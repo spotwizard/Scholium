@@ -53,3 +53,21 @@ Build outputs:
 
 - `src-tauri/target/release/bundle/macos/Scholium.app`
 - `src-tauri/target/release/bundle/dmg/Scholium_0.1.0_aarch64.dmg`
+
+## Git Flow
+
+Development follows a Git Flow style branch model:
+
+- `main` keeps production-ready history
+- `develop` is the integration branch for active development
+- `feature/*` branches start from `develop` and open pull requests back to `develop`
+- `release/*` branches start from `develop` and open pull requests back to `main`
+- `hotfix/*` branches start from `main` and open pull requests back to `main`
+
+Use concise Traditional Chinese commit messages, for example:
+
+```bash
+git commit -m "建立 Markdown 編輯器介面"
+```
+
+Pull requests should describe the user-facing change, verification steps, and any follow-up work.
