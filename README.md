@@ -64,7 +64,7 @@ Development follows a Git Flow style branch model:
 - `release/*` branches start from `develop` and open pull requests back to `main`
 - `hotfix/*` branches start from `main` and open pull requests back to `main`
 
-Use concise Traditional Chinese commit messages, for example:
+Use concise Traditional Chinese commit messages. The local helper will prompt for confirmation before it creates a commit, so you can review or replace the suggested message first.
 
 ```bash
 git commit -m "建立 Markdown 編輯器介面"
