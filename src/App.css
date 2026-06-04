@@ -103,7 +103,8 @@ button:disabled {
 
 .icon-button,
 .editor-actions button,
-.note-composer button {
+.popover-actions button,
+.note-actions button {
   min-height: 36px;
   border: 1px solid #cbd4df;
   border-radius: 8px;
@@ -201,20 +202,23 @@ button:disabled {
 }
 
 .editor-actions button,
-.note-composer button {
+.popover-actions button,
+.note-actions button {
   padding: 0 12px;
   font-size: 0.9rem;
   font-weight: 700;
 }
 
 .editor-actions button:last-child,
-.note-composer button {
+.popover-actions button:last-child,
+.note-actions button:first-child {
   border-color: #347169;
   color: #ffffff;
   background: #347169;
 }
 
-.note-composer button:disabled {
+.popover-actions button:disabled,
+.note-actions button:disabled {
   border-color: #d8dee6;
   color: #8c96a3;
   background: #eef2f5;
@@ -226,26 +230,111 @@ button:disabled {
   min-height: 0;
 }
 
-.markdown-editor {
-  width: 100%;
-  max-width: 100%;
+.editor-surface {
+  position: relative;
   min-width: 0;
-  min-height: 100%;
-  resize: none;
-  border: 0;
+  min-height: 0;
   border-right: 1px solid #d9dee5;
-  outline: none;
-  padding: 28px;
+  background: #fbfcfd;
+}
+
+.markdown-editor-host {
+  min-height: 100%;
+}
+
+.cm-editor {
+  min-height: 100%;
   color: #202124;
   background: #fbfcfd;
+}
+
+.cm-editor.cm-focused {
+  outline: none;
+}
+
+.cm-scroller {
+  min-height: calc(100vh - 88px);
   font-family:
     "SFMono-Regular", "Cascadia Code", "Roboto Mono", Consolas, "Liberation Mono",
     monospace;
   font-size: 0.96rem;
   line-height: 1.72;
-  overflow-x: hidden;
-  overflow-wrap: break-word;
-  white-space: pre-wrap;
+}
+
+.cm-content {
+  min-height: calc(100vh - 88px);
+  padding: 28px;
+  caret-color: #347169;
+}
+
+.cm-line {
+  padding: 0;
+}
+
+.cm-selectionBackground {
+  background: rgba(52, 113, 105, 0.24) !important;
+}
+
+.cm-note-annotation {
+  border: 1px solid rgba(208, 138, 46, 0.8);
+  border-radius: 5px;
+  background: rgba(255, 247, 234, 0.7);
+  box-shadow: inset 0 -1px 0 rgba(208, 138, 46, 0.45);
+  cursor: pointer;
+}
+
+.selection-popover {
+  position: absolute;
+  right: 18px;
+  top: 18px;
+  z-index: 4;
+  display: grid;
+  gap: 10px;
+  width: min(360px, calc(100% - 36px));
+  padding: 14px;
+  border: 1px solid #cbd4df;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 12px 32px rgba(32, 33, 36, 0.14);
+}
+
+.selection-popover blockquote,
+.note-editor blockquote {
+  margin: 0;
+  padding: 8px 10px;
+  border-left: 3px solid #d08a2e;
+  color: #35404a;
+  background: #fff7ea;
+  font-size: 0.88rem;
+  line-height: 1.4;
+}
+
+.selection-popover textarea,
+.note-editor textarea {
+  width: 100%;
+  min-height: 112px;
+  resize: vertical;
+  border: 1px solid #cbd4df;
+  border-radius: 8px;
+  outline: none;
+  padding: 10px 12px;
+  color: #202124;
+  background: #fbfcfd;
+}
+
+.popover-actions,
+.note-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.popover-actions button,
+.note-actions button {
+  min-height: 34px;
+  padding: 0 12px;
+  font-size: 0.86rem;
+  font-weight: 700;
 }
 
 .block-map {
@@ -285,7 +374,7 @@ button:disabled {
 
 .notes-pane {
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  grid-template-rows: auto auto auto minmax(0, 1fr);
   background: #ffffff;
 }
 
@@ -306,23 +395,11 @@ button:disabled {
   font-weight: 800;
 }
 
-.note-composer {
+.note-editor {
   display: grid;
   gap: 10px;
   padding: 12px;
   border-bottom: 1px solid #d9dee5;
-}
-
-.note-composer textarea {
-  width: 100%;
-  min-height: 112px;
-  resize: vertical;
-  border: 1px solid #cbd4df;
-  border-radius: 8px;
-  outline: none;
-  padding: 10px 12px;
-  color: #202124;
-  background: #fbfcfd;
 }
 
 .note-item {
@@ -363,6 +440,14 @@ button:disabled {
   padding: 12px;
   border-top: 1px solid #d9dee5;
   background: #f7f9fb;
+}
+
+.orphaned-notes {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border-bottom: 1px solid #d9dee5;
+  background: #fff7ea;
 }
 
 .note-link {
@@ -414,9 +499,26 @@ button:disabled {
     flex: 0 0 240px;
   }
 
-  .markdown-editor {
+  .editor-surface {
+    min-height: 460px;
+    border-right: 0;
+  }
+
+  .cm-scroller,
+  .cm-content {
+    min-height: 460px;
+  }
+
+  .markdown-editor-host {
     min-height: 460px;
     border-right: 0;
     border-bottom: 1px solid #d9dee5;
+  }
+
+  .selection-popover {
+    position: sticky;
+    top: 8px;
+    width: auto;
+    margin: 8px;
   }
 }
