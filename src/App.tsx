@@ -238,6 +238,7 @@ function App() {
     from: note.anchor.from,
     to: note.anchor.to,
   }));
+  const canSaveSelectionNote = Boolean(pendingAnchor && noteDraft.trim());
 
   function updateSelectedDocumentBody(body: string) {
     setDocuments((currentDocuments) =>
@@ -267,7 +268,7 @@ function App() {
 
   function createNoteFromSelection() {
     const body = noteDraft.trim();
-    if (!body || !pendingAnchor) return;
+    if (!canSaveSelectionNote || !pendingAnchor) return;
 
     const note: SelectionNote = {
       id: crypto.randomUUID(),
@@ -409,7 +410,7 @@ function App() {
                   <button
                     type="button"
                     onClick={createNoteFromSelection}
-                    disabled={!noteDraft.trim()}
+                    disabled={!canSaveSelectionNote}
                   >
                     Save note
                   </button>
