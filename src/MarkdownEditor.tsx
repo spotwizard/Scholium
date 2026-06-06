@@ -24,10 +24,12 @@ export type TextAnnotation = {
   to: number;
 };
 
+export type EditorChangeSource = "user" | "undo";
+
 type MarkdownEditorProps = {
   value: string;
   annotations: TextAnnotation[];
-  onChange: (value: string) => void;
+  onChange: (value: string, source: EditorChangeSource) => void;
   onSelectionChange: (anchor: TextSelectionAnchor | null) => void;
   onAnnotationClick: (noteId: string) => void;
 };
@@ -94,6 +96,7 @@ export function MarkdownEditor({
   const onChangeRef = useRef(onChange);
   const onSelectionChangeRef = useRef(onSelectionChange);
   const onAnnotationClickRef = useRef(onAnnotationClick);
+  const suppressNextChangeRef = useRef(false);
 
   const annotationSignature = useMemo(
     () =>
@@ -120,7 +123,17 @@ export function MarkdownEditor({
 
     const updateListener = EditorView.updateListener.of((update: ViewUpdate) => {
       if (update.docChanged) {
-        onChangeRef.current(update.state.doc.toString());
+        if (suppressNextChangeRef.current) {
+          suppressNextChangeRef.current = false;
+        } else {
+          const source = update.transactions.some((transaction) =>
+            transaction.isUserEvent("undo"),
+          )
+            ? "undo"
+            : "user";
+
+          onChangeRef.current(update.state.doc.toString(), source);
+        }
       }
 
       if (update.selectionSet || update.docChanged) {
@@ -178,6 +191,7 @@ export function MarkdownEditor({
     const currentValue = view.state.doc.toString();
     if (value === currentValue) return;
 
+    suppressNextChangeRef.current = true;
     view.dispatch({
       changes: {
         from: 0,
