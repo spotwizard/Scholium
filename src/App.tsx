@@ -4,6 +4,7 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import { useEffect, useState } from "react";
 import "./App.css";
 import {
+  EditorChangeSource,
   MarkdownEditor,
   TextAnnotation,
   TextSelectionAnchor,
@@ -85,6 +86,11 @@ type WorkspaceEntry =
       path: string;
       documentId: string;
     };
+
+type DirtyDocumentState = {
+  body: boolean;
+  notes: boolean;
+};
 
 const markdownFilters = [
   {
@@ -261,6 +267,14 @@ function workspaceEntryFromDocument(document: MarkdownDocument): WorkspaceEntry 
   };
 }
 
+function savedBodiesFromDocuments(documents: MarkdownDocument[]) {
+  return Object.fromEntries(documents.map((document) => [document.id, document.body]));
+}
+
+function hasDirtyState(state: DirtyDocumentState | undefined) {
+  return Boolean(state?.body || state?.notes);
+}
+
 function App() {
   const [documents, setDocuments] = useState(documentsSeed);
   const [workspaceTitle, setWorkspaceTitle] = useState("Scholium");
@@ -273,7 +287,12 @@ function App() {
   const [pendingAnchor, setPendingAnchor] = useState<TextSelectionAnchor | null>(null);
   const [noteDraft, setNoteDraft] = useState("");
   const [activeNoteId, setActiveNoteId] = useState("note-1");
-  const [dirtyDocumentIds, setDirtyDocumentIds] = useState<Set<string>>(new Set());
+  const [dirtyDocumentStates, setDirtyDocumentStates] = useState<
+    Record<string, DirtyDocumentState>
+  >({});
+  const [savedDocumentBodies, setSavedDocumentBodies] = useState<Record<string, string>>(() =>
+    savedBodiesFromDocuments(documentsSeed),
+  );
   const [storageError, setStorageError] = useState("");
   const [isSavingFile, setIsSavingFile] = useState(false);
 
@@ -287,7 +306,7 @@ function App() {
   const activeNotes = documentNotes.filter((note) => note.status === "active");
   const orphanedNotes = documentNotes.filter((note) => note.status === "orphaned");
   const activeNote = documentNotes.find((note) => note.id === activeNoteId);
-  const selectedDocumentIsDirty = dirtyDocumentIds.has(selectedDocument.id);
+  const selectedDocumentIsDirty = hasDirtyState(dirtyDocumentStates[selectedDocument.id]);
 
   const annotations: TextAnnotation[] = activeNotes.map((note) => ({
     id: note.id,
@@ -326,15 +345,61 @@ function App() {
     };
   }, [nativeStorageAvailable]);
 
-  function markDocumentDirty(documentId = selectedDocument.id) {
-    setDirtyDocumentIds((currentIds) => new Set(currentIds).add(documentId));
+  function updateDocumentDirtyState(documentId: string, patch: Partial<DirtyDocumentState>) {
+    setDirtyDocumentStates((currentStates) => {
+      const currentState = currentStates[documentId] ?? { body: false, notes: false };
+      const nextState = {
+        ...currentState,
+        ...patch,
+      };
+      const nextStates = { ...currentStates };
+
+      if (hasDirtyState(nextState)) {
+        nextStates[documentId] = nextState;
+      } else {
+        delete nextStates[documentId];
+      }
+
+      return nextStates;
+    });
   }
 
-  function markDocumentClean(documentId: string) {
-    setDirtyDocumentIds((currentIds) => {
-      const nextIds = new Set(currentIds);
-      nextIds.delete(documentId);
-      return nextIds;
+  function markDocumentBodyDirty(documentId: string, isDirty: boolean) {
+    updateDocumentDirtyState(documentId, { body: isDirty });
+  }
+
+  function markDocumentNotesDirty(documentId = selectedDocument.id) {
+    updateDocumentDirtyState(documentId, { notes: true });
+  }
+
+  function markDocumentClean(documentId: string, body: string) {
+    setDirtyDocumentStates((currentStates) => {
+      const nextStates = { ...currentStates };
+      delete nextStates[documentId];
+      return nextStates;
+    });
+    setSavedDocumentBodies((currentBodies) => ({
+      ...currentBodies,
+      [documentId]: body,
+    }));
+  }
+
+  function markLoadedDocumentsClean(loadedDocuments: MarkdownDocument[]) {
+    const loadedDocumentIds = new Set(loadedDocuments.map((document) => document.id));
+
+    setDirtyDocumentStates((currentStates) => {
+      const nextStates = { ...currentStates };
+      loadedDocumentIds.forEach((documentId) => {
+        delete nextStates[documentId];
+      });
+      return nextStates;
+    });
+    setSavedDocumentBodies((currentBodies) => {
+      const nextBodies = { ...currentBodies };
+      loadedDocuments.forEach((document) => {
+        nextBodies[document.id] = document.body;
+      });
+      return nextBodies;
     });
   }
 
@@ -387,7 +452,7 @@ function App() {
       loadedNotes.find((note) => note.documentId === firstDocument.id && note.status !== "deleted")
         ?.id ?? "",
     );
-    loadedDocuments.forEach((document) => markDocumentClean(document.id));
+    markLoadedDocumentsClean(loadedDocuments);
   }
 
   function applyOpenedDirectory(openedDirectory: OpenMarkdownDirectoryResult, selectedPath?: string) {
@@ -433,7 +498,7 @@ function App() {
     setWorkspaceEntries(nextEntries);
     setPendingAnchor(null);
     setNoteDraft("");
-    loadedDocuments.forEach((document) => markDocumentClean(document.id));
+    markLoadedDocumentsClean(loadedDocuments);
 
     if (documentToSelect) {
       setSelectedDocumentId(documentToSelect.id);
@@ -604,7 +669,7 @@ function App() {
             : document,
         ),
       );
-      markDocumentClean(selectedDocument.id);
+      markDocumentClean(selectedDocument.id, selectedDocument.body);
     } catch (error) {
       setStorageError(error instanceof Error ? error.message : String(error));
     } finally {
@@ -612,18 +677,23 @@ function App() {
     }
   }
 
-  function updateSelectedDocumentBody(body: string) {
+  function updateSelectedDocumentBody(body: string, source: EditorChangeSource) {
+    if (body === selectedDocument.body) return;
+
+    const documentId = selectedDocument.id;
+    const savedBody = savedDocumentBodies[documentId] ?? selectedDocument.body;
+
     setDocuments((currentDocuments) =>
       currentDocuments.map((document) =>
-        document.id === selectedDocument.id ? { ...document, body } : document,
+        document.id === documentId ? { ...document, body } : document,
       ),
     );
     setNotes((currentNotes) =>
       currentNotes.map((note) =>
-        note.documentId === selectedDocument.id ? reconcileNote(note, body) : note,
+        note.documentId === documentId ? reconcileNote(note, body) : note,
       ),
     );
-    markDocumentDirty();
+    markDocumentBodyDirty(documentId, !(source === "undo" && body === savedBody));
   }
 
   function selectDocument(documentId: string) {
@@ -659,7 +729,7 @@ function App() {
     setActiveNoteId(note.id);
     setPendingAnchor(null);
     setNoteDraft("");
-    markDocumentDirty();
+    markDocumentNotesDirty();
   }
 
   function updateNoteBody(noteId: string, body: string) {
@@ -674,7 +744,7 @@ function App() {
           : note,
       ),
     );
-    markDocumentDirty();
+    markDocumentNotesDirty();
   }
 
   function deleteNote(noteId: string) {
@@ -693,7 +763,7 @@ function App() {
     if (activeNoteId === noteId) {
       setActiveNoteId("");
     }
-    markDocumentDirty();
+    markDocumentNotesDirty();
   }
 
   function rebindNote(noteId: string) {
@@ -714,7 +784,7 @@ function App() {
     );
     setActiveNoteId(noteId);
     setPendingAnchor(null);
-    markDocumentDirty();
+    markDocumentNotesDirty();
   }
 
   return (
