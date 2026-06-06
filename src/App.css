@@ -540,6 +540,17 @@ button:disabled {
   line-height: 1.4;
 }
 
+.selection-warning {
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid #e4c27a;
+  border-radius: 8px;
+  color: #6d4827;
+  background: #fff7ea;
+  font-size: 0.82rem;
+  line-height: 1.35;
+}
+
 .selection-popover textarea,
 .note-editor textarea {
   width: 100%;

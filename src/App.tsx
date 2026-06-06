@@ -388,6 +388,71 @@ function getBlockRange(markdown: string, block: MarkdownPreviewBlock) {
   return { start, end };
 }
 
+function trimRange(text: string, from: number, to: number) {
+  let nextFrom = Math.max(0, Math.min(from, text.length));
+  let nextTo = Math.max(nextFrom, Math.min(to, text.length));
+
+  while (nextFrom < nextTo && /\s/.test(text[nextFrom])) {
+    nextFrom += 1;
+  }
+
+  while (nextTo > nextFrom && /\s/.test(text[nextTo - 1])) {
+    nextTo -= 1;
+  }
+
+  return { from: nextFrom, to: nextTo };
+}
+
+function getBlockSemanticRange(markdown: string, block: MarkdownPreviewBlock) {
+  const lines = markdown.replace(/\r\n/g, "\n").split("\n");
+  const lineStartOffsets = getLineStartOffsets(markdown);
+  const blockRange = getBlockRange(markdown, block);
+
+  if (block.kind === "rule") return null;
+
+  if (block.kind === "heading") {
+    const line = lines[block.startLine] ?? "";
+    const match = line.match(/^(#{1,6})\s+(.+)$/);
+    if (!match || match.index === undefined) return trimRange(markdown, blockRange.start, blockRange.end);
+
+    const contentStart = blockRange.start + match[1].length + (line[match[1].length] === " " ? 1 : 0);
+    return trimRange(markdown, contentStart, blockRange.end);
+  }
+
+  if (block.kind === "code" && block.endLine > block.startLine) {
+    const openingLine = lines[block.startLine] ?? "";
+    const contentStart = (lineStartOffsets[block.startLine] ?? 0) + openingLine.length + 1;
+    const contentEnd = Math.max(contentStart, (lineStartOffsets[block.endLine] ?? blockRange.end) - 1);
+    return trimRange(markdown, contentStart, contentEnd);
+  }
+
+  return trimRange(markdown, blockRange.start, blockRange.end);
+}
+
+function isSelectionCompleteMarkdownBlock(markdown: string, anchor: TextSelectionAnchor) {
+  const selection = trimRange(markdown, anchor.from, anchor.to);
+  if (selection.from === selection.to) return true;
+
+  const blocks = parseMarkdownPreviewBlocks(markdown)
+    .map((block) => ({
+      block,
+      sourceRange: getBlockRange(markdown, block),
+      semanticRange: getBlockSemanticRange(markdown, block),
+    }))
+    .filter((block) => block.semanticRange);
+  const intersectedBlocks = blocks.filter(
+    ({ sourceRange }) => selection.to > sourceRange.start && selection.from < sourceRange.end,
+  );
+
+  if (intersectedBlocks.length === 0) return true;
+
+  return intersectedBlocks.every(({ semanticRange }) => {
+    if (!semanticRange) return true;
+
+    return selection.from <= semanticRange.from && selection.to >= semanticRange.to;
+  });
+}
+
 function makeAnchorFromRange(
   body: string,
   from: number,
@@ -971,6 +1036,9 @@ function App() {
     to: note.anchor.to,
   }));
   const canSaveSelectionNote = Boolean(pendingAnchor && noteDraft.trim());
+  const selectionMayBePartialBlock = Boolean(
+    pendingAnchor && !isSelectionCompleteMarkdownBlock(selectedDocument.body, pendingAnchor),
+  );
 
   useEffect(() => {
     if (!nativeStorageAvailable) return;
@@ -1564,6 +1632,11 @@ function App() {
               <div className="selection-popover">
                 <p className="eyebrow">Selection</p>
                 <blockquote>{summarizeText(pendingAnchor.selectedText, 96)}</blockquote>
+                {selectionMayBePartialBlock ? (
+                  <p className="selection-warning">
+                    目前圈選的範圍可能不是完整段落，請確認這是你想綁定筆記的文字。
+                  </p>
+                ) : null}
                 <textarea
                   aria-label="Selection note"
                   value={noteDraft}
