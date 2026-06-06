@@ -1,4 +1,7 @@
-import { useMemo, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { open, save } from "@tauri-apps/plugin-dialog";
+import { useEffect, useState } from "react";
 import "./App.css";
 import {
   MarkdownEditor,
@@ -12,15 +15,10 @@ type MarkdownDocument = {
   id: string;
   title: string;
   path: string;
+  filePath: string | null;
+  notesPath: string | null;
   updatedAt: string;
   body: string;
-};
-
-type MarkdownBlock = {
-  id: string;
-  type: string;
-  title: string;
-  preview: string;
 };
 
 type SelectionNote = {
@@ -35,11 +33,73 @@ type SelectionNote = {
   deletedAt: string | null;
 };
 
+type OpenMarkdownFileResult = {
+  path: string;
+  notesPath: string;
+  title: string;
+  body: string;
+  notes: SelectionNote[];
+};
+
+type OpenDirectoryEntryResult =
+  | {
+      kind: "directory";
+      path: string;
+      title: string;
+      file: null;
+    }
+  | {
+      kind: "file";
+      path: string;
+      title: string;
+      file: OpenMarkdownFileResult;
+    };
+
+type OpenMarkdownDirectoryResult = {
+  path: string;
+  title: string;
+  entries: OpenDirectoryEntryResult[];
+};
+
+type OpenMarkdownFileContextResult = {
+  selectedFile: OpenMarkdownFileResult;
+  directory: OpenMarkdownDirectoryResult;
+};
+
+type SaveMarkdownFileResult = {
+  path: string;
+  notesPath: string;
+};
+
+type WorkspaceEntry =
+  | {
+      kind: "directory";
+      id: string;
+      title: string;
+      path: string;
+    }
+  | {
+      kind: "file";
+      id: string;
+      title: string;
+      path: string;
+      documentId: string;
+    };
+
+const markdownFilters = [
+  {
+    name: "Markdown",
+    extensions: ["md", "markdown", "mdown"],
+  },
+];
+
 const documentsSeed: MarkdownDocument[] = [
   {
     id: "roadmap",
     title: "Scholium Roadmap",
     path: "workspace/roadmap.md",
+    filePath: null,
+    notesPath: null,
     updatedAt: "Today",
     body: `# Scholium Roadmap
 
@@ -57,6 +117,8 @@ Readers can highlight a passage, attach a note, and return later to see a thin m
     id: "research",
     title: "Research Notes",
     path: "workspace/research.md",
+    filePath: null,
+    notesPath: null,
     updatedAt: "Yesterday",
     body: `# Research Notes
 
@@ -74,6 +136,8 @@ The Markdown file can stay untouched while annotations live in a sidecar JSON fi
     id: "meeting",
     title: "Planning Meeting",
     path: "workspace/meeting.md",
+    filePath: null,
+    notesPath: null,
     updatedAt: "Jun 3",
     body: `# Planning Meeting
 
@@ -133,35 +197,6 @@ function summarizeText(text: string, maxLength = 150) {
     : normalized;
 }
 
-function getBlockType(text: string) {
-  const trimmed = text.trim();
-
-  if (trimmed.startsWith("#")) return "Heading";
-  if (trimmed.startsWith(">")) return "Quote";
-  if (trimmed.startsWith("```")) return "Code";
-  if (/^[-*]\s/.test(trimmed)) return "List";
-  return "Paragraph";
-}
-
-function getBlockTitle(text: string) {
-  const firstLine = text.trim().split("\n")[0] ?? "";
-  return firstLine.replace(/^#+\s*/, "").replace(/^[-*>]\s*/, "") || "Untitled block";
-}
-
-function parseMarkdownBlocks(documentId: string, markdown: string): MarkdownBlock[] {
-  const blocks = markdown
-    .split(/\n{2,}/)
-    .map((block) => block.trim())
-    .filter(Boolean);
-
-  return blocks.map((block, index) => ({
-    id: `${documentId}-block-${index + 1}`,
-    type: getBlockType(block),
-    title: getBlockTitle(block),
-    preview: summarizeText(block),
-  }));
-}
-
 function nowLabel() {
   return new Date().toLocaleTimeString([], {
     hour: "2-digit",
@@ -208,30 +243,51 @@ function reconcileNote(note: SelectionNote, nextBody: string): SelectionNote {
   };
 }
 
+function hasNativeStorageAccess() {
+  return "__TAURI_INTERNALS__" in window;
+}
+
+function ensureMarkdownExtension(path: string) {
+  return /\.(md|markdown|mdown)$/i.test(path) ? path : `${path}.md`;
+}
+
+function workspaceEntryFromDocument(document: MarkdownDocument): WorkspaceEntry {
+  return {
+    kind: "file",
+    id: `file:${document.id}`,
+    title: document.title,
+    path: document.path,
+    documentId: document.id,
+  };
+}
+
 function App() {
   const [documents, setDocuments] = useState(documentsSeed);
+  const [workspaceTitle, setWorkspaceTitle] = useState("Scholium");
+  const [workspacePath, setWorkspacePath] = useState("Workspace");
+  const [workspaceEntries, setWorkspaceEntries] = useState<WorkspaceEntry[]>(() =>
+    documentsSeed.map(workspaceEntryFromDocument),
+  );
   const [selectedDocumentId, setSelectedDocumentId] = useState(documentsSeed[0].id);
-  const [activeBlockId, setActiveBlockId] = useState("roadmap-block-2");
   const [notes, setNotes] = useState(notesSeed);
   const [pendingAnchor, setPendingAnchor] = useState<TextSelectionAnchor | null>(null);
   const [noteDraft, setNoteDraft] = useState("");
   const [activeNoteId, setActiveNoteId] = useState("note-1");
+  const [dirtyDocumentIds, setDirtyDocumentIds] = useState<Set<string>>(new Set());
+  const [storageError, setStorageError] = useState("");
+  const [isSavingFile, setIsSavingFile] = useState(false);
 
   const selectedDocument =
     documents.find((document) => document.id === selectedDocumentId) ?? documents[0];
 
-  const blocks = useMemo(
-    () => parseMarkdownBlocks(selectedDocument.id, selectedDocument.body),
-    [selectedDocument],
-  );
-
-  const activeBlock = blocks.find((block) => block.id === activeBlockId) ?? blocks[0];
   const documentNotes = notes.filter(
     (note) => note.documentId === selectedDocument.id && note.status !== "deleted",
   );
+  const nativeStorageAvailable = hasNativeStorageAccess();
   const activeNotes = documentNotes.filter((note) => note.status === "active");
   const orphanedNotes = documentNotes.filter((note) => note.status === "orphaned");
   const activeNote = documentNotes.find((note) => note.id === activeNoteId);
+  const selectedDocumentIsDirty = dirtyDocumentIds.has(selectedDocument.id);
 
   const annotations: TextAnnotation[] = activeNotes.map((note) => ({
     id: note.id,
@@ -239,6 +295,322 @@ function App() {
     to: note.anchor.to,
   }));
   const canSaveSelectionNote = Boolean(pendingAnchor && noteDraft.trim());
+
+  useEffect(() => {
+    if (!nativeStorageAvailable) return;
+
+    let unlistenNewFile: (() => void) | null = null;
+    let unlistenOpenFile: (() => void) | null = null;
+    let unlistenOpenFolder: (() => void) | null = null;
+
+    void Promise.all([
+      listen("scholium-new-file", () => {
+        void newMarkdownFile();
+      }),
+      listen("scholium-open-file", () => {
+        void openMarkdownFileFromPicker();
+      }),
+      listen("scholium-open-folder", () => {
+        void openMarkdownFolder();
+      }),
+    ]).then(([newFileListener, openFileListener, openFolderListener]) => {
+      unlistenNewFile = newFileListener;
+      unlistenOpenFile = openFileListener;
+      unlistenOpenFolder = openFolderListener;
+    });
+
+    return () => {
+      unlistenNewFile?.();
+      unlistenOpenFile?.();
+      unlistenOpenFolder?.();
+    };
+  }, [nativeStorageAvailable]);
+
+  function markDocumentDirty(documentId = selectedDocument.id) {
+    setDirtyDocumentIds((currentIds) => new Set(currentIds).add(documentId));
+  }
+
+  function markDocumentClean(documentId: string) {
+    setDirtyDocumentIds((currentIds) => {
+      const nextIds = new Set(currentIds);
+      nextIds.delete(documentId);
+      return nextIds;
+    });
+  }
+
+  function documentFromLoadedFile(loaded: OpenMarkdownFileResult): MarkdownDocument {
+    return {
+      id: loaded.path,
+      title: loaded.title,
+      path: loaded.path,
+      filePath: loaded.path,
+      notesPath: loaded.notesPath,
+      updatedAt: "",
+      body: loaded.body,
+    };
+  }
+
+  function applyLoadedFiles(loadedFiles: OpenMarkdownFileResult[]) {
+    if (loadedFiles.length === 0) {
+      setStorageError("No Markdown files found in the selected folder.");
+      return;
+    }
+
+    const loadedDocuments = loadedFiles.map(documentFromLoadedFile);
+    const loadedDocumentIds = new Set(loadedDocuments.map((document) => document.id));
+    const loadedNotes = loadedFiles.flatMap((loadedFile) =>
+      loadedFile.notes.map((note) => ({
+        ...note,
+        documentId: loadedFile.path,
+      })),
+    );
+    const firstDocument = loadedDocuments[0];
+
+    setDocuments((currentDocuments) => [
+      ...loadedDocuments,
+      ...currentDocuments.filter((document) => !loadedDocumentIds.has(document.id)),
+    ]);
+    setWorkspaceEntries((currentEntries) => [
+      ...loadedDocuments.map(workspaceEntryFromDocument),
+      ...currentEntries.filter(
+        (entry) => entry.kind !== "file" || !loadedDocumentIds.has(entry.documentId),
+      ),
+    ]);
+    setNotes((currentNotes) => [
+      ...loadedNotes,
+      ...currentNotes.filter((note) => !loadedDocumentIds.has(note.documentId)),
+    ]);
+    setSelectedDocumentId(firstDocument.id);
+    setPendingAnchor(null);
+    setNoteDraft("");
+    setActiveNoteId(
+      loadedNotes.find((note) => note.documentId === firstDocument.id && note.status !== "deleted")
+        ?.id ?? "",
+    );
+    loadedDocuments.forEach((document) => markDocumentClean(document.id));
+  }
+
+  function applyOpenedDirectory(openedDirectory: OpenMarkdownDirectoryResult, selectedPath?: string) {
+    const loadedFiles = openedDirectory.entries.flatMap((entry) =>
+      entry.kind === "file" ? [entry.file] : [],
+    );
+    const loadedDocuments = loadedFiles.map(documentFromLoadedFile);
+    const loadedDocumentIds = new Set(loadedDocuments.map((document) => document.id));
+    const loadedNotes = loadedFiles.flatMap((loadedFile) =>
+      loadedFile.notes.map((note) => ({
+        ...note,
+        documentId: loadedFile.path,
+      })),
+    );
+    const nextEntries = openedDirectory.entries.map((entry): WorkspaceEntry => {
+      if (entry.kind === "directory") {
+        return {
+          kind: "directory",
+          id: `directory:${entry.path}`,
+          title: entry.title,
+          path: entry.path,
+        };
+      }
+
+      return workspaceEntryFromDocument(documentFromLoadedFile(entry.file));
+    });
+    const firstDocument = loadedDocuments[0];
+    const selectedDocument = selectedPath
+      ? loadedDocuments.find((document) => document.id === selectedPath)
+      : firstDocument;
+    const documentToSelect = selectedDocument ?? firstDocument;
+
+    setDocuments((currentDocuments) => [
+      ...loadedDocuments,
+      ...currentDocuments.filter((document) => !loadedDocumentIds.has(document.id)),
+    ]);
+    setNotes((currentNotes) => [
+      ...loadedNotes,
+      ...currentNotes.filter((note) => !loadedDocumentIds.has(note.documentId)),
+    ]);
+    setWorkspaceTitle(openedDirectory.title);
+    setWorkspacePath(openedDirectory.path);
+    setWorkspaceEntries(nextEntries);
+    setPendingAnchor(null);
+    setNoteDraft("");
+    loadedDocuments.forEach((document) => markDocumentClean(document.id));
+
+    if (documentToSelect) {
+      setSelectedDocumentId(documentToSelect.id);
+      setActiveNoteId(
+        loadedNotes.find(
+          (note) => note.documentId === documentToSelect.id && note.status !== "deleted",
+        )?.id ?? "",
+      );
+    } else {
+      setActiveNoteId("");
+    }
+
+    if (nextEntries.length === 0) {
+      setStorageError("No folders or Markdown files found in the selected folder.");
+    }
+  }
+
+  async function openDirectoryPath(path: string) {
+    if (!nativeStorageAvailable) {
+      setStorageError("Open/save requires the Scholium macOS app runtime.");
+      return;
+    }
+
+    setStorageError("");
+
+    try {
+      const openedDirectory = await invoke<OpenMarkdownDirectoryResult>("open_markdown_directory", {
+        path,
+      });
+      applyOpenedDirectory(openedDirectory);
+    } catch (error) {
+      setStorageError(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function openMarkdownFolder() {
+    if (!nativeStorageAvailable) {
+      setStorageError("Open/save requires the Scholium macOS app runtime.");
+      return;
+    }
+
+    setStorageError("");
+
+    try {
+      const selectedPath = await open({
+        directory: true,
+        multiple: false,
+      });
+      if (!selectedPath || Array.isArray(selectedPath)) return;
+
+      await openDirectoryPath(selectedPath);
+    } catch (error) {
+      setStorageError(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function openMarkdownFileFromPicker() {
+    if (!nativeStorageAvailable) {
+      setStorageError("Open/save requires the Scholium macOS app runtime.");
+      return;
+    }
+
+    setStorageError("Opening file...");
+
+    try {
+      const selectedPath = await open({
+        directory: false,
+        multiple: false,
+        filters: markdownFilters,
+      });
+      if (!selectedPath || Array.isArray(selectedPath)) {
+        setStorageError("");
+        return;
+      }
+
+      const context = await invoke<OpenMarkdownFileContextResult>("open_markdown_file_context", {
+        path: selectedPath,
+      });
+      const selectedFileEntryExists = context.directory.entries.some(
+        (entry) => entry.kind === "file" && entry.file.path === context.selectedFile.path,
+      );
+      const directory = selectedFileEntryExists
+        ? context.directory
+        : {
+            ...context.directory,
+            entries: [
+              ...context.directory.entries,
+              {
+                kind: "file" as const,
+                path: context.selectedFile.path,
+                title: context.selectedFile.title,
+                file: context.selectedFile,
+              },
+            ],
+          };
+
+      applyOpenedDirectory(directory, context.selectedFile.path);
+      setStorageError("");
+    } catch (error) {
+      setStorageError(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function newMarkdownFile() {
+    if (!nativeStorageAvailable) {
+      setStorageError("Open/save requires the Scholium macOS app runtime.");
+      return;
+    }
+
+    setIsSavingFile(true);
+    setStorageError("");
+
+    try {
+      const selectedPath = await save({
+        defaultPath: "Untitled.md",
+        filters: markdownFilters,
+      });
+      if (!selectedPath) return;
+
+      const path = ensureMarkdownExtension(selectedPath);
+      const body = "# Untitled\n";
+      const saved = await invoke<SaveMarkdownFileResult>("save_markdown_file", {
+        path,
+        body,
+        notes: [],
+      });
+      const loaded = await invoke<OpenMarkdownFileResult>("open_markdown_file", {
+        path: saved.path,
+      });
+
+      applyLoadedFiles([loaded]);
+    } catch (error) {
+      setStorageError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsSavingFile(false);
+    }
+  }
+
+  async function saveSelectedDocument() {
+    if (!selectedDocument.filePath) {
+      setStorageError("This document is sample content. Open a local .md file before saving.");
+      return;
+    }
+    if (!nativeStorageAvailable) {
+      setStorageError("Open/save requires the Scholium macOS app runtime.");
+      return;
+    }
+
+    setIsSavingFile(true);
+    setStorageError("");
+
+    try {
+      const saved = await invoke<SaveMarkdownFileResult>("save_markdown_file", {
+        path: selectedDocument.filePath,
+        body: selectedDocument.body,
+        notes: notes.filter((note) => note.documentId === selectedDocument.id),
+      });
+
+      setDocuments((currentDocuments) =>
+        currentDocuments.map((document) =>
+          document.id === selectedDocument.id
+            ? {
+                ...document,
+                path: saved.path,
+                notesPath: saved.notesPath,
+                updatedAt: `Saved ${nowLabel()}`,
+              }
+            : document,
+        ),
+      );
+      markDocumentClean(selectedDocument.id);
+    } catch (error) {
+      setStorageError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsSavingFile(false);
+    }
+  }
 
   function updateSelectedDocumentBody(body: string) {
     setDocuments((currentDocuments) =>
@@ -251,6 +623,7 @@ function App() {
         note.documentId === selectedDocument.id ? reconcileNote(note, body) : note,
       ),
     );
+    markDocumentDirty();
   }
 
   function selectDocument(documentId: string) {
@@ -258,9 +631,9 @@ function App() {
     if (!nextDocument) return;
 
     setSelectedDocumentId(documentId);
-    setActiveBlockId(`${nextDocument.id}-block-1`);
     setPendingAnchor(null);
     setNoteDraft("");
+    setStorageError("");
     setActiveNoteId(
       notes.find((note) => note.documentId === documentId && note.status !== "deleted")?.id ?? "",
     );
@@ -286,6 +659,7 @@ function App() {
     setActiveNoteId(note.id);
     setPendingAnchor(null);
     setNoteDraft("");
+    markDocumentDirty();
   }
 
   function updateNoteBody(noteId: string, body: string) {
@@ -300,6 +674,7 @@ function App() {
           : note,
       ),
     );
+    markDocumentDirty();
   }
 
   function deleteNote(noteId: string) {
@@ -318,6 +693,7 @@ function App() {
     if (activeNoteId === noteId) {
       setActiveNoteId("");
     }
+    markDocumentDirty();
   }
 
   function rebindNote(noteId: string) {
@@ -338,6 +714,7 @@ function App() {
     );
     setActiveNoteId(noteId);
     setPendingAnchor(null);
+    markDocumentDirty();
   }
 
   return (
@@ -345,30 +722,39 @@ function App() {
       <aside className="document-pane" aria-label="Documents">
         <div className="pane-header">
           <div>
-            <p className="eyebrow">Workspace</p>
-            <h1>Scholium</h1>
+            <p className="eyebrow">{workspacePath}</p>
+            <h1>{workspaceTitle}</h1>
           </div>
-          <button className="icon-button" type="button" aria-label="Create document">
-            +
-          </button>
         </div>
 
         <div className="document-list">
-          {documents.map((document) => (
-            <button
-              className={`document-row ${
-                document.id === selectedDocument.id ? "is-selected" : ""
-              }`}
-              key={document.id}
-              onClick={() => selectDocument(document.id)}
-              type="button"
-            >
-              <span className="document-title">{document.title}</span>
-              <span className="document-path">{document.path}</span>
-              <span className="document-meta">{document.updatedAt}</span>
-            </button>
-          ))}
+          {workspaceEntries.map((entry) => {
+            const isSelected = entry.kind === "file" && entry.documentId === selectedDocument.id;
+
+            return (
+              <button
+                className={`document-row ${entry.kind === "directory" ? "is-folder" : ""} ${
+                  isSelected ? "is-selected" : ""
+                }`}
+                key={entry.id}
+                onClick={() => {
+                  if (entry.kind === "directory") {
+                    void openDirectoryPath(entry.path);
+                    return;
+                  }
+
+                  selectDocument(entry.documentId);
+                }}
+                type="button"
+              >
+                <span className="document-icon" aria-hidden="true" />
+                <span className="document-title">{entry.title}</span>
+              </button>
+            );
+          })}
         </div>
+
+        {storageError ? <p className="storage-error">{storageError}</p> : null}
       </aside>
 
       <section className="editor-pane" aria-label="Markdown editor">
@@ -378,8 +764,17 @@ function App() {
             <h2>{selectedDocument.title}</h2>
           </div>
           <div className="editor-actions" aria-label="Editor actions">
+            <span className={`save-state ${selectedDocumentIsDirty ? "is-dirty" : ""}`}>
+              {selectedDocumentIsDirty ? "Unsaved" : "Saved"}
+            </span>
             <button type="button">Preview</button>
-            <button type="button">Save</button>
+            <button
+              type="button"
+              onClick={saveSelectedDocument}
+              disabled={!selectedDocument.filePath || !selectedDocumentIsDirty || isSavingFile}
+            >
+              {isSavingFile ? "Saving" : "Save"}
+            </button>
           </div>
         </header>
 
@@ -417,21 +812,6 @@ function App() {
                 </div>
               </div>
             ) : null}
-          </div>
-
-          <div className="block-map" aria-label="Markdown blocks">
-            {blocks.map((block) => (
-              <button
-                className={`block-row ${block.id === activeBlock?.id ? "is-active" : ""}`}
-                key={block.id}
-                onClick={() => setActiveBlockId(block.id)}
-                type="button"
-              >
-                <span className="block-type">{block.type}</span>
-                <span className="block-title">{block.title}</span>
-                <span className="block-preview">{block.preview}</span>
-              </button>
-            ))}
           </div>
         </div>
       </section>
