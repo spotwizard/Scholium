@@ -329,6 +329,12 @@ button:disabled {
   background: #eef2f5;
 }
 
+.editor-actions button.is-active {
+  border-color: #347169;
+  color: #193c38;
+  background: #edf7f5;
+}
+
 .editor-grid {
   display: block;
   min-height: 0;
@@ -382,6 +388,128 @@ button:disabled {
   border: 1px solid rgba(208, 138, 46, 0.8);
   border-radius: 5px;
   background: rgba(255, 247, 234, 0.7);
+  box-shadow: inset 0 -1px 0 rgba(208, 138, 46, 0.45);
+  cursor: pointer;
+}
+
+.markdown-preview {
+  min-height: calc(100vh - 88px);
+  overflow: auto;
+  padding: 28px;
+  color: #202124;
+  background: #fbfcfd;
+  font-size: 1rem;
+  line-height: 1.72;
+}
+
+.markdown-preview > :first-child {
+  margin-top: 0;
+}
+
+.markdown-preview h1,
+.markdown-preview h2,
+.markdown-preview h3,
+.markdown-preview h4,
+.markdown-preview h5,
+.markdown-preview h6 {
+  margin: 1.35em 0 0.5em;
+  color: #151719;
+  font-weight: 760;
+  letter-spacing: 0;
+  line-height: 1.22;
+}
+
+.markdown-preview h1 {
+  font-size: 1.75rem;
+}
+
+.markdown-preview h2 {
+  padding-bottom: 0.25em;
+  border-bottom: 1px solid #d9dee5;
+  font-size: 1.35rem;
+}
+
+.markdown-preview h3 {
+  font-size: 1.15rem;
+}
+
+.markdown-preview p {
+  margin: 0 0 1em;
+}
+
+.markdown-preview ul,
+.markdown-preview ol {
+  margin: 0 0 1em;
+  padding-left: 1.35em;
+}
+
+.markdown-preview li + li {
+  margin-top: 0.28em;
+}
+
+.markdown-preview blockquote {
+  margin: 0 0 1em;
+  padding: 0.2em 1em;
+  border-left: 3px solid #347169;
+  color: #4d5965;
+  background: #edf7f5;
+}
+
+.markdown-preview blockquote p:last-child {
+  margin-bottom: 0;
+}
+
+.markdown-preview code {
+  border-radius: 5px;
+  padding: 0.1em 0.32em;
+  color: #193c38;
+  background: #eef2f5;
+  font-family:
+    "SFMono-Regular", "Cascadia Code", "Roboto Mono", Consolas, "Liberation Mono",
+    monospace;
+  font-size: 0.9em;
+}
+
+.markdown-preview pre {
+  overflow: auto;
+  margin: 0 0 1em;
+  border: 1px solid #d9dee5;
+  border-radius: 8px;
+  padding: 14px;
+  background: #f4f6f8;
+}
+
+.markdown-preview pre code {
+  padding: 0;
+  background: transparent;
+}
+
+.markdown-preview a {
+  color: #2b665f;
+  font-weight: 650;
+}
+
+.markdown-preview hr {
+  height: 1px;
+  border: 0;
+  margin: 1.5em 0;
+  background: #d9dee5;
+}
+
+.markdown-preview-editable {
+  border-radius: 6px;
+  caret-color: #347169;
+  outline: none;
+}
+
+.markdown-preview-editable:focus {
+  background: transparent;
+}
+
+.preview-note-annotation {
+  border: 1px solid rgba(208, 138, 46, 0.8);
+  border-radius: 5px;
+  background: rgba(255, 247, 234, 0.85);
   box-shadow: inset 0 -1px 0 rgba(208, 138, 46, 0.45);
   cursor: pointer;
 }

@@ -1,7 +1,16 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
-import { useEffect, useState } from "react";
+import {
+  createElement,
+  type FocusEvent,
+  type FormEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent,
+  type ReactNode,
+  useEffect,
+  useState,
+} from "react";
 import "./App.css";
 import {
   EditorChangeSource,
@@ -91,6 +100,38 @@ type DirtyDocumentState = {
   body: boolean;
   notes: boolean;
 };
+
+type EditorMode = "edit" | "preview";
+
+type MarkdownPreviewBlock =
+  | {
+      kind: "heading";
+      key: string;
+      startLine: number;
+      endLine: number;
+      level: number;
+      text: string;
+    }
+  | {
+      kind: "paragraph" | "quote" | "code";
+      key: string;
+      startLine: number;
+      endLine: number;
+      text: string;
+    }
+  | {
+      kind: "unordered-list" | "ordered-list";
+      key: string;
+      startLine: number;
+      endLine: number;
+      items: string[];
+    }
+  | {
+      kind: "rule";
+      key: string;
+      startLine: number;
+      endLine: number;
+    };
 
 const markdownFilters = [
   {
@@ -275,6 +316,621 @@ function hasDirtyState(state: DirtyDocumentState | undefined) {
   return Boolean(state?.body || state?.notes);
 }
 
+function isSafeLink(href: string) {
+  return /^(https?:|mailto:)/i.test(href);
+}
+
+function renderInlineMarkdown(text: string, keyPrefix: string): ReactNode[] {
+  const nodes: ReactNode[] = [];
+  const tokenPattern = /(`[^`]+`|\*\*[^*]+\*\*|\*[^*]+\*|\[[^\]]+\]\([^)]+\))/g;
+  let lastIndex = 0;
+  let tokenIndex = 0;
+
+  for (const match of text.matchAll(tokenPattern)) {
+    const token = match[0];
+    const index = match.index ?? 0;
+
+    if (index > lastIndex) {
+      nodes.push(text.slice(lastIndex, index));
+    }
+
+    const key = `${keyPrefix}-inline-${tokenIndex}`;
+
+    if (token.startsWith("`")) {
+      nodes.push(<code key={key}>{token.slice(1, -1)}</code>);
+    } else if (token.startsWith("**")) {
+      nodes.push(<strong key={key}>{token.slice(2, -2)}</strong>);
+    } else if (token.startsWith("*")) {
+      nodes.push(<em key={key}>{token.slice(1, -1)}</em>);
+    } else {
+      const linkMatch = token.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
+      if (linkMatch && isSafeLink(linkMatch[2])) {
+        nodes.push(
+          <a href={linkMatch[2]} key={key} rel="noreferrer" target="_blank">
+            {linkMatch[1]}
+          </a>,
+        );
+      } else {
+        nodes.push(token);
+      }
+    }
+
+    lastIndex = index + token.length;
+    tokenIndex += 1;
+  }
+
+  if (lastIndex < text.length) {
+    nodes.push(text.slice(lastIndex));
+  }
+
+  return nodes;
+}
+
+function getLineStartOffsets(markdown: string) {
+  const offsets = [0];
+
+  for (let index = 0; index < markdown.length; index += 1) {
+    if (markdown[index] === "\n") {
+      offsets.push(index + 1);
+    }
+  }
+
+  return offsets;
+}
+
+function getBlockRange(markdown: string, block: MarkdownPreviewBlock) {
+  const lines = markdown.replace(/\r\n/g, "\n").split("\n");
+  const lineStartOffsets = getLineStartOffsets(markdown);
+  const start = lineStartOffsets[block.startLine] ?? 0;
+  const endLine = lines[block.endLine] ?? "";
+  const end = (lineStartOffsets[block.endLine] ?? markdown.length) + endLine.length;
+
+  return { start, end };
+}
+
+function makeAnchorFromRange(
+  body: string,
+  from: number,
+  to: number,
+  selectedText: string,
+): TextSelectionAnchor {
+  return {
+    from,
+    to,
+    selectedText,
+    prefix: body.slice(Math.max(0, from - 48), from),
+    suffix: body.slice(to, Math.min(body.length, to + 48)),
+  };
+}
+
+function makePreviewAnchor(
+  body: string,
+  block: MarkdownPreviewBlock | undefined,
+  selectedText: string,
+) {
+  const normalizedSelection = selectedText.replace(/\s+/g, " ").trim();
+  if (!normalizedSelection) return null;
+
+  if (block) {
+    const blockRange = getBlockRange(body, block);
+    const blockSource = body.slice(blockRange.start, blockRange.end);
+    const blockIndex = blockSource.indexOf(normalizedSelection);
+
+    if (blockIndex >= 0) {
+      const from = blockRange.start + blockIndex;
+      return makeAnchorFromRange(body, from, from + normalizedSelection.length, normalizedSelection);
+    }
+  }
+
+  const fallbackIndex = body.indexOf(normalizedSelection);
+  if (fallbackIndex < 0) return null;
+
+  return makeAnchorFromRange(
+    body,
+    fallbackIndex,
+    fallbackIndex + normalizedSelection.length,
+    normalizedSelection,
+  );
+}
+
+function getNotesForPreviewBlock(
+  markdown: string,
+  block: MarkdownPreviewBlock,
+  notes: SelectionNote[],
+) {
+  const blockRange = getBlockRange(markdown, block);
+
+  return notes.filter(
+    (note) =>
+      note.status === "active" &&
+      note.anchor.to > blockRange.start &&
+      note.anchor.from < blockRange.end,
+  );
+}
+
+function renderAnnotatedPlainText(
+  text: string,
+  keyPrefix: string,
+  notes: SelectionNote[],
+  onAnnotationClick: (noteId: string) => void,
+) {
+  const ranges = notes
+    .map((note) => ({
+      note,
+      start: text.indexOf(note.selectedText),
+      end: text.indexOf(note.selectedText) + note.selectedText.length,
+    }))
+    .filter((range) => range.start >= 0 && range.end > range.start)
+    .sort((left, right) => left.start - right.start);
+  const nodes: ReactNode[] = [];
+  let cursor = 0;
+
+  ranges.forEach((range, rangeIndex) => {
+    if (range.start < cursor) return;
+
+    if (range.start > cursor) {
+      nodes.push(text.slice(cursor, range.start));
+    }
+
+    nodes.push(
+      <span
+        className="preview-note-annotation"
+        data-note-id={range.note.id}
+        key={`${keyPrefix}-note-${rangeIndex}`}
+        onClick={(event) => {
+          event.stopPropagation();
+          onAnnotationClick(range.note.id);
+        }}
+      >
+        {text.slice(range.start, range.end)}
+      </span>,
+    );
+    cursor = range.end;
+  });
+
+  if (cursor < text.length) {
+    nodes.push(text.slice(cursor));
+  }
+
+  return nodes;
+}
+
+function renderPreviewInline(
+  text: string,
+  keyPrefix: string,
+  notes: SelectionNote[],
+  onAnnotationClick: (noteId: string) => void,
+) {
+  if (notes.length === 0) {
+    return renderInlineMarkdown(text, keyPrefix);
+  }
+
+  const ranges = notes
+    .map((note) => ({
+      note,
+      start: text.indexOf(note.selectedText),
+      end: text.indexOf(note.selectedText) + note.selectedText.length,
+    }))
+    .filter((range) => range.start >= 0 && range.end > range.start)
+    .sort((left, right) => left.start - right.start);
+
+  if (ranges.length === 0) {
+    return renderInlineMarkdown(text, keyPrefix);
+  }
+
+  const nodes: ReactNode[] = [];
+  let cursor = 0;
+
+  ranges.forEach((range, rangeIndex) => {
+    if (range.start < cursor) return;
+
+    if (range.start > cursor) {
+      nodes.push(...renderInlineMarkdown(text.slice(cursor, range.start), `${keyPrefix}-before-${rangeIndex}`));
+    }
+
+    nodes.push(
+      <span
+        className="preview-note-annotation"
+        data-note-id={range.note.id}
+        key={`${keyPrefix}-note-${rangeIndex}`}
+        onClick={(event) => {
+          event.stopPropagation();
+          onAnnotationClick(range.note.id);
+        }}
+      >
+        {renderInlineMarkdown(text.slice(range.start, range.end), `${keyPrefix}-marked-${rangeIndex}`)}
+      </span>,
+    );
+    cursor = range.end;
+  });
+
+  if (cursor < text.length) {
+    nodes.push(...renderInlineMarkdown(text.slice(cursor), `${keyPrefix}-after`));
+  }
+
+  return nodes;
+}
+
+function isMarkdownBlockStart(line: string) {
+  return (
+    /^#{1,6}\s+/.test(line) ||
+    /^>\s?/.test(line) ||
+    /^[-*]\s+/.test(line) ||
+    /^\d+\.\s+/.test(line) ||
+    /^```/.test(line) ||
+    /^(-{3,}|\*{3,}|_{3,})$/.test(line.trim())
+  );
+}
+
+function parseMarkdownPreviewBlocks(markdown: string): MarkdownPreviewBlock[] {
+  const lines = markdown.replace(/\r\n/g, "\n").split("\n");
+  const blocks: MarkdownPreviewBlock[] = [];
+  let index = 0;
+
+  while (index < lines.length) {
+    const line = lines[index];
+    const trimmed = line.trim();
+    const key = `markdown-block-${index}`;
+
+    if (!trimmed) {
+      index += 1;
+      continue;
+    }
+
+    if (trimmed.startsWith("```")) {
+      const codeLines: string[] = [];
+      const startLine = index;
+      index += 1;
+
+      while (index < lines.length && !lines[index].trim().startsWith("```")) {
+        codeLines.push(lines[index]);
+        index += 1;
+      }
+
+      blocks.push({
+        kind: "code",
+        key,
+        startLine,
+        endLine: index,
+        text: codeLines.join("\n"),
+      });
+      index += 1;
+      continue;
+    }
+
+    const headingMatch = line.match(/^(#{1,6})\s+(.+)$/);
+    if (headingMatch) {
+      blocks.push({
+        kind: "heading",
+        key,
+        startLine: index,
+        endLine: index,
+        level: headingMatch[1].length,
+        text: headingMatch[2],
+      });
+      index += 1;
+      continue;
+    }
+
+    if (/^(-{3,}|\*{3,}|_{3,})$/.test(trimmed)) {
+      blocks.push({
+        kind: "rule",
+        key,
+        startLine: index,
+        endLine: index,
+      });
+      index += 1;
+      continue;
+    }
+
+    if (/^>\s?/.test(line)) {
+      const quoteLines: string[] = [];
+      const startLine = index;
+
+      while (index < lines.length && /^>\s?/.test(lines[index])) {
+        quoteLines.push(lines[index].replace(/^>\s?/, ""));
+        index += 1;
+      }
+
+      blocks.push({
+        kind: "quote",
+        key,
+        startLine,
+        endLine: index - 1,
+        text: quoteLines.join("\n"),
+      });
+      continue;
+    }
+
+    if (/^[-*]\s+/.test(line)) {
+      const items: string[] = [];
+      const startLine = index;
+
+      while (index < lines.length && /^[-*]\s+/.test(lines[index])) {
+        items.push(lines[index].replace(/^[-*]\s+/, ""));
+        index += 1;
+      }
+
+      blocks.push({
+        kind: "unordered-list",
+        key,
+        startLine,
+        endLine: index - 1,
+        items,
+      });
+      continue;
+    }
+
+    if (/^\d+\.\s+/.test(line)) {
+      const items: string[] = [];
+      const startLine = index;
+
+      while (index < lines.length && /^\d+\.\s+/.test(lines[index])) {
+        items.push(lines[index].replace(/^\d+\.\s+/, ""));
+        index += 1;
+      }
+
+      blocks.push({
+        kind: "ordered-list",
+        key,
+        startLine,
+        endLine: index - 1,
+        items,
+      });
+      continue;
+    }
+
+    const paragraphLines: string[] = [];
+    const startLine = index;
+
+    while (index < lines.length && lines[index].trim() && !isMarkdownBlockStart(lines[index])) {
+      paragraphLines.push(lines[index].trim());
+      index += 1;
+    }
+
+    blocks.push({
+      kind: "paragraph",
+      key,
+      startLine,
+      endLine: index - 1,
+      text: paragraphLines.join(" "),
+    });
+  }
+
+  return blocks;
+}
+
+function markdownFromPreviewBlock(block: MarkdownPreviewBlock, text: string) {
+  const lines = text
+    .replace(/\u00a0/g, " ")
+    .split("\n")
+    .map((line) => line.trimEnd());
+
+  if (block.kind === "heading") {
+    return `${"#".repeat(block.level)} ${lines.join(" ").trim() || "Untitled"}`;
+  }
+
+  if (block.kind === "quote") {
+    return lines.map((line) => `> ${line}`).join("\n");
+  }
+
+  if (block.kind === "unordered-list") {
+    return lines
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => `- ${line}`)
+      .join("\n");
+  }
+
+  if (block.kind === "ordered-list") {
+    return lines
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line, index) => `${index + 1}. ${line}`)
+      .join("\n");
+  }
+
+  if (block.kind === "code") {
+    return `\`\`\`\n${text.replace(/\n+$/, "")}\n\`\`\``;
+  }
+
+  if (block.kind === "rule") {
+    return "---";
+  }
+
+  return lines.join("\n").trim();
+}
+
+function replaceMarkdownBlock(markdown: string, block: MarkdownPreviewBlock, nextBlock: string) {
+  const lines = markdown.replace(/\r\n/g, "\n").split("\n");
+  const nextLines = nextBlock ? nextBlock.split("\n") : [""];
+
+  lines.splice(block.startLine, block.endLine - block.startLine + 1, ...nextLines);
+
+  return lines.join("\n");
+}
+
+function markEditableBlockChanged(event: FormEvent<HTMLElement>) {
+  event.currentTarget.dataset.edited = "true";
+}
+
+function MarkdownPreviewBlockView({
+  block,
+  markdown,
+  notes,
+  onChange,
+  onAnnotationClick,
+}: {
+  block: MarkdownPreviewBlock;
+  markdown: string;
+  notes: SelectionNote[];
+  onChange: (block: MarkdownPreviewBlock, text: string) => void;
+  onAnnotationClick: (noteId: string) => void;
+}) {
+  const blockNotes = getNotesForPreviewBlock(markdown, block, notes);
+
+  function commitEditableBlock(event: FocusEvent<HTMLElement>) {
+    if (event.currentTarget.dataset.edited !== "true") return;
+
+    delete event.currentTarget.dataset.edited;
+    onChange(block, event.currentTarget.innerText);
+  }
+
+  const editableProps = {
+    contentEditable: true,
+    suppressContentEditableWarning: true,
+    "data-preview-block-key": block.key,
+    onBlur: commitEditableBlock,
+    onInput: markEditableBlockChanged,
+  };
+
+  if (block.kind === "heading") {
+    const tagName = `h${block.level}` as "h1" | "h2" | "h3" | "h4" | "h5" | "h6";
+
+    return createElement(
+      tagName,
+      {
+        ...editableProps,
+        className: "markdown-preview-editable",
+      },
+      renderPreviewInline(block.text, `${block.key}-heading`, blockNotes, onAnnotationClick),
+    );
+  }
+
+  if (block.kind === "quote") {
+    return (
+      <blockquote
+        {...editableProps}
+        className="markdown-preview-editable"
+        key={block.key}
+      >
+        {block.text.split("\n").map((quoteLine, quoteIndex) => (
+          <p key={`${block.key}-quote-${quoteIndex}`}>
+            {renderPreviewInline(
+              quoteLine,
+              `${block.key}-quote-${quoteIndex}`,
+              blockNotes,
+              onAnnotationClick,
+            )}
+          </p>
+        ))}
+      </blockquote>
+    );
+  }
+
+  if (block.kind === "unordered-list" || block.kind === "ordered-list") {
+    const ListTag = block.kind === "unordered-list" ? "ul" : "ol";
+
+    return (
+      <ListTag {...editableProps} className="markdown-preview-editable" key={block.key}>
+        {block.items.map((item, itemIndex) => (
+          <li key={`${block.key}-item-${itemIndex}`}>
+            {renderPreviewInline(
+              item,
+              `${block.key}-item-${itemIndex}`,
+              blockNotes,
+              onAnnotationClick,
+            )}
+          </li>
+        ))}
+      </ListTag>
+    );
+  }
+
+  if (block.kind === "code") {
+    return (
+      <pre {...editableProps} className="markdown-preview-editable" key={block.key}>
+        <code>
+          {renderAnnotatedPlainText(
+            block.text,
+            `${block.key}-code`,
+            blockNotes,
+            onAnnotationClick,
+          )}
+        </code>
+      </pre>
+    );
+  }
+
+  if (block.kind === "rule") {
+    return <hr data-preview-block-key={block.key} key={block.key} />;
+  }
+
+  if (block.kind === "paragraph") {
+    return (
+      <p {...editableProps} className="markdown-preview-editable" key={block.key}>
+        {renderPreviewInline(block.text, `${block.key}-paragraph`, blockNotes, onAnnotationClick)}
+      </p>
+    );
+  }
+
+  return null;
+}
+
+function MarkdownPreview({
+  value,
+  notes,
+  onChange,
+  onSelectionChange,
+  onAnnotationClick,
+}: {
+  value: string;
+  notes: SelectionNote[];
+  onChange: (value: string, source: EditorChangeSource) => void;
+  onSelectionChange: (anchor: TextSelectionAnchor | null) => void;
+  onAnnotationClick: (noteId: string) => void;
+}) {
+  const blocks = parseMarkdownPreviewBlocks(value);
+
+  function handlePreviewSelection(
+    event: MouseEvent<HTMLDivElement> | ReactKeyboardEvent<HTMLDivElement>,
+  ) {
+    const selection = window.getSelection();
+    const selectedText = selection?.toString() ?? "";
+
+    if (!selection || selection.isCollapsed || !selectedText.trim()) {
+      onSelectionChange(null);
+      return;
+    }
+
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+
+    const blockElement = target.closest<HTMLElement>("[data-preview-block-key]");
+    const block = blocks.find(
+      (previewBlock) => previewBlock.key === blockElement?.dataset.previewBlockKey,
+    );
+
+    onSelectionChange(makePreviewAnchor(value, block, selectedText));
+  }
+
+  function updatePreviewBlock(block: MarkdownPreviewBlock, text: string) {
+    const nextBlock = markdownFromPreviewBlock(block, text);
+    const nextValue = replaceMarkdownBlock(value, block, nextBlock);
+
+    onChange(nextValue, "user");
+  }
+
+  return (
+    <div
+      className="markdown-preview"
+      onKeyUp={handlePreviewSelection}
+      onMouseUp={handlePreviewSelection}
+    >
+      {blocks.map((block) => (
+        <MarkdownPreviewBlockView
+          block={block}
+          key={block.key}
+          markdown={value}
+          notes={notes}
+          onAnnotationClick={onAnnotationClick}
+          onChange={updatePreviewBlock}
+        />
+      ))}
+    </div>
+  );
+}
+
 function App() {
   const [documents, setDocuments] = useState(documentsSeed);
   const [workspaceTitle, setWorkspaceTitle] = useState("Scholium");
@@ -287,6 +943,7 @@ function App() {
   const [pendingAnchor, setPendingAnchor] = useState<TextSelectionAnchor | null>(null);
   const [noteDraft, setNoteDraft] = useState("");
   const [activeNoteId, setActiveNoteId] = useState("note-1");
+  const [editorMode, setEditorMode] = useState<EditorMode>("edit");
   const [dirtyDocumentStates, setDirtyDocumentStates] = useState<
     Record<string, DirtyDocumentState>
   >({});
@@ -344,6 +1001,24 @@ function App() {
       unlistenOpenFolder?.();
     };
   }, [nativeStorageAvailable]);
+
+  useEffect(() => {
+    function handleModeShortcut(event: KeyboardEvent) {
+      if (!(event.metaKey || event.ctrlKey) || !event.shiftKey) return;
+      if (event.key.toLowerCase() !== "p") return;
+
+      event.preventDefault();
+      setPendingAnchor(null);
+      setNoteDraft("");
+      setEditorMode((currentMode) => (currentMode === "preview" ? "edit" : "preview"));
+    }
+
+    window.addEventListener("keydown", handleModeShortcut);
+
+    return () => {
+      window.removeEventListener("keydown", handleModeShortcut);
+    };
+  }, []);
 
   function updateDocumentDirtyState(documentId: string, patch: Partial<DirtyDocumentState>) {
     setDirtyDocumentStates((currentStates) => {
@@ -787,6 +1462,12 @@ function App() {
     markDocumentNotesDirty();
   }
 
+  function togglePreviewMode() {
+    setPendingAnchor(null);
+    setNoteDraft("");
+    setEditorMode((currentMode) => (currentMode === "preview" ? "edit" : "preview"));
+  }
+
   return (
     <main className="scholium-shell">
       <aside className="document-pane" aria-label="Documents">
@@ -837,7 +1518,15 @@ function App() {
             <span className={`save-state ${selectedDocumentIsDirty ? "is-dirty" : ""}`}>
               {selectedDocumentIsDirty ? "Unsaved" : "Saved"}
             </span>
-            <button type="button">Preview</button>
+            <button
+              className={editorMode === "preview" ? "is-active" : ""}
+              type="button"
+              aria-pressed={editorMode === "preview"}
+              onClick={togglePreviewMode}
+              title="Toggle Source/Preview (Cmd/Ctrl+Shift+P)"
+            >
+              {editorMode === "preview" ? "Source" : "Preview"}
+            </button>
             <button
               type="button"
               onClick={saveSelectedDocument}
@@ -850,13 +1539,26 @@ function App() {
 
         <div className="editor-grid">
           <div className="editor-surface">
-            <MarkdownEditor
-              annotations={annotations}
-              value={selectedDocument.body}
-              onAnnotationClick={setActiveNoteId}
-              onChange={updateSelectedDocumentBody}
-              onSelectionChange={setPendingAnchor}
-            />
+            {editorMode === "preview" ? (
+              <MarkdownPreview
+                notes={activeNotes}
+                value={selectedDocument.body}
+                onAnnotationClick={setActiveNoteId}
+                onChange={updateSelectedDocumentBody}
+                onSelectionChange={setPendingAnchor}
+              />
+            ) : (
+              <>
+                <MarkdownEditor
+                  annotations={annotations}
+                  value={selectedDocument.body}
+                  onAnnotationClick={setActiveNoteId}
+                  onChange={updateSelectedDocumentBody}
+                  onSelectionChange={setPendingAnchor}
+                />
+
+              </>
+            )}
 
             {pendingAnchor ? (
               <div className="selection-popover">
