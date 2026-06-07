@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { markdown } from "@codemirror/lang-markdown";
 import { EditorState, Range, StateEffect, StateField } from "@codemirror/state";
@@ -24,15 +24,33 @@ export type TextAnnotation = {
   to: number;
 };
 
+export type EditorChangeSource = "user" | "undo";
+
 type MarkdownEditorProps = {
   value: string;
   annotations: TextAnnotation[];
-  onChange: (value: string) => void;
+  onChange: (value: string, source: EditorChangeSource) => void;
   onSelectionChange: (anchor: TextSelectionAnchor | null) => void;
   onAnnotationClick: (noteId: string) => void;
 };
 
+type EditorAnnotationFrame = {
+  noteId: string;
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+};
+
+type EditorAnnotationRect = {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+};
+
 const setAnnotationsEffect = StateEffect.define<TextAnnotation[]>();
+const editorAnnotationFramePadding = 4;
 
 function buildAnchor(value: string, from: number, to: number): TextSelectionAnchor | null {
   if (from === to) return null;
@@ -62,6 +80,79 @@ function buildDecorations(annotations: TextAnnotation[]) {
     );
 
   return Decoration.set(ranges, true);
+}
+
+function roundEditorFrameValue(value: number) {
+  return Math.round(value * 100) / 100;
+}
+
+function measureEditorAnnotationFrames(container: HTMLDivElement): EditorAnnotationFrame[] {
+  const containerRect = container.getBoundingClientRect();
+  const rectsByNoteId = new Map<string, EditorAnnotationRect[]>();
+
+  container
+    .querySelectorAll<HTMLElement>(".cm-note-annotation[data-note-id]")
+    .forEach((annotation) => {
+      const noteId = annotation.dataset.noteId;
+      if (!noteId) return;
+
+      const annotationRects = Array.from(annotation.getClientRects())
+        .map((rect) => {
+          const left = Math.max(rect.left, containerRect.left);
+          const top = Math.max(rect.top, containerRect.top);
+          const right = Math.min(rect.right, containerRect.right);
+          const bottom = Math.min(rect.bottom, containerRect.bottom);
+
+          return { left, top, right, bottom };
+        })
+        .filter((rect) => rect.right > rect.left && rect.bottom > rect.top);
+      if (annotationRects.length === 0) return;
+
+      rectsByNoteId.set(noteId, [...(rectsByNoteId.get(noteId) ?? []), ...annotationRects]);
+    });
+
+  return Array.from(rectsByNoteId.entries())
+    .map(([noteId, rects]) => {
+      const left = Math.min(...rects.map((rect) => rect.left));
+      const top = Math.min(...rects.map((rect) => rect.top));
+      const right = Math.max(...rects.map((rect) => rect.right));
+      const bottom = Math.max(...rects.map((rect) => rect.bottom));
+
+      return {
+        noteId,
+        left: roundEditorFrameValue(
+          Math.max(0, left - containerRect.left - editorAnnotationFramePadding),
+        ),
+        top: roundEditorFrameValue(
+          Math.max(0, top - containerRect.top - editorAnnotationFramePadding),
+        ),
+        width: roundEditorFrameValue(right - left + editorAnnotationFramePadding * 2),
+        height: roundEditorFrameValue(bottom - top + editorAnnotationFramePadding * 2),
+      };
+    })
+    .sort(
+      (left, right) =>
+        left.top - right.top || left.left - right.left || left.noteId.localeCompare(right.noteId),
+    );
+}
+
+function areEditorAnnotationFramesEqual(
+  leftFrames: EditorAnnotationFrame[],
+  rightFrames: EditorAnnotationFrame[],
+) {
+  if (leftFrames.length !== rightFrames.length) return false;
+
+  return leftFrames.every((leftFrame, index) => {
+    const rightFrame = rightFrames[index];
+
+    return (
+      leftFrame.noteId === rightFrame.noteId &&
+      leftFrame.left === rightFrame.left &&
+      leftFrame.top === rightFrame.top &&
+      leftFrame.width === rightFrame.width &&
+      leftFrame.height === rightFrame.height
+    );
+  });
 }
 
 const annotationField = StateField.define<DecorationSet>({
@@ -94,6 +185,9 @@ export function MarkdownEditor({
   const onChangeRef = useRef(onChange);
   const onSelectionChangeRef = useRef(onSelectionChange);
   const onAnnotationClickRef = useRef(onAnnotationClick);
+  const animationFrameRef = useRef(0);
+  const suppressNextChangeRef = useRef(false);
+  const [annotationFrames, setAnnotationFrames] = useState<EditorAnnotationFrame[]>([]);
 
   const annotationSignature = useMemo(
     () =>
@@ -115,12 +209,60 @@ export function MarkdownEditor({
     onAnnotationClickRef.current = onAnnotationClick;
   }, [onAnnotationClick]);
 
+  function updateAnnotationFrames() {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const nextFrames = measureEditorAnnotationFrames(container);
+    setAnnotationFrames((currentFrames) =>
+      areEditorAnnotationFramesEqual(currentFrames, nextFrames) ? currentFrames : nextFrames,
+    );
+  }
+
+  function scheduleAnnotationFrameUpdate() {
+    window.cancelAnimationFrame(animationFrameRef.current);
+    animationFrameRef.current = window.requestAnimationFrame(updateAnnotationFrames);
+  }
+
+  useLayoutEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const scroller = container.querySelector<HTMLElement>(".cm-scroller");
+    const resizeObserver = new ResizeObserver(scheduleAnnotationFrameUpdate);
+
+    resizeObserver.observe(container);
+    if (scroller) {
+      resizeObserver.observe(scroller);
+      scroller.addEventListener("scroll", scheduleAnnotationFrameUpdate);
+    }
+    window.addEventListener("resize", scheduleAnnotationFrameUpdate);
+    scheduleAnnotationFrameUpdate();
+
+    return () => {
+      window.cancelAnimationFrame(animationFrameRef.current);
+      resizeObserver.disconnect();
+      scroller?.removeEventListener("scroll", scheduleAnnotationFrameUpdate);
+      window.removeEventListener("resize", scheduleAnnotationFrameUpdate);
+    };
+  }, []);
+
   useEffect(() => {
     if (!containerRef.current || viewRef.current) return;
 
     const updateListener = EditorView.updateListener.of((update: ViewUpdate) => {
       if (update.docChanged) {
-        onChangeRef.current(update.state.doc.toString());
+        if (suppressNextChangeRef.current) {
+          suppressNextChangeRef.current = false;
+        } else {
+          const source = update.transactions.some((transaction) =>
+            transaction.isUserEvent("undo"),
+          )
+            ? "undo"
+            : "user";
+
+          onChangeRef.current(update.state.doc.toString(), source);
+        }
       }
 
       if (update.selectionSet || update.docChanged) {
@@ -128,6 +270,8 @@ export function MarkdownEditor({
         const anchor = buildAnchor(update.state.doc.toString(), range.from, range.to);
         onSelectionChangeRef.current(anchor);
       }
+
+      scheduleAnnotationFrameUpdate();
     });
 
     const annotationClickHandler = EditorView.domEventHandlers({
@@ -165,7 +309,12 @@ export function MarkdownEditor({
     view.dispatch({ effects: setAnnotationsEffect.of(annotations) });
     viewRef.current = view;
 
+    const scroller = containerRef.current.querySelector<HTMLElement>(".cm-scroller");
+    scroller?.addEventListener("scroll", scheduleAnnotationFrameUpdate);
+    scheduleAnnotationFrameUpdate();
+
     return () => {
+      scroller?.removeEventListener("scroll", scheduleAnnotationFrameUpdate);
       view.destroy();
       viewRef.current = null;
     };
@@ -178,6 +327,7 @@ export function MarkdownEditor({
     const currentValue = view.state.doc.toString();
     if (value === currentValue) return;
 
+    suppressNextChangeRef.current = true;
     view.dispatch({
       changes: {
         from: 0,
@@ -191,7 +341,25 @@ export function MarkdownEditor({
     viewRef.current?.dispatch({
       effects: setAnnotationsEffect.of(annotations),
     });
+    scheduleAnnotationFrameUpdate();
   }, [annotationSignature, annotations]);
 
-  return <div className="markdown-editor-host" ref={containerRef} />;
+  return (
+    <div className="markdown-editor-host" ref={containerRef}>
+      <div aria-hidden="true" className="cm-annotation-layer">
+        {annotationFrames.map((frame) => (
+          <span
+            className="cm-annotation-frame"
+            key={frame.noteId}
+            style={{
+              height: frame.height,
+              left: frame.left,
+              top: frame.top,
+              width: frame.width,
+            }}
+          />
+        ))}
+      </div>
+    </div>
+  );
 }

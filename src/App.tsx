@@ -1,9 +1,19 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
-import { useEffect, useState } from "react";
+import {
+  createElement,
+  type FocusEvent,
+  type FormEvent,
+  type ReactNode,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import "./App.css";
 import {
+  EditorChangeSource,
   MarkdownEditor,
   TextAnnotation,
   TextSelectionAnchor,
@@ -86,12 +96,84 @@ type WorkspaceEntry =
       documentId: string;
     };
 
+type DirtyDocumentState = {
+  body: boolean;
+  notes: boolean;
+};
+
+type EditorMode = "edit" | "preview";
+
+type PreviewAnnotationFrame = {
+  noteId: string;
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+};
+
+type PreviewTextMap = {
+  text: string;
+  sourceOffsets: Array<number | null>;
+};
+
+type PreviewAnnotationTextRange = {
+  note: SelectionNote;
+  start: number;
+  end: number;
+};
+
+type MarkdownPreviewBlock =
+  | {
+      kind: "heading";
+      key: string;
+      startLine: number;
+      endLine: number;
+      level: number;
+      text: string;
+    }
+  | {
+      kind: "paragraph";
+      key: string;
+      startLine: number;
+      endLine: number;
+      text: string;
+    }
+  | {
+      kind: "quote";
+      key: string;
+      startLine: number;
+      endLine: number;
+      text: string;
+    }
+  | {
+      kind: "code";
+      key: string;
+      startLine: number;
+      endLine: number;
+      text: string;
+    }
+  | {
+      kind: "unordered-list" | "ordered-list";
+      key: string;
+      startLine: number;
+      endLine: number;
+      items: string[];
+    }
+  | {
+      kind: "rule";
+      key: string;
+      startLine: number;
+      endLine: number;
+    };
+
 const markdownFilters = [
   {
     name: "Markdown",
     extensions: ["md", "markdown", "mdown"],
   },
 ];
+
+const previewAnnotationFramePadding = 4;
 
 const documentsSeed: MarkdownDocument[] = [
   {
@@ -261,6 +343,1039 @@ function workspaceEntryFromDocument(document: MarkdownDocument): WorkspaceEntry 
   };
 }
 
+function savedBodiesFromDocuments(documents: MarkdownDocument[]) {
+  return Object.fromEntries(documents.map((document) => [document.id, document.body]));
+}
+
+function hasDirtyState(state: DirtyDocumentState | undefined) {
+  return Boolean(state?.body || state?.notes);
+}
+
+function isSafeLink(href: string) {
+  return /^(https?:|mailto:)/i.test(href);
+}
+
+function renderInlineMarkdown(text: string, keyPrefix: string): ReactNode[] {
+  const nodes: ReactNode[] = [];
+  const tokenPattern = /(`[^`]+`|\*\*[^*]+\*\*|\*[^*]+\*|\[[^\]]+\]\([^)]+\))/g;
+  let lastIndex = 0;
+  let tokenIndex = 0;
+
+  for (const match of text.matchAll(tokenPattern)) {
+    const token = match[0];
+    const index = match.index ?? 0;
+
+    if (index > lastIndex) {
+      nodes.push(text.slice(lastIndex, index));
+    }
+
+    const key = `${keyPrefix}-inline-${tokenIndex}`;
+
+    if (token.startsWith("`")) {
+      nodes.push(<code key={key}>{token.slice(1, -1)}</code>);
+    } else if (token.startsWith("**")) {
+      nodes.push(<strong key={key}>{token.slice(2, -2)}</strong>);
+    } else if (token.startsWith("*")) {
+      nodes.push(<em key={key}>{token.slice(1, -1)}</em>);
+    } else {
+      const linkMatch = token.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
+      if (linkMatch && isSafeLink(linkMatch[2])) {
+        nodes.push(
+          <a href={linkMatch[2]} key={key} rel="noreferrer" target="_blank">
+            {linkMatch[1]}
+          </a>,
+        );
+      } else {
+        nodes.push(token);
+      }
+    }
+
+    lastIndex = index + token.length;
+    tokenIndex += 1;
+  }
+
+  if (lastIndex < text.length) {
+    nodes.push(text.slice(lastIndex));
+  }
+
+  return nodes;
+}
+
+function getLineStartOffsets(markdown: string) {
+  const offsets = [0];
+
+  for (let index = 0; index < markdown.length; index += 1) {
+    if (markdown[index] === "\n") {
+      offsets.push(index + 1);
+    }
+  }
+
+  return offsets;
+}
+
+function getBlockRange(markdown: string, block: MarkdownPreviewBlock) {
+  const lines = markdown.replace(/\r\n/g, "\n").split("\n");
+  const lineStartOffsets = getLineStartOffsets(markdown);
+  const start = lineStartOffsets[block.startLine] ?? 0;
+  const endLine = lines[block.endLine] ?? "";
+  const end = (lineStartOffsets[block.endLine] ?? markdown.length) + endLine.length;
+
+  return { start, end };
+}
+
+function trimRange(text: string, from: number, to: number) {
+  let nextFrom = Math.max(0, Math.min(from, text.length));
+  let nextTo = Math.max(nextFrom, Math.min(to, text.length));
+
+  while (nextFrom < nextTo && /\s/.test(text[nextFrom])) {
+    nextFrom += 1;
+  }
+
+  while (nextTo > nextFrom && /\s/.test(text[nextTo - 1])) {
+    nextTo -= 1;
+  }
+
+  return { from: nextFrom, to: nextTo };
+}
+
+function getBlockSemanticRange(markdown: string, block: MarkdownPreviewBlock) {
+  const lines = markdown.replace(/\r\n/g, "\n").split("\n");
+  const lineStartOffsets = getLineStartOffsets(markdown);
+  const blockRange = getBlockRange(markdown, block);
+
+  if (block.kind === "rule") return null;
+
+  if (block.kind === "heading") {
+    const line = lines[block.startLine] ?? "";
+    const match = line.match(/^(#{1,6})\s+(.+)$/);
+    if (!match || match.index === undefined) return trimRange(markdown, blockRange.start, blockRange.end);
+
+    const contentStart = blockRange.start + match[1].length + (line[match[1].length] === " " ? 1 : 0);
+    return trimRange(markdown, contentStart, blockRange.end);
+  }
+
+  if (block.kind === "code" && block.endLine > block.startLine) {
+    const openingLine = lines[block.startLine] ?? "";
+    const contentStart = (lineStartOffsets[block.startLine] ?? 0) + openingLine.length + 1;
+    const contentEnd = Math.max(contentStart, (lineStartOffsets[block.endLine] ?? blockRange.end) - 1);
+    return trimRange(markdown, contentStart, contentEnd);
+  }
+
+  return trimRange(markdown, blockRange.start, blockRange.end);
+}
+
+function getLineContentStart(line: string) {
+  const match = line.match(/\S/);
+  return match?.index ?? 0;
+}
+
+function appendTextMap(target: PreviewTextMap, text: string, sourceStart: number | null) {
+  target.text += text;
+  target.sourceOffsets.push(
+    ...Array.from({ length: text.length }, (_, index) =>
+      sourceStart === null ? null : sourceStart + index,
+    ),
+  );
+}
+
+function appendTextMapSeparator(target: PreviewTextMap, separator: string) {
+  appendTextMap(target, separator, null);
+}
+
+function getHeadingTextMap(markdown: string, block: Extract<MarkdownPreviewBlock, { kind: "heading" }>) {
+  const lines = markdown.replace(/\r\n/g, "\n").split("\n");
+  const lineStartOffsets = getLineStartOffsets(markdown);
+  const line = lines[block.startLine] ?? "";
+  const match = line.match(/^(#{1,6})\s+(.+)$/);
+  const markerLength = match ? match[1].length + (line[match[1].length] === " " ? 1 : 0) : 0;
+  const sourceStart = (lineStartOffsets[block.startLine] ?? 0) + markerLength;
+
+  return {
+    text: block.text,
+    sourceOffsets: Array.from({ length: block.text.length }, (_, index) => sourceStart + index),
+  };
+}
+
+function getParagraphTextMap(
+  markdown: string,
+  block: Extract<MarkdownPreviewBlock, { kind: "paragraph" }>,
+) {
+  const lines = markdown.replace(/\r\n/g, "\n").split("\n");
+  const lineStartOffsets = getLineStartOffsets(markdown);
+  const textMap: PreviewTextMap = { text: "", sourceOffsets: [] };
+
+  for (let lineIndex = block.startLine; lineIndex <= block.endLine; lineIndex += 1) {
+    const line = lines[lineIndex] ?? "";
+    const trimmed = line.trim();
+    if (lineIndex > block.startLine) {
+      appendTextMapSeparator(textMap, " ");
+    }
+
+    appendTextMap(
+      textMap,
+      trimmed,
+      (lineStartOffsets[lineIndex] ?? 0) + getLineContentStart(line),
+    );
+  }
+
+  return textMap;
+}
+
+function getQuoteLineTextMap(
+  markdown: string,
+  block: Extract<MarkdownPreviewBlock, { kind: "quote" }>,
+  quoteIndex: number,
+) {
+  const lines = markdown.replace(/\r\n/g, "\n").split("\n");
+  const lineStartOffsets = getLineStartOffsets(markdown);
+  const lineIndex = block.startLine + quoteIndex;
+  const line = lines[lineIndex] ?? "";
+  const marker = line.match(/^>\s?/)?.[0] ?? "";
+  const text = line.slice(marker.length);
+
+  return {
+    text,
+    sourceOffsets: Array.from(
+      { length: text.length },
+      (_, index) => (lineStartOffsets[lineIndex] ?? 0) + marker.length + index,
+    ),
+  };
+}
+
+function getListItemTextMap(
+  markdown: string,
+  block: Extract<MarkdownPreviewBlock, { kind: "unordered-list" | "ordered-list" }>,
+  itemIndex: number,
+) {
+  const lines = markdown.replace(/\r\n/g, "\n").split("\n");
+  const lineStartOffsets = getLineStartOffsets(markdown);
+  const lineIndex = block.startLine + itemIndex;
+  const line = lines[lineIndex] ?? "";
+  const marker =
+    block.kind === "unordered-list"
+      ? line.match(/^[-*]\s+/)?.[0] ?? ""
+      : line.match(/^\d+\.\s+/)?.[0] ?? "";
+  const text = line.slice(marker.length);
+
+  return {
+    text,
+    sourceOffsets: Array.from(
+      { length: text.length },
+      (_, index) => (lineStartOffsets[lineIndex] ?? 0) + marker.length + index,
+    ),
+  };
+}
+
+function getCodeTextMap(markdown: string, block: Extract<MarkdownPreviewBlock, { kind: "code" }>) {
+  const lines = markdown.replace(/\r\n/g, "\n").split("\n");
+  const lineStartOffsets = getLineStartOffsets(markdown);
+  const textMap: PreviewTextMap = { text: "", sourceOffsets: [] };
+
+  for (let lineIndex = block.startLine + 1; lineIndex < block.endLine; lineIndex += 1) {
+    const line = lines[lineIndex] ?? "";
+    if (lineIndex > block.startLine + 1) {
+      appendTextMap(textMap, "\n", (lineStartOffsets[lineIndex] ?? 0) - 1);
+    }
+    appendTextMap(textMap, line, lineStartOffsets[lineIndex] ?? 0);
+  }
+
+  return textMap;
+}
+
+function getPreviewBlockTextMap(markdown: string, block: MarkdownPreviewBlock): PreviewTextMap {
+  if (block.kind === "heading") return getHeadingTextMap(markdown, block);
+  if (block.kind === "paragraph") return getParagraphTextMap(markdown, block);
+  if (block.kind === "code") return getCodeTextMap(markdown, block);
+  if (block.kind === "quote") {
+    return block.text.split("\n").reduce<PreviewTextMap>(
+      (textMap, _quoteLine, quoteIndex) => {
+        if (quoteIndex > 0) appendTextMapSeparator(textMap, "\n");
+        const quoteLineTextMap = getQuoteLineTextMap(markdown, block, quoteIndex);
+        appendTextMap(textMap, quoteLineTextMap.text, quoteLineTextMap.sourceOffsets[0] ?? null);
+        return textMap;
+      },
+      { text: "", sourceOffsets: [] },
+    );
+  }
+  if (block.kind === "unordered-list" || block.kind === "ordered-list") {
+    return block.items.reduce<PreviewTextMap>(
+      (textMap, _item, itemIndex) => {
+        if (itemIndex > 0) appendTextMapSeparator(textMap, "\n");
+        const itemTextMap = getListItemTextMap(markdown, block, itemIndex);
+        appendTextMap(textMap, itemTextMap.text, itemTextMap.sourceOffsets[0] ?? null);
+        return textMap;
+      },
+      { text: "", sourceOffsets: [] },
+    );
+  }
+
+  return { text: "", sourceOffsets: [] };
+}
+
+function isSelectionCompleteMarkdownBlock(markdown: string, anchor: TextSelectionAnchor) {
+  const selection = trimRange(markdown, anchor.from, anchor.to);
+  if (selection.from === selection.to) return true;
+
+  const blocks = parseMarkdownPreviewBlocks(markdown)
+    .map((block) => ({
+      block,
+      sourceRange: getBlockRange(markdown, block),
+      semanticRange: getBlockSemanticRange(markdown, block),
+    }))
+    .filter((block) => block.semanticRange);
+  const intersectedBlocks = blocks.filter(
+    ({ sourceRange }) => selection.to > sourceRange.start && selection.from < sourceRange.end,
+  );
+
+  if (intersectedBlocks.length === 0) return true;
+
+  return intersectedBlocks.every(({ semanticRange }) => {
+    if (!semanticRange) return true;
+
+    return selection.from <= semanticRange.from && selection.to >= semanticRange.to;
+  });
+}
+
+function makeAnchorFromRange(
+  body: string,
+  from: number,
+  to: number,
+  selectedText: string,
+): TextSelectionAnchor {
+  return {
+    from,
+    to,
+    selectedText,
+    prefix: body.slice(Math.max(0, from - 48), from),
+    suffix: body.slice(to, Math.min(body.length, to + 48)),
+  };
+}
+
+function normalizeTextMapForMatch(textMap: PreviewTextMap): PreviewTextMap {
+  const normalized: PreviewTextMap = { text: "", sourceOffsets: [] };
+  let pendingWhitespaceOffset: number | null = null;
+  let hasPendingWhitespace = false;
+
+  Array.from(textMap.text).forEach((character, index) => {
+    const sourceOffset = textMap.sourceOffsets[index] ?? null;
+
+    if (/\s/.test(character)) {
+      hasPendingWhitespace = true;
+      if (pendingWhitespaceOffset === null && sourceOffset !== null) {
+        pendingWhitespaceOffset = sourceOffset;
+      }
+      return;
+    }
+
+    if (hasPendingWhitespace && normalized.text.length > 0) {
+      normalized.text += " ";
+      normalized.sourceOffsets.push(pendingWhitespaceOffset);
+    }
+
+    normalized.text += character;
+    normalized.sourceOffsets.push(sourceOffset);
+    hasPendingWhitespace = false;
+    pendingWhitespaceOffset = null;
+  });
+
+  return normalized;
+}
+
+function getPreviewSourceProjection(markdown: string) {
+  return parseMarkdownPreviewBlocks(markdown).reduce<PreviewTextMap>(
+    (projection, block, blockIndex) => {
+      if (blockIndex > 0 && projection.text.length > 0) {
+        appendTextMapSeparator(projection, "\n\n");
+      }
+
+      const blockTextMap = getPreviewBlockTextMap(markdown, block);
+      projection.text += blockTextMap.text;
+      projection.sourceOffsets.push(...blockTextMap.sourceOffsets);
+      return projection;
+    },
+    { text: "", sourceOffsets: [] },
+  );
+}
+
+function sourceRangeFromTextMapMatch(textMap: PreviewTextMap, start: number, end: number) {
+  const sourceOffsets = textMap.sourceOffsets
+    .slice(start, end)
+    .filter((offset): offset is number => offset !== null);
+
+  if (sourceOffsets.length === 0) return null;
+
+  return {
+    from: Math.min(...sourceOffsets),
+    to: Math.max(...sourceOffsets) + 1,
+  };
+}
+
+function makePreviewAnchor(body: string, selectedText: string) {
+  const normalizedSelection = selectedText.replace(/\s+/g, " ").trim();
+  if (!normalizedSelection) return null;
+
+  const projection = normalizeTextMapForMatch(getPreviewSourceProjection(body));
+  const projectionIndex = projection.text.indexOf(normalizedSelection);
+
+  if (projectionIndex >= 0) {
+    const sourceRange = sourceRangeFromTextMapMatch(
+      projection,
+      projectionIndex,
+      projectionIndex + normalizedSelection.length,
+    );
+
+    if (sourceRange) {
+      return makeAnchorFromRange(
+        body,
+        sourceRange.from,
+        sourceRange.to,
+        body.slice(sourceRange.from, sourceRange.to),
+      );
+    }
+  }
+
+  const fallbackIndex = body.indexOf(normalizedSelection);
+  if (fallbackIndex < 0) return null;
+
+  return makeAnchorFromRange(
+    body,
+    fallbackIndex,
+    fallbackIndex + normalizedSelection.length,
+    body.slice(fallbackIndex, fallbackIndex + normalizedSelection.length),
+  );
+}
+
+function getNotesForPreviewBlock(
+  markdown: string,
+  block: MarkdownPreviewBlock,
+  notes: SelectionNote[],
+) {
+  const blockRange = getBlockRange(markdown, block);
+
+  return notes.filter(
+    (note) =>
+      note.status === "active" &&
+      note.anchor.to > blockRange.start &&
+      note.anchor.from < blockRange.end,
+  );
+}
+
+function getAnnotationRangesForTextMap(textMap: PreviewTextMap, notes: SelectionNote[]) {
+  const ranges: PreviewAnnotationTextRange[] = [];
+
+  notes.forEach((note) => {
+    let rangeStart: number | null = null;
+
+    textMap.sourceOffsets.forEach((sourceOffset, index) => {
+      const isMarked =
+        sourceOffset !== null && sourceOffset >= note.anchor.from && sourceOffset < note.anchor.to;
+
+      if (isMarked && rangeStart === null) {
+        rangeStart = index;
+      }
+
+      if (!isMarked && rangeStart !== null) {
+        ranges.push({ note, start: rangeStart, end: index });
+        rangeStart = null;
+      }
+    });
+
+    if (rangeStart !== null) {
+      ranges.push({ note, start: rangeStart, end: textMap.text.length });
+    }
+  });
+
+  return ranges
+    .filter((range) => range.end > range.start)
+    .sort((left, right) => left.start - right.start || left.end - right.end);
+}
+
+function renderAnnotatedPlainText(
+  textMap: PreviewTextMap,
+  keyPrefix: string,
+  notes: SelectionNote[],
+  onAnnotationClick: (noteId: string) => void,
+) {
+  const ranges = getAnnotationRangesForTextMap(textMap, notes);
+  const nodes: ReactNode[] = [];
+  let cursor = 0;
+
+  ranges.forEach((range, rangeIndex) => {
+    if (range.start < cursor) return;
+
+    if (range.start > cursor) {
+      nodes.push(textMap.text.slice(cursor, range.start));
+    }
+
+    nodes.push(
+      <span
+        className="preview-note-annotation"
+        data-note-id={range.note.id}
+        key={`${keyPrefix}-note-${rangeIndex}`}
+        onClick={(event) => {
+          event.stopPropagation();
+          onAnnotationClick(range.note.id);
+        }}
+      >
+        {textMap.text.slice(range.start, range.end)}
+      </span>,
+    );
+    cursor = range.end;
+  });
+
+  if (cursor < textMap.text.length) {
+    nodes.push(textMap.text.slice(cursor));
+  }
+
+  return nodes;
+}
+
+function renderPreviewInline(
+  textMap: PreviewTextMap,
+  keyPrefix: string,
+  notes: SelectionNote[],
+  onAnnotationClick: (noteId: string) => void,
+) {
+  if (notes.length === 0) {
+    return renderInlineMarkdown(textMap.text, keyPrefix);
+  }
+
+  const ranges = getAnnotationRangesForTextMap(textMap, notes);
+
+  if (ranges.length === 0) {
+    return renderInlineMarkdown(textMap.text, keyPrefix);
+  }
+
+  const nodes: ReactNode[] = [];
+  let cursor = 0;
+
+  ranges.forEach((range, rangeIndex) => {
+    if (range.start < cursor) return;
+
+    if (range.start > cursor) {
+      nodes.push(
+        ...renderInlineMarkdown(
+          textMap.text.slice(cursor, range.start),
+          `${keyPrefix}-before-${rangeIndex}`,
+        ),
+      );
+    }
+
+    nodes.push(
+      <span
+        className="preview-note-annotation"
+        data-note-id={range.note.id}
+        key={`${keyPrefix}-note-${rangeIndex}`}
+        onClick={(event) => {
+          event.stopPropagation();
+          onAnnotationClick(range.note.id);
+        }}
+      >
+        {renderInlineMarkdown(
+          textMap.text.slice(range.start, range.end),
+          `${keyPrefix}-marked-${rangeIndex}`,
+        )}
+      </span>,
+    );
+    cursor = range.end;
+  });
+
+  if (cursor < textMap.text.length) {
+    nodes.push(...renderInlineMarkdown(textMap.text.slice(cursor), `${keyPrefix}-after`));
+  }
+
+  return nodes;
+}
+
+function roundPreviewFrameValue(value: number) {
+  return Math.round(value * 100) / 100;
+}
+
+function measurePreviewAnnotationFrames(container: HTMLDivElement): PreviewAnnotationFrame[] {
+  const containerRect = container.getBoundingClientRect();
+  const rectsByNoteId = new Map<string, DOMRect[]>();
+
+  container
+    .querySelectorAll<HTMLElement>(".preview-note-annotation[data-note-id]")
+    .forEach((annotation) => {
+      const noteId = annotation.dataset.noteId;
+      if (!noteId) return;
+
+      const annotationRects = Array.from(annotation.getClientRects()).filter(
+        (rect) => rect.width > 0 && rect.height > 0,
+      );
+      if (annotationRects.length === 0) return;
+
+      rectsByNoteId.set(noteId, [...(rectsByNoteId.get(noteId) ?? []), ...annotationRects]);
+    });
+
+  return Array.from(rectsByNoteId.entries())
+    .map(([noteId, rects]) => {
+      const left = Math.min(...rects.map((rect) => rect.left));
+      const top = Math.min(...rects.map((rect) => rect.top));
+      const right = Math.max(...rects.map((rect) => rect.right));
+      const bottom = Math.max(...rects.map((rect) => rect.bottom));
+
+      return {
+        noteId,
+        left: roundPreviewFrameValue(
+          Math.max(0, left - containerRect.left + container.scrollLeft - previewAnnotationFramePadding),
+        ),
+        top: roundPreviewFrameValue(
+          Math.max(0, top - containerRect.top + container.scrollTop - previewAnnotationFramePadding),
+        ),
+        width: roundPreviewFrameValue(right - left + previewAnnotationFramePadding * 2),
+        height: roundPreviewFrameValue(bottom - top + previewAnnotationFramePadding * 2),
+      };
+    })
+    .sort(
+      (left, right) =>
+        left.top - right.top || left.left - right.left || left.noteId.localeCompare(right.noteId),
+    );
+}
+
+function arePreviewAnnotationFramesEqual(
+  leftFrames: PreviewAnnotationFrame[],
+  rightFrames: PreviewAnnotationFrame[],
+) {
+  if (leftFrames.length !== rightFrames.length) return false;
+
+  return leftFrames.every((leftFrame, index) => {
+    const rightFrame = rightFrames[index];
+
+    return (
+      leftFrame.noteId === rightFrame.noteId &&
+      leftFrame.left === rightFrame.left &&
+      leftFrame.top === rightFrame.top &&
+      leftFrame.width === rightFrame.width &&
+      leftFrame.height === rightFrame.height
+    );
+  });
+}
+
+function isMarkdownBlockStart(line: string) {
+  return (
+    /^#{1,6}\s+/.test(line) ||
+    /^>\s?/.test(line) ||
+    /^[-*]\s+/.test(line) ||
+    /^\d+\.\s+/.test(line) ||
+    /^```/.test(line) ||
+    /^(-{3,}|\*{3,}|_{3,})$/.test(line.trim())
+  );
+}
+
+function parseMarkdownPreviewBlocks(markdown: string): MarkdownPreviewBlock[] {
+  const lines = markdown.replace(/\r\n/g, "\n").split("\n");
+  const blocks: MarkdownPreviewBlock[] = [];
+  let index = 0;
+
+  while (index < lines.length) {
+    const line = lines[index];
+    const trimmed = line.trim();
+    const key = `markdown-block-${index}`;
+
+    if (!trimmed) {
+      index += 1;
+      continue;
+    }
+
+    if (trimmed.startsWith("```")) {
+      const codeLines: string[] = [];
+      const startLine = index;
+      index += 1;
+
+      while (index < lines.length && !lines[index].trim().startsWith("```")) {
+        codeLines.push(lines[index]);
+        index += 1;
+      }
+
+      blocks.push({
+        kind: "code",
+        key,
+        startLine,
+        endLine: index,
+        text: codeLines.join("\n"),
+      });
+      index += 1;
+      continue;
+    }
+
+    const headingMatch = line.match(/^(#{1,6})\s+(.+)$/);
+    if (headingMatch) {
+      blocks.push({
+        kind: "heading",
+        key,
+        startLine: index,
+        endLine: index,
+        level: headingMatch[1].length,
+        text: headingMatch[2],
+      });
+      index += 1;
+      continue;
+    }
+
+    if (/^(-{3,}|\*{3,}|_{3,})$/.test(trimmed)) {
+      blocks.push({
+        kind: "rule",
+        key,
+        startLine: index,
+        endLine: index,
+      });
+      index += 1;
+      continue;
+    }
+
+    if (/^>\s?/.test(line)) {
+      const quoteLines: string[] = [];
+      const startLine = index;
+
+      while (index < lines.length && /^>\s?/.test(lines[index])) {
+        quoteLines.push(lines[index].replace(/^>\s?/, ""));
+        index += 1;
+      }
+
+      blocks.push({
+        kind: "quote",
+        key,
+        startLine,
+        endLine: index - 1,
+        text: quoteLines.join("\n"),
+      });
+      continue;
+    }
+
+    if (/^[-*]\s+/.test(line)) {
+      const items: string[] = [];
+      const startLine = index;
+
+      while (index < lines.length && /^[-*]\s+/.test(lines[index])) {
+        items.push(lines[index].replace(/^[-*]\s+/, ""));
+        index += 1;
+      }
+
+      blocks.push({
+        kind: "unordered-list",
+        key,
+        startLine,
+        endLine: index - 1,
+        items,
+      });
+      continue;
+    }
+
+    if (/^\d+\.\s+/.test(line)) {
+      const items: string[] = [];
+      const startLine = index;
+
+      while (index < lines.length && /^\d+\.\s+/.test(lines[index])) {
+        items.push(lines[index].replace(/^\d+\.\s+/, ""));
+        index += 1;
+      }
+
+      blocks.push({
+        kind: "ordered-list",
+        key,
+        startLine,
+        endLine: index - 1,
+        items,
+      });
+      continue;
+    }
+
+    const paragraphLines: string[] = [];
+    const startLine = index;
+
+    while (index < lines.length && lines[index].trim() && !isMarkdownBlockStart(lines[index])) {
+      paragraphLines.push(lines[index].trim());
+      index += 1;
+    }
+
+    blocks.push({
+      kind: "paragraph",
+      key,
+      startLine,
+      endLine: index - 1,
+      text: paragraphLines.join(" "),
+    });
+  }
+
+  return blocks;
+}
+
+function markdownFromPreviewBlock(block: MarkdownPreviewBlock, text: string) {
+  const lines = text
+    .replace(/\u00a0/g, " ")
+    .split("\n")
+    .map((line) => line.trimEnd());
+
+  if (block.kind === "heading") {
+    return `${"#".repeat(block.level)} ${lines.join(" ").trim() || "Untitled"}`;
+  }
+
+  if (block.kind === "quote") {
+    return lines.map((line) => `> ${line}`).join("\n");
+  }
+
+  if (block.kind === "unordered-list") {
+    return lines
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => `- ${line}`)
+      .join("\n");
+  }
+
+  if (block.kind === "ordered-list") {
+    return lines
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line, index) => `${index + 1}. ${line}`)
+      .join("\n");
+  }
+
+  if (block.kind === "code") {
+    return `\`\`\`\n${text.replace(/\n+$/, "")}\n\`\`\``;
+  }
+
+  if (block.kind === "rule") {
+    return "---";
+  }
+
+  return lines.join("\n").trim();
+}
+
+function replaceMarkdownBlock(markdown: string, block: MarkdownPreviewBlock, nextBlock: string) {
+  const lines = markdown.replace(/\r\n/g, "\n").split("\n");
+  const nextLines = nextBlock ? nextBlock.split("\n") : [""];
+
+  lines.splice(block.startLine, block.endLine - block.startLine + 1, ...nextLines);
+
+  return lines.join("\n");
+}
+
+function markEditableBlockChanged(event: FormEvent<HTMLElement>) {
+  event.currentTarget.dataset.edited = "true";
+}
+
+function MarkdownPreviewBlockView({
+  block,
+  markdown,
+  notes,
+  onChange,
+  onAnnotationClick,
+}: {
+  block: MarkdownPreviewBlock;
+  markdown: string;
+  notes: SelectionNote[];
+  onChange: (block: MarkdownPreviewBlock, text: string) => void;
+  onAnnotationClick: (noteId: string) => void;
+}) {
+  const blockNotes = getNotesForPreviewBlock(markdown, block, notes);
+
+  function commitEditableBlock(event: FocusEvent<HTMLElement>) {
+    if (event.currentTarget.dataset.edited !== "true") return;
+
+    delete event.currentTarget.dataset.edited;
+    onChange(block, event.currentTarget.innerText);
+  }
+
+  const editableProps = {
+    contentEditable: true,
+    suppressContentEditableWarning: true,
+    "data-preview-block-key": block.key,
+    onBlur: commitEditableBlock,
+    onInput: markEditableBlockChanged,
+  };
+
+  if (block.kind === "heading") {
+    const tagName = `h${block.level}` as "h1" | "h2" | "h3" | "h4" | "h5" | "h6";
+    const textMap = getPreviewBlockTextMap(markdown, block);
+
+    return createElement(
+      tagName,
+      {
+        ...editableProps,
+        className: "markdown-preview-editable",
+      },
+      renderPreviewInline(textMap, `${block.key}-heading`, blockNotes, onAnnotationClick),
+    );
+  }
+
+  if (block.kind === "quote") {
+    return (
+      <blockquote
+        {...editableProps}
+        className="markdown-preview-editable"
+        key={block.key}
+      >
+        {block.text.split("\n").map((_quoteLine, quoteIndex) => (
+          <p key={`${block.key}-quote-${quoteIndex}`}>
+            {renderPreviewInline(
+              getQuoteLineTextMap(markdown, block, quoteIndex),
+              `${block.key}-quote-${quoteIndex}`,
+              blockNotes,
+              onAnnotationClick,
+            )}
+          </p>
+        ))}
+      </blockquote>
+    );
+  }
+
+  if (block.kind === "unordered-list" || block.kind === "ordered-list") {
+    const ListTag = block.kind === "unordered-list" ? "ul" : "ol";
+
+    return (
+      <ListTag {...editableProps} className="markdown-preview-editable" key={block.key}>
+        {block.items.map((_item, itemIndex) => (
+          <li key={`${block.key}-item-${itemIndex}`}>
+            {renderPreviewInline(
+              getListItemTextMap(markdown, block, itemIndex),
+              `${block.key}-item-${itemIndex}`,
+              blockNotes,
+              onAnnotationClick,
+            )}
+          </li>
+        ))}
+      </ListTag>
+    );
+  }
+
+  if (block.kind === "code") {
+    return (
+      <pre {...editableProps} className="markdown-preview-editable" key={block.key}>
+        <code>
+          {renderAnnotatedPlainText(
+            getPreviewBlockTextMap(markdown, block),
+            `${block.key}-code`,
+            blockNotes,
+            onAnnotationClick,
+          )}
+        </code>
+      </pre>
+    );
+  }
+
+  if (block.kind === "rule") {
+    return <hr data-preview-block-key={block.key} key={block.key} />;
+  }
+
+  if (block.kind === "paragraph") {
+    return (
+      <p {...editableProps} className="markdown-preview-editable" key={block.key}>
+        {renderPreviewInline(
+          getPreviewBlockTextMap(markdown, block),
+          `${block.key}-paragraph`,
+          blockNotes,
+          onAnnotationClick,
+        )}
+      </p>
+    );
+  }
+
+  return null;
+}
+
+function MarkdownPreview({
+  value,
+  notes,
+  onChange,
+  onSelectionChange,
+  onAnnotationClick,
+}: {
+  value: string;
+  notes: SelectionNote[];
+  onChange: (value: string, source: EditorChangeSource) => void;
+  onSelectionChange: (anchor: TextSelectionAnchor | null) => void;
+  onAnnotationClick: (noteId: string) => void;
+}) {
+  const blocks = parseMarkdownPreviewBlocks(value);
+  const previewRef = useRef<HTMLDivElement | null>(null);
+  const [annotationFrames, setAnnotationFrames] = useState<PreviewAnnotationFrame[]>([]);
+
+  useLayoutEffect(() => {
+    const previewElement = previewRef.current;
+    if (!previewElement) return;
+
+    let animationFrame = 0;
+    const updateAnnotationFrames = () => {
+      const nextFrames = measurePreviewAnnotationFrames(previewElement);
+
+      setAnnotationFrames((currentFrames) =>
+        arePreviewAnnotationFramesEqual(currentFrames, nextFrames) ? currentFrames : nextFrames,
+      );
+    };
+    const scheduleAnnotationFrameUpdate = () => {
+      window.cancelAnimationFrame(animationFrame);
+      animationFrame = window.requestAnimationFrame(updateAnnotationFrames);
+    };
+
+    updateAnnotationFrames();
+
+    const resizeObserver = new ResizeObserver(scheduleAnnotationFrameUpdate);
+    resizeObserver.observe(previewElement);
+    window.addEventListener("resize", scheduleAnnotationFrameUpdate);
+
+    return () => {
+      window.cancelAnimationFrame(animationFrame);
+      resizeObserver.disconnect();
+      window.removeEventListener("resize", scheduleAnnotationFrameUpdate);
+    };
+  }, [notes, value]);
+
+  function handlePreviewSelection() {
+    const selection = window.getSelection();
+    const selectedText = selection?.toString() ?? "";
+
+    if (!selection || selection.isCollapsed || !selectedText.trim()) {
+      onSelectionChange(null);
+      return;
+    }
+
+    onSelectionChange(makePreviewAnchor(value, selectedText));
+  }
+
+  function updatePreviewBlock(block: MarkdownPreviewBlock, text: string) {
+    const nextBlock = markdownFromPreviewBlock(block, text);
+    const nextValue = replaceMarkdownBlock(value, block, nextBlock);
+
+    onChange(nextValue, "user");
+  }
+
+  return (
+    <div
+      className="markdown-preview"
+      ref={previewRef}
+      onKeyUp={handlePreviewSelection}
+      onMouseUp={handlePreviewSelection}
+    >
+      {blocks.map((block) => (
+        <MarkdownPreviewBlockView
+          block={block}
+          key={block.key}
+          markdown={value}
+          notes={notes}
+          onAnnotationClick={onAnnotationClick}
+          onChange={updatePreviewBlock}
+        />
+      ))}
+      <div aria-hidden="true" className="preview-annotation-layer">
+        {annotationFrames.map((frame) => (
+          <span
+            className="preview-annotation-frame"
+            key={frame.noteId}
+            style={{
+              height: frame.height,
+              left: frame.left,
+              top: frame.top,
+              width: frame.width,
+            }}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function App() {
   const [documents, setDocuments] = useState(documentsSeed);
   const [workspaceTitle, setWorkspaceTitle] = useState("Scholium");
@@ -273,7 +1388,13 @@ function App() {
   const [pendingAnchor, setPendingAnchor] = useState<TextSelectionAnchor | null>(null);
   const [noteDraft, setNoteDraft] = useState("");
   const [activeNoteId, setActiveNoteId] = useState("note-1");
-  const [dirtyDocumentIds, setDirtyDocumentIds] = useState<Set<string>>(new Set());
+  const [editorMode, setEditorMode] = useState<EditorMode>("edit");
+  const [dirtyDocumentStates, setDirtyDocumentStates] = useState<
+    Record<string, DirtyDocumentState>
+  >({});
+  const [savedDocumentBodies, setSavedDocumentBodies] = useState<Record<string, string>>(() =>
+    savedBodiesFromDocuments(documentsSeed),
+  );
   const [storageError, setStorageError] = useState("");
   const [isSavingFile, setIsSavingFile] = useState(false);
 
@@ -287,7 +1408,7 @@ function App() {
   const activeNotes = documentNotes.filter((note) => note.status === "active");
   const orphanedNotes = documentNotes.filter((note) => note.status === "orphaned");
   const activeNote = documentNotes.find((note) => note.id === activeNoteId);
-  const selectedDocumentIsDirty = dirtyDocumentIds.has(selectedDocument.id);
+  const selectedDocumentIsDirty = hasDirtyState(dirtyDocumentStates[selectedDocument.id]);
 
   const annotations: TextAnnotation[] = activeNotes.map((note) => ({
     id: note.id,
@@ -295,6 +1416,11 @@ function App() {
     to: note.anchor.to,
   }));
   const canSaveSelectionNote = Boolean(pendingAnchor && noteDraft.trim());
+  const shouldShowPartialSelectionWarning = Boolean(
+    noteDraft.trim() &&
+      pendingAnchor &&
+      !isSelectionCompleteMarkdownBlock(selectedDocument.body, pendingAnchor),
+  );
 
   useEffect(() => {
     if (!nativeStorageAvailable) return;
@@ -326,15 +1452,79 @@ function App() {
     };
   }, [nativeStorageAvailable]);
 
-  function markDocumentDirty(documentId = selectedDocument.id) {
-    setDirtyDocumentIds((currentIds) => new Set(currentIds).add(documentId));
+  useEffect(() => {
+    function handleModeShortcut(event: KeyboardEvent) {
+      if (!(event.metaKey || event.ctrlKey) || !event.shiftKey) return;
+      if (event.key.toLowerCase() !== "p") return;
+
+      event.preventDefault();
+      setPendingAnchor(null);
+      setNoteDraft("");
+      setEditorMode((currentMode) => (currentMode === "preview" ? "edit" : "preview"));
+    }
+
+    window.addEventListener("keydown", handleModeShortcut);
+
+    return () => {
+      window.removeEventListener("keydown", handleModeShortcut);
+    };
+  }, []);
+
+  function updateDocumentDirtyState(documentId: string, patch: Partial<DirtyDocumentState>) {
+    setDirtyDocumentStates((currentStates) => {
+      const currentState = currentStates[documentId] ?? { body: false, notes: false };
+      const nextState = {
+        ...currentState,
+        ...patch,
+      };
+      const nextStates = { ...currentStates };
+
+      if (hasDirtyState(nextState)) {
+        nextStates[documentId] = nextState;
+      } else {
+        delete nextStates[documentId];
+      }
+
+      return nextStates;
+    });
   }
 
-  function markDocumentClean(documentId: string) {
-    setDirtyDocumentIds((currentIds) => {
-      const nextIds = new Set(currentIds);
-      nextIds.delete(documentId);
-      return nextIds;
+  function markDocumentBodyDirty(documentId: string, isDirty: boolean) {
+    updateDocumentDirtyState(documentId, { body: isDirty });
+  }
+
+  function markDocumentNotesDirty(documentId = selectedDocument.id) {
+    updateDocumentDirtyState(documentId, { notes: true });
+  }
+
+  function markDocumentClean(documentId: string, body: string) {
+    setDirtyDocumentStates((currentStates) => {
+      const nextStates = { ...currentStates };
+      delete nextStates[documentId];
+      return nextStates;
+    });
+    setSavedDocumentBodies((currentBodies) => ({
+      ...currentBodies,
+      [documentId]: body,
+    }));
+  }
+
+  function markLoadedDocumentsClean(loadedDocuments: MarkdownDocument[]) {
+    const loadedDocumentIds = new Set(loadedDocuments.map((document) => document.id));
+
+    setDirtyDocumentStates((currentStates) => {
+      const nextStates = { ...currentStates };
+      loadedDocumentIds.forEach((documentId) => {
+        delete nextStates[documentId];
+      });
+      return nextStates;
+    });
+    setSavedDocumentBodies((currentBodies) => {
+      const nextBodies = { ...currentBodies };
+      loadedDocuments.forEach((document) => {
+        nextBodies[document.id] = document.body;
+      });
+      return nextBodies;
     });
   }
 
@@ -387,7 +1577,7 @@ function App() {
       loadedNotes.find((note) => note.documentId === firstDocument.id && note.status !== "deleted")
         ?.id ?? "",
     );
-    loadedDocuments.forEach((document) => markDocumentClean(document.id));
+    markLoadedDocumentsClean(loadedDocuments);
   }
 
   function applyOpenedDirectory(openedDirectory: OpenMarkdownDirectoryResult, selectedPath?: string) {
@@ -433,7 +1623,7 @@ function App() {
     setWorkspaceEntries(nextEntries);
     setPendingAnchor(null);
     setNoteDraft("");
-    loadedDocuments.forEach((document) => markDocumentClean(document.id));
+    markLoadedDocumentsClean(loadedDocuments);
 
     if (documentToSelect) {
       setSelectedDocumentId(documentToSelect.id);
@@ -604,7 +1794,7 @@ function App() {
             : document,
         ),
       );
-      markDocumentClean(selectedDocument.id);
+      markDocumentClean(selectedDocument.id, selectedDocument.body);
     } catch (error) {
       setStorageError(error instanceof Error ? error.message : String(error));
     } finally {
@@ -612,18 +1802,23 @@ function App() {
     }
   }
 
-  function updateSelectedDocumentBody(body: string) {
+  function updateSelectedDocumentBody(body: string, source: EditorChangeSource) {
+    if (body === selectedDocument.body) return;
+
+    const documentId = selectedDocument.id;
+    const savedBody = savedDocumentBodies[documentId] ?? selectedDocument.body;
+
     setDocuments((currentDocuments) =>
       currentDocuments.map((document) =>
-        document.id === selectedDocument.id ? { ...document, body } : document,
+        document.id === documentId ? { ...document, body } : document,
       ),
     );
     setNotes((currentNotes) =>
       currentNotes.map((note) =>
-        note.documentId === selectedDocument.id ? reconcileNote(note, body) : note,
+        note.documentId === documentId ? reconcileNote(note, body) : note,
       ),
     );
-    markDocumentDirty();
+    markDocumentBodyDirty(documentId, !(source === "undo" && body === savedBody));
   }
 
   function selectDocument(documentId: string) {
@@ -659,7 +1854,7 @@ function App() {
     setActiveNoteId(note.id);
     setPendingAnchor(null);
     setNoteDraft("");
-    markDocumentDirty();
+    markDocumentNotesDirty();
   }
 
   function updateNoteBody(noteId: string, body: string) {
@@ -674,7 +1869,7 @@ function App() {
           : note,
       ),
     );
-    markDocumentDirty();
+    markDocumentNotesDirty();
   }
 
   function deleteNote(noteId: string) {
@@ -693,7 +1888,7 @@ function App() {
     if (activeNoteId === noteId) {
       setActiveNoteId("");
     }
-    markDocumentDirty();
+    markDocumentNotesDirty();
   }
 
   function rebindNote(noteId: string) {
@@ -714,7 +1909,13 @@ function App() {
     );
     setActiveNoteId(noteId);
     setPendingAnchor(null);
-    markDocumentDirty();
+    markDocumentNotesDirty();
+  }
+
+  function togglePreviewMode() {
+    setPendingAnchor(null);
+    setNoteDraft("");
+    setEditorMode((currentMode) => (currentMode === "preview" ? "edit" : "preview"));
   }
 
   return (
@@ -767,7 +1968,15 @@ function App() {
             <span className={`save-state ${selectedDocumentIsDirty ? "is-dirty" : ""}`}>
               {selectedDocumentIsDirty ? "Unsaved" : "Saved"}
             </span>
-            <button type="button">Preview</button>
+            <button
+              className={editorMode === "preview" ? "is-active" : ""}
+              type="button"
+              aria-pressed={editorMode === "preview"}
+              onClick={togglePreviewMode}
+              title="Toggle Source/Preview (Cmd/Ctrl+Shift+P)"
+            >
+              {editorMode === "preview" ? "Source" : "Preview"}
+            </button>
             <button
               type="button"
               onClick={saveSelectedDocument}
@@ -780,18 +1989,36 @@ function App() {
 
         <div className="editor-grid">
           <div className="editor-surface">
-            <MarkdownEditor
-              annotations={annotations}
-              value={selectedDocument.body}
-              onAnnotationClick={setActiveNoteId}
-              onChange={updateSelectedDocumentBody}
-              onSelectionChange={setPendingAnchor}
-            />
+            {editorMode === "preview" ? (
+              <MarkdownPreview
+                notes={activeNotes}
+                value={selectedDocument.body}
+                onAnnotationClick={setActiveNoteId}
+                onChange={updateSelectedDocumentBody}
+                onSelectionChange={setPendingAnchor}
+              />
+            ) : (
+              <>
+                <MarkdownEditor
+                  annotations={annotations}
+                  value={selectedDocument.body}
+                  onAnnotationClick={setActiveNoteId}
+                  onChange={updateSelectedDocumentBody}
+                  onSelectionChange={setPendingAnchor}
+                />
+
+              </>
+            )}
 
             {pendingAnchor ? (
               <div className="selection-popover">
                 <p className="eyebrow">Selection</p>
                 <blockquote>{summarizeText(pendingAnchor.selectedText, 96)}</blockquote>
+                {shouldShowPartialSelectionWarning ? (
+                  <p className="selection-warning">
+                    目前圈選的範圍可能不是完整段落，請確認這是你想綁定筆記的文字。
+                  </p>
+                ) : null}
                 <textarea
                   aria-label="Selection note"
                   value={noteDraft}
