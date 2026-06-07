@@ -5,10 +5,10 @@ import {
   createElement,
   type FocusEvent,
   type FormEvent,
-  type KeyboardEvent as ReactKeyboardEvent,
-  type MouseEvent,
   type ReactNode,
   useEffect,
+  useLayoutEffect,
+  useRef,
   useState,
 } from "react";
 import "./App.css";
@@ -103,6 +103,25 @@ type DirtyDocumentState = {
 
 type EditorMode = "edit" | "preview";
 
+type PreviewAnnotationFrame = {
+  noteId: string;
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+};
+
+type PreviewTextMap = {
+  text: string;
+  sourceOffsets: Array<number | null>;
+};
+
+type PreviewAnnotationTextRange = {
+  note: SelectionNote;
+  start: number;
+  end: number;
+};
+
 type MarkdownPreviewBlock =
   | {
       kind: "heading";
@@ -113,7 +132,21 @@ type MarkdownPreviewBlock =
       text: string;
     }
   | {
-      kind: "paragraph" | "quote" | "code";
+      kind: "paragraph";
+      key: string;
+      startLine: number;
+      endLine: number;
+      text: string;
+    }
+  | {
+      kind: "quote";
+      key: string;
+      startLine: number;
+      endLine: number;
+      text: string;
+    }
+  | {
+      kind: "code";
       key: string;
       startLine: number;
       endLine: number;
@@ -139,6 +172,8 @@ const markdownFilters = [
     extensions: ["md", "markdown", "mdown"],
   },
 ];
+
+const previewAnnotationFramePadding = 4;
 
 const documentsSeed: MarkdownDocument[] = [
   {
@@ -429,6 +464,154 @@ function getBlockSemanticRange(markdown: string, block: MarkdownPreviewBlock) {
   return trimRange(markdown, blockRange.start, blockRange.end);
 }
 
+function getLineContentStart(line: string) {
+  const match = line.match(/\S/);
+  return match?.index ?? 0;
+}
+
+function appendTextMap(target: PreviewTextMap, text: string, sourceStart: number | null) {
+  target.text += text;
+  target.sourceOffsets.push(
+    ...Array.from({ length: text.length }, (_, index) =>
+      sourceStart === null ? null : sourceStart + index,
+    ),
+  );
+}
+
+function appendTextMapSeparator(target: PreviewTextMap, separator: string) {
+  appendTextMap(target, separator, null);
+}
+
+function getHeadingTextMap(markdown: string, block: Extract<MarkdownPreviewBlock, { kind: "heading" }>) {
+  const lines = markdown.replace(/\r\n/g, "\n").split("\n");
+  const lineStartOffsets = getLineStartOffsets(markdown);
+  const line = lines[block.startLine] ?? "";
+  const match = line.match(/^(#{1,6})\s+(.+)$/);
+  const markerLength = match ? match[1].length + (line[match[1].length] === " " ? 1 : 0) : 0;
+  const sourceStart = (lineStartOffsets[block.startLine] ?? 0) + markerLength;
+
+  return {
+    text: block.text,
+    sourceOffsets: Array.from({ length: block.text.length }, (_, index) => sourceStart + index),
+  };
+}
+
+function getParagraphTextMap(
+  markdown: string,
+  block: Extract<MarkdownPreviewBlock, { kind: "paragraph" }>,
+) {
+  const lines = markdown.replace(/\r\n/g, "\n").split("\n");
+  const lineStartOffsets = getLineStartOffsets(markdown);
+  const textMap: PreviewTextMap = { text: "", sourceOffsets: [] };
+
+  for (let lineIndex = block.startLine; lineIndex <= block.endLine; lineIndex += 1) {
+    const line = lines[lineIndex] ?? "";
+    const trimmed = line.trim();
+    if (lineIndex > block.startLine) {
+      appendTextMapSeparator(textMap, " ");
+    }
+
+    appendTextMap(
+      textMap,
+      trimmed,
+      (lineStartOffsets[lineIndex] ?? 0) + getLineContentStart(line),
+    );
+  }
+
+  return textMap;
+}
+
+function getQuoteLineTextMap(
+  markdown: string,
+  block: Extract<MarkdownPreviewBlock, { kind: "quote" }>,
+  quoteIndex: number,
+) {
+  const lines = markdown.replace(/\r\n/g, "\n").split("\n");
+  const lineStartOffsets = getLineStartOffsets(markdown);
+  const lineIndex = block.startLine + quoteIndex;
+  const line = lines[lineIndex] ?? "";
+  const marker = line.match(/^>\s?/)?.[0] ?? "";
+  const text = line.slice(marker.length);
+
+  return {
+    text,
+    sourceOffsets: Array.from(
+      { length: text.length },
+      (_, index) => (lineStartOffsets[lineIndex] ?? 0) + marker.length + index,
+    ),
+  };
+}
+
+function getListItemTextMap(
+  markdown: string,
+  block: Extract<MarkdownPreviewBlock, { kind: "unordered-list" | "ordered-list" }>,
+  itemIndex: number,
+) {
+  const lines = markdown.replace(/\r\n/g, "\n").split("\n");
+  const lineStartOffsets = getLineStartOffsets(markdown);
+  const lineIndex = block.startLine + itemIndex;
+  const line = lines[lineIndex] ?? "";
+  const marker =
+    block.kind === "unordered-list"
+      ? line.match(/^[-*]\s+/)?.[0] ?? ""
+      : line.match(/^\d+\.\s+/)?.[0] ?? "";
+  const text = line.slice(marker.length);
+
+  return {
+    text,
+    sourceOffsets: Array.from(
+      { length: text.length },
+      (_, index) => (lineStartOffsets[lineIndex] ?? 0) + marker.length + index,
+    ),
+  };
+}
+
+function getCodeTextMap(markdown: string, block: Extract<MarkdownPreviewBlock, { kind: "code" }>) {
+  const lines = markdown.replace(/\r\n/g, "\n").split("\n");
+  const lineStartOffsets = getLineStartOffsets(markdown);
+  const textMap: PreviewTextMap = { text: "", sourceOffsets: [] };
+
+  for (let lineIndex = block.startLine + 1; lineIndex < block.endLine; lineIndex += 1) {
+    const line = lines[lineIndex] ?? "";
+    if (lineIndex > block.startLine + 1) {
+      appendTextMap(textMap, "\n", (lineStartOffsets[lineIndex] ?? 0) - 1);
+    }
+    appendTextMap(textMap, line, lineStartOffsets[lineIndex] ?? 0);
+  }
+
+  return textMap;
+}
+
+function getPreviewBlockTextMap(markdown: string, block: MarkdownPreviewBlock): PreviewTextMap {
+  if (block.kind === "heading") return getHeadingTextMap(markdown, block);
+  if (block.kind === "paragraph") return getParagraphTextMap(markdown, block);
+  if (block.kind === "code") return getCodeTextMap(markdown, block);
+  if (block.kind === "quote") {
+    return block.text.split("\n").reduce<PreviewTextMap>(
+      (textMap, _quoteLine, quoteIndex) => {
+        if (quoteIndex > 0) appendTextMapSeparator(textMap, "\n");
+        const quoteLineTextMap = getQuoteLineTextMap(markdown, block, quoteIndex);
+        appendTextMap(textMap, quoteLineTextMap.text, quoteLineTextMap.sourceOffsets[0] ?? null);
+        return textMap;
+      },
+      { text: "", sourceOffsets: [] },
+    );
+  }
+  if (block.kind === "unordered-list" || block.kind === "ordered-list") {
+    return block.items.reduce<PreviewTextMap>(
+      (textMap, _item, itemIndex) => {
+        if (itemIndex > 0) appendTextMapSeparator(textMap, "\n");
+        const itemTextMap = getListItemTextMap(markdown, block, itemIndex);
+        appendTextMap(textMap, itemTextMap.text, itemTextMap.sourceOffsets[0] ?? null);
+        return textMap;
+      },
+      { text: "", sourceOffsets: [] },
+    );
+  }
+
+  return { text: "", sourceOffsets: [] };
+}
+
 function isSelectionCompleteMarkdownBlock(markdown: string, anchor: TextSelectionAnchor) {
   const selection = trimRange(markdown, anchor.from, anchor.to);
   if (selection.from === selection.to) return true;
@@ -468,22 +651,86 @@ function makeAnchorFromRange(
   };
 }
 
-function makePreviewAnchor(
-  body: string,
-  block: MarkdownPreviewBlock | undefined,
-  selectedText: string,
-) {
+function normalizeTextMapForMatch(textMap: PreviewTextMap): PreviewTextMap {
+  const normalized: PreviewTextMap = { text: "", sourceOffsets: [] };
+  let pendingWhitespaceOffset: number | null = null;
+  let hasPendingWhitespace = false;
+
+  Array.from(textMap.text).forEach((character, index) => {
+    const sourceOffset = textMap.sourceOffsets[index] ?? null;
+
+    if (/\s/.test(character)) {
+      hasPendingWhitespace = true;
+      if (pendingWhitespaceOffset === null && sourceOffset !== null) {
+        pendingWhitespaceOffset = sourceOffset;
+      }
+      return;
+    }
+
+    if (hasPendingWhitespace && normalized.text.length > 0) {
+      normalized.text += " ";
+      normalized.sourceOffsets.push(pendingWhitespaceOffset);
+    }
+
+    normalized.text += character;
+    normalized.sourceOffsets.push(sourceOffset);
+    hasPendingWhitespace = false;
+    pendingWhitespaceOffset = null;
+  });
+
+  return normalized;
+}
+
+function getPreviewSourceProjection(markdown: string) {
+  return parseMarkdownPreviewBlocks(markdown).reduce<PreviewTextMap>(
+    (projection, block, blockIndex) => {
+      if (blockIndex > 0 && projection.text.length > 0) {
+        appendTextMapSeparator(projection, "\n\n");
+      }
+
+      const blockTextMap = getPreviewBlockTextMap(markdown, block);
+      projection.text += blockTextMap.text;
+      projection.sourceOffsets.push(...blockTextMap.sourceOffsets);
+      return projection;
+    },
+    { text: "", sourceOffsets: [] },
+  );
+}
+
+function sourceRangeFromTextMapMatch(textMap: PreviewTextMap, start: number, end: number) {
+  const sourceOffsets = textMap.sourceOffsets
+    .slice(start, end)
+    .filter((offset): offset is number => offset !== null);
+
+  if (sourceOffsets.length === 0) return null;
+
+  return {
+    from: Math.min(...sourceOffsets),
+    to: Math.max(...sourceOffsets) + 1,
+  };
+}
+
+function makePreviewAnchor(body: string, selectedText: string) {
   const normalizedSelection = selectedText.replace(/\s+/g, " ").trim();
   if (!normalizedSelection) return null;
 
-  if (block) {
-    const blockRange = getBlockRange(body, block);
-    const blockSource = body.slice(blockRange.start, blockRange.end);
-    const blockIndex = blockSource.indexOf(normalizedSelection);
+  const projection = normalizeTextMapForMatch(getPreviewSourceProjection(body));
+  const projectionIndex = projection.text.indexOf(normalizedSelection);
 
-    if (blockIndex >= 0) {
-      const from = blockRange.start + blockIndex;
-      return makeAnchorFromRange(body, from, from + normalizedSelection.length, normalizedSelection);
+  if (projectionIndex >= 0) {
+    const sourceRange = sourceRangeFromTextMapMatch(
+      projection,
+      projectionIndex,
+      projectionIndex + normalizedSelection.length,
+    );
+
+    if (sourceRange) {
+      return makeAnchorFromRange(
+        body,
+        sourceRange.from,
+        sourceRange.to,
+        body.slice(sourceRange.from, sourceRange.to),
+      );
     }
   }
 
@@ -494,7 +741,7 @@ function makePreviewAnchor(
     body,
     fallbackIndex,
     fallbackIndex + normalizedSelection.length,
-    normalizedSelection,
+    body.slice(fallbackIndex, fallbackIndex + normalizedSelection.length),
   );
 }
 
@@ -513,20 +760,43 @@ function getNotesForPreviewBlock(
   );
 }
 
+function getAnnotationRangesForTextMap(textMap: PreviewTextMap, notes: SelectionNote[]) {
+  const ranges: PreviewAnnotationTextRange[] = [];
+
+  notes.forEach((note) => {
+    let rangeStart: number | null = null;
+
+    textMap.sourceOffsets.forEach((sourceOffset, index) => {
+      const isMarked =
+        sourceOffset !== null && sourceOffset >= note.anchor.from && sourceOffset < note.anchor.to;
+
+      if (isMarked && rangeStart === null) {
+        rangeStart = index;
+      }
+
+      if (!isMarked && rangeStart !== null) {
+        ranges.push({ note, start: rangeStart, end: index });
+        rangeStart = null;
+      }
+    });
+
+    if (rangeStart !== null) {
+      ranges.push({ note, start: rangeStart, end: textMap.text.length });
+    }
+  });
+
+  return ranges
+    .filter((range) => range.end > range.start)
+    .sort((left, right) => left.start - right.start || left.end - right.end);
+}
+
 function renderAnnotatedPlainText(
-  text: string,
+  textMap: PreviewTextMap,
   keyPrefix: string,
   notes: SelectionNote[],
   onAnnotationClick: (noteId: string) => void,
 ) {
-  const ranges = notes
-    .map((note) => ({
-      note,
-      start: text.indexOf(note.selectedText),
-      end: text.indexOf(note.selectedText) + note.selectedText.length,
-    }))
-    .filter((range) => range.start >= 0 && range.end > range.start)
-    .sort((left, right) => left.start - right.start);
+  const ranges = getAnnotationRangesForTextMap(textMap, notes);
   const nodes: ReactNode[] = [];
   let cursor = 0;
 
@@ -534,7 +804,7 @@ function renderAnnotatedPlainText(
     if (range.start < cursor) return;
 
     if (range.start > cursor) {
-      nodes.push(text.slice(cursor, range.start));
+      nodes.push(textMap.text.slice(cursor, range.start));
     }
 
     nodes.push(
@@ -547,40 +817,33 @@ function renderAnnotatedPlainText(
           onAnnotationClick(range.note.id);
         }}
       >
-        {text.slice(range.start, range.end)}
+        {textMap.text.slice(range.start, range.end)}
       </span>,
     );
     cursor = range.end;
   });
 
-  if (cursor < text.length) {
-    nodes.push(text.slice(cursor));
+  if (cursor < textMap.text.length) {
+    nodes.push(textMap.text.slice(cursor));
   }
 
   return nodes;
 }
 
 function renderPreviewInline(
-  text: string,
+  textMap: PreviewTextMap,
   keyPrefix: string,
   notes: SelectionNote[],
   onAnnotationClick: (noteId: string) => void,
 ) {
   if (notes.length === 0) {
-    return renderInlineMarkdown(text, keyPrefix);
+    return renderInlineMarkdown(textMap.text, keyPrefix);
   }
 
-  const ranges = notes
-    .map((note) => ({
-      note,
-      start: text.indexOf(note.selectedText),
-      end: text.indexOf(note.selectedText) + note.selectedText.length,
-    }))
-    .filter((range) => range.start >= 0 && range.end > range.start)
-    .sort((left, right) => left.start - right.start);
+  const ranges = getAnnotationRangesForTextMap(textMap, notes);
 
   if (ranges.length === 0) {
-    return renderInlineMarkdown(text, keyPrefix);
+    return renderInlineMarkdown(textMap.text, keyPrefix);
   }
 
   const nodes: ReactNode[] = [];
@@ -590,7 +853,12 @@ function renderPreviewInline(
     if (range.start < cursor) return;
 
     if (range.start > cursor) {
-      nodes.push(...renderInlineMarkdown(text.slice(cursor, range.start), `${keyPrefix}-before-${rangeIndex}`));
+      nodes.push(
+        ...renderInlineMarkdown(
+          textMap.text.slice(cursor, range.start),
+          `${keyPrefix}-before-${rangeIndex}`,
+        ),
+      );
     }
 
     nodes.push(
@@ -603,17 +871,86 @@ function renderPreviewInline(
           onAnnotationClick(range.note.id);
         }}
       >
-        {renderInlineMarkdown(text.slice(range.start, range.end), `${keyPrefix}-marked-${rangeIndex}`)}
+        {renderInlineMarkdown(
+          textMap.text.slice(range.start, range.end),
+          `${keyPrefix}-marked-${rangeIndex}`,
+        )}
       </span>,
     );
     cursor = range.end;
   });
 
-  if (cursor < text.length) {
-    nodes.push(...renderInlineMarkdown(text.slice(cursor), `${keyPrefix}-after`));
+  if (cursor < textMap.text.length) {
+    nodes.push(...renderInlineMarkdown(textMap.text.slice(cursor), `${keyPrefix}-after`));
   }
 
   return nodes;
+}
+
+function roundPreviewFrameValue(value: number) {
+  return Math.round(value * 100) / 100;
+}
+
+function measurePreviewAnnotationFrames(container: HTMLDivElement): PreviewAnnotationFrame[] {
+  const containerRect = container.getBoundingClientRect();
+  const rectsByNoteId = new Map<string, DOMRect[]>();
+
+  container
+    .querySelectorAll<HTMLElement>(".preview-note-annotation[data-note-id]")
+    .forEach((annotation) => {
+      const noteId = annotation.dataset.noteId;
+      if (!noteId) return;
+
+      const annotationRects = Array.from(annotation.getClientRects()).filter(
+        (rect) => rect.width > 0 && rect.height > 0,
+      );
+      if (annotationRects.length === 0) return;
+
+      rectsByNoteId.set(noteId, [...(rectsByNoteId.get(noteId) ?? []), ...annotationRects]);
+    });
+
+  return Array.from(rectsByNoteId.entries())
+    .map(([noteId, rects]) => {
+      const left = Math.min(...rects.map((rect) => rect.left));
+      const top = Math.min(...rects.map((rect) => rect.top));
+      const right = Math.max(...rects.map((rect) => rect.right));
+      const bottom = Math.max(...rects.map((rect) => rect.bottom));
+
+      return {
+        noteId,
+        left: roundPreviewFrameValue(
+          Math.max(0, left - containerRect.left + container.scrollLeft - previewAnnotationFramePadding),
+        ),
+        top: roundPreviewFrameValue(
+          Math.max(0, top - containerRect.top + container.scrollTop - previewAnnotationFramePadding),
+        ),
+        width: roundPreviewFrameValue(right - left + previewAnnotationFramePadding * 2),
+        height: roundPreviewFrameValue(bottom - top + previewAnnotationFramePadding * 2),
+      };
+    })
+    .sort(
+      (left, right) =>
+        left.top - right.top || left.left - right.left || left.noteId.localeCompare(right.noteId),
+    );
+}
+
+function arePreviewAnnotationFramesEqual(
+  leftFrames: PreviewAnnotationFrame[],
+  rightFrames: PreviewAnnotationFrame[],
+) {
+  if (leftFrames.length !== rightFrames.length) return false;
+
+  return leftFrames.every((leftFrame, index) => {
+    const rightFrame = rightFrames[index];
+
+    return (
+      leftFrame.noteId === rightFrame.noteId &&
+      leftFrame.left === rightFrame.left &&
+      leftFrame.top === rightFrame.top &&
+      leftFrame.width === rightFrame.width &&
+      leftFrame.height === rightFrame.height
+    );
+  });
 }
 
 function isMarkdownBlockStart(line: string) {
@@ -851,6 +1188,7 @@ function MarkdownPreviewBlockView({
 
   if (block.kind === "heading") {
     const tagName = `h${block.level}` as "h1" | "h2" | "h3" | "h4" | "h5" | "h6";
+    const textMap = getPreviewBlockTextMap(markdown, block);
 
     return createElement(
       tagName,
@@ -858,7 +1196,7 @@ function MarkdownPreviewBlockView({
         ...editableProps,
         className: "markdown-preview-editable",
       },
-      renderPreviewInline(block.text, `${block.key}-heading`, blockNotes, onAnnotationClick),
+      renderPreviewInline(textMap, `${block.key}-heading`, blockNotes, onAnnotationClick),
     );
   }
 
@@ -869,10 +1207,10 @@ function MarkdownPreviewBlockView({
         className="markdown-preview-editable"
         key={block.key}
       >
-        {block.text.split("\n").map((quoteLine, quoteIndex) => (
+        {block.text.split("\n").map((_quoteLine, quoteIndex) => (
           <p key={`${block.key}-quote-${quoteIndex}`}>
             {renderPreviewInline(
-              quoteLine,
+              getQuoteLineTextMap(markdown, block, quoteIndex),
               `${block.key}-quote-${quoteIndex}`,
               blockNotes,
               onAnnotationClick,
@@ -888,10 +1226,10 @@ function MarkdownPreviewBlockView({
 
     return (
       <ListTag {...editableProps} className="markdown-preview-editable" key={block.key}>
-        {block.items.map((item, itemIndex) => (
+        {block.items.map((_item, itemIndex) => (
           <li key={`${block.key}-item-${itemIndex}`}>
             {renderPreviewInline(
-              item,
+              getListItemTextMap(markdown, block, itemIndex),
               `${block.key}-item-${itemIndex}`,
               blockNotes,
               onAnnotationClick,
@@ -907,7 +1245,7 @@ function MarkdownPreviewBlockView({
       <pre {...editableProps} className="markdown-preview-editable" key={block.key}>
         <code>
           {renderAnnotatedPlainText(
-            block.text,
+            getPreviewBlockTextMap(markdown, block),
             `${block.key}-code`,
             blockNotes,
             onAnnotationClick,
@@ -924,7 +1262,12 @@ function MarkdownPreviewBlockView({
   if (block.kind === "paragraph") {
     return (
       <p {...editableProps} className="markdown-preview-editable" key={block.key}>
-        {renderPreviewInline(block.text, `${block.key}-paragraph`, blockNotes, onAnnotationClick)}
+        {renderPreviewInline(
+          getPreviewBlockTextMap(markdown, block),
+          `${block.key}-paragraph`,
+          blockNotes,
+          onAnnotationClick,
+        )}
       </p>
     );
   }
@@ -946,10 +1289,40 @@ function MarkdownPreview({
   onAnnotationClick: (noteId: string) => void;
 }) {
   const blocks = parseMarkdownPreviewBlocks(value);
+  const previewRef = useRef<HTMLDivElement | null>(null);
+  const [annotationFrames, setAnnotationFrames] = useState<PreviewAnnotationFrame[]>([]);
 
-  function handlePreviewSelection(
-    event: MouseEvent<HTMLDivElement> | ReactKeyboardEvent<HTMLDivElement>,
-  ) {
+  useLayoutEffect(() => {
+    const previewElement = previewRef.current;
+    if (!previewElement) return;
+
+    let animationFrame = 0;
+    const updateAnnotationFrames = () => {
+      const nextFrames = measurePreviewAnnotationFrames(previewElement);
+
+      setAnnotationFrames((currentFrames) =>
+        arePreviewAnnotationFramesEqual(currentFrames, nextFrames) ? currentFrames : nextFrames,
+      );
+    };
+    const scheduleAnnotationFrameUpdate = () => {
+      window.cancelAnimationFrame(animationFrame);
+      animationFrame = window.requestAnimationFrame(updateAnnotationFrames);
+    };
+
+    updateAnnotationFrames();
+
+    const resizeObserver = new ResizeObserver(scheduleAnnotationFrameUpdate);
+    resizeObserver.observe(previewElement);
+    window.addEventListener("resize", scheduleAnnotationFrameUpdate);
+
+    return () => {
+      window.cancelAnimationFrame(animationFrame);
+      resizeObserver.disconnect();
+      window.removeEventListener("resize", scheduleAnnotationFrameUpdate);
+    };
+  }, [notes, value]);
+
+  function handlePreviewSelection() {
     const selection = window.getSelection();
     const selectedText = selection?.toString() ?? "";
 
@@ -958,15 +1331,7 @@ function MarkdownPreview({
       return;
     }
 
-    const target = event.target;
-    if (!(target instanceof HTMLElement)) return;
-
-    const blockElement = target.closest<HTMLElement>("[data-preview-block-key]");
-    const block = blocks.find(
-      (previewBlock) => previewBlock.key === blockElement?.dataset.previewBlockKey,
-    );
-
-    onSelectionChange(makePreviewAnchor(value, block, selectedText));
+    onSelectionChange(makePreviewAnchor(value, selectedText));
   }
 
   function updatePreviewBlock(block: MarkdownPreviewBlock, text: string) {
@@ -979,6 +1344,7 @@ function MarkdownPreview({
   return (
     <div
       className="markdown-preview"
+      ref={previewRef}
       onKeyUp={handlePreviewSelection}
       onMouseUp={handlePreviewSelection}
     >
@@ -992,6 +1358,20 @@ function MarkdownPreview({
           onChange={updatePreviewBlock}
         />
       ))}
+      <div aria-hidden="true" className="preview-annotation-layer">
+        {annotationFrames.map((frame) => (
+          <span
+            className="preview-annotation-frame"
+            key={frame.noteId}
+            style={{
+              height: frame.height,
+              left: frame.left,
+              top: frame.top,
+              width: frame.width,
+            }}
+          />
+        ))}
+      </div>
     </div>
   );
 }
@@ -1036,8 +1416,10 @@ function App() {
     to: note.anchor.to,
   }));
   const canSaveSelectionNote = Boolean(pendingAnchor && noteDraft.trim());
-  const selectionMayBePartialBlock = Boolean(
-    pendingAnchor && !isSelectionCompleteMarkdownBlock(selectedDocument.body, pendingAnchor),
+  const shouldShowPartialSelectionWarning = Boolean(
+    noteDraft.trim() &&
+      pendingAnchor &&
+      !isSelectionCompleteMarkdownBlock(selectedDocument.body, pendingAnchor),
   );
 
   useEffect(() => {
@@ -1632,7 +2014,7 @@ function App() {
               <div className="selection-popover">
                 <p className="eyebrow">Selection</p>
                 <blockquote>{summarizeText(pendingAnchor.selectedText, 96)}</blockquote>
-                {selectionMayBePartialBlock ? (
+                {shouldShowPartialSelectionWarning ? (
                   <p className="selection-warning">
                     目前圈選的範圍可能不是完整段落，請確認這是你想綁定筆記的文字。
                   </p>
