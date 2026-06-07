@@ -103,6 +103,7 @@ type DirtyDocumentState = {
 };
 
 type EditorMode = "edit" | "preview";
+type ActiveNoteMode = "view" | "edit";
 
 type PreviewAnnotationFrame = {
   noteId: string;
@@ -176,6 +177,7 @@ const markdownFilters = [
 
 const previewAnnotationFramePadding = 4;
 const bottomNotePanelAnimationMs = 180;
+const annotationOpenDelayMs = 1000;
 
 const documentsSeed: MarkdownDocument[] = [
   {
@@ -790,6 +792,7 @@ function renderAnnotatedPlainText(
   keyPrefix: string,
   notes: SelectionNote[],
   onAnnotationClick: (noteId: string) => void,
+  onAnnotationDoubleClick: (noteId: string) => void,
 ) {
   const ranges = getAnnotationRangesForTextMap(textMap, notes);
   const nodes: ReactNode[] = [];
@@ -807,9 +810,20 @@ function renderAnnotatedPlainText(
         className="preview-note-annotation"
         data-note-id={range.note.id}
         key={`${keyPrefix}-note-${rangeIndex}`}
+        onMouseDown={(event) => {
+          event.stopPropagation();
+        }}
+        onMouseUp={(event) => {
+          event.stopPropagation();
+        }}
         onClick={(event) => {
           event.stopPropagation();
           onAnnotationClick(range.note.id);
+        }}
+        onDoubleClick={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          onAnnotationDoubleClick(range.note.id);
         }}
       >
         {textMap.text.slice(range.start, range.end)}
@@ -830,6 +844,7 @@ function renderPreviewInline(
   keyPrefix: string,
   notes: SelectionNote[],
   onAnnotationClick: (noteId: string) => void,
+  onAnnotationDoubleClick: (noteId: string) => void,
 ) {
   if (notes.length === 0) {
     return renderInlineMarkdown(textMap.text, keyPrefix);
@@ -861,9 +876,20 @@ function renderPreviewInline(
         className="preview-note-annotation"
         data-note-id={range.note.id}
         key={`${keyPrefix}-note-${rangeIndex}`}
+        onMouseDown={(event) => {
+          event.stopPropagation();
+        }}
+        onMouseUp={(event) => {
+          event.stopPropagation();
+        }}
         onClick={(event) => {
           event.stopPropagation();
           onAnnotationClick(range.note.id);
+        }}
+        onDoubleClick={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          onAnnotationDoubleClick(range.note.id);
         }}
       >
         {renderInlineMarkdown(
@@ -1157,12 +1183,14 @@ function MarkdownPreviewBlockView({
   notes,
   onChange,
   onAnnotationClick,
+  onAnnotationDoubleClick,
 }: {
   block: MarkdownPreviewBlock;
   markdown: string;
   notes: SelectionNote[];
   onChange: (block: MarkdownPreviewBlock, text: string) => void;
   onAnnotationClick: (noteId: string) => void;
+  onAnnotationDoubleClick: (noteId: string) => void;
 }) {
   const blockNotes = getNotesForPreviewBlock(markdown, block, notes);
 
@@ -1191,7 +1219,13 @@ function MarkdownPreviewBlockView({
         ...editableProps,
         className: "markdown-preview-editable",
       },
-      renderPreviewInline(textMap, `${block.key}-heading`, blockNotes, onAnnotationClick),
+      renderPreviewInline(
+        textMap,
+        `${block.key}-heading`,
+        blockNotes,
+        onAnnotationClick,
+        onAnnotationDoubleClick,
+      ),
     );
   }
 
@@ -1209,6 +1243,7 @@ function MarkdownPreviewBlockView({
               `${block.key}-quote-${quoteIndex}`,
               blockNotes,
               onAnnotationClick,
+              onAnnotationDoubleClick,
             )}
           </p>
         ))}
@@ -1228,6 +1263,7 @@ function MarkdownPreviewBlockView({
               `${block.key}-item-${itemIndex}`,
               blockNotes,
               onAnnotationClick,
+              onAnnotationDoubleClick,
             )}
           </li>
         ))}
@@ -1244,6 +1280,7 @@ function MarkdownPreviewBlockView({
             `${block.key}-code`,
             blockNotes,
             onAnnotationClick,
+            onAnnotationDoubleClick,
           )}
         </code>
       </pre>
@@ -1262,6 +1299,7 @@ function MarkdownPreviewBlockView({
           `${block.key}-paragraph`,
           blockNotes,
           onAnnotationClick,
+          onAnnotationDoubleClick,
         )}
       </p>
     );
@@ -1276,12 +1314,14 @@ function MarkdownPreview({
   onChange,
   onSelectionChange,
   onAnnotationClick,
+  onAnnotationDoubleClick,
 }: {
   value: string;
   notes: SelectionNote[];
   onChange: (value: string, source: EditorChangeSource) => void;
   onSelectionChange: (anchor: TextSelectionAnchor | null) => void;
   onAnnotationClick: (noteId: string) => void;
+  onAnnotationDoubleClick: (noteId: string) => void;
 }) {
   const blocks = parseMarkdownPreviewBlocks(value);
   const previewRef = useRef<HTMLDivElement | null>(null);
@@ -1355,6 +1395,7 @@ function MarkdownPreview({
           markdown={value}
           notes={notes}
           onAnnotationClick={onAnnotationClick}
+          onAnnotationDoubleClick={onAnnotationDoubleClick}
           onChange={updatePreviewBlock}
         />
       ))}
@@ -1388,6 +1429,7 @@ function App() {
   const [pendingAnchor, setPendingAnchor] = useState<TextSelectionAnchor | null>(null);
   const [noteDraft, setNoteDraft] = useState("");
   const [activeNoteId, setActiveNoteId] = useState("");
+  const [activeNoteMode, setActiveNoteMode] = useState<ActiveNoteMode>("view");
   const [isNotePanelClosing, setIsNotePanelClosing] = useState(false);
   const [editorMode, setEditorMode] = useState<EditorMode>("edit");
   const [dirtyDocumentStates, setDirtyDocumentStates] = useState<
@@ -1399,6 +1441,7 @@ function App() {
   const [storageError, setStorageError] = useState("");
   const [isSavingFile, setIsSavingFile] = useState(false);
   const notePanelCloseTimerRef = useRef(0);
+  const pendingAnnotationOpenTimerRef = useRef(0);
   const notePanelHasContentRef = useRef(false);
 
   const selectedDocument =
@@ -1423,7 +1466,8 @@ function App() {
   const canSaveSelectionNote = Boolean(
     pendingAnchor && pendingAnchorIsCompleteBlock && noteDraft.trim(),
   );
-  const canSaveActiveNote = Boolean(activeNote && noteDraft.trim());
+  const activeNoteIsEditing = Boolean(activeNote && activeNoteMode === "edit");
+  const canSaveActiveNote = Boolean(activeNoteIsEditing && noteDraft.trim());
   const notePanelHasContent = Boolean(pendingAnchor || activeNote);
   const notePanelShouldRender = notePanelHasContent || isNotePanelClosing;
 
@@ -1434,6 +1478,7 @@ function App() {
   useEffect(() => {
     return () => {
       window.clearTimeout(notePanelCloseTimerRef.current);
+      window.clearTimeout(pendingAnnotationOpenTimerRef.current);
     };
   }, []);
 
@@ -1588,6 +1633,8 @@ function App() {
     setPendingAnchor(null);
     setNoteDraft("");
     setActiveNoteId("");
+    setActiveNoteMode("view");
+    clearPendingAnnotationOpenTimer();
     markLoadedDocumentsClean(loadedDocuments);
   }
 
@@ -1634,12 +1681,14 @@ function App() {
     setWorkspaceEntries(nextEntries);
     setPendingAnchor(null);
     setNoteDraft("");
+    clearPendingAnnotationOpenTimer();
     markLoadedDocumentsClean(loadedDocuments);
 
     if (documentToSelect) {
       setSelectedDocumentId(documentToSelect.id);
     }
     setActiveNoteId("");
+    setActiveNoteMode("view");
 
     if (nextEntries.length === 0) {
       setStorageError("No folders or Markdown files found in the selected folder.");
@@ -1835,6 +1884,13 @@ function App() {
     setNoteDraft("");
     setStorageError("");
     setActiveNoteId("");
+    setActiveNoteMode("view");
+    clearPendingAnnotationOpenTimer();
+  }
+
+  function clearPendingAnnotationOpenTimer() {
+    window.clearTimeout(pendingAnnotationOpenTimerRef.current);
+    pendingAnnotationOpenTimerRef.current = 0;
   }
 
   function clearNotePanelCloseTimer() {
@@ -1843,6 +1899,7 @@ function App() {
   }
 
   function closeNotePanel() {
+    clearPendingAnnotationOpenTimer();
     clearNotePanelCloseTimer();
 
     if (!notePanelHasContentRef.current) {
@@ -1854,6 +1911,7 @@ function App() {
     notePanelCloseTimerRef.current = window.setTimeout(() => {
       setPendingAnchor(null);
       setActiveNoteId("");
+      setActiveNoteMode("view");
       setNoteDraft("");
       setIsNotePanelClosing(false);
       notePanelHasContentRef.current = false;
@@ -1869,15 +1927,17 @@ function App() {
       return;
     }
 
+    clearPendingAnnotationOpenTimer();
     clearNotePanelCloseTimer();
     setIsNotePanelClosing(false);
     setPendingAnchor(anchor);
     setActiveNoteId("");
+    setActiveNoteMode("view");
     setNoteDraft("");
     notePanelHasContentRef.current = true;
   }
 
-  function openNoteEditor(noteId: string) {
+  function showNoteViewer(noteId: string) {
     const note = notes.find((candidate) => candidate.id === noteId && candidate.status !== "deleted");
     if (!note) return;
 
@@ -1885,6 +1945,29 @@ function App() {
     setIsNotePanelClosing(false);
     setPendingAnchor(null);
     setActiveNoteId(noteId);
+    setActiveNoteMode("view");
+    setNoteDraft(note.body);
+    notePanelHasContentRef.current = true;
+  }
+
+  function scheduleNoteViewer(noteId: string) {
+    clearPendingAnnotationOpenTimer();
+    pendingAnnotationOpenTimerRef.current = window.setTimeout(() => {
+      showNoteViewer(noteId);
+      pendingAnnotationOpenTimerRef.current = 0;
+    }, annotationOpenDelayMs);
+  }
+
+  function openNoteEditor(noteId: string) {
+    const note = notes.find((candidate) => candidate.id === noteId && candidate.status !== "deleted");
+    if (!note) return;
+
+    clearPendingAnnotationOpenTimer();
+    clearNotePanelCloseTimer();
+    setIsNotePanelClosing(false);
+    setPendingAnchor(null);
+    setActiveNoteId(noteId);
+    setActiveNoteMode("edit");
     setNoteDraft(note.body);
     notePanelHasContentRef.current = true;
   }
@@ -1949,6 +2032,7 @@ function App() {
     if (activeNoteId === noteId) {
       setPendingAnchor(null);
       setActiveNoteId("");
+      setActiveNoteMode("view");
       setNoteDraft("");
       setIsNotePanelClosing(false);
       notePanelHasContentRef.current = false;
@@ -1957,6 +2041,7 @@ function App() {
   }
 
   function togglePreviewMode() {
+    clearPendingAnnotationOpenTimer();
     closeNotePanel();
     setEditorMode((currentMode) => (currentMode === "preview" ? "edit" : "preview"));
   }
@@ -2036,7 +2121,8 @@ function App() {
               <MarkdownPreview
                 notes={activeNotes}
                 value={selectedDocument.body}
-                onAnnotationClick={openNoteEditor}
+                onAnnotationClick={scheduleNoteViewer}
+                onAnnotationDoubleClick={openNoteEditor}
                 onChange={updateSelectedDocumentBody}
                 onSelectionChange={handleSelectionChange}
               />
@@ -2044,7 +2130,8 @@ function App() {
               <MarkdownEditor
                 annotations={annotations}
                 value={selectedDocument.body}
-                onAnnotationClick={openNoteEditor}
+                onAnnotationClick={scheduleNoteViewer}
+                onAnnotationDoubleClick={openNoteEditor}
                 onChange={updateSelectedDocumentBody}
                 onSelectionChange={handleSelectionChange}
               />
@@ -2056,19 +2143,31 @@ function App() {
       {notePanelShouldRender ? (
         <section
           className={`bottom-note-panel ${isNotePanelClosing ? "is-closing" : "is-open"}`}
-          aria-label={activeNote ? "Edit selection note" : "Create selection note"}
+          aria-label={
+            activeNote
+              ? activeNoteIsEditing
+                ? "Edit selection note"
+                : "View selection note"
+              : "Create selection note"
+          }
         >
           <div className="bottom-note-card">
             <div className="bottom-note-context">
-              <p className="eyebrow">{activeNote ? "Edit note" : "Selection note"}</p>
+              <p className="eyebrow">
+                {activeNote ? (activeNoteIsEditing ? "Edit note" : "Note") : "Selection note"}
+              </p>
               {pendingAnchor && !pendingAnchorIsCompleteBlock ? (
                 <p className="selection-warning">請選取完整段落後再新增筆記。</p>
               ) : null}
             </div>
 
-            {activeNote || pendingAnchorIsCompleteBlock ? (
+            {activeNote && !activeNoteIsEditing ? (
+              <p className="bottom-note-body">{activeNote.body}</p>
+            ) : null}
+
+            {activeNoteIsEditing || pendingAnchorIsCompleteBlock ? (
               <textarea
-                aria-label={activeNote ? "Edit note" : "Selection note"}
+                aria-label={activeNoteIsEditing ? "Edit note" : "Selection note"}
                 value={noteDraft}
                 onChange={(event) => setNoteDraft(event.currentTarget.value)}
                 placeholder="Add a note..."
@@ -2076,7 +2175,7 @@ function App() {
             ) : null}
 
             <div className="note-actions bottom-note-actions">
-              {activeNote ? (
+              {activeNote && activeNoteIsEditing ? (
                 <button
                   className="is-danger"
                   type="button"
@@ -2086,9 +2185,9 @@ function App() {
                 </button>
               ) : null}
               <button type="button" onClick={closeNotePanel}>
-                Cancel
+                {activeNote && !activeNoteIsEditing ? "Close" : "Cancel"}
               </button>
-              {activeNote ? (
+              {activeNote && activeNoteIsEditing ? (
                 <button
                   className="is-primary"
                   type="button"
@@ -2097,7 +2196,7 @@ function App() {
                 >
                   Done
                 </button>
-              ) : (
+              ) : pendingAnchor ? (
                 <button
                   className="is-primary"
                   type="button"
@@ -2106,7 +2205,7 @@ function App() {
                 >
                   Save note
                 </button>
-              )}
+              ) : null}
             </div>
           </div>
         </section>
