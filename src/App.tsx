@@ -5,6 +5,7 @@ import {
   createElement,
   type FocusEvent,
   type FormEvent,
+  type MouseEvent,
   type ReactNode,
   useEffect,
   useLayoutEffect,
@@ -174,6 +175,7 @@ const markdownFilters = [
 ];
 
 const previewAnnotationFramePadding = 4;
+const bottomNotePanelAnimationMs = 180;
 
 const documentsSeed: MarkdownDocument[] = [
   {
@@ -271,13 +273,6 @@ const notesSeed: SelectionNote[] = [
     deletedAt: null,
   },
 ];
-
-function summarizeText(text: string, maxLength = 150) {
-  const normalized = text.replace(/\s+/g, " ").trim();
-  return normalized.length > maxLength
-    ? `${normalized.slice(0, maxLength - 1)}...`
-    : normalized;
-}
 
 function nowLabel() {
   return new Date().toLocaleTimeString([], {
@@ -1334,6 +1329,11 @@ function MarkdownPreview({
     onSelectionChange(makePreviewAnchor(value, selectedText));
   }
 
+  function handlePreviewMouseUp(event: MouseEvent<HTMLDivElement>) {
+    if (event.button !== 0) return;
+    handlePreviewSelection();
+  }
+
   function updatePreviewBlock(block: MarkdownPreviewBlock, text: string) {
     const nextBlock = markdownFromPreviewBlock(block, text);
     const nextValue = replaceMarkdownBlock(value, block, nextBlock);
@@ -1346,7 +1346,7 @@ function MarkdownPreview({
       className="markdown-preview"
       ref={previewRef}
       onKeyUp={handlePreviewSelection}
-      onMouseUp={handlePreviewSelection}
+      onMouseUp={handlePreviewMouseUp}
     >
       {blocks.map((block) => (
         <MarkdownPreviewBlockView
@@ -1387,7 +1387,8 @@ function App() {
   const [notes, setNotes] = useState(notesSeed);
   const [pendingAnchor, setPendingAnchor] = useState<TextSelectionAnchor | null>(null);
   const [noteDraft, setNoteDraft] = useState("");
-  const [activeNoteId, setActiveNoteId] = useState("note-1");
+  const [activeNoteId, setActiveNoteId] = useState("");
+  const [isNotePanelClosing, setIsNotePanelClosing] = useState(false);
   const [editorMode, setEditorMode] = useState<EditorMode>("edit");
   const [dirtyDocumentStates, setDirtyDocumentStates] = useState<
     Record<string, DirtyDocumentState>
@@ -1397,6 +1398,8 @@ function App() {
   );
   const [storageError, setStorageError] = useState("");
   const [isSavingFile, setIsSavingFile] = useState(false);
+  const notePanelCloseTimerRef = useRef(0);
+  const notePanelHasContentRef = useRef(false);
 
   const selectedDocument =
     documents.find((document) => document.id === selectedDocumentId) ?? documents[0];
@@ -1406,7 +1409,6 @@ function App() {
   );
   const nativeStorageAvailable = hasNativeStorageAccess();
   const activeNotes = documentNotes.filter((note) => note.status === "active");
-  const orphanedNotes = documentNotes.filter((note) => note.status === "orphaned");
   const activeNote = documentNotes.find((note) => note.id === activeNoteId);
   const selectedDocumentIsDirty = hasDirtyState(dirtyDocumentStates[selectedDocument.id]);
 
@@ -1415,12 +1417,25 @@ function App() {
     from: note.anchor.from,
     to: note.anchor.to,
   }));
-  const canSaveSelectionNote = Boolean(pendingAnchor && noteDraft.trim());
-  const shouldShowPartialSelectionWarning = Boolean(
-    noteDraft.trim() &&
-      pendingAnchor &&
-      !isSelectionCompleteMarkdownBlock(selectedDocument.body, pendingAnchor),
+  const pendingAnchorIsCompleteBlock = Boolean(
+    pendingAnchor && isSelectionCompleteMarkdownBlock(selectedDocument.body, pendingAnchor),
   );
+  const canSaveSelectionNote = Boolean(
+    pendingAnchor && pendingAnchorIsCompleteBlock && noteDraft.trim(),
+  );
+  const canSaveActiveNote = Boolean(activeNote && noteDraft.trim());
+  const notePanelHasContent = Boolean(pendingAnchor || activeNote);
+  const notePanelShouldRender = notePanelHasContent || isNotePanelClosing;
+
+  useEffect(() => {
+    notePanelHasContentRef.current = notePanelHasContent;
+  }, [notePanelHasContent]);
+
+  useEffect(() => {
+    return () => {
+      window.clearTimeout(notePanelCloseTimerRef.current);
+    };
+  }, []);
 
   useEffect(() => {
     if (!nativeStorageAvailable) return;
@@ -1458,8 +1473,7 @@ function App() {
       if (event.key.toLowerCase() !== "p") return;
 
       event.preventDefault();
-      setPendingAnchor(null);
-      setNoteDraft("");
+      closeNotePanel();
       setEditorMode((currentMode) => (currentMode === "preview" ? "edit" : "preview"));
     }
 
@@ -1468,7 +1482,7 @@ function App() {
     return () => {
       window.removeEventListener("keydown", handleModeShortcut);
     };
-  }, []);
+  }, [closeNotePanel]);
 
   function updateDocumentDirtyState(documentId: string, patch: Partial<DirtyDocumentState>) {
     setDirtyDocumentStates((currentStates) => {
@@ -1573,10 +1587,7 @@ function App() {
     setSelectedDocumentId(firstDocument.id);
     setPendingAnchor(null);
     setNoteDraft("");
-    setActiveNoteId(
-      loadedNotes.find((note) => note.documentId === firstDocument.id && note.status !== "deleted")
-        ?.id ?? "",
-    );
+    setActiveNoteId("");
     markLoadedDocumentsClean(loadedDocuments);
   }
 
@@ -1627,14 +1638,8 @@ function App() {
 
     if (documentToSelect) {
       setSelectedDocumentId(documentToSelect.id);
-      setActiveNoteId(
-        loadedNotes.find(
-          (note) => note.documentId === documentToSelect.id && note.status !== "deleted",
-        )?.id ?? "",
-      );
-    } else {
-      setActiveNoteId("");
     }
+    setActiveNoteId("");
 
     if (nextEntries.length === 0) {
       setStorageError("No folders or Markdown files found in the selected folder.");
@@ -1829,9 +1834,59 @@ function App() {
     setPendingAnchor(null);
     setNoteDraft("");
     setStorageError("");
-    setActiveNoteId(
-      notes.find((note) => note.documentId === documentId && note.status !== "deleted")?.id ?? "",
-    );
+    setActiveNoteId("");
+  }
+
+  function clearNotePanelCloseTimer() {
+    window.clearTimeout(notePanelCloseTimerRef.current);
+    notePanelCloseTimerRef.current = 0;
+  }
+
+  function closeNotePanel() {
+    clearNotePanelCloseTimer();
+
+    if (!notePanelHasContentRef.current) {
+      setIsNotePanelClosing(false);
+      return;
+    }
+
+    setIsNotePanelClosing(true);
+    notePanelCloseTimerRef.current = window.setTimeout(() => {
+      setPendingAnchor(null);
+      setActiveNoteId("");
+      setNoteDraft("");
+      setIsNotePanelClosing(false);
+      notePanelHasContentRef.current = false;
+      notePanelCloseTimerRef.current = 0;
+    }, bottomNotePanelAnimationMs);
+  }
+
+  function handleSelectionChange(anchor: TextSelectionAnchor | null) {
+    if (!anchor) {
+      if (pendingAnchor) {
+        closeNotePanel();
+      }
+      return;
+    }
+
+    clearNotePanelCloseTimer();
+    setIsNotePanelClosing(false);
+    setPendingAnchor(anchor);
+    setActiveNoteId("");
+    setNoteDraft("");
+    notePanelHasContentRef.current = true;
+  }
+
+  function openNoteEditor(noteId: string) {
+    const note = notes.find((candidate) => candidate.id === noteId && candidate.status !== "deleted");
+    if (!note) return;
+
+    clearNotePanelCloseTimer();
+    setIsNotePanelClosing(false);
+    setPendingAnchor(null);
+    setActiveNoteId(noteId);
+    setNoteDraft(note.body);
+    notePanelHasContentRef.current = true;
   }
 
   function createNoteFromSelection() {
@@ -1851,10 +1906,15 @@ function App() {
     };
 
     setNotes((currentNotes) => [note, ...currentNotes]);
-    setActiveNoteId(note.id);
-    setPendingAnchor(null);
-    setNoteDraft("");
+    closeNotePanel();
     markDocumentNotesDirty();
+  }
+
+  function saveActiveNote() {
+    if (!activeNote || !canSaveActiveNote) return;
+
+    updateNoteBody(activeNote.id, noteDraft.trim());
+    closeNotePanel();
   }
 
   function updateNoteBody(noteId: string, body: string) {
@@ -1873,6 +1933,7 @@ function App() {
   }
 
   function deleteNote(noteId: string) {
+    clearNotePanelCloseTimer();
     setNotes((currentNotes) =>
       currentNotes.map((note) =>
         note.id === noteId
@@ -1886,40 +1947,22 @@ function App() {
       ),
     );
     if (activeNoteId === noteId) {
+      setPendingAnchor(null);
       setActiveNoteId("");
+      setNoteDraft("");
+      setIsNotePanelClosing(false);
+      notePanelHasContentRef.current = false;
     }
     markDocumentNotesDirty();
   }
 
-  function rebindNote(noteId: string) {
-    if (!pendingAnchor) return;
-
-    setNotes((currentNotes) =>
-      currentNotes.map((note) =>
-        note.id === noteId
-          ? {
-              ...note,
-              status: "active",
-              selectedText: pendingAnchor.selectedText,
-              anchor: pendingAnchor,
-              updatedAt: nowLabel(),
-            }
-          : note,
-      ),
-    );
-    setActiveNoteId(noteId);
-    setPendingAnchor(null);
-    markDocumentNotesDirty();
-  }
-
   function togglePreviewMode() {
-    setPendingAnchor(null);
-    setNoteDraft("");
+    closeNotePanel();
     setEditorMode((currentMode) => (currentMode === "preview" ? "edit" : "preview"));
   }
 
   return (
-    <main className="scholium-shell">
+    <main className={`scholium-shell ${notePanelShouldRender ? "has-bottom-note-panel" : ""}`}>
       <aside className="document-pane" aria-label="Documents">
         <div className="pane-header">
           <div>
@@ -1993,125 +2036,81 @@ function App() {
               <MarkdownPreview
                 notes={activeNotes}
                 value={selectedDocument.body}
-                onAnnotationClick={setActiveNoteId}
+                onAnnotationClick={openNoteEditor}
                 onChange={updateSelectedDocumentBody}
-                onSelectionChange={setPendingAnchor}
+                onSelectionChange={handleSelectionChange}
               />
             ) : (
-              <>
-                <MarkdownEditor
-                  annotations={annotations}
-                  value={selectedDocument.body}
-                  onAnnotationClick={setActiveNoteId}
-                  onChange={updateSelectedDocumentBody}
-                  onSelectionChange={setPendingAnchor}
-                />
-
-              </>
+              <MarkdownEditor
+                annotations={annotations}
+                value={selectedDocument.body}
+                onAnnotationClick={openNoteEditor}
+                onChange={updateSelectedDocumentBody}
+                onSelectionChange={handleSelectionChange}
+              />
             )}
-
-            {pendingAnchor ? (
-              <div className="selection-popover">
-                <p className="eyebrow">Selection</p>
-                <blockquote>{summarizeText(pendingAnchor.selectedText, 96)}</blockquote>
-                {shouldShowPartialSelectionWarning ? (
-                  <p className="selection-warning">
-                    目前圈選的範圍可能不是完整段落，請確認這是你想綁定筆記的文字。
-                  </p>
-                ) : null}
-                <textarea
-                  aria-label="Selection note"
-                  value={noteDraft}
-                  onChange={(event) => setNoteDraft(event.currentTarget.value)}
-                  placeholder="Add a note..."
-                />
-                <div className="popover-actions">
-                  <button type="button" onClick={() => setPendingAnchor(null)}>
-                    Cancel
-                  </button>
-                  <button
-                    type="button"
-                    onClick={createNoteFromSelection}
-                    disabled={!canSaveSelectionNote}
-                  >
-                    Save note
-                  </button>
-                </div>
-              </div>
-            ) : null}
           </div>
         </div>
       </section>
 
-      <aside className="notes-pane" aria-label="Selection notes">
-        <div className="pane-header notes-header">
-          <div>
-            <p className="eyebrow">Text notes</p>
-            <h2>{activeNote ? summarizeText(activeNote.selectedText, 54) : "No note selected"}</h2>
-          </div>
-          <span className="note-count">{activeNotes.length}</span>
-        </div>
+      {notePanelShouldRender ? (
+        <section
+          className={`bottom-note-panel ${isNotePanelClosing ? "is-closing" : "is-open"}`}
+          aria-label={activeNote ? "Edit selection note" : "Create selection note"}
+        >
+          <div className="bottom-note-card">
+            <div className="bottom-note-context">
+              <p className="eyebrow">{activeNote ? "Edit note" : "Selection note"}</p>
+              {pendingAnchor && !pendingAnchorIsCompleteBlock ? (
+                <p className="selection-warning">請選取完整段落後再新增筆記。</p>
+              ) : null}
+            </div>
 
-        {activeNote ? (
-          <div className="note-editor">
-            <p className="eyebrow">{activeNote.status}</p>
-            <blockquote>{activeNote.selectedText}</blockquote>
-            <textarea
-              aria-label="Edit note"
-              value={activeNote.body}
-              onChange={(event) => updateNoteBody(activeNote.id, event.currentTarget.value)}
-            />
-            <div className="note-actions">
-              {activeNote.status === "orphaned" ? (
+            {activeNote || pendingAnchorIsCompleteBlock ? (
+              <textarea
+                aria-label={activeNote ? "Edit note" : "Selection note"}
+                value={noteDraft}
+                onChange={(event) => setNoteDraft(event.currentTarget.value)}
+                placeholder="Add a note..."
+              />
+            ) : null}
+
+            <div className="note-actions bottom-note-actions">
+              {activeNote ? (
                 <button
+                  className="is-danger"
                   type="button"
-                  onClick={() => rebindNote(activeNote.id)}
-                  disabled={!pendingAnchor}
+                  onClick={() => deleteNote(activeNote.id)}
                 >
-                  Rebind
+                  Delete
                 </button>
               ) : null}
-              <button type="button" onClick={() => deleteNote(activeNote.id)}>
-                Delete
+              <button type="button" onClick={closeNotePanel}>
+                Cancel
               </button>
+              {activeNote ? (
+                <button
+                  className="is-primary"
+                  type="button"
+                  onClick={saveActiveNote}
+                  disabled={!canSaveActiveNote}
+                >
+                  Done
+                </button>
+              ) : (
+                <button
+                  className="is-primary"
+                  type="button"
+                  onClick={createNoteFromSelection}
+                  disabled={!canSaveSelectionNote}
+                >
+                  Save note
+                </button>
+              )}
             </div>
           </div>
-        ) : (
-          <div className="empty-notes">No active note.</div>
-        )}
-
-        {orphanedNotes.length > 0 ? (
-          <div className="orphaned-notes">
-            <p className="eyebrow">Unbound notes</p>
-            {orphanedNotes.map((note) => (
-              <button
-                className={`note-link ${note.id === activeNoteId ? "is-active" : ""}`}
-                key={note.id}
-                onClick={() => setActiveNoteId(note.id)}
-                type="button"
-              >
-                <span>{note.selectedText}</span>
-                <small>{note.body}</small>
-              </button>
-            ))}
-          </div>
-        ) : null}
-
-        <div className="document-note-index">
-          <p className="eyebrow">Marked ranges</p>
-          {activeNotes.map((note) => (
-            <button
-              className={`note-link ${note.id === activeNoteId ? "is-active" : ""}`}
-              key={note.id}
-              onClick={() => setActiveNoteId(note.id)}
-              type="button"
-            >
-              <span>{note.selectedText}</span>
-              <small>{note.body}</small>
-            </button>
-          ))}
-        </div>
-      </aside>
+        </section>
+      ) : null}
     </main>
   );
 }

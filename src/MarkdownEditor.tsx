@@ -49,6 +49,11 @@ type EditorAnnotationRect = {
   bottom: number;
 };
 
+type EditorBrowserSelection = Selection & {
+  anchorNode: Node;
+  focusNode: Node;
+};
+
 const setAnnotationsEffect = StateEffect.define<TextAnnotation[]>();
 const editorAnnotationFramePadding = 4;
 
@@ -65,6 +70,55 @@ function buildAnchor(value: string, from: number, to: number): TextSelectionAnch
     prefix: value.slice(Math.max(0, from - 48), from),
     suffix: value.slice(to, Math.min(value.length, to + 48)),
   };
+}
+
+function browserSelectionBelongsToView(
+  view: EditorView,
+  selection: Selection | null,
+): selection is EditorBrowserSelection {
+  return Boolean(
+    selection &&
+      !selection.isCollapsed &&
+      selection.anchorNode &&
+      selection.focusNode &&
+      view.dom.contains(selection.anchorNode) &&
+      view.dom.contains(selection.focusNode),
+  );
+}
+
+function buildAnchorFromSelection(view: EditorView): TextSelectionAnchor | null {
+  const doc = view.state.doc.toString();
+  const browserSelection = window.getSelection();
+
+  if (browserSelectionBelongsToView(view, browserSelection)) {
+    try {
+      const anchorPosition = view.posAtDOM(
+        browserSelection.anchorNode,
+        browserSelection.anchorOffset,
+      );
+      const focusPosition = view.posAtDOM(
+        browserSelection.focusNode,
+        browserSelection.focusOffset,
+      );
+
+      return buildAnchor(
+        doc,
+        Math.min(anchorPosition, focusPosition),
+        Math.max(anchorPosition, focusPosition),
+      );
+    } catch {
+      // CodeMirror can reject DOM positions from transient browser selections.
+    }
+
+    const selectedText = browserSelection.toString();
+    const selectedTextIndex = doc.indexOf(selectedText);
+    if (selectedTextIndex >= 0) {
+      return buildAnchor(doc, selectedTextIndex, selectedTextIndex + selectedText.length);
+    }
+  }
+
+  const range = view.state.selection.main;
+  return buildAnchor(doc, range.from, range.to);
 }
 
 function buildDecorations(annotations: TextAnnotation[]) {
@@ -186,6 +240,9 @@ export function MarkdownEditor({
   const onSelectionChangeRef = useRef(onSelectionChange);
   const onAnnotationClickRef = useRef(onAnnotationClick);
   const animationFrameRef = useRef(0);
+  const selectionFrameRef = useRef(0);
+  const selectionFallbackTimerRef = useRef(0);
+  const mouseSelectionStartedRef = useRef(false);
   const suppressNextChangeRef = useRef(false);
   const [annotationFrames, setAnnotationFrames] = useState<EditorAnnotationFrame[]>([]);
 
@@ -222,6 +279,15 @@ export function MarkdownEditor({
   function scheduleAnnotationFrameUpdate() {
     window.cancelAnimationFrame(animationFrameRef.current);
     animationFrameRef.current = window.requestAnimationFrame(updateAnnotationFrames);
+  }
+
+  function publishSelectionAfterMouseUp(view: EditorView) {
+    window.cancelAnimationFrame(selectionFrameRef.current);
+    selectionFrameRef.current = window.requestAnimationFrame(() => {
+      const anchor = buildAnchorFromSelection(view);
+      onSelectionChangeRef.current(anchor);
+      selectionFrameRef.current = 0;
+    });
   }
 
   useLayoutEffect(() => {
@@ -265,16 +331,40 @@ export function MarkdownEditor({
         }
       }
 
-      if (update.selectionSet || update.docChanged) {
-        const range = update.state.selection.main;
-        const anchor = buildAnchor(update.state.doc.toString(), range.from, range.to);
-        onSelectionChangeRef.current(anchor);
+      if (update.docChanged) {
+        onSelectionChangeRef.current(null);
       }
 
       scheduleAnnotationFrameUpdate();
     });
 
     const annotationClickHandler = EditorView.domEventHandlers({
+      mousedown(event) {
+        if (event.button === 0) {
+          mouseSelectionStartedRef.current = true;
+        }
+        return false;
+      },
+      pointerdown(event) {
+        if (event.button === 0) {
+          mouseSelectionStartedRef.current = true;
+        }
+        return false;
+      },
+      mouseup(event, view) {
+        if (event.button !== 0) return false;
+
+        mouseSelectionStartedRef.current = false;
+        publishSelectionAfterMouseUp(view);
+        return false;
+      },
+      pointerup(event, view) {
+        if (event.button !== 0) return false;
+
+        mouseSelectionStartedRef.current = false;
+        publishSelectionAfterMouseUp(view);
+        return false;
+      },
       click(event) {
         const target = event.target;
         if (!(target instanceof HTMLElement)) return false;
@@ -309,12 +399,60 @@ export function MarkdownEditor({
     view.dispatch({ effects: setAnnotationsEffect.of(annotations) });
     viewRef.current = view;
 
+    function handleWindowMouseUp(event: MouseEvent) {
+      handleWindowSelectionPointerEnd(event);
+    }
+
+    function handleWindowPointerUp(event: PointerEvent) {
+      handleWindowSelectionPointerEnd(event);
+    }
+
+    function handleWindowSelectionPointerEnd(event: MouseEvent | PointerEvent) {
+      const browserSelection = window.getSelection();
+      const activeElement = document.activeElement;
+      const eventTargetIsInEditor =
+        event.target instanceof Node ? view.dom.contains(event.target) : false;
+      const selectionIsInEditor = browserSelectionBelongsToView(view, browserSelection);
+      const editorHasFocus = activeElement ? view.dom.contains(activeElement) : false;
+
+      if (
+        event.button !== 0 ||
+        (!mouseSelectionStartedRef.current &&
+          !eventTargetIsInEditor &&
+          !selectionIsInEditor &&
+          !editorHasFocus)
+      ) {
+        return;
+      }
+
+      mouseSelectionStartedRef.current = false;
+      publishSelectionAfterMouseUp(view);
+    }
+
+    function handleDocumentSelectionChange() {
+      window.clearTimeout(selectionFallbackTimerRef.current);
+      selectionFallbackTimerRef.current = window.setTimeout(() => {
+        if (mouseSelectionStartedRef.current) return;
+        if (!browserSelectionBelongsToView(view, window.getSelection())) return;
+
+        publishSelectionAfterMouseUp(view);
+      }, 220);
+    }
+
     const scroller = containerRef.current.querySelector<HTMLElement>(".cm-scroller");
     scroller?.addEventListener("scroll", scheduleAnnotationFrameUpdate);
+    document.addEventListener("selectionchange", handleDocumentSelectionChange);
+    window.addEventListener("mouseup", handleWindowMouseUp, true);
+    window.addEventListener("pointerup", handleWindowPointerUp, true);
     scheduleAnnotationFrameUpdate();
 
     return () => {
+      window.cancelAnimationFrame(selectionFrameRef.current);
+      window.clearTimeout(selectionFallbackTimerRef.current);
       scroller?.removeEventListener("scroll", scheduleAnnotationFrameUpdate);
+      document.removeEventListener("selectionchange", handleDocumentSelectionChange);
+      window.removeEventListener("mouseup", handleWindowMouseUp, true);
+      window.removeEventListener("pointerup", handleWindowPointerUp, true);
       view.destroy();
       viewRef.current = null;
     };
