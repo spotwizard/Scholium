@@ -369,6 +369,8 @@ button:disabled {
 .cm-note-annotation {
   border-radius: 2px;
   cursor: pointer;
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 .cm-annotation-layer {
@@ -505,6 +507,8 @@ button:disabled {
 .preview-note-annotation {
   border-radius: 2px;
   cursor: pointer;
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 .preview-annotation-layer {

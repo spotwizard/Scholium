@@ -178,6 +178,7 @@ const markdownFilters = [
 const previewAnnotationFramePadding = 4;
 const bottomNotePanelAnimationMs = 180;
 const annotationOpenDelayMs = 1000;
+const lastOpenedMarkdownPathStorageKey = "scholium:last-opened-markdown-path";
 
 const documentsSeed: MarkdownDocument[] = [
   {
@@ -342,6 +343,32 @@ function workspaceEntryFromDocument(document: MarkdownDocument): WorkspaceEntry 
 
 function savedBodiesFromDocuments(documents: MarkdownDocument[]) {
   return Object.fromEntries(documents.map((document) => [document.id, document.body]));
+}
+
+function readLastOpenedMarkdownPath() {
+  try {
+    return window.localStorage.getItem(lastOpenedMarkdownPathStorageKey)?.trim() ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function rememberLastOpenedMarkdownPath(path: string | null | undefined) {
+  if (!path) return;
+
+  try {
+    window.localStorage.setItem(lastOpenedMarkdownPathStorageKey, path);
+  } catch {
+    // Remembering the last file is best-effort only.
+  }
+}
+
+function forgetLastOpenedMarkdownPath() {
+  try {
+    window.localStorage.removeItem(lastOpenedMarkdownPathStorageKey);
+  } catch {
+    // Remembering the last file is best-effort only.
+  }
 }
 
 function hasDirtyState(state: DirtyDocumentState | undefined) {
@@ -811,12 +838,15 @@ function renderAnnotatedPlainText(
         data-note-id={range.note.id}
         key={`${keyPrefix}-note-${rangeIndex}`}
         onMouseDown={(event) => {
+          event.preventDefault();
           event.stopPropagation();
         }}
         onMouseUp={(event) => {
+          event.preventDefault();
           event.stopPropagation();
         }}
         onClick={(event) => {
+          event.preventDefault();
           event.stopPropagation();
           onAnnotationClick(range.note.id);
         }}
@@ -877,12 +907,15 @@ function renderPreviewInline(
         data-note-id={range.note.id}
         key={`${keyPrefix}-note-${rangeIndex}`}
         onMouseDown={(event) => {
+          event.preventDefault();
           event.stopPropagation();
         }}
         onMouseUp={(event) => {
+          event.preventDefault();
           event.stopPropagation();
         }}
         onClick={(event) => {
+          event.preventDefault();
           event.stopPropagation();
           onAnnotationClick(range.note.id);
         }}
@@ -1369,8 +1402,66 @@ function MarkdownPreview({
     onSelectionChange(makePreviewAnchor(value, selectedText));
   }
 
+  function noteIdFromPreviewFrameEvent(event: MouseEvent<HTMLDivElement>) {
+    const previewElement = previewRef.current;
+    if (!previewElement) return null;
+
+    const targetElement =
+      event.target instanceof HTMLElement
+        ? event.target
+        : event.target instanceof Node
+          ? event.target.parentElement
+          : null;
+    if (targetElement?.closest(".preview-note-annotation")) return null;
+
+    for (const frame of previewElement.querySelectorAll<HTMLElement>(
+      ".preview-annotation-frame[data-note-id]",
+    )) {
+      const noteId = frame.dataset.noteId;
+      if (!noteId) continue;
+
+      const rect = frame.getBoundingClientRect();
+      const hitFrame =
+        event.clientX >= rect.left &&
+        event.clientX <= rect.right &&
+        event.clientY >= rect.top &&
+        event.clientY <= rect.bottom;
+
+      if (hitFrame) return noteId;
+    }
+
+    return null;
+  }
+
+  function suppressPreviewFrameSelection(event: MouseEvent<HTMLDivElement>) {
+    const noteId = noteIdFromPreviewFrameEvent(event);
+    if (!noteId) return null;
+
+    event.preventDefault();
+    event.stopPropagation();
+    window.getSelection()?.removeAllRanges();
+    onSelectionChange(null);
+    return noteId;
+  }
+
+  function handlePreviewMouseDown(event: MouseEvent<HTMLDivElement>) {
+    if (event.button !== 0) return;
+    suppressPreviewFrameSelection(event);
+  }
+
   function handlePreviewMouseUp(event: MouseEvent<HTMLDivElement>) {
     if (event.button !== 0) return;
+
+    const noteId = suppressPreviewFrameSelection(event);
+    if (noteId) {
+      if (event.detail >= 2) {
+        onAnnotationDoubleClick(noteId);
+      } else {
+        onAnnotationClick(noteId);
+      }
+      return;
+    }
+
     handlePreviewSelection();
   }
 
@@ -1386,6 +1477,8 @@ function MarkdownPreview({
       className="markdown-preview"
       ref={previewRef}
       onKeyUp={handlePreviewSelection}
+      onMouseDownCapture={handlePreviewMouseDown}
+      onMouseUpCapture={handlePreviewMouseUp}
       onMouseUp={handlePreviewMouseUp}
     >
       {blocks.map((block) => (
@@ -1403,6 +1496,7 @@ function MarkdownPreview({
         {annotationFrames.map((frame) => (
           <span
             className="preview-annotation-frame"
+            data-note-id={frame.noteId}
             key={frame.noteId}
             style={{
               height: frame.height,
@@ -1431,7 +1525,7 @@ function App() {
   const [activeNoteId, setActiveNoteId] = useState("");
   const [activeNoteMode, setActiveNoteMode] = useState<ActiveNoteMode>("view");
   const [isNotePanelClosing, setIsNotePanelClosing] = useState(false);
-  const [editorMode, setEditorMode] = useState<EditorMode>("edit");
+  const [editorMode, setEditorMode] = useState<EditorMode>("preview");
   const [dirtyDocumentStates, setDirtyDocumentStates] = useState<
     Record<string, DirtyDocumentState>
   >({});
@@ -1440,9 +1534,12 @@ function App() {
   );
   const [storageError, setStorageError] = useState("");
   const [isSavingFile, setIsSavingFile] = useState(false);
+  const notePanelRef = useRef<HTMLElement | null>(null);
   const notePanelCloseTimerRef = useRef(0);
   const pendingAnnotationOpenTimerRef = useRef(0);
   const notePanelHasContentRef = useRef(false);
+  const selectionDismissedUntilRef = useRef(0);
+  const lastOpenedFileRestoreAttemptedRef = useRef(false);
 
   const selectedDocument =
     documents.find((document) => document.id === selectedDocumentId) ?? documents[0];
@@ -1475,12 +1572,164 @@ function App() {
     notePanelHasContentRef.current = notePanelHasContent;
   }, [notePanelHasContent]);
 
+  function elementFromEventTarget(target: EventTarget | null) {
+    return target instanceof HTMLElement
+      ? target
+      : target instanceof Node
+        ? target.parentElement
+        : null;
+  }
+
+  function pointHitsRect(clientX: number, clientY: number, rect: DOMRect) {
+    return (
+      clientX >= rect.left &&
+      clientX <= rect.right &&
+      clientY >= rect.top &&
+      clientY <= rect.bottom
+    );
+  }
+
+  function pointHitsAnyRect(clientX: number, clientY: number, rects: DOMRect[]) {
+    return rects.some((rect) => pointHitsRect(clientX, clientY, rect));
+  }
+
+  function targetIsInsideNotePanel(target: EventTarget | null) {
+    const panel = notePanelRef.current;
+    return Boolean(panel && target instanceof Node && panel.contains(target));
+  }
+
+  function targetIsActiveNoteRange(target: EventTarget | null) {
+    if (!activeNoteId) return false;
+
+    const targetElement = elementFromEventTarget(target);
+    const noteElement = targetElement?.closest<HTMLElement>(
+      ".cm-note-annotation[data-note-id], .cm-annotation-frame[data-note-id], .preview-note-annotation[data-note-id], .preview-annotation-frame[data-note-id]",
+    );
+
+    return noteElement?.dataset.noteId === activeNoteId;
+  }
+
+  function pointHitsActiveNoteRange(clientX: number, clientY: number) {
+    if (!activeNoteId) return false;
+
+    return Array.from(
+      document.querySelectorAll<HTMLElement>(
+        ".cm-note-annotation[data-note-id], .cm-annotation-frame[data-note-id], .preview-note-annotation[data-note-id], .preview-annotation-frame[data-note-id]",
+      ),
+    ).some((element) => {
+      if (element.dataset.noteId !== activeNoteId) return false;
+      return pointHitsAnyRect(clientX, clientY, Array.from(element.getClientRects()));
+    });
+  }
+
+  function pointHitsCurrentSelection(clientX: number, clientY: number) {
+    if (!pendingAnchor) return false;
+
+    const selection = window.getSelection();
+    if (selection && !selection.isCollapsed) {
+      for (let index = 0; index < selection.rangeCount; index += 1) {
+        if (
+          pointHitsAnyRect(
+            clientX,
+            clientY,
+            Array.from(selection.getRangeAt(index).getClientRects()),
+          )
+        ) {
+          return true;
+        }
+      }
+    }
+
+    return Array.from(document.querySelectorAll<HTMLElement>(".cm-selectionBackground")).some(
+      (element) => pointHitsAnyRect(clientX, clientY, Array.from(element.getClientRects())),
+    );
+  }
+
+  function notePanelKeepsFocus(target: EventTarget | null, clientX?: number, clientY?: number) {
+    if (targetIsInsideNotePanel(target) || targetIsActiveNoteRange(target)) return true;
+
+    if (typeof clientX === "number" && typeof clientY === "number") {
+      return (
+        pointHitsActiveNoteRange(clientX, clientY) ||
+        pointHitsCurrentSelection(clientX, clientY)
+      );
+    }
+
+    return false;
+  }
+
+  function dismissNotePanelFromBlur() {
+    selectionDismissedUntilRef.current = Date.now() + 700;
+    window.getSelection()?.removeAllRanges();
+    closeNotePanel();
+  }
+
+  useEffect(() => {
+    if (!notePanelHasContent || isNotePanelClosing) return;
+
+    function handleDocumentPointerDown(event: PointerEvent) {
+      if (event.button !== 0) return;
+      if (notePanelKeepsFocus(event.target, event.clientX, event.clientY)) return;
+
+      dismissNotePanelFromBlur();
+    }
+
+    function handleDocumentMouseDown(event: globalThis.MouseEvent) {
+      if (event.button !== 0) return;
+      if (notePanelKeepsFocus(event.target, event.clientX, event.clientY)) return;
+
+      dismissNotePanelFromBlur();
+    }
+
+    function handleDocumentFocusIn(event: Event) {
+      if (notePanelKeepsFocus(event.target)) return;
+
+      dismissNotePanelFromBlur();
+    }
+
+    document.addEventListener("pointerdown", handleDocumentPointerDown, true);
+    document.addEventListener("mousedown", handleDocumentMouseDown, true);
+    document.addEventListener("focusin", handleDocumentFocusIn, true);
+    window.addEventListener("blur", dismissNotePanelFromBlur);
+
+    return () => {
+      document.removeEventListener("pointerdown", handleDocumentPointerDown, true);
+      document.removeEventListener("mousedown", handleDocumentMouseDown, true);
+      document.removeEventListener("focusin", handleDocumentFocusIn, true);
+      window.removeEventListener("blur", dismissNotePanelFromBlur);
+    };
+  }, [activeNoteId, isNotePanelClosing, notePanelHasContent, pendingAnchor]);
+
   useEffect(() => {
     return () => {
       window.clearTimeout(notePanelCloseTimerRef.current);
       window.clearTimeout(pendingAnnotationOpenTimerRef.current);
     };
   }, []);
+
+  useEffect(() => {
+    if (!nativeStorageAvailable || lastOpenedFileRestoreAttemptedRef.current) return;
+
+    lastOpenedFileRestoreAttemptedRef.current = true;
+    const lastOpenedPath = readLastOpenedMarkdownPath();
+    if (!lastOpenedPath) return;
+
+    setStorageError("Opening last file...");
+
+    void invoke<OpenMarkdownFileContextResult>("open_markdown_file_context", {
+      path: lastOpenedPath,
+    })
+      .then((context) => {
+        applyOpenedDirectory(directoryWithSelectedFile(context), context.selectedFile.path);
+        setStorageError("");
+      })
+      .catch((error) => {
+        forgetLastOpenedMarkdownPath();
+        setStorageError(
+          `Could not reopen last file: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      });
+  }, [nativeStorageAvailable]);
 
   useEffect(() => {
     if (!nativeStorageAvailable) return;
@@ -1599,6 +1848,29 @@ function App() {
     };
   }
 
+  function directoryWithSelectedFile(context: OpenMarkdownFileContextResult) {
+    const selectedFileEntryExists = context.directory.entries.some(
+      (entry) => entry.kind === "file" && entry.file.path === context.selectedFile.path,
+    );
+
+    if (selectedFileEntryExists) {
+      return context.directory;
+    }
+
+    return {
+      ...context.directory,
+      entries: [
+        ...context.directory.entries,
+        {
+          kind: "file" as const,
+          path: context.selectedFile.path,
+          title: context.selectedFile.title,
+          file: context.selectedFile,
+        },
+      ],
+    };
+  }
+
   function applyLoadedFiles(loadedFiles: OpenMarkdownFileResult[]) {
     if (loadedFiles.length === 0) {
       setStorageError("No Markdown files found in the selected folder.");
@@ -1636,6 +1908,7 @@ function App() {
     setActiveNoteMode("view");
     clearPendingAnnotationOpenTimer();
     markLoadedDocumentsClean(loadedDocuments);
+    rememberLastOpenedMarkdownPath(firstDocument.filePath);
   }
 
   function applyOpenedDirectory(openedDirectory: OpenMarkdownDirectoryResult, selectedPath?: string) {
@@ -1686,6 +1959,7 @@ function App() {
 
     if (documentToSelect) {
       setSelectedDocumentId(documentToSelect.id);
+      rememberLastOpenedMarkdownPath(documentToSelect.filePath);
     }
     setActiveNoteId("");
     setActiveNoteMode("view");
@@ -1756,23 +2030,7 @@ function App() {
       const context = await invoke<OpenMarkdownFileContextResult>("open_markdown_file_context", {
         path: selectedPath,
       });
-      const selectedFileEntryExists = context.directory.entries.some(
-        (entry) => entry.kind === "file" && entry.file.path === context.selectedFile.path,
-      );
-      const directory = selectedFileEntryExists
-        ? context.directory
-        : {
-            ...context.directory,
-            entries: [
-              ...context.directory.entries,
-              {
-                kind: "file" as const,
-                path: context.selectedFile.path,
-                title: context.selectedFile.title,
-                file: context.selectedFile,
-              },
-            ],
-          };
+      const directory = directoryWithSelectedFile(context);
 
       applyOpenedDirectory(directory, context.selectedFile.path);
       setStorageError("");
@@ -1886,6 +2144,7 @@ function App() {
     setActiveNoteId("");
     setActiveNoteMode("view");
     clearPendingAnnotationOpenTimer();
+    rememberLastOpenedMarkdownPath(nextDocument.filePath);
   }
 
   function clearPendingAnnotationOpenTimer() {
@@ -1924,6 +2183,10 @@ function App() {
       if (pendingAnchor) {
         closeNotePanel();
       }
+      return;
+    }
+
+    if (Date.now() < selectionDismissedUntilRef.current) {
       return;
     }
 
@@ -1968,6 +2231,20 @@ function App() {
     setPendingAnchor(null);
     setActiveNoteId(noteId);
     setActiveNoteMode("edit");
+    setNoteDraft(note.body);
+    notePanelHasContentRef.current = true;
+  }
+
+  function returnToNoteViewer(noteId: string) {
+    const note = notes.find((candidate) => candidate.id === noteId && candidate.status !== "deleted");
+    if (!note) return;
+
+    clearPendingAnnotationOpenTimer();
+    clearNotePanelCloseTimer();
+    setIsNotePanelClosing(false);
+    setPendingAnchor(null);
+    setActiveNoteId(noteId);
+    setActiveNoteMode("view");
     setNoteDraft(note.body);
     notePanelHasContentRef.current = true;
   }
@@ -2143,6 +2420,7 @@ function App() {
       {notePanelShouldRender ? (
         <section
           className={`bottom-note-panel ${isNotePanelClosing ? "is-closing" : "is-open"}`}
+          ref={notePanelRef}
           aria-label={
             activeNote
               ? activeNoteIsEditing
@@ -2184,9 +2462,29 @@ function App() {
                   Delete
                 </button>
               ) : null}
-              <button type="button" onClick={closeNotePanel}>
-                {activeNote && !activeNoteIsEditing ? "Close" : "Cancel"}
-              </button>
+              {activeNote && activeNoteIsEditing ? (
+                <button type="button" onClick={() => returnToNoteViewer(activeNote.id)}>
+                  View
+                </button>
+              ) : null}
+              {activeNote && !activeNoteIsEditing ? (
+                <>
+                  <button type="button" onClick={closeNotePanel}>
+                    Close
+                  </button>
+                  <button
+                    className="is-primary"
+                    type="button"
+                    onClick={() => openNoteEditor(activeNote.id)}
+                  >
+                    Edit
+                  </button>
+                </>
+              ) : (
+                <button type="button" onClick={closeNotePanel}>
+                  Cancel
+                </button>
+              )}
               {activeNote && activeNoteIsEditing ? (
                 <button
                   className="is-primary"
