@@ -107,6 +107,7 @@ type EditorMode = "edit" | "preview";
 type ActiveNoteMode = "view" | "edit";
 
 type PreviewAnnotationFrame = {
+  frameKey: string;
   noteId: string;
   left: number;
   top: number;
@@ -199,9 +200,10 @@ const markdownFilters = [
 ];
 
 const previewAnnotationFramePadding = 4;
+const previewAnnotationLineJoinMaxGap = 20;
 const notePanelAnimationMs = 180;
 const annotationOpenDelayMs = 500;
-const autosaveDelayMs = 700;
+const autosaveDelayMs = 1000;
 const lastOpenedMarkdownPathStorageKey = "scholium:last-opened-markdown-path";
 
 const documentsSeed: MarkdownDocument[] = [
@@ -486,6 +488,39 @@ function trimRange(text: string, from: number, to: number) {
   return { from: nextFrom, to: nextTo };
 }
 
+function previousNonWhitespaceIndex(text: string, from: number, to: number) {
+  for (let index = Math.min(to, text.length) - 1; index >= Math.max(0, from); index -= 1) {
+    if (!/\s/.test(text[index])) return index;
+  }
+
+  return null;
+}
+
+function isSentenceEndingCharacter(character: string) {
+  return /[.!?。！？]/.test(character);
+}
+
+function isSelectionCompleteSentenceSpan(
+  markdown: string,
+  selection: ReturnType<typeof trimRange>,
+  semanticRange: ReturnType<typeof trimRange>,
+) {
+  const selectedLastIndex = previousNonWhitespaceIndex(markdown, selection.from, selection.to);
+  if (selectedLastIndex === null || !isSentenceEndingCharacter(markdown[selectedLastIndex])) {
+    return false;
+  }
+
+  const previousContentIndex = previousNonWhitespaceIndex(
+    markdown,
+    semanticRange.from,
+    selection.from,
+  );
+  const startsAtSentenceBoundary =
+    previousContentIndex === null || isSentenceEndingCharacter(markdown[previousContentIndex]);
+
+  return startsAtSentenceBoundary;
+}
+
 function getBlockSemanticRange(markdown: string, block: MarkdownPreviewBlock) {
   const lines = markdown.replace(/\r\n/g, "\n").split("\n");
   const lineStartOffsets = getLineStartOffsets(markdown);
@@ -677,10 +712,17 @@ function isSelectionCompleteMarkdownBlock(markdown: string, anchor: TextSelectio
 
   if (intersectedBlocks.length === 0) return true;
 
-  return intersectedBlocks.every(({ semanticRange }) => {
+  return intersectedBlocks.every(({ block, semanticRange }) => {
     if (!semanticRange) return true;
 
-    return selection.from <= semanticRange.from && selection.to >= semanticRange.to;
+    if (selection.from <= semanticRange.from && selection.to >= semanticRange.to) {
+      return true;
+    }
+
+    return (
+      block.kind === "paragraph" &&
+      isSelectionCompleteSentenceSpan(markdown, selection, semanticRange)
+    );
   });
 }
 
@@ -975,11 +1017,39 @@ function clampNumber(value: number, min: number, max: number) {
 
 function measurePreviewAnnotationFrames(container: HTMLDivElement): PreviewAnnotationFrame[] {
   const containerRect = container.getBoundingClientRect();
-  const rectsByNoteId = new Map<string, DOMRect[]>();
+  const frames: PreviewAnnotationFrame[] = [];
+
+  function frameFromBounds(
+    noteId: string,
+    frameKey: string,
+    left: number,
+    top: number,
+    right: number,
+    bottom: number,
+  ): PreviewAnnotationFrame {
+    return {
+      frameKey,
+      noteId,
+      left: roundPreviewFrameValue(
+        Math.max(
+          0,
+          left - containerRect.left + container.scrollLeft,
+        ),
+      ),
+      top: roundPreviewFrameValue(
+        Math.max(
+          0,
+          top - containerRect.top + container.scrollTop,
+        ),
+      ),
+      width: roundPreviewFrameValue(right - left),
+      height: roundPreviewFrameValue(bottom - top),
+    };
+  }
 
   container
     .querySelectorAll<HTMLElement>(".preview-note-annotation[data-note-id]")
-    .forEach((annotation) => {
+    .forEach((annotation, annotationIndex) => {
       const noteId = annotation.dataset.noteId;
       if (!noteId) return;
 
@@ -988,32 +1058,49 @@ function measurePreviewAnnotationFrames(container: HTMLDivElement): PreviewAnnot
       );
       if (annotationRects.length === 0) return;
 
-      rectsByNoteId.set(noteId, [...(rectsByNoteId.get(noteId) ?? []), ...annotationRects]);
+      const sortedRects = annotationRects.sort(
+        (left, right) => left.top - right.top || left.left - right.left,
+      );
+
+      sortedRects.forEach((rect, rectIndex) => {
+        let top = rect.top - previewAnnotationFramePadding;
+        let bottom = rect.bottom + previewAnnotationFramePadding;
+        const previousRect = sortedRects[rectIndex - 1];
+        const nextRect = sortedRects[rectIndex + 1];
+
+        if (previousRect) {
+          const previousGap = rect.top - previousRect.bottom;
+          if (previousGap >= 0 && previousGap <= previewAnnotationLineJoinMaxGap) {
+            top = Math.min(top, previousRect.bottom + previousGap / 2 - 1);
+          }
+        }
+
+        if (nextRect) {
+          const nextGap = nextRect.top - rect.bottom;
+          if (nextGap >= 0 && nextGap <= previewAnnotationLineJoinMaxGap) {
+            bottom = Math.max(bottom, rect.bottom + nextGap / 2 + 1);
+          }
+        }
+
+        frames.push(
+          frameFromBounds(
+            noteId,
+            `${noteId}:inline:${annotationIndex}:${rectIndex}`,
+            rect.left - previewAnnotationFramePadding,
+            top,
+            rect.right + previewAnnotationFramePadding,
+            bottom,
+          ),
+        );
+      });
     });
 
-  return Array.from(rectsByNoteId.entries())
-    .map(([noteId, rects]) => {
-      const left = Math.min(...rects.map((rect) => rect.left));
-      const top = Math.min(...rects.map((rect) => rect.top));
-      const right = Math.max(...rects.map((rect) => rect.right));
-      const bottom = Math.max(...rects.map((rect) => rect.bottom));
-
-      return {
-        noteId,
-        left: roundPreviewFrameValue(
-          Math.max(0, left - containerRect.left + container.scrollLeft - previewAnnotationFramePadding),
-        ),
-        top: roundPreviewFrameValue(
-          Math.max(0, top - containerRect.top + container.scrollTop - previewAnnotationFramePadding),
-        ),
-        width: roundPreviewFrameValue(right - left + previewAnnotationFramePadding * 2),
-        height: roundPreviewFrameValue(bottom - top + previewAnnotationFramePadding * 2),
-      };
-    })
-    .sort(
-      (left, right) =>
-        left.top - right.top || left.left - right.left || left.noteId.localeCompare(right.noteId),
-    );
+  return frames.sort(
+    (left, right) =>
+      left.top - right.top ||
+      left.left - right.left ||
+      left.frameKey.localeCompare(right.frameKey),
+  );
 }
 
 function arePreviewAnnotationFramesEqual(
@@ -1026,6 +1113,7 @@ function arePreviewAnnotationFramesEqual(
     const rightFrame = rightFrames[index];
 
     return (
+      leftFrame.frameKey === rightFrame.frameKey &&
       leftFrame.noteId === rightFrame.noteId &&
       leftFrame.left === rightFrame.left &&
       leftFrame.top === rightFrame.top &&
@@ -1525,7 +1613,7 @@ function MarkdownPreview({
           <span
             className="preview-annotation-frame"
             data-note-id={frame.noteId}
-            key={frame.noteId}
+            key={frame.frameKey}
             style={{
               height: frame.height,
               left: frame.left,
@@ -1566,10 +1654,12 @@ function App() {
   const [isSavingFile, setIsSavingFile] = useState(false);
   const notePanelRef = useRef<HTMLElement | null>(null);
   const floatingNoteCardRef = useRef<HTMLDivElement | null>(null);
+  const noteTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const notePanelCloseTimerRef = useRef(0);
   const pendingAnnotationOpenTimerRef = useRef(0);
   const floatingNotePanelPositionFrameRef = useRef(0);
   const floatingNoteAnchorRectRef = useRef<TextRangeRect | null>(null);
+  const noteTextareaShouldRefocusRef = useRef(false);
   const autosaveTimerRef = useRef(0);
   const autosaveInFlightRef = useRef(false);
   const autosaveRequestedWhileSavingRef = useRef(false);
@@ -1624,6 +1714,17 @@ function App() {
   useEffect(() => {
     notePanelHasContentRef.current = notePanelHasContent;
   }, [notePanelHasContent]);
+
+  useLayoutEffect(() => {
+    if (!noteTextareaShouldRefocusRef.current) return;
+
+    const textarea = noteTextareaRef.current;
+    if (!textarea) return;
+
+    noteTextareaShouldRefocusRef.current = false;
+    textarea.focus();
+    textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+  }, [activeNoteId, activeNoteMode, pendingAnchor]);
 
   useLayoutEffect(() => {
     if (!notePanelHasContent) {
@@ -2573,6 +2674,7 @@ function App() {
     };
 
     setNotes((currentNotes) => [note, ...currentNotes]);
+    noteTextareaShouldRefocusRef.current = true;
     setPendingAnchor(null);
     setActiveNoteId(note.id);
     setActiveNoteMode("edit");
@@ -2786,13 +2888,14 @@ function App() {
                   {pendingAnchor ? "Selection note" : activeNoteIsEditing ? "Edit note" : "Note"}
                 </p>
                 {pendingAnchor && !pendingAnchorIsCompleteBlock ? (
-                  <p className="selection-warning">請選取完整段落後再新增筆記。</p>
+                  <p className="selection-warning">請選取完整句子或段落後再新增筆記。</p>
                 ) : null}
               </div>
 
               {pendingAnchor && pendingAnchorIsCompleteBlock ? (
                 <textarea
                   aria-label="Selection note"
+                  ref={noteTextareaRef}
                   value={noteDraft}
                   onChange={(event) => updateSelectionNoteDraft(event.currentTarget.value)}
                   placeholder="Add a note..."
@@ -2802,6 +2905,7 @@ function App() {
               {!pendingAnchor && activeNoteIsEditing ? (
                 <textarea
                   aria-label="Edit note"
+                  ref={noteTextareaRef}
                   value={noteDraft}
                   onChange={(event) => updateActiveNoteDraft(event.currentTarget.value)}
                   placeholder="Add a note..."
@@ -2814,15 +2918,13 @@ function App() {
 
               {!pendingAnchor && activeNote ? (
                 <div className="note-actions bottom-note-actions">
-                  {activeNoteIsEditing ? (
-                    <button
-                      className="is-danger"
-                      type="button"
-                      onClick={() => deleteNote(activeNote.id)}
-                    >
-                      Delete
-                    </button>
-                  ) : null}
+                  <button
+                    className="is-danger"
+                    type="button"
+                    onClick={() => deleteNote(activeNote.id)}
+                  >
+                    Delete
+                  </button>
                   {!activeNoteIsEditing ? (
                     <button
                       className="is-primary"

@@ -506,6 +506,11 @@ button:disabled {
   background: transparent;
 }
 
+.markdown-preview > :not(.preview-annotation-layer) {
+  position: relative;
+  z-index: 1;
+}
+
 .preview-note-annotation {
   border-radius: 2px;
   cursor: pointer;
@@ -516,17 +521,15 @@ button:disabled {
 .preview-annotation-layer {
   position: absolute;
   inset: 0;
-  z-index: 2;
+  z-index: 0;
   pointer-events: none;
 }
 
 .preview-annotation-frame {
   position: absolute;
   box-sizing: border-box;
-  border: 1px solid rgba(208, 138, 46, 0.86);
-  border-radius: 6px;
-  background: rgba(255, 247, 234, 0.45);
-  box-shadow: inset 0 -1px 0 rgba(208, 138, 46, 0.35);
+  border-radius: 4px;
+  background: #fff4bf;
 }
 
 .floating-note-panel {
