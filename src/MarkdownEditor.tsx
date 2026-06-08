@@ -18,9 +18,12 @@ export type TextSelectionAnchor = {
   suffix: string;
 };
 
+export type AnnotationTone = 0 | 1;
+
 export type TextAnnotation = {
   id: string;
   from: number;
+  tone?: AnnotationTone;
   to: number;
 };
 
@@ -37,6 +40,7 @@ type MarkdownEditorProps = {
 
 type EditorAnnotationFrame = {
   noteId: string;
+  tone: AnnotationTone;
   left: number;
   top: number;
   width: number;
@@ -130,6 +134,7 @@ function buildDecorations(annotations: TextAnnotation[]) {
       Decoration.mark({
         attributes: {
           "data-note-id": annotation.id,
+          "data-note-tone": String(annotation.tone ?? 0),
         },
         class: "cm-note-annotation",
       }).range(annotation.from, annotation.to),
@@ -145,12 +150,14 @@ function roundEditorFrameValue(value: number) {
 function measureEditorAnnotationFrames(container: HTMLDivElement): EditorAnnotationFrame[] {
   const containerRect = container.getBoundingClientRect();
   const rectsByNoteId = new Map<string, EditorAnnotationRect[]>();
+  const tonesByNoteId = new Map<string, AnnotationTone>();
 
   container
     .querySelectorAll<HTMLElement>(".cm-note-annotation[data-note-id]")
     .forEach((annotation) => {
       const noteId = annotation.dataset.noteId;
       if (!noteId) return;
+      tonesByNoteId.set(noteId, annotation.dataset.noteTone === "1" ? 1 : 0);
 
       const annotationRects = Array.from(annotation.getClientRects())
         .map((rect) => {
@@ -176,6 +183,7 @@ function measureEditorAnnotationFrames(container: HTMLDivElement): EditorAnnotat
 
       return {
         noteId,
+        tone: tonesByNoteId.get(noteId) ?? 0,
         left: roundEditorFrameValue(
           Math.max(0, left - containerRect.left - editorAnnotationFramePadding),
         ),
@@ -203,6 +211,7 @@ function areEditorAnnotationFramesEqual(
 
     return (
       leftFrame.noteId === rightFrame.noteId &&
+      leftFrame.tone === rightFrame.tone &&
       leftFrame.left === rightFrame.left &&
       leftFrame.top === rightFrame.top &&
       leftFrame.width === rightFrame.width &&
@@ -254,7 +263,10 @@ export function MarkdownEditor({
   const annotationSignature = useMemo(
     () =>
       annotations
-        .map((annotation) => `${annotation.id}:${annotation.from}:${annotation.to}`)
+        .map(
+          (annotation) =>
+            `${annotation.id}:${annotation.from}:${annotation.to}:${annotation.tone ?? 0}`,
+        )
         .join("|"),
     [annotations],
   );
@@ -660,6 +672,7 @@ export function MarkdownEditor({
           <span
             className="cm-annotation-frame"
             data-note-id={frame.noteId}
+            data-note-tone={frame.tone}
             key={frame.noteId}
             style={{
               height: frame.height,

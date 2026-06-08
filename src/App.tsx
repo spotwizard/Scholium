@@ -15,10 +15,11 @@ import {
 } from "react";
 import "./App.css";
 import {
-  EditorChangeSource,
   MarkdownEditor,
-  TextAnnotation,
-  TextSelectionAnchor,
+  type AnnotationTone,
+  type EditorChangeSource,
+  type TextAnnotation,
+  type TextSelectionAnchor,
 } from "./MarkdownEditor";
 
 type NoteStatus = "active" | "orphaned" | "deleted";
@@ -39,6 +40,7 @@ type SelectionNote = {
   status: NoteStatus;
   selectedText: string;
   anchor: TextSelectionAnchor;
+  tone?: AnnotationTone;
   body: string;
   createdAt: string;
   updatedAt: string;
@@ -109,6 +111,7 @@ type ActiveNoteMode = "view" | "edit";
 type PreviewAnnotationFrame = {
   frameKey: string;
   noteId: string;
+  tone: AnnotationTone;
   left: number;
   top: number;
   width: number;
@@ -130,11 +133,11 @@ type FloatingNotePosition = {
     left: number;
     top: number;
     width: number;
-  };
+  } | null;
   left: number;
   top: number;
   maxHeight: number;
-  placement: "above" | "below";
+  placement: "above" | "below" | "detached";
 };
 
 type PreviewTextMap = {
@@ -347,6 +350,21 @@ function reconcileNote(note: SelectionNote, nextBody: string): SelectionNote {
     status: "orphaned",
     updatedAt: nowLabel(),
   };
+}
+
+function assignAnnotationTones(notes: SelectionNote[]): SelectionNote[] {
+  return [...notes]
+    .sort(
+      (left, right) =>
+        left.anchor.from - right.anchor.from ||
+        left.anchor.to - right.anchor.to ||
+        left.createdAt.localeCompare(right.createdAt) ||
+        left.id.localeCompare(right.id),
+    )
+    .map((note, index) => ({
+      ...note,
+      tone: (index % 2) as AnnotationTone,
+    }));
 }
 
 function hasNativeStorageAccess() {
@@ -902,6 +920,7 @@ function renderAnnotatedPlainText(
       <span
         className="preview-note-annotation"
         data-note-id={range.note.id}
+        data-note-tone={range.note.tone ?? 0}
         key={`${keyPrefix}-note-${rangeIndex}`}
         onMouseDown={(event) => {
           event.preventDefault();
@@ -971,6 +990,7 @@ function renderPreviewInline(
       <span
         className="preview-note-annotation"
         data-note-id={range.note.id}
+        data-note-tone={range.note.tone ?? 0}
         key={`${keyPrefix}-note-${rangeIndex}`}
         onMouseDown={(event) => {
           event.preventDefault();
@@ -1022,6 +1042,7 @@ function measurePreviewAnnotationFrames(container: HTMLDivElement): PreviewAnnot
   function frameFromBounds(
     noteId: string,
     frameKey: string,
+    tone: AnnotationTone,
     left: number,
     top: number,
     right: number,
@@ -1030,6 +1051,7 @@ function measurePreviewAnnotationFrames(container: HTMLDivElement): PreviewAnnot
     return {
       frameKey,
       noteId,
+      tone,
       left: roundPreviewFrameValue(
         Math.max(
           0,
@@ -1052,6 +1074,7 @@ function measurePreviewAnnotationFrames(container: HTMLDivElement): PreviewAnnot
     .forEach((annotation, annotationIndex) => {
       const noteId = annotation.dataset.noteId;
       if (!noteId) return;
+      const tone: AnnotationTone = annotation.dataset.noteTone === "1" ? 1 : 0;
 
       const annotationRects = Array.from(annotation.getClientRects()).filter(
         (rect) => rect.width > 0 && rect.height > 0,
@@ -1086,6 +1109,7 @@ function measurePreviewAnnotationFrames(container: HTMLDivElement): PreviewAnnot
           frameFromBounds(
             noteId,
             `${noteId}:inline:${annotationIndex}:${rectIndex}`,
+            tone,
             rect.left - previewAnnotationFramePadding,
             top,
             rect.right + previewAnnotationFramePadding,
@@ -1115,6 +1139,7 @@ function arePreviewAnnotationFramesEqual(
     return (
       leftFrame.frameKey === rightFrame.frameKey &&
       leftFrame.noteId === rightFrame.noteId &&
+      leftFrame.tone === rightFrame.tone &&
       leftFrame.left === rightFrame.left &&
       leftFrame.top === rightFrame.top &&
       leftFrame.width === rightFrame.width &&
@@ -1613,6 +1638,7 @@ function MarkdownPreview({
           <span
             className="preview-annotation-frame"
             data-note-id={frame.noteId}
+            data-note-tone={frame.tone}
             key={frame.frameKey}
             style={{
               height: frame.height,
@@ -1681,7 +1707,9 @@ function App() {
     (note) => note.documentId === selectedDocument.id && note.status !== "deleted",
   );
   const nativeStorageAvailable = hasNativeStorageAccess();
-  const activeNotes = documentNotes.filter((note) => note.status === "active");
+  const activeNotes = assignAnnotationTones(
+    documentNotes.filter((note) => note.status === "active"),
+  );
   const activeNote = documentNotes.find((note) => note.id === activeNoteId);
   const selectedDocumentIsDirty = hasDirtyState(dirtyDocumentStates[selectedDocument.id]);
   const selectedDocumentSaveStateLabel = !selectedDocument.filePath
@@ -1702,12 +1730,14 @@ function App() {
   const annotations: TextAnnotation[] = activeNotes.map((note) => ({
     id: note.id,
     from: note.anchor.from,
+    tone: note.tone,
     to: note.anchor.to,
   }));
   const pendingAnchorIsCompleteBlock = Boolean(
     pendingAnchor && isSelectionCompleteMarkdownBlock(selectedDocument.body, pendingAnchor),
   );
   const activeNoteIsEditing = Boolean(activeNote && activeNoteMode === "edit");
+  const activeNoteBodyIsEmpty = Boolean(activeNote && !activeNote.body.trim());
   const notePanelHasContent = Boolean(pendingAnchor || activeNote);
   const floatingNotePanelShouldRender = notePanelHasContent;
 
@@ -1746,14 +1776,17 @@ function App() {
         if (measuredAnchorRect) {
           floatingNoteAnchorRectRef.current = measuredAnchorRect;
         }
-        const anchorRect = measuredAnchorRect ?? floatingNoteAnchorRectRef.current;
+        const anchorRect =
+          measuredAnchorRect ?? (activeNote ? null : floatingNoteAnchorRectRef.current);
 
-        if (!card || !anchorRect) {
+        if (!card) {
           setFloatingNotePanelPosition(null);
           return;
         }
 
-        const nextPosition = calculateFloatingNotePosition(anchorRect, card.getBoundingClientRect());
+        const nextPosition = anchorRect
+          ? calculateFloatingNotePosition(anchorRect, card.getBoundingClientRect())
+          : calculateDetachedFloatingNotePosition(card.getBoundingClientRect());
         setFloatingNotePanelPosition((currentPosition) =>
           floatingNotePositionsAreEqual(currentPosition, nextPosition)
             ? currentPosition
@@ -1813,6 +1846,20 @@ function App() {
     };
   }
 
+  function textAnchorRectFromClientRects(rects: DOMRect[]): TextRangeRect | null {
+    const visibleRects = rects
+      .filter((rect) => rect.width > 0 && rect.height > 0)
+      .sort((left, right) => left.top - right.top || left.left - right.left);
+    if (visibleRects.length === 0) return null;
+
+    const bottomLineTop = visibleRects[visibleRects.length - 1].top;
+    const bottomLineRects = visibleRects.filter(
+      (rect) => Math.abs(rect.top - bottomLineTop) < 2,
+    );
+
+    return textRangeRectFromClientRects(bottomLineRects);
+  }
+
   function currentSelectionAnchorRect() {
     const selection = window.getSelection();
 
@@ -1820,7 +1867,7 @@ function App() {
       const selectionRects = Array.from({ length: selection.rangeCount }).flatMap((_, index) =>
         Array.from(selection.getRangeAt(index).getClientRects()),
       );
-      const selectionRect = textRangeRectFromClientRects(selectionRects);
+      const selectionRect = textAnchorRectFromClientRects(selectionRects);
       if (selectionRect) return selectionRect;
     }
 
@@ -1828,13 +1875,13 @@ function App() {
       document.querySelectorAll<HTMLElement>(".cm-selectionBackground"),
     ).flatMap((element) => Array.from(element.getClientRects()));
 
-    return textRangeRectFromClientRects(editorSelectionRects);
+    return textAnchorRectFromClientRects(editorSelectionRects);
   }
 
   function activeNoteAnchorRect(noteId: string) {
     const noteElements = Array.from(
       document.querySelectorAll<HTMLElement>(
-        ".cm-annotation-frame[data-note-id], .preview-annotation-frame[data-note-id], .cm-note-annotation[data-note-id], .preview-note-annotation[data-note-id]",
+        ".cm-note-annotation[data-note-id], .preview-note-annotation[data-note-id]",
       ),
     ).filter((element) => element.dataset.noteId === noteId);
 
@@ -1842,7 +1889,7 @@ function App() {
       Array.from(element.getClientRects()).filter((rect) => rect.width > 0 && rect.height > 0),
     );
 
-    return textRangeRectFromClientRects(rects);
+    return textAnchorRectFromClientRects(rects);
   }
 
   function calculateFloatingNotePosition(
@@ -1883,13 +1930,25 @@ function App() {
     );
     const minimumVerticalDistance = noteGap + (placement === "below" ? belowNoteOffset : 0);
     const preferredSlant = Math.min(24, Math.max(10, minimumVerticalDistance * 0.55));
-    const preferredSourceX = targetX + preferredSlant;
+    const centeredLeft = clampNumber(
+      targetX - cardWidth / 2,
+      viewportMargin,
+      viewportWidth - viewportMargin - cardWidth,
+    );
+    const panelShouldLeanRight = centeredLeft + cardWidth / 2 < viewportWidth / 2;
+    const preferredSourceX = targetX + (panelShouldLeanRight ? -preferredSlant : preferredSlant);
     const left = clampNumber(
       preferredSourceX - cardWidth / 2,
       viewportMargin,
       viewportWidth - viewportMargin - cardWidth,
     );
-    const sourceX = left + cardWidth / 2;
+    const right = left + cardWidth;
+    const connectorInset = Math.min(36, Math.max(18, cardWidth * 0.12));
+    const sourceX = clampNumber(
+      preferredSourceX,
+      left + connectorInset,
+      right - connectorInset,
+    );
     // Keep the connector within 45 degrees from the vertical axis: |dx| <= |dy|.
     const verticalDistance = Math.max(
       minimumVerticalDistance,
@@ -1923,6 +1982,25 @@ function App() {
     };
   }
 
+  function calculateDetachedFloatingNotePosition(cardRect: DOMRect): FloatingNotePosition {
+    const viewportHeight = window.innerHeight;
+    const viewportMargin = 12;
+    const cardHeight = cardRect.height || 260;
+    const maxHeight = Math.min(
+      360,
+      Math.max(120, viewportHeight - viewportMargin * 2),
+    );
+    const positionedHeight = Math.min(cardHeight, maxHeight);
+
+    return {
+      connector: null,
+      left: viewportMargin,
+      maxHeight: Math.round(maxHeight),
+      placement: "detached",
+      top: Math.round(viewportHeight - viewportMargin - positionedHeight),
+    };
+  }
+
   function floatingNotePositionsAreEqual(
     leftPosition: FloatingNotePosition | null,
     rightPosition: FloatingNotePosition,
@@ -1932,10 +2010,10 @@ function App() {
       leftPosition.top === rightPosition.top &&
       leftPosition.maxHeight === rightPosition.maxHeight &&
       leftPosition.placement === rightPosition.placement &&
-      leftPosition.connector.left === rightPosition.connector.left &&
-      leftPosition.connector.top === rightPosition.connector.top &&
-      leftPosition.connector.width === rightPosition.connector.width &&
-      leftPosition.connector.angle === rightPosition.connector.angle
+      leftPosition.connector?.left === rightPosition.connector?.left &&
+      leftPosition.connector?.top === rightPosition.connector?.top &&
+      leftPosition.connector?.width === rightPosition.connector?.width &&
+      leftPosition.connector?.angle === rightPosition.connector?.angle
     );
   }
 
@@ -2754,6 +2832,7 @@ function App() {
         visibility: "hidden",
       };
   const floatingNoteConnectorStyle: CSSProperties | null = floatingNotePanelPosition
+    ?.connector
     ? {
         left: floatingNotePanelPosition.connector.left,
         top: floatingNotePanelPosition.connector.top,
@@ -2862,7 +2941,11 @@ function App() {
           ) : null}
           <section
             className={`floating-note-panel ${isNotePanelClosing ? "is-closing" : "is-open"} ${
-              floatingNotePanelPosition?.placement === "above" ? "is-above" : "is-below"
+              floatingNotePanelPosition?.placement === "above"
+                ? "is-above"
+                : floatingNotePanelPosition?.placement === "detached"
+                  ? "is-detached"
+                  : "is-below"
             }`}
             ref={notePanelRef}
             style={floatingNotePanelStyle}
@@ -2913,7 +2996,9 @@ function App() {
               ) : null}
 
               {!pendingAnchor && activeNote && !activeNoteIsEditing ? (
-                <p className="bottom-note-body">{activeNote.body}</p>
+                <p className={`bottom-note-body ${activeNoteBodyIsEmpty ? "is-empty" : ""}`}>
+                  {activeNoteBodyIsEmpty ? "無內容" : activeNote.body}
+                </p>
               ) : null}
 
               {!pendingAnchor && activeNote ? (
