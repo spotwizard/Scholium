@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import {
   createElement,
+  type CSSProperties,
   type FocusEvent,
   type FormEvent,
   type MouseEvent,
@@ -113,6 +114,28 @@ type PreviewAnnotationFrame = {
   height: number;
 };
 
+type TextRangeRect = {
+  bottom: number;
+  height: number;
+  left: number;
+  right: number;
+  top: number;
+  width: number;
+};
+
+type FloatingNotePosition = {
+  connector: {
+    angle: number;
+    left: number;
+    top: number;
+    width: number;
+  };
+  left: number;
+  top: number;
+  maxHeight: number;
+  placement: "above" | "below";
+};
+
 type PreviewTextMap = {
   text: string;
   sourceOffsets: Array<number | null>;
@@ -176,8 +199,9 @@ const markdownFilters = [
 ];
 
 const previewAnnotationFramePadding = 4;
-const bottomNotePanelAnimationMs = 180;
-const annotationOpenDelayMs = 1000;
+const notePanelAnimationMs = 180;
+const annotationOpenDelayMs = 500;
+const autosaveDelayMs = 700;
 const lastOpenedMarkdownPathStorageKey = "scholium:last-opened-markdown-path";
 
 const documentsSeed: MarkdownDocument[] = [
@@ -945,6 +969,10 @@ function roundPreviewFrameValue(value: number) {
   return Math.round(value * 100) / 100;
 }
 
+function clampNumber(value: number, min: number, max: number) {
+  return Math.min(Math.max(value, min), max);
+}
+
 function measurePreviewAnnotationFrames(container: HTMLDivElement): PreviewAnnotationFrame[] {
   const containerRect = container.getBoundingClientRect();
   const rectsByNoteId = new Map<string, DOMRect[]>();
@@ -1524,6 +1552,8 @@ function App() {
   const [noteDraft, setNoteDraft] = useState("");
   const [activeNoteId, setActiveNoteId] = useState("");
   const [activeNoteMode, setActiveNoteMode] = useState<ActiveNoteMode>("view");
+  const [floatingNotePanelPosition, setFloatingNotePanelPosition] =
+    useState<FloatingNotePosition | null>(null);
   const [isNotePanelClosing, setIsNotePanelClosing] = useState(false);
   const [editorMode, setEditorMode] = useState<EditorMode>("preview");
   const [dirtyDocumentStates, setDirtyDocumentStates] = useState<
@@ -1535,11 +1565,24 @@ function App() {
   const [storageError, setStorageError] = useState("");
   const [isSavingFile, setIsSavingFile] = useState(false);
   const notePanelRef = useRef<HTMLElement | null>(null);
+  const floatingNoteCardRef = useRef<HTMLDivElement | null>(null);
   const notePanelCloseTimerRef = useRef(0);
   const pendingAnnotationOpenTimerRef = useRef(0);
+  const floatingNotePanelPositionFrameRef = useRef(0);
+  const floatingNoteAnchorRectRef = useRef<TextRangeRect | null>(null);
+  const autosaveTimerRef = useRef(0);
+  const autosaveInFlightRef = useRef(false);
+  const autosaveRequestedWhileSavingRef = useRef(false);
+  const documentsRef = useRef(documents);
+  const notesRef = useRef(notes);
+  const dirtyDocumentStatesRef = useRef(dirtyDocumentStates);
   const notePanelHasContentRef = useRef(false);
   const selectionDismissedUntilRef = useRef(0);
   const lastOpenedFileRestoreAttemptedRef = useRef(false);
+
+  documentsRef.current = documents;
+  notesRef.current = notes;
+  dirtyDocumentStatesRef.current = dirtyDocumentStates;
 
   const selectedDocument =
     documents.find((document) => document.id === selectedDocumentId) ?? documents[0];
@@ -1551,6 +1594,20 @@ function App() {
   const activeNotes = documentNotes.filter((note) => note.status === "active");
   const activeNote = documentNotes.find((note) => note.id === activeNoteId);
   const selectedDocumentIsDirty = hasDirtyState(dirtyDocumentStates[selectedDocument.id]);
+  const selectedDocumentSaveStateLabel = !selectedDocument.filePath
+    ? "Sample"
+    : isSavingFile
+      ? "Saving"
+      : selectedDocumentIsDirty
+        ? "Autosaving"
+        : "Saved";
+  const selectedDocumentSaveStateClass = [
+    "save-state",
+    selectedDocumentIsDirty ? "is-dirty" : "",
+    isSavingFile ? "is-saving" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
 
   const annotations: TextAnnotation[] = activeNotes.map((note) => ({
     id: note.id,
@@ -1560,17 +1617,60 @@ function App() {
   const pendingAnchorIsCompleteBlock = Boolean(
     pendingAnchor && isSelectionCompleteMarkdownBlock(selectedDocument.body, pendingAnchor),
   );
-  const canSaveSelectionNote = Boolean(
-    pendingAnchor && pendingAnchorIsCompleteBlock && noteDraft.trim(),
-  );
   const activeNoteIsEditing = Boolean(activeNote && activeNoteMode === "edit");
-  const canSaveActiveNote = Boolean(activeNoteIsEditing && noteDraft.trim());
   const notePanelHasContent = Boolean(pendingAnchor || activeNote);
-  const notePanelShouldRender = notePanelHasContent || isNotePanelClosing;
+  const floatingNotePanelShouldRender = notePanelHasContent;
 
   useEffect(() => {
     notePanelHasContentRef.current = notePanelHasContent;
   }, [notePanelHasContent]);
+
+  useLayoutEffect(() => {
+    if (!notePanelHasContent) {
+      window.cancelAnimationFrame(floatingNotePanelPositionFrameRef.current);
+      floatingNoteAnchorRectRef.current = null;
+      setFloatingNotePanelPosition(null);
+      return;
+    }
+
+    function updateFloatingNotePanelPosition() {
+      window.cancelAnimationFrame(floatingNotePanelPositionFrameRef.current);
+      floatingNotePanelPositionFrameRef.current = window.requestAnimationFrame(() => {
+        const card = floatingNoteCardRef.current;
+        const measuredAnchorRect = activeNote
+          ? activeNoteAnchorRect(activeNote.id)
+          : pendingAnchor
+            ? currentSelectionAnchorRect()
+            : null;
+        if (measuredAnchorRect) {
+          floatingNoteAnchorRectRef.current = measuredAnchorRect;
+        }
+        const anchorRect = measuredAnchorRect ?? floatingNoteAnchorRectRef.current;
+
+        if (!card || !anchorRect) {
+          setFloatingNotePanelPosition(null);
+          return;
+        }
+
+        const nextPosition = calculateFloatingNotePosition(anchorRect, card.getBoundingClientRect());
+        setFloatingNotePanelPosition((currentPosition) =>
+          floatingNotePositionsAreEqual(currentPosition, nextPosition)
+            ? currentPosition
+            : nextPosition,
+        );
+      });
+    }
+
+    updateFloatingNotePanelPosition();
+    document.addEventListener("scroll", updateFloatingNotePanelPosition, true);
+    window.addEventListener("resize", updateFloatingNotePanelPosition);
+
+    return () => {
+      window.cancelAnimationFrame(floatingNotePanelPositionFrameRef.current);
+      document.removeEventListener("scroll", updateFloatingNotePanelPosition, true);
+      window.removeEventListener("resize", updateFloatingNotePanelPosition);
+    };
+  }, [activeNote, activeNoteMode, editorMode, noteDraft, notePanelHasContent, pendingAnchor, selectedDocument.body]);
 
   function elementFromEventTarget(target: EventTarget | null) {
     return target instanceof HTMLElement
@@ -1591,6 +1691,151 @@ function App() {
 
   function pointHitsAnyRect(clientX: number, clientY: number, rects: DOMRect[]) {
     return rects.some((rect) => pointHitsRect(clientX, clientY, rect));
+  }
+
+  function textRangeRectFromClientRects(rects: DOMRect[]): TextRangeRect | null {
+    const visibleRects = rects.filter((rect) => rect.width > 0 && rect.height > 0);
+    if (visibleRects.length === 0) return null;
+
+    const left = Math.min(...visibleRects.map((rect) => rect.left));
+    const top = Math.min(...visibleRects.map((rect) => rect.top));
+    const right = Math.max(...visibleRects.map((rect) => rect.right));
+    const bottom = Math.max(...visibleRects.map((rect) => rect.bottom));
+
+    return {
+      bottom,
+      height: bottom - top,
+      left,
+      right,
+      top,
+      width: right - left,
+    };
+  }
+
+  function currentSelectionAnchorRect() {
+    const selection = window.getSelection();
+
+    if (selection && !selection.isCollapsed) {
+      const selectionRects = Array.from({ length: selection.rangeCount }).flatMap((_, index) =>
+        Array.from(selection.getRangeAt(index).getClientRects()),
+      );
+      const selectionRect = textRangeRectFromClientRects(selectionRects);
+      if (selectionRect) return selectionRect;
+    }
+
+    const editorSelectionRects = Array.from(
+      document.querySelectorAll<HTMLElement>(".cm-selectionBackground"),
+    ).flatMap((element) => Array.from(element.getClientRects()));
+
+    return textRangeRectFromClientRects(editorSelectionRects);
+  }
+
+  function activeNoteAnchorRect(noteId: string) {
+    const noteElements = Array.from(
+      document.querySelectorAll<HTMLElement>(
+        ".cm-annotation-frame[data-note-id], .preview-annotation-frame[data-note-id], .cm-note-annotation[data-note-id], .preview-note-annotation[data-note-id]",
+      ),
+    ).filter((element) => element.dataset.noteId === noteId);
+
+    const rects = noteElements.flatMap((element) =>
+      Array.from(element.getClientRects()).filter((rect) => rect.width > 0 && rect.height > 0),
+    );
+
+    return textRangeRectFromClientRects(rects);
+  }
+
+  function calculateFloatingNotePosition(
+    anchorRect: TextRangeRect,
+    cardRect: DOMRect,
+  ): FloatingNotePosition {
+    const viewportWidth = window.innerWidth;
+    const viewportHeight = window.innerHeight;
+    const viewportMargin = 12;
+    const noteGap = 12;
+    const belowNoteOffset = 8;
+    const cardWidth = Math.min(
+      cardRect.width || 300,
+      Math.max(180, viewportWidth - viewportMargin * 2),
+    );
+    const cardHeight = cardRect.height || 260;
+    const belowRoom = viewportHeight - anchorRect.bottom - noteGap - viewportMargin;
+    const aboveRoom = anchorRect.top - noteGap - viewportMargin;
+    const preferredHeight = Math.min(cardHeight, 280);
+    const placement =
+      belowRoom >= preferredHeight || belowRoom >= aboveRoom ? "below" : "above";
+    const availableHeight = placement === "below" ? belowRoom : aboveRoom;
+    const maxHeight = Math.min(
+      360,
+      Math.max(120, availableHeight > 0 ? availableHeight : cardHeight),
+      Math.max(120, viewportHeight - viewportMargin * 2),
+    );
+    const positionedHeight = Math.min(cardHeight, maxHeight);
+    const targetY = placement === "below" ? anchorRect.bottom : anchorRect.top;
+    const targetInset = Math.min(
+      Math.max(24, anchorRect.width * 0.18),
+      Math.max(0, anchorRect.width / 2 - 1),
+    );
+    const targetX = clampNumber(
+      anchorRect.left + anchorRect.width * 0.78,
+      anchorRect.left + targetInset,
+      anchorRect.right - targetInset,
+    );
+    const minimumVerticalDistance = noteGap + (placement === "below" ? belowNoteOffset : 0);
+    const preferredSlant = Math.min(24, Math.max(10, minimumVerticalDistance * 0.55));
+    const preferredSourceX = targetX + preferredSlant;
+    const left = clampNumber(
+      preferredSourceX - cardWidth / 2,
+      viewportMargin,
+      viewportWidth - viewportMargin - cardWidth,
+    );
+    const sourceX = left + cardWidth / 2;
+    // Keep the connector within 45 degrees from the vertical axis: |dx| <= |dy|.
+    const verticalDistance = Math.max(
+      minimumVerticalDistance,
+      Math.abs(sourceX - targetX),
+    );
+    const top =
+      placement === "below"
+        ? targetY + verticalDistance
+        : targetY - positionedHeight - verticalDistance;
+    const sourceY = placement === "below" ? top : top + positionedHeight;
+    const connectorDeltaX = sourceX - targetX;
+    const connectorDeltaY = sourceY - targetY;
+    const connectorWidth = Math.max(
+      0,
+      Math.sqrt(connectorDeltaX * connectorDeltaX + connectorDeltaY * connectorDeltaY),
+    );
+    const connectorAngle =
+      Math.atan2(connectorDeltaY, connectorDeltaX) * (180 / Math.PI);
+
+    return {
+      connector: {
+        angle: Math.round(connectorAngle * 100) / 100,
+        left: Math.round(targetX),
+        top: Math.round(targetY),
+        width: Math.round(connectorWidth),
+      },
+      left: Math.round(left),
+      maxHeight: Math.round(maxHeight),
+      placement,
+      top: Math.round(top),
+    };
+  }
+
+  function floatingNotePositionsAreEqual(
+    leftPosition: FloatingNotePosition | null,
+    rightPosition: FloatingNotePosition,
+  ) {
+    return (
+      leftPosition?.left === rightPosition.left &&
+      leftPosition.top === rightPosition.top &&
+      leftPosition.maxHeight === rightPosition.maxHeight &&
+      leftPosition.placement === rightPosition.placement &&
+      leftPosition.connector.left === rightPosition.connector.left &&
+      leftPosition.connector.top === rightPosition.connector.top &&
+      leftPosition.connector.width === rightPosition.connector.width &&
+      leftPosition.connector.angle === rightPosition.connector.angle
+    );
   }
 
   function targetIsInsideNotePanel(target: EventTarget | null) {
@@ -1704,8 +1949,30 @@ function App() {
     return () => {
       window.clearTimeout(notePanelCloseTimerRef.current);
       window.clearTimeout(pendingAnnotationOpenTimerRef.current);
+      window.clearTimeout(autosaveTimerRef.current);
+      window.cancelAnimationFrame(floatingNotePanelPositionFrameRef.current);
     };
   }, []);
+
+  useEffect(() => {
+    window.clearTimeout(autosaveTimerRef.current);
+
+    if (!nativeStorageAvailable) return;
+
+    const hasDirtyLocalDocument = documents.some(
+      (document) =>
+        Boolean(document.filePath) && hasDirtyState(dirtyDocumentStates[document.id]),
+    );
+    if (!hasDirtyLocalDocument) return;
+
+    autosaveTimerRef.current = window.setTimeout(() => {
+      void saveDirtyDocuments();
+    }, autosaveDelayMs);
+
+    return () => {
+      window.clearTimeout(autosaveTimerRef.current);
+    };
+  }, [dirtyDocumentStates, documents, nativeStorageAvailable, notes]);
 
   useEffect(() => {
     if (!nativeStorageAvailable || lastOpenedFileRestoreAttemptedRef.current) return;
@@ -1803,18 +2070,6 @@ function App() {
 
   function markDocumentNotesDirty(documentId = selectedDocument.id) {
     updateDocumentDirtyState(documentId, { notes: true });
-  }
-
-  function markDocumentClean(documentId: string, body: string) {
-    setDirtyDocumentStates((currentStates) => {
-      const nextStates = { ...currentStates };
-      delete nextStates[documentId];
-      return nextStates;
-    });
-    setSavedDocumentBodies((currentBodies) => ({
-      ...currentBodies,
-      [documentId]: body,
-    }));
   }
 
   function markLoadedDocumentsClean(loadedDocuments: MarkdownDocument[]) {
@@ -2074,43 +2329,106 @@ function App() {
     }
   }
 
-  async function saveSelectedDocument() {
-    if (!selectedDocument.filePath) {
-      setStorageError("This document is sample content. Open a local .md file before saving.");
-      return;
-    }
-    if (!nativeStorageAvailable) {
-      setStorageError("Open/save requires the Scholium macOS app runtime.");
+  function notesForDocument(documentId: string, sourceNotes = notesRef.current) {
+    return sourceNotes.filter((note) => note.documentId === documentId);
+  }
+
+  function notesFingerprint(sourceNotes: SelectionNote[]) {
+    return JSON.stringify(sourceNotes);
+  }
+
+  function markDocumentSnapshotSaved(
+    documentId: string,
+    savedBody: string,
+    savedNotesFingerprint: string,
+  ) {
+    setSavedDocumentBodies((currentBodies) => ({
+      ...currentBodies,
+      [documentId]: savedBody,
+    }));
+    setDirtyDocumentStates((currentStates) => {
+      const currentDocument = documentsRef.current.find((document) => document.id === documentId);
+      const currentNotesFingerprint = notesFingerprint(notesForDocument(documentId));
+      const nextState: DirtyDocumentState = {
+        body: currentDocument ? currentDocument.body !== savedBody : false,
+        notes: currentNotesFingerprint !== savedNotesFingerprint,
+      };
+      const nextStates = { ...currentStates };
+
+      if (hasDirtyState(nextState)) {
+        nextStates[documentId] = nextState;
+      } else {
+        delete nextStates[documentId];
+      }
+
+      return nextStates;
+    });
+  }
+
+  async function saveDocumentToDisk(documentToSave: MarkdownDocument) {
+    if (!documentToSave.filePath) return;
+
+    const bodyToSave = documentToSave.body;
+    const notesToSave = notesForDocument(documentToSave.id);
+    const savedNotesFingerprint = notesFingerprint(notesToSave);
+    const saved = await invoke<SaveMarkdownFileResult>("save_markdown_file", {
+      path: documentToSave.filePath,
+      body: bodyToSave,
+      notes: notesToSave,
+    });
+
+    setDocuments((currentDocuments) =>
+      currentDocuments.map((document) =>
+        document.id === documentToSave.id
+          ? {
+              ...document,
+              filePath: saved.path,
+              path: saved.path,
+              notesPath: saved.notesPath,
+              updatedAt: `Saved ${nowLabel()}`,
+            }
+          : document,
+      ),
+    );
+    markDocumentSnapshotSaved(documentToSave.id, bodyToSave, savedNotesFingerprint);
+  }
+
+  async function saveDirtyDocuments() {
+    if (!nativeStorageAvailable) return;
+
+    if (autosaveInFlightRef.current) {
+      autosaveRequestedWhileSavingRef.current = true;
       return;
     }
 
+    const dirtyDocuments = documentsRef.current.filter(
+      (document) =>
+        Boolean(document.filePath) &&
+        hasDirtyState(dirtyDocumentStatesRef.current[document.id]),
+    );
+    if (dirtyDocuments.length === 0) return;
+
+    autosaveInFlightRef.current = true;
     setIsSavingFile(true);
     setStorageError("");
 
     try {
-      const saved = await invoke<SaveMarkdownFileResult>("save_markdown_file", {
-        path: selectedDocument.filePath,
-        body: selectedDocument.body,
-        notes: notes.filter((note) => note.documentId === selectedDocument.id),
-      });
-
-      setDocuments((currentDocuments) =>
-        currentDocuments.map((document) =>
-          document.id === selectedDocument.id
-            ? {
-                ...document,
-                path: saved.path,
-                notesPath: saved.notesPath,
-                updatedAt: `Saved ${nowLabel()}`,
-              }
-            : document,
-        ),
-      );
-      markDocumentClean(selectedDocument.id, selectedDocument.body);
+      for (const documentToSave of dirtyDocuments) {
+        await saveDocumentToDisk(documentToSave);
+      }
     } catch (error) {
       setStorageError(error instanceof Error ? error.message : String(error));
     } finally {
+      autosaveInFlightRef.current = false;
       setIsSavingFile(false);
+
+      if (autosaveRequestedWhileSavingRef.current) {
+        autosaveRequestedWhileSavingRef.current = false;
+        window.clearTimeout(autosaveTimerRef.current);
+        autosaveTimerRef.current = window.setTimeout(() => {
+          void saveDirtyDocuments();
+        }, autosaveDelayMs);
+      }
     }
   }
 
@@ -2173,9 +2491,10 @@ function App() {
       setActiveNoteMode("view");
       setNoteDraft("");
       setIsNotePanelClosing(false);
+      floatingNoteAnchorRectRef.current = null;
       notePanelHasContentRef.current = false;
       notePanelCloseTimerRef.current = 0;
-    }, bottomNotePanelAnimationMs);
+    }, notePanelAnimationMs);
   }
 
   function handleSelectionChange(anchor: TextSelectionAnchor | null) {
@@ -2193,6 +2512,7 @@ function App() {
     clearPendingAnnotationOpenTimer();
     clearNotePanelCloseTimer();
     setIsNotePanelClosing(false);
+    floatingNoteAnchorRectRef.current = currentSelectionAnchorRect();
     setPendingAnchor(anchor);
     setActiveNoteId("");
     setActiveNoteMode("view");
@@ -2206,6 +2526,7 @@ function App() {
 
     clearNotePanelCloseTimer();
     setIsNotePanelClosing(false);
+    floatingNoteAnchorRectRef.current = activeNoteAnchorRect(noteId);
     setPendingAnchor(null);
     setActiveNoteId(noteId);
     setActiveNoteMode("view");
@@ -2228,6 +2549,7 @@ function App() {
     clearPendingAnnotationOpenTimer();
     clearNotePanelCloseTimer();
     setIsNotePanelClosing(false);
+    floatingNoteAnchorRectRef.current = activeNoteAnchorRect(noteId);
     setPendingAnchor(null);
     setActiveNoteId(noteId);
     setActiveNoteMode("edit");
@@ -2235,23 +2557,8 @@ function App() {
     notePanelHasContentRef.current = true;
   }
 
-  function returnToNoteViewer(noteId: string) {
-    const note = notes.find((candidate) => candidate.id === noteId && candidate.status !== "deleted");
-    if (!note) return;
-
-    clearPendingAnnotationOpenTimer();
-    clearNotePanelCloseTimer();
-    setIsNotePanelClosing(false);
-    setPendingAnchor(null);
-    setActiveNoteId(noteId);
-    setActiveNoteMode("view");
-    setNoteDraft(note.body);
-    notePanelHasContentRef.current = true;
-  }
-
-  function createNoteFromSelection() {
-    const body = noteDraft.trim();
-    if (!canSaveSelectionNote || !pendingAnchor) return;
+  function createLiveNoteFromSelection(body: string) {
+    if (!pendingAnchor || !pendingAnchorIsCompleteBlock || !body.trim()) return;
 
     const note: SelectionNote = {
       id: crypto.randomUUID(),
@@ -2266,15 +2573,17 @@ function App() {
     };
 
     setNotes((currentNotes) => [note, ...currentNotes]);
-    closeNotePanel();
+    setPendingAnchor(null);
+    setActiveNoteId(note.id);
+    setActiveNoteMode("edit");
+    setIsNotePanelClosing(false);
+    notePanelHasContentRef.current = true;
     markDocumentNotesDirty();
   }
 
-  function saveActiveNote() {
-    if (!activeNote || !canSaveActiveNote) return;
-
-    updateNoteBody(activeNote.id, noteDraft.trim());
-    closeNotePanel();
+  function updateSelectionNoteDraft(body: string) {
+    setNoteDraft(body);
+    createLiveNoteFromSelection(body);
   }
 
   function updateNoteBody(noteId: string, body: string) {
@@ -2290,6 +2599,13 @@ function App() {
       ),
     );
     markDocumentNotesDirty();
+  }
+
+  function updateActiveNoteDraft(body: string) {
+    if (!activeNote) return;
+
+    setNoteDraft(body);
+    updateNoteBody(activeNote.id, body);
   }
 
   function deleteNote(noteId: string) {
@@ -2323,8 +2639,29 @@ function App() {
     setEditorMode((currentMode) => (currentMode === "preview" ? "edit" : "preview"));
   }
 
+  const floatingNotePanelStyle: CSSProperties = floatingNotePanelPosition
+    ? {
+        left: floatingNotePanelPosition.left,
+        maxHeight: floatingNotePanelPosition.maxHeight,
+        top: floatingNotePanelPosition.top,
+      }
+    : {
+        left: 0,
+        maxHeight: 360,
+        top: 0,
+        visibility: "hidden",
+      };
+  const floatingNoteConnectorStyle: CSSProperties | null = floatingNotePanelPosition
+    ? {
+        left: floatingNotePanelPosition.connector.left,
+        top: floatingNotePanelPosition.connector.top,
+        transform: `translateY(-50%) rotate(${floatingNotePanelPosition.connector.angle}deg)`,
+        width: floatingNotePanelPosition.connector.width,
+      }
+    : null;
+
   return (
-    <main className={`scholium-shell ${notePanelShouldRender ? "has-bottom-note-panel" : ""}`}>
+    <main className="scholium-shell">
       <aside className="document-pane" aria-label="Documents">
         <div className="pane-header">
           <div>
@@ -2370,8 +2707,8 @@ function App() {
             <h2>{selectedDocument.title}</h2>
           </div>
           <div className="editor-actions" aria-label="Editor actions">
-            <span className={`save-state ${selectedDocumentIsDirty ? "is-dirty" : ""}`}>
-              {selectedDocumentIsDirty ? "Unsaved" : "Saved"}
+            <span className={selectedDocumentSaveStateClass}>
+              {selectedDocumentSaveStateLabel}
             </span>
             <button
               className={editorMode === "preview" ? "is-active" : ""}
@@ -2381,13 +2718,6 @@ function App() {
               title="Toggle Source/Preview (Cmd/Ctrl+Shift+P)"
             >
               {editorMode === "preview" ? "Source" : "Preview"}
-            </button>
-            <button
-              type="button"
-              onClick={saveSelectedDocument}
-              disabled={!selectedDocument.filePath || !selectedDocumentIsDirty || isSavingFile}
-            >
-              {isSavingFile ? "Saving" : "Save"}
             </button>
           </div>
         </header>
@@ -2417,96 +2747,96 @@ function App() {
         </div>
       </section>
 
-      {notePanelShouldRender ? (
-        <section
-          className={`bottom-note-panel ${isNotePanelClosing ? "is-closing" : "is-open"}`}
-          ref={notePanelRef}
-          aria-label={
-            activeNote
-              ? activeNoteIsEditing
-                ? "Edit selection note"
-                : "View selection note"
-              : "Create selection note"
-          }
-        >
-          <div className="bottom-note-card">
-            <div className="bottom-note-context">
-              <p className="eyebrow">
-                {activeNote ? (activeNoteIsEditing ? "Edit note" : "Note") : "Selection note"}
-              </p>
-              {pendingAnchor && !pendingAnchorIsCompleteBlock ? (
-                <p className="selection-warning">請選取完整段落後再新增筆記。</p>
+      {floatingNotePanelShouldRender ? (
+        <>
+          {floatingNoteConnectorStyle ? (
+            <span
+              aria-hidden="true"
+              className={`floating-note-connector ${
+                isNotePanelClosing ? "is-closing" : "is-open"
+              }`}
+              style={floatingNoteConnectorStyle}
+            />
+          ) : null}
+          <section
+            className={`floating-note-panel ${isNotePanelClosing ? "is-closing" : "is-open"} ${
+              floatingNotePanelPosition?.placement === "above" ? "is-above" : "is-below"
+            }`}
+            ref={notePanelRef}
+            style={floatingNotePanelStyle}
+            aria-label={
+              pendingAnchor
+                ? "Create selection note"
+                : activeNoteIsEditing
+                  ? "Edit selection note"
+                  : "View selection note"
+            }
+          >
+            <div className="floating-note-card" ref={floatingNoteCardRef}>
+              <button
+                className="floating-note-close-button"
+                type="button"
+                aria-label="Close note"
+                onClick={closeNotePanel}
+              >
+                ×
+              </button>
+              <div className="bottom-note-context">
+                <p className="eyebrow">
+                  {pendingAnchor ? "Selection note" : activeNoteIsEditing ? "Edit note" : "Note"}
+                </p>
+                {pendingAnchor && !pendingAnchorIsCompleteBlock ? (
+                  <p className="selection-warning">請選取完整段落後再新增筆記。</p>
+                ) : null}
+              </div>
+
+              {pendingAnchor && pendingAnchorIsCompleteBlock ? (
+                <textarea
+                  aria-label="Selection note"
+                  value={noteDraft}
+                  onChange={(event) => updateSelectionNoteDraft(event.currentTarget.value)}
+                  placeholder="Add a note..."
+                />
+              ) : null}
+
+              {!pendingAnchor && activeNoteIsEditing ? (
+                <textarea
+                  aria-label="Edit note"
+                  value={noteDraft}
+                  onChange={(event) => updateActiveNoteDraft(event.currentTarget.value)}
+                  placeholder="Add a note..."
+                />
+              ) : null}
+
+              {!pendingAnchor && activeNote && !activeNoteIsEditing ? (
+                <p className="bottom-note-body">{activeNote.body}</p>
+              ) : null}
+
+              {!pendingAnchor && activeNote ? (
+                <div className="note-actions bottom-note-actions">
+                  {activeNoteIsEditing ? (
+                    <button
+                      className="is-danger"
+                      type="button"
+                      onClick={() => deleteNote(activeNote.id)}
+                    >
+                      Delete
+                    </button>
+                  ) : null}
+                  {!activeNoteIsEditing ? (
+                    <button
+                      className="is-primary"
+                      type="button"
+                      onClick={() => openNoteEditor(activeNote.id)}
+                    >
+                      Edit
+                    </button>
+                  ) : null}
+                </div>
               ) : null}
             </div>
-
-            {activeNote && !activeNoteIsEditing ? (
-              <p className="bottom-note-body">{activeNote.body}</p>
-            ) : null}
-
-            {activeNoteIsEditing || pendingAnchorIsCompleteBlock ? (
-              <textarea
-                aria-label={activeNoteIsEditing ? "Edit note" : "Selection note"}
-                value={noteDraft}
-                onChange={(event) => setNoteDraft(event.currentTarget.value)}
-                placeholder="Add a note..."
-              />
-            ) : null}
-
-            <div className="note-actions bottom-note-actions">
-              {activeNote && activeNoteIsEditing ? (
-                <button
-                  className="is-danger"
-                  type="button"
-                  onClick={() => deleteNote(activeNote.id)}
-                >
-                  Delete
-                </button>
-              ) : null}
-              {activeNote && activeNoteIsEditing ? (
-                <button type="button" onClick={() => returnToNoteViewer(activeNote.id)}>
-                  View
-                </button>
-              ) : null}
-              {activeNote && !activeNoteIsEditing ? (
-                <>
-                  <button type="button" onClick={closeNotePanel}>
-                    Close
-                  </button>
-                  <button
-                    className="is-primary"
-                    type="button"
-                    onClick={() => openNoteEditor(activeNote.id)}
-                  >
-                    Edit
-                  </button>
-                </>
-              ) : (
-                <button type="button" onClick={closeNotePanel}>
-                  Cancel
-                </button>
-              )}
-              {activeNote && activeNoteIsEditing ? (
-                <button
-                  className="is-primary"
-                  type="button"
-                  onClick={saveActiveNote}
-                  disabled={!canSaveActiveNote}
-                >
-                  Done
-                </button>
-              ) : pendingAnchor ? (
-                <button
-                  className="is-primary"
-                  type="button"
-                  onClick={createNoteFromSelection}
-                  disabled={!canSaveSelectionNote}
-                >
-                  Save note
-                </button>
-              ) : null}
-            </div>
-          </div>
-        </section>
+          </section>
+        </>
       ) : null}
     </main>
   );
