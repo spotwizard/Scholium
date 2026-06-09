@@ -150,20 +150,6 @@ function TrashIcon() {
   );
 }
 
-function PlusIcon() {
-  return (
-    <svg
-      aria-hidden="true"
-      className="note-action-icon"
-      fill="none"
-      viewBox="0 0 24 24"
-    >
-      <path d="M12 5v14" />
-      <path d="M5 12h14" />
-    </svg>
-  );
-}
-
 type FloatingNotePosition = {
   connector: {
     angle: number;
@@ -244,6 +230,7 @@ const previewAnnotationLineJoinMaxGap = 20;
 const notePanelAnimationMs = 180;
 const autosaveDelayMs = 1000;
 const lastOpenedMarkdownPathStorageKey = "scholium:last-opened-markdown-path";
+const mobileViewportQuery = "(max-width: 820px)";
 
 const documentsSeed: MarkdownDocument[] = [
   {
@@ -1691,6 +1678,104 @@ function MarkdownPreview({
   );
 }
 
+function MarkdownPreviewContentBlock({
+  block,
+  keyPrefix,
+}: {
+  block: MarkdownPreviewBlock;
+  keyPrefix: string;
+}) {
+  if (block.kind === "heading") {
+    const tagName = `h${block.level}` as "h1" | "h2" | "h3" | "h4" | "h5" | "h6";
+
+    return createElement(
+      tagName,
+      { key: block.key },
+      renderInlineMarkdown(block.text, `${keyPrefix}-heading`),
+    );
+  }
+
+  if (block.kind === "quote") {
+    return (
+      <blockquote key={block.key}>
+        {block.text.split("\n").map((quoteLine, quoteIndex) => (
+          <p key={`${keyPrefix}-quote-${quoteIndex}`}>
+            {renderInlineMarkdown(quoteLine, `${keyPrefix}-quote-${quoteIndex}`)}
+          </p>
+        ))}
+      </blockquote>
+    );
+  }
+
+  if (block.kind === "unordered-list" || block.kind === "ordered-list") {
+    const ListTag = block.kind === "unordered-list" ? "ul" : "ol";
+
+    return (
+      <ListTag key={block.key}>
+        {block.items.map((item, itemIndex) => (
+          <li key={`${keyPrefix}-item-${itemIndex}`}>
+            {renderInlineMarkdown(item, `${keyPrefix}-item-${itemIndex}`)}
+          </li>
+        ))}
+      </ListTag>
+    );
+  }
+
+  if (block.kind === "code") {
+    return (
+      <pre key={block.key}>
+        <code>{block.text}</code>
+      </pre>
+    );
+  }
+
+  if (block.kind === "rule") {
+    return <hr key={block.key} />;
+  }
+
+  if (block.kind === "paragraph") {
+    return (
+      <p key={block.key}>
+        {renderInlineMarkdown(block.text, `${keyPrefix}-paragraph`)}
+      </p>
+    );
+  }
+
+  return null;
+}
+
+function MarkdownPreviewContent({
+  className,
+  emptyLabel,
+  onDoubleClick,
+  value,
+}: {
+  className: string;
+  emptyLabel: string;
+  onDoubleClick?: () => void;
+  value: string;
+}) {
+  const isEmpty = !value.trim();
+  const blocks = isEmpty ? [] : parseMarkdownPreviewBlocks(value);
+
+  return (
+    <div
+      className={`${className} ${isEmpty ? "is-empty" : ""}`}
+      onDoubleClick={onDoubleClick}
+    >
+      {isEmpty
+        ? emptyLabel
+        : blocks.map((block, blockIndex) => (
+            <MarkdownPreviewContentBlock
+              block={block}
+              key={block.key}
+              keyPrefix={`markdown-content-${blockIndex}`}
+            />
+          ))}
+    </div>
+  );
+}
+
 function App() {
   const [documents, setDocuments] = useState(documentsSeed);
   const [workspaceTitle, setWorkspaceTitle] = useState("Scholium");
@@ -1710,6 +1795,9 @@ function App() {
     useState<SelectionWarningPosition | null>(null);
   const [isNotePanelClosing, setIsNotePanelClosing] = useState(false);
   const [isReturningToView, setIsReturningToView] = useState(false);
+  const [isMobileViewport, setIsMobileViewport] = useState(() =>
+    window.matchMedia(mobileViewportQuery).matches,
+  );
   const [editorMode, setEditorMode] = useState<EditorMode>("preview");
   const [dirtyDocumentStates, setDirtyDocumentStates] = useState<
     Record<string, DirtyDocumentState>
@@ -1766,8 +1854,8 @@ function App() {
     pendingAnchor && isSelectionCompleteMarkdownBlock(selectedDocument.body, pendingAnchor),
   );
   const activeNoteIsEditing = Boolean(activeNote && activeNoteMode === "edit");
-  const activeNoteBodyIsEmpty = Boolean(activeNote && !activeNote.body.trim());
-  const notePanelHasContent = Boolean(pendingAnchor || activeNote);
+  const shouldShowSelectionConfirmation = Boolean(pendingAnchor && isMobileViewport);
+  const notePanelHasContent = Boolean(shouldShowSelectionConfirmation || activeNote);
   const floatingNotePanelShouldRender = notePanelHasContent;
 
   useEffect(() => {
@@ -1780,6 +1868,21 @@ function App() {
     },
     [],
   );
+
+  useEffect(() => {
+    const mediaQuery = window.matchMedia(mobileViewportQuery);
+
+    function updateMobileViewport() {
+      setIsMobileViewport(mediaQuery.matches);
+    }
+
+    updateMobileViewport();
+    mediaQuery.addEventListener("change", updateMobileViewport);
+
+    return () => {
+      mediaQuery.removeEventListener("change", updateMobileViewport);
+    };
+  }, []);
 
   useLayoutEffect(() => {
     if (!noteTextareaShouldRefocusRef.current) return;
@@ -2144,6 +2247,12 @@ function App() {
     closeNotePanel();
   }
 
+  function targetIsFormControl(target: EventTarget | null) {
+    const targetElement = elementFromEventTarget(target);
+
+    return Boolean(targetElement?.closest("input, textarea, select"));
+  }
+
   useEffect(() => {
     if (!notePanelHasContent || isNotePanelClosing) return;
 
@@ -2276,9 +2385,24 @@ function App() {
 
   useEffect(() => {
     function handleModeShortcut(event: KeyboardEvent) {
-      if (event.key === "Escape" && notePanelHasContentRef.current) {
+      if (event.key === "Escape" && (notePanelHasContentRef.current || pendingAnchor)) {
         event.preventDefault();
         closeNotePanel();
+        return;
+      }
+
+      const isPlainEnter =
+        event.key === "Enter" &&
+        !event.metaKey &&
+        !event.ctrlKey &&
+        !event.altKey &&
+        !event.shiftKey;
+
+      if (isPlainEnter && pendingAnchor && pendingAnchorIsCompleteBlock) {
+        if (targetIsFormControl(event.target)) return;
+
+        event.preventDefault();
+        confirmPendingSelectionNote();
         return;
       }
 
@@ -2290,12 +2414,12 @@ function App() {
       setEditorMode((currentMode) => (currentMode === "preview" ? "edit" : "preview"));
     }
 
-    window.addEventListener("keydown", handleModeShortcut);
+    window.addEventListener("keydown", handleModeShortcut, true);
 
     return () => {
-      window.removeEventListener("keydown", handleModeShortcut);
+      window.removeEventListener("keydown", handleModeShortcut, true);
     };
-  }, [closeNotePanel]);
+  }, [closeNotePanel, pendingAnchor, pendingAnchorIsCompleteBlock]);
 
   function updateDocumentDirtyState(documentId: string, patch: Partial<DirtyDocumentState>) {
     setDirtyDocumentStates((currentStates) => {
@@ -2791,6 +2915,11 @@ function App() {
     setSelectionWarningPosition(null);
 
     if (!notePanelHasContentRef.current) {
+      setPendingAnchor(null);
+      setActiveNoteId("");
+      setActiveNoteMode("view");
+      setNoteDraft("");
+      floatingNoteAnchorRectRef.current = null;
       setIsNotePanelClosing(false);
       return;
     }
@@ -2897,7 +3026,7 @@ function App() {
     setActiveNoteId("");
     setActiveNoteMode("view");
     setNoteDraft("");
-    notePanelHasContentRef.current = true;
+    notePanelHasContentRef.current = isMobileViewport;
   }
 
   function showNoteViewer(noteId: string) {
@@ -3163,13 +3292,13 @@ function App() {
                   <p>要新增筆記嗎？</p>
                   <div className="note-actions bottom-note-actions">
                     <button
-                      className="is-primary"
+                      className="is-primary selection-confirmation-button"
                       type="button"
                       aria-label="Add note"
                       title="Add note"
                       onClick={confirmPendingSelectionNote}
                     >
-                      <PlusIcon />
+                      新增
                     </button>
                   </div>
                 </div>
@@ -3197,12 +3326,12 @@ function App() {
               ) : null}
 
               {!pendingAnchor && activeNote && !activeNoteIsEditing ? (
-                <p
-                  className={`bottom-note-body ${activeNoteBodyIsEmpty ? "is-empty" : ""}`}
+                <MarkdownPreviewContent
+                  className="bottom-note-body"
+                  emptyLabel="無內容"
                   onDoubleClick={() => openNoteEditor(activeNote.id)}
-                >
-                  {activeNoteBodyIsEmpty ? "無內容" : activeNote.body}
-                </p>
+                  value={activeNote.body}
+                />
               ) : null}
 
               {!pendingAnchor && activeNote && !activeNoteIsEditing ? (

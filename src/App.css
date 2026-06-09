@@ -663,7 +663,7 @@ button:disabled {
 
 .selection-confirmation {
   display: grid;
-  gap: 12px;
+  gap: 8px;
 }
 
 .selection-warning-popover {
@@ -694,11 +694,100 @@ button:disabled {
   font-size: 0.94rem;
   line-height: 1.5;
   overflow-wrap: anywhere;
-  white-space: pre-wrap;
 }
 
 .bottom-note-body.is-empty {
   color: rgba(107, 114, 128, 0.62);
+}
+
+.bottom-note-body > :first-child {
+  margin-top: 0;
+}
+
+.bottom-note-body > :last-child {
+  margin-bottom: 0;
+}
+
+.bottom-note-body h1,
+.bottom-note-body h2,
+.bottom-note-body h3,
+.bottom-note-body h4,
+.bottom-note-body h5,
+.bottom-note-body h6 {
+  margin: 0.85em 0 0.32em;
+  color: var(--color-heading);
+  font-size: 1rem;
+  font-weight: 760;
+  letter-spacing: 0;
+  line-height: 1.25;
+}
+
+.bottom-note-body h1 {
+  font-size: 1.08rem;
+}
+
+.bottom-note-body h2 {
+  padding-bottom: 0.18em;
+  border-bottom: 1px solid rgba(32, 35, 41, 0.14);
+}
+
+.bottom-note-body p,
+.bottom-note-body ul,
+.bottom-note-body ol,
+.bottom-note-body blockquote,
+.bottom-note-body pre {
+  margin: 0 0 0.72em;
+}
+
+.bottom-note-body ul,
+.bottom-note-body ol {
+  padding-left: 1.22em;
+}
+
+.bottom-note-body li + li {
+  margin-top: 0.18em;
+}
+
+.bottom-note-body blockquote {
+  padding: 0.1em 0 0.1em 0.72em;
+  border-left: 3px solid var(--color-note-border);
+  color: var(--color-muted);
+}
+
+.bottom-note-body code {
+  border-radius: 4px;
+  padding: 0.08em 0.28em;
+  background: rgba(255, 255, 255, 0.58);
+  font-family:
+    "SFMono-Regular", "Cascadia Code", "Roboto Mono", Consolas, "Liberation Mono",
+    monospace;
+  font-size: 0.88em;
+}
+
+.bottom-note-body pre {
+  overflow: auto;
+  border: 1px solid rgba(32, 35, 41, 0.14);
+  border-radius: 6px;
+  padding: 10px;
+  background: rgba(255, 255, 255, 0.5);
+  white-space: pre;
+}
+
+.bottom-note-body pre code {
+  padding: 0;
+  background: transparent;
+}
+
+.bottom-note-body a {
+  color: var(--color-accent-strong);
+  font-weight: 650;
+}
+
+.bottom-note-body hr {
+  height: 1px;
+  border: 0;
+  margin: 0.9em 0;
+  background: rgba(32, 35, 41, 0.14);
 }
 
 .note-returning-status {
@@ -780,6 +869,15 @@ button:disabled {
 
 .bottom-note-actions {
   grid-column: 1 / -1;
+}
+
+.floating-note-card .note-actions .selection-confirmation-button {
+  width: auto;
+  min-width: 48px;
+  height: 28px;
+  min-height: 28px;
+  padding: 0 10px;
+  font-size: 0.8rem;
 }
 
 .note-action-icon {
