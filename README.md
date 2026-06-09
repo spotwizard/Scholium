@@ -170,53 +170,6 @@ src-tauri/
 package.json           # frontend 與 Tauri CLI scripts
 ```
 
-## Git Flow
-
-本 repo 的 Git 操作以 `.codex_push.py` 為準，不要用一般 GitHub/GitLab 預設流程替代。
-
-查看目前狀態：
-
-```bash
-./.codex_push.py status
-```
-
-建立 feature branch，會先同步 `develop`，再建立 `feature/<name>`：
-
-```bash
-./.codex_push.py feature <name>
-```
-
-建立 hotfix branch，會先同步 `main`，再建立 `hotfix/<name>`：
-
-```bash
-./.codex_push.py hotfix <name>
-```
-
-建立 release branch，會從 `develop` 建立並 push `release/<Major>.<Minor>.<Patch>`：
-
-```bash
-./.codex_push.py release --bump patch
-./.codex_push.py release --version 1.2.3
-```
-
-發布目前 Git Flow branch 的變更：
-
-```bash
-./.codex_push.py push -m "重寫 README 文件"
-```
-
-建立 PR：
-
-```bash
-./.codex_push.py pr
-```
-
-PR target 由 helper 判斷：
-
-- `feature/*` -> `develop`
-- `release/*` -> `main`
-- `hotfix/*` -> `master` 與 `develop`
-
 ## 驗證
 
 README 或文件類變更至少確認：
