@@ -394,6 +394,14 @@ export function MarkdownEditor({
     mouseSelectionStartedRef.current = false;
   }
 
+  function editorHasTextSelection(view: EditorView) {
+    const browserSelection = window.getSelection();
+    return (
+      browserSelectionBelongsToView(view, browserSelection) ||
+      view.state.selection.main.from !== view.state.selection.main.to
+    );
+  }
+
   useLayoutEffect(() => {
     const container = containerRef.current;
     if (!container) return;
@@ -443,25 +451,13 @@ export function MarkdownEditor({
     });
 
     const annotationClickHandler = EditorView.domEventHandlers({
-      mousedown(event, view) {
-        if (event.button === 0 && noteIdFromAnnotationPointerEvent(event)) {
-          event.preventDefault();
-          suppressSelectionForAnnotationInteraction(view, event);
-          return true;
-        }
-
+      mousedown(event) {
         if (event.button === 0) {
           mouseSelectionStartedRef.current = true;
         }
         return false;
       },
-      pointerdown(event, view) {
-        if (event.button === 0 && noteIdFromAnnotationPointerEvent(event)) {
-          event.preventDefault();
-          suppressSelectionForAnnotationInteraction(view, event);
-          return true;
-        }
-
+      pointerdown(event) {
         if (event.button === 0) {
           mouseSelectionStartedRef.current = true;
         }
@@ -472,6 +468,12 @@ export function MarkdownEditor({
 
         const noteId = noteIdFromAnnotationPointerEvent(event);
         if (noteId) {
+          if (editorHasTextSelection(view)) {
+            mouseSelectionStartedRef.current = false;
+            publishSelectionAfterMouseUp(view);
+            return false;
+          }
+
           event.preventDefault();
           suppressSelectionForAnnotationInteraction(view, event);
           if (event.detail >= 2) {
@@ -491,6 +493,12 @@ export function MarkdownEditor({
 
         const noteId = noteIdFromAnnotationPointerEvent(event);
         if (noteId) {
+          if (editorHasTextSelection(view)) {
+            mouseSelectionStartedRef.current = false;
+            publishSelectionAfterMouseUp(view);
+            return false;
+          }
+
           event.preventDefault();
           suppressSelectionForAnnotationInteraction(view, event);
           onAnnotationClickRef.current(noteId);
@@ -504,9 +512,13 @@ export function MarkdownEditor({
       click(event) {
         const noteId = noteIdFromAnnotationPointerEvent(event);
         if (!noteId) return false;
+        const view = viewRef.current;
+        if (view && editorHasTextSelection(view)) {
+          return false;
+        }
 
         event.preventDefault();
-        suppressSelectionForAnnotationInteraction(viewRef.current ?? undefined, event);
+        suppressSelectionForAnnotationInteraction(view ?? undefined, event);
         if (event.detail >= 2) {
           onAnnotationDoubleClickRef.current(noteId);
         } else {
@@ -517,9 +529,13 @@ export function MarkdownEditor({
       dblclick(event) {
         const noteId = noteIdFromAnnotationPointerEvent(event);
         if (!noteId) return false;
+        const view = viewRef.current;
+        if (view && editorHasTextSelection(view)) {
+          return false;
+        }
 
         event.preventDefault();
-        suppressSelectionForAnnotationInteraction(viewRef.current ?? undefined, event);
+        suppressSelectionForAnnotationInteraction(view ?? undefined, event);
         onAnnotationDoubleClickRef.current(noteId);
         return true;
       },
@@ -546,22 +562,6 @@ export function MarkdownEditor({
     view.dispatch({ effects: setAnnotationsEffect.of(annotations) });
     viewRef.current = view;
 
-    function preventAnnotationNativeSelection(event: MouseEvent | PointerEvent) {
-      if (event.button !== 0) return;
-      if (!noteIdFromAnnotationPointerEvent(event)) return;
-
-      event.preventDefault();
-      event.stopPropagation();
-      suppressSelectionForAnnotationInteraction(view, event);
-    }
-
-    function preventAnnotationDoubleClickSelection(event: MouseEvent) {
-      if (!noteIdFromAnnotationPointerEvent(event)) return;
-
-      event.preventDefault();
-      suppressSelectionForAnnotationInteraction(view, event);
-    }
-
     function handleWindowMouseUp(event: MouseEvent) {
       handleWindowSelectionPointerEnd(event);
     }
@@ -574,6 +574,12 @@ export function MarkdownEditor({
       const browserSelection = window.getSelection();
       const activeElement = document.activeElement;
       if (noteIdFromAnnotationPointerEvent(event)) {
+        if (editorHasTextSelection(view)) {
+          mouseSelectionStartedRef.current = false;
+          publishSelectionAfterMouseUp(view);
+          return;
+        }
+
         event.preventDefault();
         suppressSelectionForAnnotationInteraction(view, event);
         return;
@@ -618,9 +624,6 @@ export function MarkdownEditor({
 
     const scroller = containerRef.current.querySelector<HTMLElement>(".cm-scroller");
     scroller?.addEventListener("scroll", scheduleAnnotationFrameUpdate);
-    view.dom.addEventListener("pointerdown", preventAnnotationNativeSelection, true);
-    view.dom.addEventListener("mousedown", preventAnnotationNativeSelection, true);
-    view.dom.addEventListener("dblclick", preventAnnotationDoubleClickSelection, true);
     document.addEventListener("selectionchange", handleDocumentSelectionChange);
     window.addEventListener("mouseup", handleWindowMouseUp, true);
     window.addEventListener("pointerup", handleWindowPointerUp, true);
@@ -630,9 +633,6 @@ export function MarkdownEditor({
       window.cancelAnimationFrame(selectionFrameRef.current);
       window.clearTimeout(selectionFallbackTimerRef.current);
       scroller?.removeEventListener("scroll", scheduleAnnotationFrameUpdate);
-      view.dom.removeEventListener("pointerdown", preventAnnotationNativeSelection, true);
-      view.dom.removeEventListener("mousedown", preventAnnotationNativeSelection, true);
-      view.dom.removeEventListener("dblclick", preventAnnotationDoubleClickSelection, true);
       document.removeEventListener("selectionchange", handleDocumentSelectionChange);
       window.removeEventListener("mouseup", handleWindowMouseUp, true);
       window.removeEventListener("pointerup", handleWindowPointerUp, true);

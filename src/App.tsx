@@ -6,6 +6,7 @@ import {
   type CSSProperties,
   type FocusEvent,
   type FormEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent,
   type ReactNode,
   useEffect,
@@ -127,6 +128,42 @@ type TextRangeRect = {
   width: number;
 };
 
+type SelectionWarningPosition = {
+  left: number;
+  top: number;
+};
+
+function TrashIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      className="note-action-icon"
+      fill="none"
+      viewBox="0 0 24 24"
+    >
+      <path d="M3 6h18" />
+      <path d="M8 6V4c0-1.1.9-2 2-2h4c1.1 0 2 .9 2 2v2" />
+      <path d="m19 6-1 14c-.1 1.1-1 2-2.1 2H8.1c-1.1 0-2-.9-2.1-2L5 6" />
+      <path d="M10 11v6" />
+      <path d="M14 11v6" />
+    </svg>
+  );
+}
+
+function PlusIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      className="note-action-icon"
+      fill="none"
+      viewBox="0 0 24 24"
+    >
+      <path d="M12 5v14" />
+      <path d="M5 12h14" />
+    </svg>
+  );
+}
+
 type FloatingNotePosition = {
   connector: {
     angle: number;
@@ -205,7 +242,6 @@ const markdownFilters = [
 const previewAnnotationFramePadding = 4;
 const previewAnnotationLineJoinMaxGap = 20;
 const notePanelAnimationMs = 180;
-const annotationOpenDelayMs = 500;
 const autosaveDelayMs = 1000;
 const lastOpenedMarkdownPathStorageKey = "scholium:last-opened-markdown-path";
 
@@ -365,6 +401,10 @@ function assignAnnotationTones(notes: SelectionNote[]): SelectionNote[] {
       ...note,
       tone: (index % 2) as AnnotationTone,
     }));
+}
+
+function selectionOverlapsNote(anchor: TextSelectionAnchor, note: SelectionNote) {
+  return anchor.to > note.anchor.from && anchor.from < note.anchor.to;
 }
 
 function hasNativeStorageAccess() {
@@ -922,20 +962,14 @@ function renderAnnotatedPlainText(
         data-note-id={range.note.id}
         data-note-tone={range.note.tone ?? 0}
         key={`${keyPrefix}-note-${rangeIndex}`}
-        onMouseDown={(event) => {
-          event.preventDefault();
-          event.stopPropagation();
-        }}
-        onMouseUp={(event) => {
-          event.preventDefault();
-          event.stopPropagation();
-        }}
         onClick={(event) => {
+          if (window.getSelection()?.toString().trim()) return;
           event.preventDefault();
           event.stopPropagation();
           onAnnotationClick(range.note.id);
         }}
         onDoubleClick={(event) => {
+          if (window.getSelection()?.toString().trim()) return;
           event.preventDefault();
           event.stopPropagation();
           onAnnotationDoubleClick(range.note.id);
@@ -992,20 +1026,14 @@ function renderPreviewInline(
         data-note-id={range.note.id}
         data-note-tone={range.note.tone ?? 0}
         key={`${keyPrefix}-note-${rangeIndex}`}
-        onMouseDown={(event) => {
-          event.preventDefault();
-          event.stopPropagation();
-        }}
-        onMouseUp={(event) => {
-          event.preventDefault();
-          event.stopPropagation();
-        }}
         onClick={(event) => {
+          if (window.getSelection()?.toString().trim()) return;
           event.preventDefault();
           event.stopPropagation();
           onAnnotationClick(range.note.id);
         }}
         onDoubleClick={(event) => {
+          if (window.getSelection()?.toString().trim()) return;
           event.preventDefault();
           event.stopPropagation();
           onAnnotationDoubleClick(range.note.id);
@@ -1574,26 +1602,36 @@ function MarkdownPreview({
     return null;
   }
 
-  function suppressPreviewFrameSelection(event: MouseEvent<HTMLDivElement>) {
+  function selectedPreviewText() {
+    const selection = window.getSelection();
+    return selection && !selection.isCollapsed ? selection.toString().trim() : "";
+  }
+
+  function noteIdFromPreviewFrameClick(event: MouseEvent<HTMLDivElement>) {
+    if (selectedPreviewText()) return null;
+
     const noteId = noteIdFromPreviewFrameEvent(event);
     if (!noteId) return null;
 
     event.preventDefault();
     event.stopPropagation();
-    window.getSelection()?.removeAllRanges();
     onSelectionChange(null);
     return noteId;
   }
 
   function handlePreviewMouseDown(event: MouseEvent<HTMLDivElement>) {
     if (event.button !== 0) return;
-    suppressPreviewFrameSelection(event);
   }
 
   function handlePreviewMouseUp(event: MouseEvent<HTMLDivElement>) {
     if (event.button !== 0) return;
 
-    const noteId = suppressPreviewFrameSelection(event);
+    if (selectedPreviewText()) {
+      handlePreviewSelection();
+      return;
+    }
+
+    const noteId = noteIdFromPreviewFrameClick(event);
     if (noteId) {
       if (event.detail >= 2) {
         onAnnotationDoubleClick(noteId);
@@ -1668,7 +1706,10 @@ function App() {
   const [activeNoteMode, setActiveNoteMode] = useState<ActiveNoteMode>("view");
   const [floatingNotePanelPosition, setFloatingNotePanelPosition] =
     useState<FloatingNotePosition | null>(null);
+  const [selectionWarningPosition, setSelectionWarningPosition] =
+    useState<SelectionWarningPosition | null>(null);
   const [isNotePanelClosing, setIsNotePanelClosing] = useState(false);
+  const [isReturningToView, setIsReturningToView] = useState(false);
   const [editorMode, setEditorMode] = useState<EditorMode>("preview");
   const [dirtyDocumentStates, setDirtyDocumentStates] = useState<
     Record<string, DirtyDocumentState>
@@ -1677,15 +1718,18 @@ function App() {
     savedBodiesFromDocuments(documentsSeed),
   );
   const [storageError, setStorageError] = useState("");
-  const [isSavingFile, setIsSavingFile] = useState(false);
   const notePanelRef = useRef<HTMLElement | null>(null);
   const floatingNoteCardRef = useRef<HTMLDivElement | null>(null);
   const noteTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const returnToViewTimerRef = useRef(0);
   const notePanelCloseTimerRef = useRef(0);
-  const pendingAnnotationOpenTimerRef = useRef(0);
   const floatingNotePanelPositionFrameRef = useRef(0);
   const floatingNoteAnchorRectRef = useRef<TextRangeRect | null>(null);
   const noteTextareaShouldRefocusRef = useRef(false);
+  const noteTextareaIsComposingRef = useRef(false);
+  const noteTextareaEnterIgnoredDuringCompositionRef = useRef(false);
+  const noteTextareaPostCompositionGuardUntilRef = useRef(0);
+  const transientSelectionNoteIdRef = useRef("");
   const autosaveTimerRef = useRef(0);
   const autosaveInFlightRef = useRef(false);
   const autosaveRequestedWhileSavingRef = useRef(false);
@@ -1711,21 +1755,6 @@ function App() {
     documentNotes.filter((note) => note.status === "active"),
   );
   const activeNote = documentNotes.find((note) => note.id === activeNoteId);
-  const selectedDocumentIsDirty = hasDirtyState(dirtyDocumentStates[selectedDocument.id]);
-  const selectedDocumentSaveStateLabel = !selectedDocument.filePath
-    ? "Sample"
-    : isSavingFile
-      ? "Saving"
-      : selectedDocumentIsDirty
-        ? "Autosaving"
-        : "Saved";
-  const selectedDocumentSaveStateClass = [
-    "save-state",
-    selectedDocumentIsDirty ? "is-dirty" : "",
-    isSavingFile ? "is-saving" : "",
-  ]
-    .filter(Boolean)
-    .join(" ");
 
   const annotations: TextAnnotation[] = activeNotes.map((note) => ({
     id: note.id,
@@ -1744,6 +1773,13 @@ function App() {
   useEffect(() => {
     notePanelHasContentRef.current = notePanelHasContent;
   }, [notePanelHasContent]);
+
+  useEffect(
+    () => () => {
+      window.clearTimeout(returnToViewTimerRef.current);
+    },
+    [],
+  );
 
   useLayoutEffect(() => {
     if (!noteTextareaShouldRefocusRef.current) return;
@@ -1876,6 +1912,26 @@ function App() {
     ).flatMap((element) => Array.from(element.getClientRects()));
 
     return textAnchorRectFromClientRects(editorSelectionRects);
+  }
+
+  function selectionWarningPositionFromAnchor(anchorRect: TextRangeRect | null) {
+    const warningWidth = 260;
+    const warningHeight = 44;
+    const viewportMargin = 12;
+    const maxLeft = Math.max(viewportMargin, window.innerWidth - warningWidth - viewportMargin);
+    const maxTop = Math.max(viewportMargin, window.innerHeight - warningHeight - viewportMargin);
+
+    if (!anchorRect) {
+      return {
+        left: Math.round(clampNumber(window.innerWidth / 2 - warningWidth / 2, viewportMargin, maxLeft)),
+        top: viewportMargin,
+      };
+    }
+
+    return {
+      left: Math.round(clampNumber(anchorRect.left, viewportMargin, maxLeft)),
+      top: Math.round(clampNumber(anchorRect.bottom + 8, viewportMargin, maxTop)),
+    };
   }
 
   function activeNoteAnchorRect(noteId: string) {
@@ -2082,7 +2138,7 @@ function App() {
     return false;
   }
 
-  function dismissNotePanelFromBlur() {
+  function dismissNotePanelFromAppInteraction() {
     selectionDismissedUntilRef.current = Date.now() + 700;
     window.getSelection()?.removeAllRanges();
     closeNotePanel();
@@ -2095,39 +2151,50 @@ function App() {
       if (event.button !== 0) return;
       if (notePanelKeepsFocus(event.target, event.clientX, event.clientY)) return;
 
-      dismissNotePanelFromBlur();
+      dismissNotePanelFromAppInteraction();
     }
 
     function handleDocumentMouseDown(event: globalThis.MouseEvent) {
       if (event.button !== 0) return;
       if (notePanelKeepsFocus(event.target, event.clientX, event.clientY)) return;
 
-      dismissNotePanelFromBlur();
+      dismissNotePanelFromAppInteraction();
     }
 
     function handleDocumentFocusIn(event: Event) {
       if (notePanelKeepsFocus(event.target)) return;
 
-      dismissNotePanelFromBlur();
+      dismissNotePanelFromAppInteraction();
     }
 
     document.addEventListener("pointerdown", handleDocumentPointerDown, true);
     document.addEventListener("mousedown", handleDocumentMouseDown, true);
     document.addEventListener("focusin", handleDocumentFocusIn, true);
-    window.addEventListener("blur", dismissNotePanelFromBlur);
 
     return () => {
       document.removeEventListener("pointerdown", handleDocumentPointerDown, true);
       document.removeEventListener("mousedown", handleDocumentMouseDown, true);
       document.removeEventListener("focusin", handleDocumentFocusIn, true);
-      window.removeEventListener("blur", dismissNotePanelFromBlur);
     };
   }, [activeNoteId, isNotePanelClosing, notePanelHasContent, pendingAnchor]);
 
   useEffect(() => {
+    if (!selectionWarningPosition) return;
+
+    function dismissSelectionWarning() {
+      setSelectionWarningPosition(null);
+    }
+
+    document.addEventListener("pointerdown", dismissSelectionWarning, true);
+
+    return () => {
+      document.removeEventListener("pointerdown", dismissSelectionWarning, true);
+    };
+  }, [selectionWarningPosition]);
+
+  useEffect(() => {
     return () => {
       window.clearTimeout(notePanelCloseTimerRef.current);
-      window.clearTimeout(pendingAnnotationOpenTimerRef.current);
       window.clearTimeout(autosaveTimerRef.current);
       window.cancelAnimationFrame(floatingNotePanelPositionFrameRef.current);
     };
@@ -2209,8 +2276,14 @@ function App() {
 
   useEffect(() => {
     function handleModeShortcut(event: KeyboardEvent) {
-      if (!(event.metaKey || event.ctrlKey) || !event.shiftKey) return;
-      if (event.key.toLowerCase() !== "p") return;
+      if (event.key === "Escape" && notePanelHasContentRef.current) {
+        event.preventDefault();
+        closeNotePanel();
+        return;
+      }
+
+      if (!event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
+      if (event.key !== "/" && event.code !== "Slash") return;
 
       event.preventDefault();
       closeNotePanel();
@@ -2311,6 +2384,8 @@ function App() {
       return;
     }
 
+    discardTransientEmptySelectionNote();
+
     const loadedDocuments = loadedFiles.map(documentFromLoadedFile);
     const loadedDocumentIds = new Set(loadedDocuments.map((document) => document.id));
     const loadedNotes = loadedFiles.flatMap((loadedFile) =>
@@ -2336,16 +2411,18 @@ function App() {
       ...currentNotes.filter((note) => !loadedDocumentIds.has(note.documentId)),
     ]);
     setSelectedDocumentId(firstDocument.id);
+    setSelectionWarningPosition(null);
     setPendingAnchor(null);
     setNoteDraft("");
     setActiveNoteId("");
     setActiveNoteMode("view");
-    clearPendingAnnotationOpenTimer();
     markLoadedDocumentsClean(loadedDocuments);
     rememberLastOpenedMarkdownPath(firstDocument.filePath);
   }
 
   function applyOpenedDirectory(openedDirectory: OpenMarkdownDirectoryResult, selectedPath?: string) {
+    discardTransientEmptySelectionNote();
+
     const loadedFiles = openedDirectory.entries.flatMap((entry) =>
       entry.kind === "file" ? [entry.file] : [],
     );
@@ -2386,9 +2463,9 @@ function App() {
     setWorkspaceTitle(openedDirectory.title);
     setWorkspacePath(openedDirectory.path);
     setWorkspaceEntries(nextEntries);
+    setSelectionWarningPosition(null);
     setPendingAnchor(null);
     setNoteDraft("");
-    clearPendingAnnotationOpenTimer();
     markLoadedDocumentsClean(loadedDocuments);
 
     if (documentToSelect) {
@@ -2479,7 +2556,6 @@ function App() {
       return;
     }
 
-    setIsSavingFile(true);
     setStorageError("");
 
     try {
@@ -2503,13 +2579,17 @@ function App() {
       applyLoadedFiles([loaded]);
     } catch (error) {
       setStorageError(error instanceof Error ? error.message : String(error));
-    } finally {
-      setIsSavingFile(false);
     }
   }
 
+  function isTransientEmptySelectionNote(note: SelectionNote) {
+    return note.id === transientSelectionNoteIdRef.current && !note.body.trim();
+  }
+
   function notesForDocument(documentId: string, sourceNotes = notesRef.current) {
-    return sourceNotes.filter((note) => note.documentId === documentId);
+    return sourceNotes.filter(
+      (note) => note.documentId === documentId && !isTransientEmptySelectionNote(note),
+    );
   }
 
   function notesFingerprint(sourceNotes: SelectionNote[]) {
@@ -2588,7 +2668,6 @@ function App() {
     if (dirtyDocuments.length === 0) return;
 
     autosaveInFlightRef.current = true;
-    setIsSavingFile(true);
     setStorageError("");
 
     try {
@@ -2599,7 +2678,6 @@ function App() {
       setStorageError(error instanceof Error ? error.message : String(error));
     } finally {
       autosaveInFlightRef.current = false;
-      setIsSavingFile(false);
 
       if (autosaveRequestedWhileSavingRef.current) {
         autosaveRequestedWhileSavingRef.current = false;
@@ -2634,19 +2712,16 @@ function App() {
     const nextDocument = documents.find((document) => document.id === documentId);
     if (!nextDocument) return;
 
+    discardTransientEmptySelectionNote();
     setSelectedDocumentId(documentId);
+    setSelectionWarningPosition(null);
     setPendingAnchor(null);
     setNoteDraft("");
     setStorageError("");
     setActiveNoteId("");
     setActiveNoteMode("view");
-    clearPendingAnnotationOpenTimer();
+    clearReturnToViewTimer();
     rememberLastOpenedMarkdownPath(nextDocument.filePath);
-  }
-
-  function clearPendingAnnotationOpenTimer() {
-    window.clearTimeout(pendingAnnotationOpenTimerRef.current);
-    pendingAnnotationOpenTimerRef.current = 0;
   }
 
   function clearNotePanelCloseTimer() {
@@ -2654,9 +2729,66 @@ function App() {
     notePanelCloseTimerRef.current = 0;
   }
 
+  function clearReturnToViewTimer() {
+    window.clearTimeout(returnToViewTimerRef.current);
+    returnToViewTimerRef.current = 0;
+    setIsReturningToView(false);
+  }
+
+  function discardTransientEmptySelectionNote() {
+    const noteId = transientSelectionNoteIdRef.current;
+    if (!noteId) return false;
+
+    const note = notesRef.current.find((candidate) => candidate.id === noteId);
+    if (!note) {
+      transientSelectionNoteIdRef.current = "";
+      return false;
+    }
+
+    if (note.body.trim()) {
+      transientSelectionNoteIdRef.current = "";
+      return false;
+    }
+
+    notesRef.current = notesRef.current.filter((candidate) => candidate.id !== noteId);
+    setNotes((currentNotes) => currentNotes.filter((candidate) => candidate.id !== noteId));
+    transientSelectionNoteIdRef.current = "";
+    return true;
+  }
+
+  function returnActiveNoteToViewMode() {
+    if (!activeNoteIsEditing || isReturningToView) return;
+
+    if (
+      activeNote &&
+      activeNote.id === transientSelectionNoteIdRef.current &&
+      !activeNote.body.trim() &&
+      !noteDraft.trim()
+    ) {
+      closeNotePanel();
+      return;
+    }
+
+    setIsReturningToView(true);
+    window.clearTimeout(returnToViewTimerRef.current);
+    returnToViewTimerRef.current = window.setTimeout(() => {
+      setActiveNoteMode("view");
+      setIsReturningToView(false);
+      returnToViewTimerRef.current = 0;
+    }, 1000);
+  }
+
+  function resetNoteTextareaCompositionState() {
+    noteTextareaIsComposingRef.current = false;
+    noteTextareaEnterIgnoredDuringCompositionRef.current = false;
+    noteTextareaPostCompositionGuardUntilRef.current = 0;
+  }
+
   function closeNotePanel() {
-    clearPendingAnnotationOpenTimer();
     clearNotePanelCloseTimer();
+    clearReturnToViewTimer();
+    resetNoteTextareaCompositionState();
+    setSelectionWarningPosition(null);
 
     if (!notePanelHasContentRef.current) {
       setIsNotePanelClosing(false);
@@ -2665,6 +2797,7 @@ function App() {
 
     setIsNotePanelClosing(true);
     notePanelCloseTimerRef.current = window.setTimeout(() => {
+      discardTransientEmptySelectionNote();
       setPendingAnchor(null);
       setActiveNoteId("");
       setActiveNoteMode("view");
@@ -2676,8 +2809,56 @@ function App() {
     }, notePanelAnimationMs);
   }
 
+  function handleNoteEditorCompositionStart() {
+    noteTextareaIsComposingRef.current = true;
+    noteTextareaEnterIgnoredDuringCompositionRef.current = false;
+    noteTextareaPostCompositionGuardUntilRef.current = 0;
+  }
+
+  function handleNoteEditorCompositionEnd() {
+    noteTextareaIsComposingRef.current = false;
+    if (noteTextareaEnterIgnoredDuringCompositionRef.current) {
+      noteTextareaEnterIgnoredDuringCompositionRef.current = false;
+      noteTextareaPostCompositionGuardUntilRef.current = 0;
+      return;
+    }
+
+    noteTextareaPostCompositionGuardUntilRef.current = Date.now() + 180;
+  }
+
+  function handleNoteEditorKeyDown(event: ReactKeyboardEvent<HTMLTextAreaElement>) {
+    const isPlainEnter = event.key === "Enter" && !event.shiftKey;
+    const isDuringComposition =
+      event.nativeEvent.isComposing || noteTextareaIsComposingRef.current;
+
+    if (isDuringComposition) {
+      if (isPlainEnter) {
+        noteTextareaEnterIgnoredDuringCompositionRef.current = true;
+      }
+      return;
+    }
+
+    if (isPlainEnter && Date.now() <= noteTextareaPostCompositionGuardUntilRef.current) {
+      event.preventDefault();
+      noteTextareaPostCompositionGuardUntilRef.current = 0;
+      return;
+    }
+
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeNotePanel();
+      return;
+    }
+
+    if (!isPlainEnter) return;
+
+    event.preventDefault();
+    returnActiveNoteToViewMode();
+  }
+
   function handleSelectionChange(anchor: TextSelectionAnchor | null) {
     if (!anchor) {
+      setSelectionWarningPosition(null);
       if (pendingAnchor) {
         closeNotePanel();
       }
@@ -2688,8 +2869,28 @@ function App() {
       return;
     }
 
-    clearPendingAnnotationOpenTimer();
+    if (activeNotes.some((note) => selectionOverlapsNote(anchor, note))) {
+      setSelectionWarningPosition(null);
+      if (pendingAnchor) {
+        closeNotePanel();
+      }
+      return;
+    }
+
+    if (!isSelectionCompleteMarkdownBlock(selectedDocument.body, anchor)) {
+      const anchorRect = currentSelectionAnchorRect();
+      setPendingAnchor(null);
+      setNoteDraft("");
+      if (notePanelHasContentRef.current) {
+        closeNotePanel();
+      }
+      setSelectionWarningPosition(selectionWarningPositionFromAnchor(anchorRect));
+      return;
+    }
+
     clearNotePanelCloseTimer();
+    clearReturnToViewTimer();
+    setSelectionWarningPosition(null);
     setIsNotePanelClosing(false);
     floatingNoteAnchorRectRef.current = currentSelectionAnchorRect();
     setPendingAnchor(anchor);
@@ -2703,7 +2904,9 @@ function App() {
     const note = notes.find((candidate) => candidate.id === noteId && candidate.status !== "deleted");
     if (!note) return;
 
+    setSelectionWarningPosition(null);
     clearNotePanelCloseTimer();
+    clearReturnToViewTimer();
     setIsNotePanelClosing(false);
     floatingNoteAnchorRectRef.current = activeNoteAnchorRect(noteId);
     setPendingAnchor(null);
@@ -2713,31 +2916,28 @@ function App() {
     notePanelHasContentRef.current = true;
   }
 
-  function scheduleNoteViewer(noteId: string) {
-    clearPendingAnnotationOpenTimer();
-    pendingAnnotationOpenTimerRef.current = window.setTimeout(() => {
-      showNoteViewer(noteId);
-      pendingAnnotationOpenTimerRef.current = 0;
-    }, annotationOpenDelayMs);
-  }
-
   function openNoteEditor(noteId: string) {
     const note = notes.find((candidate) => candidate.id === noteId && candidate.status !== "deleted");
     if (!note) return;
 
-    clearPendingAnnotationOpenTimer();
+    setSelectionWarningPosition(null);
     clearNotePanelCloseTimer();
+    clearReturnToViewTimer();
     setIsNotePanelClosing(false);
     floatingNoteAnchorRectRef.current = activeNoteAnchorRect(noteId);
     setPendingAnchor(null);
     setActiveNoteId(noteId);
+    noteTextareaShouldRefocusRef.current = true;
     setActiveNoteMode("edit");
     setNoteDraft(note.body);
     notePanelHasContentRef.current = true;
   }
 
-  function createLiveNoteFromSelection(body: string) {
-    if (!pendingAnchor || !pendingAnchorIsCompleteBlock || !body.trim()) return;
+  function confirmPendingSelectionNote() {
+    if (!pendingAnchor || !pendingAnchorIsCompleteBlock) return;
+
+    discardTransientEmptySelectionNote();
+    setSelectionWarningPosition(null);
 
     const note: SelectionNote = {
       id: crypto.randomUUID(),
@@ -2745,25 +2945,22 @@ function App() {
       status: "active",
       selectedText: pendingAnchor.selectedText,
       anchor: pendingAnchor,
-      body,
+      body: "",
       createdAt: nowLabel(),
       updatedAt: nowLabel(),
       deletedAt: null,
     };
 
     setNotes((currentNotes) => [note, ...currentNotes]);
+    transientSelectionNoteIdRef.current = note.id;
     noteTextareaShouldRefocusRef.current = true;
+    clearReturnToViewTimer();
     setPendingAnchor(null);
     setActiveNoteId(note.id);
     setActiveNoteMode("edit");
+    setNoteDraft("");
     setIsNotePanelClosing(false);
     notePanelHasContentRef.current = true;
-    markDocumentNotesDirty();
-  }
-
-  function updateSelectionNoteDraft(body: string) {
-    setNoteDraft(body);
-    createLiveNoteFromSelection(body);
   }
 
   function updateNoteBody(noteId: string, body: string) {
@@ -2790,6 +2987,10 @@ function App() {
 
   function deleteNote(noteId: string) {
     clearNotePanelCloseTimer();
+    clearReturnToViewTimer();
+    if (transientSelectionNoteIdRef.current === noteId) {
+      transientSelectionNoteIdRef.current = "";
+    }
     setNotes((currentNotes) =>
       currentNotes.map((note) =>
         note.id === noteId
@@ -2813,12 +3014,6 @@ function App() {
     markDocumentNotesDirty();
   }
 
-  function togglePreviewMode() {
-    clearPendingAnnotationOpenTimer();
-    closeNotePanel();
-    setEditorMode((currentMode) => (currentMode === "preview" ? "edit" : "preview"));
-  }
-
   const floatingNotePanelStyle: CSSProperties = floatingNotePanelPosition
     ? {
         left: floatingNotePanelPosition.left,
@@ -2831,6 +3026,12 @@ function App() {
         top: 0,
         visibility: "hidden",
       };
+  const selectionWarningStyle: CSSProperties | undefined = selectionWarningPosition
+    ? {
+        left: selectionWarningPosition.left,
+        top: selectionWarningPosition.top,
+      }
+    : undefined;
   const floatingNoteConnectorStyle: CSSProperties | null = floatingNotePanelPosition
     ?.connector
     ? {
@@ -2882,51 +3083,36 @@ function App() {
       </aside>
 
       <section className="editor-pane" aria-label="Markdown editor">
-        <header className="editor-header">
-          <div>
-            <p className="eyebrow">{selectedDocument.path}</p>
-            <h2>{selectedDocument.title}</h2>
-          </div>
-          <div className="editor-actions" aria-label="Editor actions">
-            <span className={selectedDocumentSaveStateClass}>
-              {selectedDocumentSaveStateLabel}
-            </span>
-            <button
-              className={editorMode === "preview" ? "is-active" : ""}
-              type="button"
-              aria-pressed={editorMode === "preview"}
-              onClick={togglePreviewMode}
-              title="Toggle Source/Preview (Cmd/Ctrl+Shift+P)"
-            >
-              {editorMode === "preview" ? "Source" : "Preview"}
-            </button>
-          </div>
-        </header>
-
         <div className="editor-grid">
           <div className="editor-surface">
             {editorMode === "preview" ? (
-              <MarkdownPreview
-                notes={activeNotes}
-                value={selectedDocument.body}
-                onAnnotationClick={scheduleNoteViewer}
-                onAnnotationDoubleClick={openNoteEditor}
-                onChange={updateSelectedDocumentBody}
-                onSelectionChange={handleSelectionChange}
-              />
+                <MarkdownPreview
+                  notes={activeNotes}
+                  value={selectedDocument.body}
+                  onAnnotationClick={showNoteViewer}
+                  onAnnotationDoubleClick={showNoteViewer}
+                  onChange={updateSelectedDocumentBody}
+                  onSelectionChange={handleSelectionChange}
+                />
             ) : (
-              <MarkdownEditor
-                annotations={annotations}
-                value={selectedDocument.body}
-                onAnnotationClick={scheduleNoteViewer}
-                onAnnotationDoubleClick={openNoteEditor}
-                onChange={updateSelectedDocumentBody}
-                onSelectionChange={handleSelectionChange}
-              />
+                <MarkdownEditor
+                  annotations={annotations}
+                  value={selectedDocument.body}
+                  onAnnotationClick={showNoteViewer}
+                  onAnnotationDoubleClick={showNoteViewer}
+                  onChange={updateSelectedDocumentBody}
+                  onSelectionChange={handleSelectionChange}
+                />
             )}
           </div>
         </div>
       </section>
+
+      {selectionWarningPosition ? (
+        <div className="selection-warning-popover" role="status" style={selectionWarningStyle}>
+          請選取完整句子或段落後再新增筆記。
+        </div>
+      ) : null}
 
       {floatingNotePanelShouldRender ? (
         <>
@@ -2970,19 +3156,23 @@ function App() {
                 <p className="eyebrow">
                   {pendingAnchor ? "Selection note" : activeNoteIsEditing ? "Edit note" : "Note"}
                 </p>
-                {pendingAnchor && !pendingAnchorIsCompleteBlock ? (
-                  <p className="selection-warning">請選取完整句子或段落後再新增筆記。</p>
-                ) : null}
               </div>
 
               {pendingAnchor && pendingAnchorIsCompleteBlock ? (
-                <textarea
-                  aria-label="Selection note"
-                  ref={noteTextareaRef}
-                  value={noteDraft}
-                  onChange={(event) => updateSelectionNoteDraft(event.currentTarget.value)}
-                  placeholder="Add a note..."
-                />
+                <div className="selection-confirmation">
+                  <p>要新增筆記嗎？</p>
+                  <div className="note-actions bottom-note-actions">
+                    <button
+                      className="is-primary"
+                      type="button"
+                      aria-label="Add note"
+                      title="Add note"
+                      onClick={confirmPendingSelectionNote}
+                    >
+                      <PlusIcon />
+                    </button>
+                  </div>
+                </div>
               ) : null}
 
               {!pendingAnchor && activeNoteIsEditing ? (
@@ -2991,34 +3181,41 @@ function App() {
                   ref={noteTextareaRef}
                   value={noteDraft}
                   onChange={(event) => updateActiveNoteDraft(event.currentTarget.value)}
+                  onCompositionStart={handleNoteEditorCompositionStart}
+                  onCompositionEnd={handleNoteEditorCompositionEnd}
+                  onKeyDown={handleNoteEditorKeyDown}
+                  disabled={isReturningToView}
                   placeholder="Add a note..."
                 />
               ) : null}
 
+              {!pendingAnchor && activeNoteIsEditing && isReturningToView ? (
+                <div className="note-returning-status" role="status">
+                  <span className="note-returning-spinner" aria-hidden="true" />
+                  <span>正在回到閱覽模式</span>
+                </div>
+              ) : null}
+
               {!pendingAnchor && activeNote && !activeNoteIsEditing ? (
-                <p className={`bottom-note-body ${activeNoteBodyIsEmpty ? "is-empty" : ""}`}>
+                <p
+                  className={`bottom-note-body ${activeNoteBodyIsEmpty ? "is-empty" : ""}`}
+                  onDoubleClick={() => openNoteEditor(activeNote.id)}
+                >
                   {activeNoteBodyIsEmpty ? "無內容" : activeNote.body}
                 </p>
               ) : null}
 
-              {!pendingAnchor && activeNote ? (
+              {!pendingAnchor && activeNote && !activeNoteIsEditing ? (
                 <div className="note-actions bottom-note-actions">
                   <button
                     className="is-danger"
                     type="button"
+                    aria-label="Delete note"
+                    title="Delete"
                     onClick={() => deleteNote(activeNote.id)}
                   >
-                    Delete
+                    <TrashIcon />
                   </button>
-                  {!activeNoteIsEditing ? (
-                    <button
-                      className="is-primary"
-                      type="button"
-                      onClick={() => openNoteEditor(activeNote.id)}
-                    >
-                      Edit
-                    </button>
-                  ) : null}
                 </div>
               ) : null}
             </div>
