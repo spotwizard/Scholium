@@ -361,6 +361,27 @@ fn build_app_menu(app_handle: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wr
     )
 }
 
+#[cfg(target_os = "macos")]
+fn set_runtime_dock_icon() {
+    use objc2::{AllocAnyThread, MainThreadMarker};
+    use objc2_app_kit::{NSApplication, NSImage, NSImageView};
+    use objc2_foundation::NSData;
+
+    let icon_bytes = include_bytes!("../icons/icon.png");
+    let mtm = unsafe { MainThreadMarker::new_unchecked() };
+    let app = NSApplication::sharedApplication(mtm);
+    let data = NSData::with_bytes(icon_bytes);
+
+    if let Some(app_icon) = NSImage::initWithData(NSImage::alloc(), &data) {
+        unsafe { app.setApplicationIconImage(Some(&app_icon)) };
+
+        let image_view = NSImageView::imageViewWithImage(&app_icon, mtm);
+        let dock_tile = app.dockTile();
+        dock_tile.setContentView(Some(&image_view));
+        dock_tile.display();
+    }
+}
+
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
 fn greet(name: &str) -> String {
@@ -370,6 +391,12 @@ fn greet(name: &str) -> String {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .setup(|_app| {
+            #[cfg(target_os = "macos")]
+            set_runtime_dock_icon();
+
+            Ok(())
+        })
         .menu(build_app_menu)
         .on_menu_event(|app, event| {
             if event.id() == MENU_NEW_FILE {
