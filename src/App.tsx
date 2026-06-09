@@ -3,8 +3,11 @@ import { listen } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import {
   createElement,
+  type CSSProperties,
   type FocusEvent,
   type FormEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent,
   type ReactNode,
   useEffect,
   useLayoutEffect,
@@ -13,10 +16,11 @@ import {
 } from "react";
 import "./App.css";
 import {
-  EditorChangeSource,
   MarkdownEditor,
-  TextAnnotation,
-  TextSelectionAnchor,
+  type AnnotationTone,
+  type EditorChangeSource,
+  type TextAnnotation,
+  type TextSelectionAnchor,
 } from "./MarkdownEditor";
 
 type NoteStatus = "active" | "orphaned" | "deleted";
@@ -37,6 +41,7 @@ type SelectionNote = {
   status: NoteStatus;
   selectedText: string;
   anchor: TextSelectionAnchor;
+  tone?: AnnotationTone;
   body: string;
   createdAt: string;
   updatedAt: string;
@@ -102,13 +107,74 @@ type DirtyDocumentState = {
 };
 
 type EditorMode = "edit" | "preview";
+type ActiveNoteMode = "view" | "edit";
 
 type PreviewAnnotationFrame = {
+  frameKey: string;
   noteId: string;
+  tone: AnnotationTone;
   left: number;
   top: number;
   width: number;
   height: number;
+};
+
+type TextRangeRect = {
+  bottom: number;
+  height: number;
+  left: number;
+  right: number;
+  top: number;
+  width: number;
+};
+
+type SelectionWarningPosition = {
+  left: number;
+  top: number;
+};
+
+function TrashIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      className="note-action-icon"
+      fill="none"
+      viewBox="0 0 24 24"
+    >
+      <path d="M3 6h18" />
+      <path d="M8 6V4c0-1.1.9-2 2-2h4c1.1 0 2 .9 2 2v2" />
+      <path d="m19 6-1 14c-.1 1.1-1 2-2.1 2H8.1c-1.1 0-2-.9-2.1-2L5 6" />
+      <path d="M10 11v6" />
+      <path d="M14 11v6" />
+    </svg>
+  );
+}
+
+function PlusIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      className="note-action-icon"
+      fill="none"
+      viewBox="0 0 24 24"
+    >
+      <path d="M12 5v14" />
+      <path d="M5 12h14" />
+    </svg>
+  );
+}
+
+type FloatingNotePosition = {
+  connector: {
+    angle: number;
+    left: number;
+    top: number;
+    width: number;
+  } | null;
+  left: number;
+  top: number;
+  maxHeight: number;
+  placement: "above" | "below" | "detached";
 };
 
 type PreviewTextMap = {
@@ -174,6 +240,10 @@ const markdownFilters = [
 ];
 
 const previewAnnotationFramePadding = 4;
+const previewAnnotationLineJoinMaxGap = 20;
+const notePanelAnimationMs = 180;
+const autosaveDelayMs = 1000;
+const lastOpenedMarkdownPathStorageKey = "scholium:last-opened-markdown-path";
 
 const documentsSeed: MarkdownDocument[] = [
   {
@@ -272,13 +342,6 @@ const notesSeed: SelectionNote[] = [
   },
 ];
 
-function summarizeText(text: string, maxLength = 150) {
-  const normalized = text.replace(/\s+/g, " ").trim();
-  return normalized.length > maxLength
-    ? `${normalized.slice(0, maxLength - 1)}...`
-    : normalized;
-}
-
 function nowLabel() {
   return new Date().toLocaleTimeString([], {
     hour: "2-digit",
@@ -325,6 +388,25 @@ function reconcileNote(note: SelectionNote, nextBody: string): SelectionNote {
   };
 }
 
+function assignAnnotationTones(notes: SelectionNote[]): SelectionNote[] {
+  return [...notes]
+    .sort(
+      (left, right) =>
+        left.anchor.from - right.anchor.from ||
+        left.anchor.to - right.anchor.to ||
+        left.createdAt.localeCompare(right.createdAt) ||
+        left.id.localeCompare(right.id),
+    )
+    .map((note, index) => ({
+      ...note,
+      tone: (index % 2) as AnnotationTone,
+    }));
+}
+
+function selectionOverlapsNote(anchor: TextSelectionAnchor, note: SelectionNote) {
+  return anchor.to > note.anchor.from && anchor.from < note.anchor.to;
+}
+
 function hasNativeStorageAccess() {
   return "__TAURI_INTERNALS__" in window;
 }
@@ -345,6 +427,32 @@ function workspaceEntryFromDocument(document: MarkdownDocument): WorkspaceEntry 
 
 function savedBodiesFromDocuments(documents: MarkdownDocument[]) {
   return Object.fromEntries(documents.map((document) => [document.id, document.body]));
+}
+
+function readLastOpenedMarkdownPath() {
+  try {
+    return window.localStorage.getItem(lastOpenedMarkdownPathStorageKey)?.trim() ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function rememberLastOpenedMarkdownPath(path: string | null | undefined) {
+  if (!path) return;
+
+  try {
+    window.localStorage.setItem(lastOpenedMarkdownPathStorageKey, path);
+  } catch {
+    // Remembering the last file is best-effort only.
+  }
+}
+
+function forgetLastOpenedMarkdownPath() {
+  try {
+    window.localStorage.removeItem(lastOpenedMarkdownPathStorageKey);
+  } catch {
+    // Remembering the last file is best-effort only.
+  }
 }
 
 function hasDirtyState(state: DirtyDocumentState | undefined) {
@@ -436,6 +544,39 @@ function trimRange(text: string, from: number, to: number) {
   }
 
   return { from: nextFrom, to: nextTo };
+}
+
+function previousNonWhitespaceIndex(text: string, from: number, to: number) {
+  for (let index = Math.min(to, text.length) - 1; index >= Math.max(0, from); index -= 1) {
+    if (!/\s/.test(text[index])) return index;
+  }
+
+  return null;
+}
+
+function isSentenceEndingCharacter(character: string) {
+  return /[.!?。！？]/.test(character);
+}
+
+function isSelectionCompleteSentenceSpan(
+  markdown: string,
+  selection: ReturnType<typeof trimRange>,
+  semanticRange: ReturnType<typeof trimRange>,
+) {
+  const selectedLastIndex = previousNonWhitespaceIndex(markdown, selection.from, selection.to);
+  if (selectedLastIndex === null || !isSentenceEndingCharacter(markdown[selectedLastIndex])) {
+    return false;
+  }
+
+  const previousContentIndex = previousNonWhitespaceIndex(
+    markdown,
+    semanticRange.from,
+    selection.from,
+  );
+  const startsAtSentenceBoundary =
+    previousContentIndex === null || isSentenceEndingCharacter(markdown[previousContentIndex]);
+
+  return startsAtSentenceBoundary;
 }
 
 function getBlockSemanticRange(markdown: string, block: MarkdownPreviewBlock) {
@@ -629,10 +770,17 @@ function isSelectionCompleteMarkdownBlock(markdown: string, anchor: TextSelectio
 
   if (intersectedBlocks.length === 0) return true;
 
-  return intersectedBlocks.every(({ semanticRange }) => {
+  return intersectedBlocks.every(({ block, semanticRange }) => {
     if (!semanticRange) return true;
 
-    return selection.from <= semanticRange.from && selection.to >= semanticRange.to;
+    if (selection.from <= semanticRange.from && selection.to >= semanticRange.to) {
+      return true;
+    }
+
+    return (
+      block.kind === "paragraph" &&
+      isSelectionCompleteSentenceSpan(markdown, selection, semanticRange)
+    );
   });
 }
 
@@ -795,6 +943,7 @@ function renderAnnotatedPlainText(
   keyPrefix: string,
   notes: SelectionNote[],
   onAnnotationClick: (noteId: string) => void,
+  onAnnotationDoubleClick: (noteId: string) => void,
 ) {
   const ranges = getAnnotationRangesForTextMap(textMap, notes);
   const nodes: ReactNode[] = [];
@@ -811,10 +960,19 @@ function renderAnnotatedPlainText(
       <span
         className="preview-note-annotation"
         data-note-id={range.note.id}
+        data-note-tone={range.note.tone ?? 0}
         key={`${keyPrefix}-note-${rangeIndex}`}
         onClick={(event) => {
+          if (window.getSelection()?.toString().trim()) return;
+          event.preventDefault();
           event.stopPropagation();
           onAnnotationClick(range.note.id);
+        }}
+        onDoubleClick={(event) => {
+          if (window.getSelection()?.toString().trim()) return;
+          event.preventDefault();
+          event.stopPropagation();
+          onAnnotationDoubleClick(range.note.id);
         }}
       >
         {textMap.text.slice(range.start, range.end)}
@@ -835,6 +993,7 @@ function renderPreviewInline(
   keyPrefix: string,
   notes: SelectionNote[],
   onAnnotationClick: (noteId: string) => void,
+  onAnnotationDoubleClick: (noteId: string) => void,
 ) {
   if (notes.length === 0) {
     return renderInlineMarkdown(textMap.text, keyPrefix);
@@ -865,10 +1024,19 @@ function renderPreviewInline(
       <span
         className="preview-note-annotation"
         data-note-id={range.note.id}
+        data-note-tone={range.note.tone ?? 0}
         key={`${keyPrefix}-note-${rangeIndex}`}
         onClick={(event) => {
+          if (window.getSelection()?.toString().trim()) return;
+          event.preventDefault();
           event.stopPropagation();
           onAnnotationClick(range.note.id);
+        }}
+        onDoubleClick={(event) => {
+          if (window.getSelection()?.toString().trim()) return;
+          event.preventDefault();
+          event.stopPropagation();
+          onAnnotationDoubleClick(range.note.id);
         }}
       >
         {renderInlineMarkdown(
@@ -891,47 +1059,100 @@ function roundPreviewFrameValue(value: number) {
   return Math.round(value * 100) / 100;
 }
 
+function clampNumber(value: number, min: number, max: number) {
+  return Math.min(Math.max(value, min), max);
+}
+
 function measurePreviewAnnotationFrames(container: HTMLDivElement): PreviewAnnotationFrame[] {
   const containerRect = container.getBoundingClientRect();
-  const rectsByNoteId = new Map<string, DOMRect[]>();
+  const frames: PreviewAnnotationFrame[] = [];
+
+  function frameFromBounds(
+    noteId: string,
+    frameKey: string,
+    tone: AnnotationTone,
+    left: number,
+    top: number,
+    right: number,
+    bottom: number,
+  ): PreviewAnnotationFrame {
+    return {
+      frameKey,
+      noteId,
+      tone,
+      left: roundPreviewFrameValue(
+        Math.max(
+          0,
+          left - containerRect.left + container.scrollLeft,
+        ),
+      ),
+      top: roundPreviewFrameValue(
+        Math.max(
+          0,
+          top - containerRect.top + container.scrollTop,
+        ),
+      ),
+      width: roundPreviewFrameValue(right - left),
+      height: roundPreviewFrameValue(bottom - top),
+    };
+  }
 
   container
     .querySelectorAll<HTMLElement>(".preview-note-annotation[data-note-id]")
-    .forEach((annotation) => {
+    .forEach((annotation, annotationIndex) => {
       const noteId = annotation.dataset.noteId;
       if (!noteId) return;
+      const tone: AnnotationTone = annotation.dataset.noteTone === "1" ? 1 : 0;
 
       const annotationRects = Array.from(annotation.getClientRects()).filter(
         (rect) => rect.width > 0 && rect.height > 0,
       );
       if (annotationRects.length === 0) return;
 
-      rectsByNoteId.set(noteId, [...(rectsByNoteId.get(noteId) ?? []), ...annotationRects]);
+      const sortedRects = annotationRects.sort(
+        (left, right) => left.top - right.top || left.left - right.left,
+      );
+
+      sortedRects.forEach((rect, rectIndex) => {
+        let top = rect.top - previewAnnotationFramePadding;
+        let bottom = rect.bottom + previewAnnotationFramePadding;
+        const previousRect = sortedRects[rectIndex - 1];
+        const nextRect = sortedRects[rectIndex + 1];
+
+        if (previousRect) {
+          const previousGap = rect.top - previousRect.bottom;
+          if (previousGap >= 0 && previousGap <= previewAnnotationLineJoinMaxGap) {
+            top = Math.min(top, previousRect.bottom + previousGap / 2 - 1);
+          }
+        }
+
+        if (nextRect) {
+          const nextGap = nextRect.top - rect.bottom;
+          if (nextGap >= 0 && nextGap <= previewAnnotationLineJoinMaxGap) {
+            bottom = Math.max(bottom, rect.bottom + nextGap / 2 + 1);
+          }
+        }
+
+        frames.push(
+          frameFromBounds(
+            noteId,
+            `${noteId}:inline:${annotationIndex}:${rectIndex}`,
+            tone,
+            rect.left - previewAnnotationFramePadding,
+            top,
+            rect.right + previewAnnotationFramePadding,
+            bottom,
+          ),
+        );
+      });
     });
 
-  return Array.from(rectsByNoteId.entries())
-    .map(([noteId, rects]) => {
-      const left = Math.min(...rects.map((rect) => rect.left));
-      const top = Math.min(...rects.map((rect) => rect.top));
-      const right = Math.max(...rects.map((rect) => rect.right));
-      const bottom = Math.max(...rects.map((rect) => rect.bottom));
-
-      return {
-        noteId,
-        left: roundPreviewFrameValue(
-          Math.max(0, left - containerRect.left + container.scrollLeft - previewAnnotationFramePadding),
-        ),
-        top: roundPreviewFrameValue(
-          Math.max(0, top - containerRect.top + container.scrollTop - previewAnnotationFramePadding),
-        ),
-        width: roundPreviewFrameValue(right - left + previewAnnotationFramePadding * 2),
-        height: roundPreviewFrameValue(bottom - top + previewAnnotationFramePadding * 2),
-      };
-    })
-    .sort(
-      (left, right) =>
-        left.top - right.top || left.left - right.left || left.noteId.localeCompare(right.noteId),
-    );
+  return frames.sort(
+    (left, right) =>
+      left.top - right.top ||
+      left.left - right.left ||
+      left.frameKey.localeCompare(right.frameKey),
+  );
 }
 
 function arePreviewAnnotationFramesEqual(
@@ -944,7 +1165,9 @@ function arePreviewAnnotationFramesEqual(
     const rightFrame = rightFrames[index];
 
     return (
+      leftFrame.frameKey === rightFrame.frameKey &&
       leftFrame.noteId === rightFrame.noteId &&
+      leftFrame.tone === rightFrame.tone &&
       leftFrame.left === rightFrame.left &&
       leftFrame.top === rightFrame.top &&
       leftFrame.width === rightFrame.width &&
@@ -1162,12 +1385,14 @@ function MarkdownPreviewBlockView({
   notes,
   onChange,
   onAnnotationClick,
+  onAnnotationDoubleClick,
 }: {
   block: MarkdownPreviewBlock;
   markdown: string;
   notes: SelectionNote[];
   onChange: (block: MarkdownPreviewBlock, text: string) => void;
   onAnnotationClick: (noteId: string) => void;
+  onAnnotationDoubleClick: (noteId: string) => void;
 }) {
   const blockNotes = getNotesForPreviewBlock(markdown, block, notes);
 
@@ -1196,7 +1421,13 @@ function MarkdownPreviewBlockView({
         ...editableProps,
         className: "markdown-preview-editable",
       },
-      renderPreviewInline(textMap, `${block.key}-heading`, blockNotes, onAnnotationClick),
+      renderPreviewInline(
+        textMap,
+        `${block.key}-heading`,
+        blockNotes,
+        onAnnotationClick,
+        onAnnotationDoubleClick,
+      ),
     );
   }
 
@@ -1214,6 +1445,7 @@ function MarkdownPreviewBlockView({
               `${block.key}-quote-${quoteIndex}`,
               blockNotes,
               onAnnotationClick,
+              onAnnotationDoubleClick,
             )}
           </p>
         ))}
@@ -1233,6 +1465,7 @@ function MarkdownPreviewBlockView({
               `${block.key}-item-${itemIndex}`,
               blockNotes,
               onAnnotationClick,
+              onAnnotationDoubleClick,
             )}
           </li>
         ))}
@@ -1249,6 +1482,7 @@ function MarkdownPreviewBlockView({
             `${block.key}-code`,
             blockNotes,
             onAnnotationClick,
+            onAnnotationDoubleClick,
           )}
         </code>
       </pre>
@@ -1267,6 +1501,7 @@ function MarkdownPreviewBlockView({
           `${block.key}-paragraph`,
           blockNotes,
           onAnnotationClick,
+          onAnnotationDoubleClick,
         )}
       </p>
     );
@@ -1281,12 +1516,14 @@ function MarkdownPreview({
   onChange,
   onSelectionChange,
   onAnnotationClick,
+  onAnnotationDoubleClick,
 }: {
   value: string;
   notes: SelectionNote[];
   onChange: (value: string, source: EditorChangeSource) => void;
   onSelectionChange: (anchor: TextSelectionAnchor | null) => void;
   onAnnotationClick: (noteId: string) => void;
+  onAnnotationDoubleClick: (noteId: string) => void;
 }) {
   const blocks = parseMarkdownPreviewBlocks(value);
   const previewRef = useRef<HTMLDivElement | null>(null);
@@ -1334,6 +1571,79 @@ function MarkdownPreview({
     onSelectionChange(makePreviewAnchor(value, selectedText));
   }
 
+  function noteIdFromPreviewFrameEvent(event: MouseEvent<HTMLDivElement>) {
+    const previewElement = previewRef.current;
+    if (!previewElement) return null;
+
+    const targetElement =
+      event.target instanceof HTMLElement
+        ? event.target
+        : event.target instanceof Node
+          ? event.target.parentElement
+          : null;
+    if (targetElement?.closest(".preview-note-annotation")) return null;
+
+    for (const frame of previewElement.querySelectorAll<HTMLElement>(
+      ".preview-annotation-frame[data-note-id]",
+    )) {
+      const noteId = frame.dataset.noteId;
+      if (!noteId) continue;
+
+      const rect = frame.getBoundingClientRect();
+      const hitFrame =
+        event.clientX >= rect.left &&
+        event.clientX <= rect.right &&
+        event.clientY >= rect.top &&
+        event.clientY <= rect.bottom;
+
+      if (hitFrame) return noteId;
+    }
+
+    return null;
+  }
+
+  function selectedPreviewText() {
+    const selection = window.getSelection();
+    return selection && !selection.isCollapsed ? selection.toString().trim() : "";
+  }
+
+  function noteIdFromPreviewFrameClick(event: MouseEvent<HTMLDivElement>) {
+    if (selectedPreviewText()) return null;
+
+    const noteId = noteIdFromPreviewFrameEvent(event);
+    if (!noteId) return null;
+
+    event.preventDefault();
+    event.stopPropagation();
+    onSelectionChange(null);
+    return noteId;
+  }
+
+  function handlePreviewMouseDown(event: MouseEvent<HTMLDivElement>) {
+    if (event.button !== 0) return;
+  }
+
+  function handlePreviewMouseUp(event: MouseEvent<HTMLDivElement>) {
+    if (event.button !== 0) return;
+
+    if (selectedPreviewText()) {
+      handlePreviewSelection();
+      return;
+    }
+
+    const noteId = noteIdFromPreviewFrameClick(event);
+    if (noteId) {
+      if (event.detail >= 2) {
+        onAnnotationDoubleClick(noteId);
+      } else {
+        onAnnotationClick(noteId);
+      }
+      return;
+    }
+
+    handlePreviewSelection();
+  }
+
   function updatePreviewBlock(block: MarkdownPreviewBlock, text: string) {
     const nextBlock = markdownFromPreviewBlock(block, text);
     const nextValue = replaceMarkdownBlock(value, block, nextBlock);
@@ -1346,7 +1656,9 @@ function MarkdownPreview({
       className="markdown-preview"
       ref={previewRef}
       onKeyUp={handlePreviewSelection}
-      onMouseUp={handlePreviewSelection}
+      onMouseDownCapture={handlePreviewMouseDown}
+      onMouseUpCapture={handlePreviewMouseUp}
+      onMouseUp={handlePreviewMouseUp}
     >
       {blocks.map((block) => (
         <MarkdownPreviewBlockView
@@ -1355,6 +1667,7 @@ function MarkdownPreview({
           markdown={value}
           notes={notes}
           onAnnotationClick={onAnnotationClick}
+          onAnnotationDoubleClick={onAnnotationDoubleClick}
           onChange={updatePreviewBlock}
         />
       ))}
@@ -1362,7 +1675,9 @@ function MarkdownPreview({
         {annotationFrames.map((frame) => (
           <span
             className="preview-annotation-frame"
-            key={frame.noteId}
+            data-note-id={frame.noteId}
+            data-note-tone={frame.tone}
+            key={frame.frameKey}
             style={{
               height: frame.height,
               left: frame.left,
@@ -1387,8 +1702,15 @@ function App() {
   const [notes, setNotes] = useState(notesSeed);
   const [pendingAnchor, setPendingAnchor] = useState<TextSelectionAnchor | null>(null);
   const [noteDraft, setNoteDraft] = useState("");
-  const [activeNoteId, setActiveNoteId] = useState("note-1");
-  const [editorMode, setEditorMode] = useState<EditorMode>("edit");
+  const [activeNoteId, setActiveNoteId] = useState("");
+  const [activeNoteMode, setActiveNoteMode] = useState<ActiveNoteMode>("view");
+  const [floatingNotePanelPosition, setFloatingNotePanelPosition] =
+    useState<FloatingNotePosition | null>(null);
+  const [selectionWarningPosition, setSelectionWarningPosition] =
+    useState<SelectionWarningPosition | null>(null);
+  const [isNotePanelClosing, setIsNotePanelClosing] = useState(false);
+  const [isReturningToView, setIsReturningToView] = useState(false);
+  const [editorMode, setEditorMode] = useState<EditorMode>("preview");
   const [dirtyDocumentStates, setDirtyDocumentStates] = useState<
     Record<string, DirtyDocumentState>
   >({});
@@ -1396,7 +1718,31 @@ function App() {
     savedBodiesFromDocuments(documentsSeed),
   );
   const [storageError, setStorageError] = useState("");
-  const [isSavingFile, setIsSavingFile] = useState(false);
+  const notePanelRef = useRef<HTMLElement | null>(null);
+  const floatingNoteCardRef = useRef<HTMLDivElement | null>(null);
+  const noteTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const returnToViewTimerRef = useRef(0);
+  const notePanelCloseTimerRef = useRef(0);
+  const floatingNotePanelPositionFrameRef = useRef(0);
+  const floatingNoteAnchorRectRef = useRef<TextRangeRect | null>(null);
+  const noteTextareaShouldRefocusRef = useRef(false);
+  const noteTextareaIsComposingRef = useRef(false);
+  const noteTextareaEnterIgnoredDuringCompositionRef = useRef(false);
+  const noteTextareaPostCompositionGuardUntilRef = useRef(0);
+  const transientSelectionNoteIdRef = useRef("");
+  const autosaveTimerRef = useRef(0);
+  const autosaveInFlightRef = useRef(false);
+  const autosaveRequestedWhileSavingRef = useRef(false);
+  const documentsRef = useRef(documents);
+  const notesRef = useRef(notes);
+  const dirtyDocumentStatesRef = useRef(dirtyDocumentStates);
+  const notePanelHasContentRef = useRef(false);
+  const selectionDismissedUntilRef = useRef(0);
+  const lastOpenedFileRestoreAttemptedRef = useRef(false);
+
+  documentsRef.current = documents;
+  notesRef.current = notes;
+  dirtyDocumentStatesRef.current = dirtyDocumentStates;
 
   const selectedDocument =
     documents.find((document) => document.id === selectedDocumentId) ?? documents[0];
@@ -1405,22 +1751,498 @@ function App() {
     (note) => note.documentId === selectedDocument.id && note.status !== "deleted",
   );
   const nativeStorageAvailable = hasNativeStorageAccess();
-  const activeNotes = documentNotes.filter((note) => note.status === "active");
-  const orphanedNotes = documentNotes.filter((note) => note.status === "orphaned");
+  const activeNotes = assignAnnotationTones(
+    documentNotes.filter((note) => note.status === "active"),
+  );
   const activeNote = documentNotes.find((note) => note.id === activeNoteId);
-  const selectedDocumentIsDirty = hasDirtyState(dirtyDocumentStates[selectedDocument.id]);
 
   const annotations: TextAnnotation[] = activeNotes.map((note) => ({
     id: note.id,
     from: note.anchor.from,
+    tone: note.tone,
     to: note.anchor.to,
   }));
-  const canSaveSelectionNote = Boolean(pendingAnchor && noteDraft.trim());
-  const shouldShowPartialSelectionWarning = Boolean(
-    noteDraft.trim() &&
-      pendingAnchor &&
-      !isSelectionCompleteMarkdownBlock(selectedDocument.body, pendingAnchor),
+  const pendingAnchorIsCompleteBlock = Boolean(
+    pendingAnchor && isSelectionCompleteMarkdownBlock(selectedDocument.body, pendingAnchor),
   );
+  const activeNoteIsEditing = Boolean(activeNote && activeNoteMode === "edit");
+  const activeNoteBodyIsEmpty = Boolean(activeNote && !activeNote.body.trim());
+  const notePanelHasContent = Boolean(pendingAnchor || activeNote);
+  const floatingNotePanelShouldRender = notePanelHasContent;
+
+  useEffect(() => {
+    notePanelHasContentRef.current = notePanelHasContent;
+  }, [notePanelHasContent]);
+
+  useEffect(
+    () => () => {
+      window.clearTimeout(returnToViewTimerRef.current);
+    },
+    [],
+  );
+
+  useLayoutEffect(() => {
+    if (!noteTextareaShouldRefocusRef.current) return;
+
+    const textarea = noteTextareaRef.current;
+    if (!textarea) return;
+
+    noteTextareaShouldRefocusRef.current = false;
+    textarea.focus();
+    textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+  }, [activeNoteId, activeNoteMode, pendingAnchor]);
+
+  useLayoutEffect(() => {
+    if (!notePanelHasContent) {
+      window.cancelAnimationFrame(floatingNotePanelPositionFrameRef.current);
+      floatingNoteAnchorRectRef.current = null;
+      setFloatingNotePanelPosition(null);
+      return;
+    }
+
+    function updateFloatingNotePanelPosition() {
+      window.cancelAnimationFrame(floatingNotePanelPositionFrameRef.current);
+      floatingNotePanelPositionFrameRef.current = window.requestAnimationFrame(() => {
+        const card = floatingNoteCardRef.current;
+        const measuredAnchorRect = activeNote
+          ? activeNoteAnchorRect(activeNote.id)
+          : pendingAnchor
+            ? currentSelectionAnchorRect()
+            : null;
+        if (measuredAnchorRect) {
+          floatingNoteAnchorRectRef.current = measuredAnchorRect;
+        }
+        const anchorRect =
+          measuredAnchorRect ?? (activeNote ? null : floatingNoteAnchorRectRef.current);
+
+        if (!card) {
+          setFloatingNotePanelPosition(null);
+          return;
+        }
+
+        const nextPosition = anchorRect
+          ? calculateFloatingNotePosition(anchorRect, card.getBoundingClientRect())
+          : calculateDetachedFloatingNotePosition(card.getBoundingClientRect());
+        setFloatingNotePanelPosition((currentPosition) =>
+          floatingNotePositionsAreEqual(currentPosition, nextPosition)
+            ? currentPosition
+            : nextPosition,
+        );
+      });
+    }
+
+    updateFloatingNotePanelPosition();
+    document.addEventListener("scroll", updateFloatingNotePanelPosition, true);
+    window.addEventListener("resize", updateFloatingNotePanelPosition);
+
+    return () => {
+      window.cancelAnimationFrame(floatingNotePanelPositionFrameRef.current);
+      document.removeEventListener("scroll", updateFloatingNotePanelPosition, true);
+      window.removeEventListener("resize", updateFloatingNotePanelPosition);
+    };
+  }, [activeNote, activeNoteMode, editorMode, noteDraft, notePanelHasContent, pendingAnchor, selectedDocument.body]);
+
+  function elementFromEventTarget(target: EventTarget | null) {
+    return target instanceof HTMLElement
+      ? target
+      : target instanceof Node
+        ? target.parentElement
+        : null;
+  }
+
+  function pointHitsRect(clientX: number, clientY: number, rect: DOMRect) {
+    return (
+      clientX >= rect.left &&
+      clientX <= rect.right &&
+      clientY >= rect.top &&
+      clientY <= rect.bottom
+    );
+  }
+
+  function pointHitsAnyRect(clientX: number, clientY: number, rects: DOMRect[]) {
+    return rects.some((rect) => pointHitsRect(clientX, clientY, rect));
+  }
+
+  function textRangeRectFromClientRects(rects: DOMRect[]): TextRangeRect | null {
+    const visibleRects = rects.filter((rect) => rect.width > 0 && rect.height > 0);
+    if (visibleRects.length === 0) return null;
+
+    const left = Math.min(...visibleRects.map((rect) => rect.left));
+    const top = Math.min(...visibleRects.map((rect) => rect.top));
+    const right = Math.max(...visibleRects.map((rect) => rect.right));
+    const bottom = Math.max(...visibleRects.map((rect) => rect.bottom));
+
+    return {
+      bottom,
+      height: bottom - top,
+      left,
+      right,
+      top,
+      width: right - left,
+    };
+  }
+
+  function textAnchorRectFromClientRects(rects: DOMRect[]): TextRangeRect | null {
+    const visibleRects = rects
+      .filter((rect) => rect.width > 0 && rect.height > 0)
+      .sort((left, right) => left.top - right.top || left.left - right.left);
+    if (visibleRects.length === 0) return null;
+
+    const bottomLineTop = visibleRects[visibleRects.length - 1].top;
+    const bottomLineRects = visibleRects.filter(
+      (rect) => Math.abs(rect.top - bottomLineTop) < 2,
+    );
+
+    return textRangeRectFromClientRects(bottomLineRects);
+  }
+
+  function currentSelectionAnchorRect() {
+    const selection = window.getSelection();
+
+    if (selection && !selection.isCollapsed) {
+      const selectionRects = Array.from({ length: selection.rangeCount }).flatMap((_, index) =>
+        Array.from(selection.getRangeAt(index).getClientRects()),
+      );
+      const selectionRect = textAnchorRectFromClientRects(selectionRects);
+      if (selectionRect) return selectionRect;
+    }
+
+    const editorSelectionRects = Array.from(
+      document.querySelectorAll<HTMLElement>(".cm-selectionBackground"),
+    ).flatMap((element) => Array.from(element.getClientRects()));
+
+    return textAnchorRectFromClientRects(editorSelectionRects);
+  }
+
+  function selectionWarningPositionFromAnchor(anchorRect: TextRangeRect | null) {
+    const warningWidth = 260;
+    const warningHeight = 44;
+    const viewportMargin = 12;
+    const maxLeft = Math.max(viewportMargin, window.innerWidth - warningWidth - viewportMargin);
+    const maxTop = Math.max(viewportMargin, window.innerHeight - warningHeight - viewportMargin);
+
+    if (!anchorRect) {
+      return {
+        left: Math.round(clampNumber(window.innerWidth / 2 - warningWidth / 2, viewportMargin, maxLeft)),
+        top: viewportMargin,
+      };
+    }
+
+    return {
+      left: Math.round(clampNumber(anchorRect.left, viewportMargin, maxLeft)),
+      top: Math.round(clampNumber(anchorRect.bottom + 8, viewportMargin, maxTop)),
+    };
+  }
+
+  function activeNoteAnchorRect(noteId: string) {
+    const noteElements = Array.from(
+      document.querySelectorAll<HTMLElement>(
+        ".cm-note-annotation[data-note-id], .preview-note-annotation[data-note-id]",
+      ),
+    ).filter((element) => element.dataset.noteId === noteId);
+
+    const rects = noteElements.flatMap((element) =>
+      Array.from(element.getClientRects()).filter((rect) => rect.width > 0 && rect.height > 0),
+    );
+
+    return textAnchorRectFromClientRects(rects);
+  }
+
+  function calculateFloatingNotePosition(
+    anchorRect: TextRangeRect,
+    cardRect: DOMRect,
+  ): FloatingNotePosition {
+    const viewportWidth = window.innerWidth;
+    const viewportHeight = window.innerHeight;
+    const viewportMargin = 12;
+    const noteGap = 12;
+    const belowNoteOffset = 8;
+    const cardWidth = Math.min(
+      cardRect.width || 300,
+      Math.max(180, viewportWidth - viewportMargin * 2),
+    );
+    const cardHeight = cardRect.height || 260;
+    const belowRoom = viewportHeight - anchorRect.bottom - noteGap - viewportMargin;
+    const aboveRoom = anchorRect.top - noteGap - viewportMargin;
+    const preferredHeight = Math.min(cardHeight, 280);
+    const placement =
+      belowRoom >= preferredHeight || belowRoom >= aboveRoom ? "below" : "above";
+    const availableHeight = placement === "below" ? belowRoom : aboveRoom;
+    const maxHeight = Math.min(
+      360,
+      Math.max(120, availableHeight > 0 ? availableHeight : cardHeight),
+      Math.max(120, viewportHeight - viewportMargin * 2),
+    );
+    const positionedHeight = Math.min(cardHeight, maxHeight);
+    const targetY = placement === "below" ? anchorRect.bottom : anchorRect.top;
+    const targetInset = Math.min(
+      Math.max(24, anchorRect.width * 0.18),
+      Math.max(0, anchorRect.width / 2 - 1),
+    );
+    const targetX = clampNumber(
+      anchorRect.left + anchorRect.width * 0.78,
+      anchorRect.left + targetInset,
+      anchorRect.right - targetInset,
+    );
+    const minimumVerticalDistance = noteGap + (placement === "below" ? belowNoteOffset : 0);
+    const preferredSlant = Math.min(24, Math.max(10, minimumVerticalDistance * 0.55));
+    const centeredLeft = clampNumber(
+      targetX - cardWidth / 2,
+      viewportMargin,
+      viewportWidth - viewportMargin - cardWidth,
+    );
+    const panelShouldLeanRight = centeredLeft + cardWidth / 2 < viewportWidth / 2;
+    const preferredSourceX = targetX + (panelShouldLeanRight ? -preferredSlant : preferredSlant);
+    const left = clampNumber(
+      preferredSourceX - cardWidth / 2,
+      viewportMargin,
+      viewportWidth - viewportMargin - cardWidth,
+    );
+    const right = left + cardWidth;
+    const connectorInset = Math.min(36, Math.max(18, cardWidth * 0.12));
+    const sourceX = clampNumber(
+      preferredSourceX,
+      left + connectorInset,
+      right - connectorInset,
+    );
+    // Keep the connector within 45 degrees from the vertical axis: |dx| <= |dy|.
+    const verticalDistance = Math.max(
+      minimumVerticalDistance,
+      Math.abs(sourceX - targetX),
+    );
+    const top =
+      placement === "below"
+        ? targetY + verticalDistance
+        : targetY - positionedHeight - verticalDistance;
+    const sourceY = placement === "below" ? top : top + positionedHeight;
+    const connectorDeltaX = sourceX - targetX;
+    const connectorDeltaY = sourceY - targetY;
+    const connectorWidth = Math.max(
+      0,
+      Math.sqrt(connectorDeltaX * connectorDeltaX + connectorDeltaY * connectorDeltaY),
+    );
+    const connectorAngle =
+      Math.atan2(connectorDeltaY, connectorDeltaX) * (180 / Math.PI);
+
+    return {
+      connector: {
+        angle: Math.round(connectorAngle * 100) / 100,
+        left: Math.round(targetX),
+        top: Math.round(targetY),
+        width: Math.round(connectorWidth),
+      },
+      left: Math.round(left),
+      maxHeight: Math.round(maxHeight),
+      placement,
+      top: Math.round(top),
+    };
+  }
+
+  function calculateDetachedFloatingNotePosition(cardRect: DOMRect): FloatingNotePosition {
+    const viewportHeight = window.innerHeight;
+    const viewportMargin = 12;
+    const cardHeight = cardRect.height || 260;
+    const maxHeight = Math.min(
+      360,
+      Math.max(120, viewportHeight - viewportMargin * 2),
+    );
+    const positionedHeight = Math.min(cardHeight, maxHeight);
+
+    return {
+      connector: null,
+      left: viewportMargin,
+      maxHeight: Math.round(maxHeight),
+      placement: "detached",
+      top: Math.round(viewportHeight - viewportMargin - positionedHeight),
+    };
+  }
+
+  function floatingNotePositionsAreEqual(
+    leftPosition: FloatingNotePosition | null,
+    rightPosition: FloatingNotePosition,
+  ) {
+    return (
+      leftPosition?.left === rightPosition.left &&
+      leftPosition.top === rightPosition.top &&
+      leftPosition.maxHeight === rightPosition.maxHeight &&
+      leftPosition.placement === rightPosition.placement &&
+      leftPosition.connector?.left === rightPosition.connector?.left &&
+      leftPosition.connector?.top === rightPosition.connector?.top &&
+      leftPosition.connector?.width === rightPosition.connector?.width &&
+      leftPosition.connector?.angle === rightPosition.connector?.angle
+    );
+  }
+
+  function targetIsInsideNotePanel(target: EventTarget | null) {
+    const panel = notePanelRef.current;
+    return Boolean(panel && target instanceof Node && panel.contains(target));
+  }
+
+  function targetIsActiveNoteRange(target: EventTarget | null) {
+    if (!activeNoteId) return false;
+
+    const targetElement = elementFromEventTarget(target);
+    const noteElement = targetElement?.closest<HTMLElement>(
+      ".cm-note-annotation[data-note-id], .cm-annotation-frame[data-note-id], .preview-note-annotation[data-note-id], .preview-annotation-frame[data-note-id]",
+    );
+
+    return noteElement?.dataset.noteId === activeNoteId;
+  }
+
+  function pointHitsActiveNoteRange(clientX: number, clientY: number) {
+    if (!activeNoteId) return false;
+
+    return Array.from(
+      document.querySelectorAll<HTMLElement>(
+        ".cm-note-annotation[data-note-id], .cm-annotation-frame[data-note-id], .preview-note-annotation[data-note-id], .preview-annotation-frame[data-note-id]",
+      ),
+    ).some((element) => {
+      if (element.dataset.noteId !== activeNoteId) return false;
+      return pointHitsAnyRect(clientX, clientY, Array.from(element.getClientRects()));
+    });
+  }
+
+  function pointHitsCurrentSelection(clientX: number, clientY: number) {
+    if (!pendingAnchor) return false;
+
+    const selection = window.getSelection();
+    if (selection && !selection.isCollapsed) {
+      for (let index = 0; index < selection.rangeCount; index += 1) {
+        if (
+          pointHitsAnyRect(
+            clientX,
+            clientY,
+            Array.from(selection.getRangeAt(index).getClientRects()),
+          )
+        ) {
+          return true;
+        }
+      }
+    }
+
+    return Array.from(document.querySelectorAll<HTMLElement>(".cm-selectionBackground")).some(
+      (element) => pointHitsAnyRect(clientX, clientY, Array.from(element.getClientRects())),
+    );
+  }
+
+  function notePanelKeepsFocus(target: EventTarget | null, clientX?: number, clientY?: number) {
+    if (targetIsInsideNotePanel(target) || targetIsActiveNoteRange(target)) return true;
+
+    if (typeof clientX === "number" && typeof clientY === "number") {
+      return (
+        pointHitsActiveNoteRange(clientX, clientY) ||
+        pointHitsCurrentSelection(clientX, clientY)
+      );
+    }
+
+    return false;
+  }
+
+  function dismissNotePanelFromAppInteraction() {
+    selectionDismissedUntilRef.current = Date.now() + 700;
+    window.getSelection()?.removeAllRanges();
+    closeNotePanel();
+  }
+
+  useEffect(() => {
+    if (!notePanelHasContent || isNotePanelClosing) return;
+
+    function handleDocumentPointerDown(event: PointerEvent) {
+      if (event.button !== 0) return;
+      if (notePanelKeepsFocus(event.target, event.clientX, event.clientY)) return;
+
+      dismissNotePanelFromAppInteraction();
+    }
+
+    function handleDocumentMouseDown(event: globalThis.MouseEvent) {
+      if (event.button !== 0) return;
+      if (notePanelKeepsFocus(event.target, event.clientX, event.clientY)) return;
+
+      dismissNotePanelFromAppInteraction();
+    }
+
+    function handleDocumentFocusIn(event: Event) {
+      if (notePanelKeepsFocus(event.target)) return;
+
+      dismissNotePanelFromAppInteraction();
+    }
+
+    document.addEventListener("pointerdown", handleDocumentPointerDown, true);
+    document.addEventListener("mousedown", handleDocumentMouseDown, true);
+    document.addEventListener("focusin", handleDocumentFocusIn, true);
+
+    return () => {
+      document.removeEventListener("pointerdown", handleDocumentPointerDown, true);
+      document.removeEventListener("mousedown", handleDocumentMouseDown, true);
+      document.removeEventListener("focusin", handleDocumentFocusIn, true);
+    };
+  }, [activeNoteId, isNotePanelClosing, notePanelHasContent, pendingAnchor]);
+
+  useEffect(() => {
+    if (!selectionWarningPosition) return;
+
+    function dismissSelectionWarning() {
+      setSelectionWarningPosition(null);
+    }
+
+    document.addEventListener("pointerdown", dismissSelectionWarning, true);
+
+    return () => {
+      document.removeEventListener("pointerdown", dismissSelectionWarning, true);
+    };
+  }, [selectionWarningPosition]);
+
+  useEffect(() => {
+    return () => {
+      window.clearTimeout(notePanelCloseTimerRef.current);
+      window.clearTimeout(autosaveTimerRef.current);
+      window.cancelAnimationFrame(floatingNotePanelPositionFrameRef.current);
+    };
+  }, []);
+
+  useEffect(() => {
+    window.clearTimeout(autosaveTimerRef.current);
+
+    if (!nativeStorageAvailable) return;
+
+    const hasDirtyLocalDocument = documents.some(
+      (document) =>
+        Boolean(document.filePath) && hasDirtyState(dirtyDocumentStates[document.id]),
+    );
+    if (!hasDirtyLocalDocument) return;
+
+    autosaveTimerRef.current = window.setTimeout(() => {
+      void saveDirtyDocuments();
+    }, autosaveDelayMs);
+
+    return () => {
+      window.clearTimeout(autosaveTimerRef.current);
+    };
+  }, [dirtyDocumentStates, documents, nativeStorageAvailable, notes]);
+
+  useEffect(() => {
+    if (!nativeStorageAvailable || lastOpenedFileRestoreAttemptedRef.current) return;
+
+    lastOpenedFileRestoreAttemptedRef.current = true;
+    const lastOpenedPath = readLastOpenedMarkdownPath();
+    if (!lastOpenedPath) return;
+
+    setStorageError("Opening last file...");
+
+    void invoke<OpenMarkdownFileContextResult>("open_markdown_file_context", {
+      path: lastOpenedPath,
+    })
+      .then((context) => {
+        applyOpenedDirectory(directoryWithSelectedFile(context), context.selectedFile.path);
+        setStorageError("");
+      })
+      .catch((error) => {
+        forgetLastOpenedMarkdownPath();
+        setStorageError(
+          `Could not reopen last file: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      });
+  }, [nativeStorageAvailable]);
 
   useEffect(() => {
     if (!nativeStorageAvailable) return;
@@ -1454,12 +2276,17 @@ function App() {
 
   useEffect(() => {
     function handleModeShortcut(event: KeyboardEvent) {
-      if (!(event.metaKey || event.ctrlKey) || !event.shiftKey) return;
-      if (event.key.toLowerCase() !== "p") return;
+      if (event.key === "Escape" && notePanelHasContentRef.current) {
+        event.preventDefault();
+        closeNotePanel();
+        return;
+      }
+
+      if (!event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
+      if (event.key !== "/" && event.code !== "Slash") return;
 
       event.preventDefault();
-      setPendingAnchor(null);
-      setNoteDraft("");
+      closeNotePanel();
       setEditorMode((currentMode) => (currentMode === "preview" ? "edit" : "preview"));
     }
 
@@ -1468,7 +2295,7 @@ function App() {
     return () => {
       window.removeEventListener("keydown", handleModeShortcut);
     };
-  }, []);
+  }, [closeNotePanel]);
 
   function updateDocumentDirtyState(documentId: string, patch: Partial<DirtyDocumentState>) {
     setDirtyDocumentStates((currentStates) => {
@@ -1495,18 +2322,6 @@ function App() {
 
   function markDocumentNotesDirty(documentId = selectedDocument.id) {
     updateDocumentDirtyState(documentId, { notes: true });
-  }
-
-  function markDocumentClean(documentId: string, body: string) {
-    setDirtyDocumentStates((currentStates) => {
-      const nextStates = { ...currentStates };
-      delete nextStates[documentId];
-      return nextStates;
-    });
-    setSavedDocumentBodies((currentBodies) => ({
-      ...currentBodies,
-      [documentId]: body,
-    }));
   }
 
   function markLoadedDocumentsClean(loadedDocuments: MarkdownDocument[]) {
@@ -1540,11 +2355,36 @@ function App() {
     };
   }
 
+  function directoryWithSelectedFile(context: OpenMarkdownFileContextResult) {
+    const selectedFileEntryExists = context.directory.entries.some(
+      (entry) => entry.kind === "file" && entry.file.path === context.selectedFile.path,
+    );
+
+    if (selectedFileEntryExists) {
+      return context.directory;
+    }
+
+    return {
+      ...context.directory,
+      entries: [
+        ...context.directory.entries,
+        {
+          kind: "file" as const,
+          path: context.selectedFile.path,
+          title: context.selectedFile.title,
+          file: context.selectedFile,
+        },
+      ],
+    };
+  }
+
   function applyLoadedFiles(loadedFiles: OpenMarkdownFileResult[]) {
     if (loadedFiles.length === 0) {
       setStorageError("No Markdown files found in the selected folder.");
       return;
     }
+
+    discardTransientEmptySelectionNote();
 
     const loadedDocuments = loadedFiles.map(documentFromLoadedFile);
     const loadedDocumentIds = new Set(loadedDocuments.map((document) => document.id));
@@ -1571,16 +2411,18 @@ function App() {
       ...currentNotes.filter((note) => !loadedDocumentIds.has(note.documentId)),
     ]);
     setSelectedDocumentId(firstDocument.id);
+    setSelectionWarningPosition(null);
     setPendingAnchor(null);
     setNoteDraft("");
-    setActiveNoteId(
-      loadedNotes.find((note) => note.documentId === firstDocument.id && note.status !== "deleted")
-        ?.id ?? "",
-    );
+    setActiveNoteId("");
+    setActiveNoteMode("view");
     markLoadedDocumentsClean(loadedDocuments);
+    rememberLastOpenedMarkdownPath(firstDocument.filePath);
   }
 
   function applyOpenedDirectory(openedDirectory: OpenMarkdownDirectoryResult, selectedPath?: string) {
+    discardTransientEmptySelectionNote();
+
     const loadedFiles = openedDirectory.entries.flatMap((entry) =>
       entry.kind === "file" ? [entry.file] : [],
     );
@@ -1621,20 +2463,17 @@ function App() {
     setWorkspaceTitle(openedDirectory.title);
     setWorkspacePath(openedDirectory.path);
     setWorkspaceEntries(nextEntries);
+    setSelectionWarningPosition(null);
     setPendingAnchor(null);
     setNoteDraft("");
     markLoadedDocumentsClean(loadedDocuments);
 
     if (documentToSelect) {
       setSelectedDocumentId(documentToSelect.id);
-      setActiveNoteId(
-        loadedNotes.find(
-          (note) => note.documentId === documentToSelect.id && note.status !== "deleted",
-        )?.id ?? "",
-      );
-    } else {
-      setActiveNoteId("");
+      rememberLastOpenedMarkdownPath(documentToSelect.filePath);
     }
+    setActiveNoteId("");
+    setActiveNoteMode("view");
 
     if (nextEntries.length === 0) {
       setStorageError("No folders or Markdown files found in the selected folder.");
@@ -1702,23 +2541,7 @@ function App() {
       const context = await invoke<OpenMarkdownFileContextResult>("open_markdown_file_context", {
         path: selectedPath,
       });
-      const selectedFileEntryExists = context.directory.entries.some(
-        (entry) => entry.kind === "file" && entry.file.path === context.selectedFile.path,
-      );
-      const directory = selectedFileEntryExists
-        ? context.directory
-        : {
-            ...context.directory,
-            entries: [
-              ...context.directory.entries,
-              {
-                kind: "file" as const,
-                path: context.selectedFile.path,
-                title: context.selectedFile.title,
-                file: context.selectedFile,
-              },
-            ],
-          };
+      const directory = directoryWithSelectedFile(context);
 
       applyOpenedDirectory(directory, context.selectedFile.path);
       setStorageError("");
@@ -1733,7 +2556,6 @@ function App() {
       return;
     }
 
-    setIsSavingFile(true);
     setStorageError("");
 
     try {
@@ -1757,48 +2579,113 @@ function App() {
       applyLoadedFiles([loaded]);
     } catch (error) {
       setStorageError(error instanceof Error ? error.message : String(error));
-    } finally {
-      setIsSavingFile(false);
     }
   }
 
-  async function saveSelectedDocument() {
-    if (!selectedDocument.filePath) {
-      setStorageError("This document is sample content. Open a local .md file before saving.");
-      return;
-    }
-    if (!nativeStorageAvailable) {
-      setStorageError("Open/save requires the Scholium macOS app runtime.");
+  function isTransientEmptySelectionNote(note: SelectionNote) {
+    return note.id === transientSelectionNoteIdRef.current && !note.body.trim();
+  }
+
+  function notesForDocument(documentId: string, sourceNotes = notesRef.current) {
+    return sourceNotes.filter(
+      (note) => note.documentId === documentId && !isTransientEmptySelectionNote(note),
+    );
+  }
+
+  function notesFingerprint(sourceNotes: SelectionNote[]) {
+    return JSON.stringify(sourceNotes);
+  }
+
+  function markDocumentSnapshotSaved(
+    documentId: string,
+    savedBody: string,
+    savedNotesFingerprint: string,
+  ) {
+    setSavedDocumentBodies((currentBodies) => ({
+      ...currentBodies,
+      [documentId]: savedBody,
+    }));
+    setDirtyDocumentStates((currentStates) => {
+      const currentDocument = documentsRef.current.find((document) => document.id === documentId);
+      const currentNotesFingerprint = notesFingerprint(notesForDocument(documentId));
+      const nextState: DirtyDocumentState = {
+        body: currentDocument ? currentDocument.body !== savedBody : false,
+        notes: currentNotesFingerprint !== savedNotesFingerprint,
+      };
+      const nextStates = { ...currentStates };
+
+      if (hasDirtyState(nextState)) {
+        nextStates[documentId] = nextState;
+      } else {
+        delete nextStates[documentId];
+      }
+
+      return nextStates;
+    });
+  }
+
+  async function saveDocumentToDisk(documentToSave: MarkdownDocument) {
+    if (!documentToSave.filePath) return;
+
+    const bodyToSave = documentToSave.body;
+    const notesToSave = notesForDocument(documentToSave.id);
+    const savedNotesFingerprint = notesFingerprint(notesToSave);
+    const saved = await invoke<SaveMarkdownFileResult>("save_markdown_file", {
+      path: documentToSave.filePath,
+      body: bodyToSave,
+      notes: notesToSave,
+    });
+
+    setDocuments((currentDocuments) =>
+      currentDocuments.map((document) =>
+        document.id === documentToSave.id
+          ? {
+              ...document,
+              filePath: saved.path,
+              path: saved.path,
+              notesPath: saved.notesPath,
+              updatedAt: `Saved ${nowLabel()}`,
+            }
+          : document,
+      ),
+    );
+    markDocumentSnapshotSaved(documentToSave.id, bodyToSave, savedNotesFingerprint);
+  }
+
+  async function saveDirtyDocuments() {
+    if (!nativeStorageAvailable) return;
+
+    if (autosaveInFlightRef.current) {
+      autosaveRequestedWhileSavingRef.current = true;
       return;
     }
 
-    setIsSavingFile(true);
+    const dirtyDocuments = documentsRef.current.filter(
+      (document) =>
+        Boolean(document.filePath) &&
+        hasDirtyState(dirtyDocumentStatesRef.current[document.id]),
+    );
+    if (dirtyDocuments.length === 0) return;
+
+    autosaveInFlightRef.current = true;
     setStorageError("");
 
     try {
-      const saved = await invoke<SaveMarkdownFileResult>("save_markdown_file", {
-        path: selectedDocument.filePath,
-        body: selectedDocument.body,
-        notes: notes.filter((note) => note.documentId === selectedDocument.id),
-      });
-
-      setDocuments((currentDocuments) =>
-        currentDocuments.map((document) =>
-          document.id === selectedDocument.id
-            ? {
-                ...document,
-                path: saved.path,
-                notesPath: saved.notesPath,
-                updatedAt: `Saved ${nowLabel()}`,
-              }
-            : document,
-        ),
-      );
-      markDocumentClean(selectedDocument.id, selectedDocument.body);
+      for (const documentToSave of dirtyDocuments) {
+        await saveDocumentToDisk(documentToSave);
+      }
     } catch (error) {
       setStorageError(error instanceof Error ? error.message : String(error));
     } finally {
-      setIsSavingFile(false);
+      autosaveInFlightRef.current = false;
+
+      if (autosaveRequestedWhileSavingRef.current) {
+        autosaveRequestedWhileSavingRef.current = false;
+        window.clearTimeout(autosaveTimerRef.current);
+        autosaveTimerRef.current = window.setTimeout(() => {
+          void saveDirtyDocuments();
+        }, autosaveDelayMs);
+      }
     }
   }
 
@@ -1825,18 +2712,232 @@ function App() {
     const nextDocument = documents.find((document) => document.id === documentId);
     if (!nextDocument) return;
 
+    discardTransientEmptySelectionNote();
     setSelectedDocumentId(documentId);
+    setSelectionWarningPosition(null);
     setPendingAnchor(null);
     setNoteDraft("");
     setStorageError("");
-    setActiveNoteId(
-      notes.find((note) => note.documentId === documentId && note.status !== "deleted")?.id ?? "",
-    );
+    setActiveNoteId("");
+    setActiveNoteMode("view");
+    clearReturnToViewTimer();
+    rememberLastOpenedMarkdownPath(nextDocument.filePath);
   }
 
-  function createNoteFromSelection() {
-    const body = noteDraft.trim();
-    if (!canSaveSelectionNote || !pendingAnchor) return;
+  function clearNotePanelCloseTimer() {
+    window.clearTimeout(notePanelCloseTimerRef.current);
+    notePanelCloseTimerRef.current = 0;
+  }
+
+  function clearReturnToViewTimer() {
+    window.clearTimeout(returnToViewTimerRef.current);
+    returnToViewTimerRef.current = 0;
+    setIsReturningToView(false);
+  }
+
+  function discardTransientEmptySelectionNote() {
+    const noteId = transientSelectionNoteIdRef.current;
+    if (!noteId) return false;
+
+    const note = notesRef.current.find((candidate) => candidate.id === noteId);
+    if (!note) {
+      transientSelectionNoteIdRef.current = "";
+      return false;
+    }
+
+    if (note.body.trim()) {
+      transientSelectionNoteIdRef.current = "";
+      return false;
+    }
+
+    notesRef.current = notesRef.current.filter((candidate) => candidate.id !== noteId);
+    setNotes((currentNotes) => currentNotes.filter((candidate) => candidate.id !== noteId));
+    transientSelectionNoteIdRef.current = "";
+    return true;
+  }
+
+  function returnActiveNoteToViewMode() {
+    if (!activeNoteIsEditing || isReturningToView) return;
+
+    if (
+      activeNote &&
+      activeNote.id === transientSelectionNoteIdRef.current &&
+      !activeNote.body.trim() &&
+      !noteDraft.trim()
+    ) {
+      closeNotePanel();
+      return;
+    }
+
+    setIsReturningToView(true);
+    window.clearTimeout(returnToViewTimerRef.current);
+    returnToViewTimerRef.current = window.setTimeout(() => {
+      setActiveNoteMode("view");
+      setIsReturningToView(false);
+      returnToViewTimerRef.current = 0;
+    }, 1000);
+  }
+
+  function resetNoteTextareaCompositionState() {
+    noteTextareaIsComposingRef.current = false;
+    noteTextareaEnterIgnoredDuringCompositionRef.current = false;
+    noteTextareaPostCompositionGuardUntilRef.current = 0;
+  }
+
+  function closeNotePanel() {
+    clearNotePanelCloseTimer();
+    clearReturnToViewTimer();
+    resetNoteTextareaCompositionState();
+    setSelectionWarningPosition(null);
+
+    if (!notePanelHasContentRef.current) {
+      setIsNotePanelClosing(false);
+      return;
+    }
+
+    setIsNotePanelClosing(true);
+    notePanelCloseTimerRef.current = window.setTimeout(() => {
+      discardTransientEmptySelectionNote();
+      setPendingAnchor(null);
+      setActiveNoteId("");
+      setActiveNoteMode("view");
+      setNoteDraft("");
+      setIsNotePanelClosing(false);
+      floatingNoteAnchorRectRef.current = null;
+      notePanelHasContentRef.current = false;
+      notePanelCloseTimerRef.current = 0;
+    }, notePanelAnimationMs);
+  }
+
+  function handleNoteEditorCompositionStart() {
+    noteTextareaIsComposingRef.current = true;
+    noteTextareaEnterIgnoredDuringCompositionRef.current = false;
+    noteTextareaPostCompositionGuardUntilRef.current = 0;
+  }
+
+  function handleNoteEditorCompositionEnd() {
+    noteTextareaIsComposingRef.current = false;
+    if (noteTextareaEnterIgnoredDuringCompositionRef.current) {
+      noteTextareaEnterIgnoredDuringCompositionRef.current = false;
+      noteTextareaPostCompositionGuardUntilRef.current = 0;
+      return;
+    }
+
+    noteTextareaPostCompositionGuardUntilRef.current = Date.now() + 180;
+  }
+
+  function handleNoteEditorKeyDown(event: ReactKeyboardEvent<HTMLTextAreaElement>) {
+    const isPlainEnter = event.key === "Enter" && !event.shiftKey;
+    const isDuringComposition =
+      event.nativeEvent.isComposing || noteTextareaIsComposingRef.current;
+
+    if (isDuringComposition) {
+      if (isPlainEnter) {
+        noteTextareaEnterIgnoredDuringCompositionRef.current = true;
+      }
+      return;
+    }
+
+    if (isPlainEnter && Date.now() <= noteTextareaPostCompositionGuardUntilRef.current) {
+      event.preventDefault();
+      noteTextareaPostCompositionGuardUntilRef.current = 0;
+      return;
+    }
+
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeNotePanel();
+      return;
+    }
+
+    if (!isPlainEnter) return;
+
+    event.preventDefault();
+    returnActiveNoteToViewMode();
+  }
+
+  function handleSelectionChange(anchor: TextSelectionAnchor | null) {
+    if (!anchor) {
+      setSelectionWarningPosition(null);
+      if (pendingAnchor) {
+        closeNotePanel();
+      }
+      return;
+    }
+
+    if (Date.now() < selectionDismissedUntilRef.current) {
+      return;
+    }
+
+    if (activeNotes.some((note) => selectionOverlapsNote(anchor, note))) {
+      setSelectionWarningPosition(null);
+      if (pendingAnchor) {
+        closeNotePanel();
+      }
+      return;
+    }
+
+    if (!isSelectionCompleteMarkdownBlock(selectedDocument.body, anchor)) {
+      const anchorRect = currentSelectionAnchorRect();
+      setPendingAnchor(null);
+      setNoteDraft("");
+      if (notePanelHasContentRef.current) {
+        closeNotePanel();
+      }
+      setSelectionWarningPosition(selectionWarningPositionFromAnchor(anchorRect));
+      return;
+    }
+
+    clearNotePanelCloseTimer();
+    clearReturnToViewTimer();
+    setSelectionWarningPosition(null);
+    setIsNotePanelClosing(false);
+    floatingNoteAnchorRectRef.current = currentSelectionAnchorRect();
+    setPendingAnchor(anchor);
+    setActiveNoteId("");
+    setActiveNoteMode("view");
+    setNoteDraft("");
+    notePanelHasContentRef.current = true;
+  }
+
+  function showNoteViewer(noteId: string) {
+    const note = notes.find((candidate) => candidate.id === noteId && candidate.status !== "deleted");
+    if (!note) return;
+
+    setSelectionWarningPosition(null);
+    clearNotePanelCloseTimer();
+    clearReturnToViewTimer();
+    setIsNotePanelClosing(false);
+    floatingNoteAnchorRectRef.current = activeNoteAnchorRect(noteId);
+    setPendingAnchor(null);
+    setActiveNoteId(noteId);
+    setActiveNoteMode("view");
+    setNoteDraft(note.body);
+    notePanelHasContentRef.current = true;
+  }
+
+  function openNoteEditor(noteId: string) {
+    const note = notes.find((candidate) => candidate.id === noteId && candidate.status !== "deleted");
+    if (!note) return;
+
+    setSelectionWarningPosition(null);
+    clearNotePanelCloseTimer();
+    clearReturnToViewTimer();
+    setIsNotePanelClosing(false);
+    floatingNoteAnchorRectRef.current = activeNoteAnchorRect(noteId);
+    setPendingAnchor(null);
+    setActiveNoteId(noteId);
+    noteTextareaShouldRefocusRef.current = true;
+    setActiveNoteMode("edit");
+    setNoteDraft(note.body);
+    notePanelHasContentRef.current = true;
+  }
+
+  function confirmPendingSelectionNote() {
+    if (!pendingAnchor || !pendingAnchorIsCompleteBlock) return;
+
+    discardTransientEmptySelectionNote();
+    setSelectionWarningPosition(null);
 
     const note: SelectionNote = {
       id: crypto.randomUUID(),
@@ -1844,17 +2945,22 @@ function App() {
       status: "active",
       selectedText: pendingAnchor.selectedText,
       anchor: pendingAnchor,
-      body,
+      body: "",
       createdAt: nowLabel(),
       updatedAt: nowLabel(),
       deletedAt: null,
     };
 
     setNotes((currentNotes) => [note, ...currentNotes]);
-    setActiveNoteId(note.id);
+    transientSelectionNoteIdRef.current = note.id;
+    noteTextareaShouldRefocusRef.current = true;
+    clearReturnToViewTimer();
     setPendingAnchor(null);
+    setActiveNoteId(note.id);
+    setActiveNoteMode("edit");
     setNoteDraft("");
-    markDocumentNotesDirty();
+    setIsNotePanelClosing(false);
+    notePanelHasContentRef.current = true;
   }
 
   function updateNoteBody(noteId: string, body: string) {
@@ -1872,7 +2978,19 @@ function App() {
     markDocumentNotesDirty();
   }
 
+  function updateActiveNoteDraft(body: string) {
+    if (!activeNote) return;
+
+    setNoteDraft(body);
+    updateNoteBody(activeNote.id, body);
+  }
+
   function deleteNote(noteId: string) {
+    clearNotePanelCloseTimer();
+    clearReturnToViewTimer();
+    if (transientSelectionNoteIdRef.current === noteId) {
+      transientSelectionNoteIdRef.current = "";
+    }
     setNotes((currentNotes) =>
       currentNotes.map((note) =>
         note.id === noteId
@@ -1886,37 +3004,43 @@ function App() {
       ),
     );
     if (activeNoteId === noteId) {
+      setPendingAnchor(null);
       setActiveNoteId("");
+      setActiveNoteMode("view");
+      setNoteDraft("");
+      setIsNotePanelClosing(false);
+      notePanelHasContentRef.current = false;
     }
     markDocumentNotesDirty();
   }
 
-  function rebindNote(noteId: string) {
-    if (!pendingAnchor) return;
-
-    setNotes((currentNotes) =>
-      currentNotes.map((note) =>
-        note.id === noteId
-          ? {
-              ...note,
-              status: "active",
-              selectedText: pendingAnchor.selectedText,
-              anchor: pendingAnchor,
-              updatedAt: nowLabel(),
-            }
-          : note,
-      ),
-    );
-    setActiveNoteId(noteId);
-    setPendingAnchor(null);
-    markDocumentNotesDirty();
-  }
-
-  function togglePreviewMode() {
-    setPendingAnchor(null);
-    setNoteDraft("");
-    setEditorMode((currentMode) => (currentMode === "preview" ? "edit" : "preview"));
-  }
+  const floatingNotePanelStyle: CSSProperties = floatingNotePanelPosition
+    ? {
+        left: floatingNotePanelPosition.left,
+        maxHeight: floatingNotePanelPosition.maxHeight,
+        top: floatingNotePanelPosition.top,
+      }
+    : {
+        left: 0,
+        maxHeight: 360,
+        top: 0,
+        visibility: "hidden",
+      };
+  const selectionWarningStyle: CSSProperties | undefined = selectionWarningPosition
+    ? {
+        left: selectionWarningPosition.left,
+        top: selectionWarningPosition.top,
+      }
+    : undefined;
+  const floatingNoteConnectorStyle: CSSProperties | null = floatingNotePanelPosition
+    ?.connector
+    ? {
+        left: floatingNotePanelPosition.connector.left,
+        top: floatingNotePanelPosition.connector.top,
+        transform: `translateY(-50%) rotate(${floatingNotePanelPosition.connector.angle}deg)`,
+        width: floatingNotePanelPosition.connector.width,
+      }
+    : null;
 
   return (
     <main className="scholium-shell">
@@ -1959,159 +3083,145 @@ function App() {
       </aside>
 
       <section className="editor-pane" aria-label="Markdown editor">
-        <header className="editor-header">
-          <div>
-            <p className="eyebrow">{selectedDocument.path}</p>
-            <h2>{selectedDocument.title}</h2>
-          </div>
-          <div className="editor-actions" aria-label="Editor actions">
-            <span className={`save-state ${selectedDocumentIsDirty ? "is-dirty" : ""}`}>
-              {selectedDocumentIsDirty ? "Unsaved" : "Saved"}
-            </span>
-            <button
-              className={editorMode === "preview" ? "is-active" : ""}
-              type="button"
-              aria-pressed={editorMode === "preview"}
-              onClick={togglePreviewMode}
-              title="Toggle Source/Preview (Cmd/Ctrl+Shift+P)"
-            >
-              {editorMode === "preview" ? "Source" : "Preview"}
-            </button>
-            <button
-              type="button"
-              onClick={saveSelectedDocument}
-              disabled={!selectedDocument.filePath || !selectedDocumentIsDirty || isSavingFile}
-            >
-              {isSavingFile ? "Saving" : "Save"}
-            </button>
-          </div>
-        </header>
-
         <div className="editor-grid">
           <div className="editor-surface">
             {editorMode === "preview" ? (
-              <MarkdownPreview
-                notes={activeNotes}
-                value={selectedDocument.body}
-                onAnnotationClick={setActiveNoteId}
-                onChange={updateSelectedDocumentBody}
-                onSelectionChange={setPendingAnchor}
-              />
+                <MarkdownPreview
+                  notes={activeNotes}
+                  value={selectedDocument.body}
+                  onAnnotationClick={showNoteViewer}
+                  onAnnotationDoubleClick={showNoteViewer}
+                  onChange={updateSelectedDocumentBody}
+                  onSelectionChange={handleSelectionChange}
+                />
             ) : (
-              <>
                 <MarkdownEditor
                   annotations={annotations}
                   value={selectedDocument.body}
-                  onAnnotationClick={setActiveNoteId}
+                  onAnnotationClick={showNoteViewer}
+                  onAnnotationDoubleClick={showNoteViewer}
                   onChange={updateSelectedDocumentBody}
-                  onSelectionChange={setPendingAnchor}
+                  onSelectionChange={handleSelectionChange}
                 />
-
-              </>
             )}
-
-            {pendingAnchor ? (
-              <div className="selection-popover">
-                <p className="eyebrow">Selection</p>
-                <blockquote>{summarizeText(pendingAnchor.selectedText, 96)}</blockquote>
-                {shouldShowPartialSelectionWarning ? (
-                  <p className="selection-warning">
-                    目前圈選的範圍可能不是完整段落，請確認這是你想綁定筆記的文字。
-                  </p>
-                ) : null}
-                <textarea
-                  aria-label="Selection note"
-                  value={noteDraft}
-                  onChange={(event) => setNoteDraft(event.currentTarget.value)}
-                  placeholder="Add a note..."
-                />
-                <div className="popover-actions">
-                  <button type="button" onClick={() => setPendingAnchor(null)}>
-                    Cancel
-                  </button>
-                  <button
-                    type="button"
-                    onClick={createNoteFromSelection}
-                    disabled={!canSaveSelectionNote}
-                  >
-                    Save note
-                  </button>
-                </div>
-              </div>
-            ) : null}
           </div>
         </div>
       </section>
 
-      <aside className="notes-pane" aria-label="Selection notes">
-        <div className="pane-header notes-header">
-          <div>
-            <p className="eyebrow">Text notes</p>
-            <h2>{activeNote ? summarizeText(activeNote.selectedText, 54) : "No note selected"}</h2>
-          </div>
-          <span className="note-count">{activeNotes.length}</span>
+      {selectionWarningPosition ? (
+        <div className="selection-warning-popover" role="status" style={selectionWarningStyle}>
+          請選取完整句子或段落後再新增筆記。
         </div>
+      ) : null}
 
-        {activeNote ? (
-          <div className="note-editor">
-            <p className="eyebrow">{activeNote.status}</p>
-            <blockquote>{activeNote.selectedText}</blockquote>
-            <textarea
-              aria-label="Edit note"
-              value={activeNote.body}
-              onChange={(event) => updateNoteBody(activeNote.id, event.currentTarget.value)}
+      {floatingNotePanelShouldRender ? (
+        <>
+          {floatingNoteConnectorStyle ? (
+            <span
+              aria-hidden="true"
+              className={`floating-note-connector ${
+                isNotePanelClosing ? "is-closing" : "is-open"
+              }`}
+              style={floatingNoteConnectorStyle}
             />
-            <div className="note-actions">
-              {activeNote.status === "orphaned" ? (
-                <button
-                  type="button"
-                  onClick={() => rebindNote(activeNote.id)}
-                  disabled={!pendingAnchor}
-                >
-                  Rebind
-                </button>
-              ) : null}
-              <button type="button" onClick={() => deleteNote(activeNote.id)}>
-                Delete
-              </button>
-            </div>
-          </div>
-        ) : (
-          <div className="empty-notes">No active note.</div>
-        )}
-
-        {orphanedNotes.length > 0 ? (
-          <div className="orphaned-notes">
-            <p className="eyebrow">Unbound notes</p>
-            {orphanedNotes.map((note) => (
+          ) : null}
+          <section
+            className={`floating-note-panel ${isNotePanelClosing ? "is-closing" : "is-open"} ${
+              floatingNotePanelPosition?.placement === "above"
+                ? "is-above"
+                : floatingNotePanelPosition?.placement === "detached"
+                  ? "is-detached"
+                  : "is-below"
+            }`}
+            ref={notePanelRef}
+            style={floatingNotePanelStyle}
+            aria-label={
+              pendingAnchor
+                ? "Create selection note"
+                : activeNoteIsEditing
+                  ? "Edit selection note"
+                  : "View selection note"
+            }
+          >
+            <div className="floating-note-card" ref={floatingNoteCardRef}>
               <button
-                className={`note-link ${note.id === activeNoteId ? "is-active" : ""}`}
-                key={note.id}
-                onClick={() => setActiveNoteId(note.id)}
+                className="floating-note-close-button"
                 type="button"
+                aria-label="Close note"
+                onClick={closeNotePanel}
               >
-                <span>{note.selectedText}</span>
-                <small>{note.body}</small>
+                ×
               </button>
-            ))}
-          </div>
-        ) : null}
+              <div className="bottom-note-context">
+                <p className="eyebrow">
+                  {pendingAnchor ? "Selection note" : activeNoteIsEditing ? "Edit note" : "Note"}
+                </p>
+              </div>
 
-        <div className="document-note-index">
-          <p className="eyebrow">Marked ranges</p>
-          {activeNotes.map((note) => (
-            <button
-              className={`note-link ${note.id === activeNoteId ? "is-active" : ""}`}
-              key={note.id}
-              onClick={() => setActiveNoteId(note.id)}
-              type="button"
-            >
-              <span>{note.selectedText}</span>
-              <small>{note.body}</small>
-            </button>
-          ))}
-        </div>
-      </aside>
+              {pendingAnchor && pendingAnchorIsCompleteBlock ? (
+                <div className="selection-confirmation">
+                  <p>要新增筆記嗎？</p>
+                  <div className="note-actions bottom-note-actions">
+                    <button
+                      className="is-primary"
+                      type="button"
+                      aria-label="Add note"
+                      title="Add note"
+                      onClick={confirmPendingSelectionNote}
+                    >
+                      <PlusIcon />
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+
+              {!pendingAnchor && activeNoteIsEditing ? (
+                <textarea
+                  aria-label="Edit note"
+                  ref={noteTextareaRef}
+                  value={noteDraft}
+                  onChange={(event) => updateActiveNoteDraft(event.currentTarget.value)}
+                  onCompositionStart={handleNoteEditorCompositionStart}
+                  onCompositionEnd={handleNoteEditorCompositionEnd}
+                  onKeyDown={handleNoteEditorKeyDown}
+                  disabled={isReturningToView}
+                  placeholder="Add a note..."
+                />
+              ) : null}
+
+              {!pendingAnchor && activeNoteIsEditing && isReturningToView ? (
+                <div className="note-returning-status" role="status">
+                  <span className="note-returning-spinner" aria-hidden="true" />
+                  <span>正在回到閱覽模式</span>
+                </div>
+              ) : null}
+
+              {!pendingAnchor && activeNote && !activeNoteIsEditing ? (
+                <p
+                  className={`bottom-note-body ${activeNoteBodyIsEmpty ? "is-empty" : ""}`}
+                  onDoubleClick={() => openNoteEditor(activeNote.id)}
+                >
+                  {activeNoteBodyIsEmpty ? "無內容" : activeNote.body}
+                </p>
+              ) : null}
+
+              {!pendingAnchor && activeNote && !activeNoteIsEditing ? (
+                <div className="note-actions bottom-note-actions">
+                  <button
+                    className="is-danger"
+                    type="button"
+                    aria-label="Delete note"
+                    title="Delete"
+                    onClick={() => deleteNote(activeNote.id)}
+                  >
+                    <TrashIcon />
+                  </button>
+                </div>
+              ) : null}
+            </div>
+          </section>
+        </>
+      ) : null}
     </main>
   );
 }

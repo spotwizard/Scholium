@@ -18,9 +18,12 @@ export type TextSelectionAnchor = {
   suffix: string;
 };
 
+export type AnnotationTone = 0 | 1;
+
 export type TextAnnotation = {
   id: string;
   from: number;
+  tone?: AnnotationTone;
   to: number;
 };
 
@@ -32,10 +35,12 @@ type MarkdownEditorProps = {
   onChange: (value: string, source: EditorChangeSource) => void;
   onSelectionChange: (anchor: TextSelectionAnchor | null) => void;
   onAnnotationClick: (noteId: string) => void;
+  onAnnotationDoubleClick: (noteId: string) => void;
 };
 
 type EditorAnnotationFrame = {
   noteId: string;
+  tone: AnnotationTone;
   left: number;
   top: number;
   width: number;
@@ -49,8 +54,14 @@ type EditorAnnotationRect = {
   bottom: number;
 };
 
+type EditorBrowserSelection = Selection & {
+  anchorNode: Node;
+  focusNode: Node;
+};
+
 const setAnnotationsEffect = StateEffect.define<TextAnnotation[]>();
 const editorAnnotationFramePadding = 4;
+const annotationSelectionSuppressionMs = 1200;
 
 function buildAnchor(value: string, from: number, to: number): TextSelectionAnchor | null {
   if (from === to) return null;
@@ -67,6 +78,55 @@ function buildAnchor(value: string, from: number, to: number): TextSelectionAnch
   };
 }
 
+function browserSelectionBelongsToView(
+  view: EditorView,
+  selection: Selection | null,
+): selection is EditorBrowserSelection {
+  return Boolean(
+    selection &&
+      !selection.isCollapsed &&
+      selection.anchorNode &&
+      selection.focusNode &&
+      view.dom.contains(selection.anchorNode) &&
+      view.dom.contains(selection.focusNode),
+  );
+}
+
+function buildAnchorFromSelection(view: EditorView): TextSelectionAnchor | null {
+  const doc = view.state.doc.toString();
+  const browserSelection = window.getSelection();
+
+  if (browserSelectionBelongsToView(view, browserSelection)) {
+    try {
+      const anchorPosition = view.posAtDOM(
+        browserSelection.anchorNode,
+        browserSelection.anchorOffset,
+      );
+      const focusPosition = view.posAtDOM(
+        browserSelection.focusNode,
+        browserSelection.focusOffset,
+      );
+
+      return buildAnchor(
+        doc,
+        Math.min(anchorPosition, focusPosition),
+        Math.max(anchorPosition, focusPosition),
+      );
+    } catch {
+      // CodeMirror can reject DOM positions from transient browser selections.
+    }
+
+    const selectedText = browserSelection.toString();
+    const selectedTextIndex = doc.indexOf(selectedText);
+    if (selectedTextIndex >= 0) {
+      return buildAnchor(doc, selectedTextIndex, selectedTextIndex + selectedText.length);
+    }
+  }
+
+  const range = view.state.selection.main;
+  return buildAnchor(doc, range.from, range.to);
+}
+
 function buildDecorations(annotations: TextAnnotation[]) {
   const ranges: Range<Decoration>[] = annotations
     .filter((annotation) => annotation.to > annotation.from)
@@ -74,6 +134,7 @@ function buildDecorations(annotations: TextAnnotation[]) {
       Decoration.mark({
         attributes: {
           "data-note-id": annotation.id,
+          "data-note-tone": String(annotation.tone ?? 0),
         },
         class: "cm-note-annotation",
       }).range(annotation.from, annotation.to),
@@ -89,12 +150,14 @@ function roundEditorFrameValue(value: number) {
 function measureEditorAnnotationFrames(container: HTMLDivElement): EditorAnnotationFrame[] {
   const containerRect = container.getBoundingClientRect();
   const rectsByNoteId = new Map<string, EditorAnnotationRect[]>();
+  const tonesByNoteId = new Map<string, AnnotationTone>();
 
   container
     .querySelectorAll<HTMLElement>(".cm-note-annotation[data-note-id]")
     .forEach((annotation) => {
       const noteId = annotation.dataset.noteId;
       if (!noteId) return;
+      tonesByNoteId.set(noteId, annotation.dataset.noteTone === "1" ? 1 : 0);
 
       const annotationRects = Array.from(annotation.getClientRects())
         .map((rect) => {
@@ -120,6 +183,7 @@ function measureEditorAnnotationFrames(container: HTMLDivElement): EditorAnnotat
 
       return {
         noteId,
+        tone: tonesByNoteId.get(noteId) ?? 0,
         left: roundEditorFrameValue(
           Math.max(0, left - containerRect.left - editorAnnotationFramePadding),
         ),
@@ -147,6 +211,7 @@ function areEditorAnnotationFramesEqual(
 
     return (
       leftFrame.noteId === rightFrame.noteId &&
+      leftFrame.tone === rightFrame.tone &&
       leftFrame.left === rightFrame.left &&
       leftFrame.top === rightFrame.top &&
       leftFrame.width === rightFrame.width &&
@@ -179,20 +244,29 @@ export function MarkdownEditor({
   onChange,
   onSelectionChange,
   onAnnotationClick,
+  onAnnotationDoubleClick,
 }: MarkdownEditorProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const viewRef = useRef<EditorView | null>(null);
   const onChangeRef = useRef(onChange);
   const onSelectionChangeRef = useRef(onSelectionChange);
   const onAnnotationClickRef = useRef(onAnnotationClick);
+  const onAnnotationDoubleClickRef = useRef(onAnnotationDoubleClick);
   const animationFrameRef = useRef(0);
+  const selectionFrameRef = useRef(0);
+  const selectionFallbackTimerRef = useRef(0);
+  const mouseSelectionStartedRef = useRef(false);
+  const annotationInteractionUntilRef = useRef(0);
   const suppressNextChangeRef = useRef(false);
   const [annotationFrames, setAnnotationFrames] = useState<EditorAnnotationFrame[]>([]);
 
   const annotationSignature = useMemo(
     () =>
       annotations
-        .map((annotation) => `${annotation.id}:${annotation.from}:${annotation.to}`)
+        .map(
+          (annotation) =>
+            `${annotation.id}:${annotation.from}:${annotation.to}:${annotation.tone ?? 0}`,
+        )
         .join("|"),
     [annotations],
   );
@@ -209,6 +283,10 @@ export function MarkdownEditor({
     onAnnotationClickRef.current = onAnnotationClick;
   }, [onAnnotationClick]);
 
+  useEffect(() => {
+    onAnnotationDoubleClickRef.current = onAnnotationDoubleClick;
+  }, [onAnnotationDoubleClick]);
+
   function updateAnnotationFrames() {
     const container = containerRef.current;
     if (!container) return;
@@ -222,6 +300,106 @@ export function MarkdownEditor({
   function scheduleAnnotationFrameUpdate() {
     window.cancelAnimationFrame(animationFrameRef.current);
     animationFrameRef.current = window.requestAnimationFrame(updateAnnotationFrames);
+  }
+
+  function collapseEditorSelection(view: EditorView, event?: MouseEvent | PointerEvent) {
+    const position = event
+      ? (view.posAtCoords({ x: event.clientX, y: event.clientY }) ?? view.state.selection.main.head)
+      : view.state.selection.main.head;
+
+    view.dispatch({ selection: { anchor: position } });
+  }
+
+  function publishSelectionAfterMouseUp(view: EditorView) {
+    if (Date.now() < annotationInteractionUntilRef.current) return;
+
+    window.cancelAnimationFrame(selectionFrameRef.current);
+    selectionFrameRef.current = window.requestAnimationFrame(() => {
+      if (Date.now() < annotationInteractionUntilRef.current) return;
+
+      const anchor = buildAnchorFromSelection(view);
+      onSelectionChangeRef.current(anchor);
+      selectionFrameRef.current = 0;
+    });
+  }
+
+  function noteIdFromAnnotationTarget(target: EventTarget | null) {
+    const targetElement =
+      target instanceof HTMLElement
+        ? target
+        : target instanceof Node
+          ? target.parentElement
+          : null;
+
+    return targetElement?.closest<HTMLElement>(".cm-note-annotation")?.dataset.noteId ?? null;
+  }
+
+  function noteIdFromAnnotationPointerEvent(event: MouseEvent | PointerEvent) {
+    const targetNoteId = noteIdFromAnnotationTarget(event.target);
+    if (targetNoteId) return targetNoteId;
+
+    const pointNoteId = noteIdFromAnnotationTarget(
+      document.elementFromPoint(event.clientX, event.clientY),
+    );
+    if (pointNoteId) return pointNoteId;
+
+    const container = containerRef.current;
+    if (!container) return null;
+
+    for (const frame of container.querySelectorAll<HTMLElement>(
+      ".cm-annotation-frame[data-note-id]",
+    )) {
+      const noteId = frame.dataset.noteId;
+      if (!noteId) continue;
+
+      const rect = frame.getBoundingClientRect();
+      const hitFrame =
+        event.clientX >= rect.left &&
+        event.clientX <= rect.right &&
+        event.clientY >= rect.top &&
+        event.clientY <= rect.bottom;
+
+      if (hitFrame) return noteId;
+    }
+
+    for (const annotation of container.querySelectorAll<HTMLElement>(
+      ".cm-note-annotation[data-note-id]",
+    )) {
+      const noteId = annotation.dataset.noteId;
+      if (!noteId) continue;
+
+      const hitAnnotation = Array.from(annotation.getClientRects()).some(
+        (rect) =>
+          event.clientX >= rect.left - editorAnnotationFramePadding &&
+          event.clientX <= rect.right + editorAnnotationFramePadding &&
+          event.clientY >= rect.top - editorAnnotationFramePadding &&
+          event.clientY <= rect.bottom + editorAnnotationFramePadding,
+      );
+
+      if (hitAnnotation) return noteId;
+    }
+
+    return null;
+  }
+
+  function suppressSelectionForAnnotationInteraction(
+    view?: EditorView,
+    event?: MouseEvent | PointerEvent,
+  ) {
+    annotationInteractionUntilRef.current = Date.now() + annotationSelectionSuppressionMs;
+    window.clearTimeout(selectionFallbackTimerRef.current);
+    window.cancelAnimationFrame(selectionFrameRef.current);
+    window.getSelection()?.removeAllRanges();
+    if (view) collapseEditorSelection(view, event);
+    mouseSelectionStartedRef.current = false;
+  }
+
+  function editorHasTextSelection(view: EditorView) {
+    const browserSelection = window.getSelection();
+    return (
+      browserSelectionBelongsToView(view, browserSelection) ||
+      view.state.selection.main.from !== view.state.selection.main.to
+    );
   }
 
   useLayoutEffect(() => {
@@ -265,25 +443,100 @@ export function MarkdownEditor({
         }
       }
 
-      if (update.selectionSet || update.docChanged) {
-        const range = update.state.selection.main;
-        const anchor = buildAnchor(update.state.doc.toString(), range.from, range.to);
-        onSelectionChangeRef.current(anchor);
+      if (update.docChanged) {
+        onSelectionChangeRef.current(null);
       }
 
       scheduleAnnotationFrameUpdate();
     });
 
     const annotationClickHandler = EditorView.domEventHandlers({
+      mousedown(event) {
+        if (event.button === 0) {
+          mouseSelectionStartedRef.current = true;
+        }
+        return false;
+      },
+      pointerdown(event) {
+        if (event.button === 0) {
+          mouseSelectionStartedRef.current = true;
+        }
+        return false;
+      },
+      mouseup(event, view) {
+        if (event.button !== 0) return false;
+
+        const noteId = noteIdFromAnnotationPointerEvent(event);
+        if (noteId) {
+          if (editorHasTextSelection(view)) {
+            mouseSelectionStartedRef.current = false;
+            publishSelectionAfterMouseUp(view);
+            return false;
+          }
+
+          event.preventDefault();
+          suppressSelectionForAnnotationInteraction(view, event);
+          if (event.detail >= 2) {
+            onAnnotationDoubleClickRef.current(noteId);
+          } else {
+            onAnnotationClickRef.current(noteId);
+          }
+          return true;
+        }
+
+        mouseSelectionStartedRef.current = false;
+        publishSelectionAfterMouseUp(view);
+        return false;
+      },
+      pointerup(event, view) {
+        if (event.button !== 0) return false;
+
+        const noteId = noteIdFromAnnotationPointerEvent(event);
+        if (noteId) {
+          if (editorHasTextSelection(view)) {
+            mouseSelectionStartedRef.current = false;
+            publishSelectionAfterMouseUp(view);
+            return false;
+          }
+
+          event.preventDefault();
+          suppressSelectionForAnnotationInteraction(view, event);
+          onAnnotationClickRef.current(noteId);
+          return true;
+        }
+
+        mouseSelectionStartedRef.current = false;
+        publishSelectionAfterMouseUp(view);
+        return false;
+      },
       click(event) {
-        const target = event.target;
-        if (!(target instanceof HTMLElement)) return false;
-
-        const annotation = target.closest<HTMLElement>(".cm-note-annotation");
-        const noteId = annotation?.dataset.noteId;
+        const noteId = noteIdFromAnnotationPointerEvent(event);
         if (!noteId) return false;
+        const view = viewRef.current;
+        if (view && editorHasTextSelection(view)) {
+          return false;
+        }
 
-        onAnnotationClickRef.current(noteId);
+        event.preventDefault();
+        suppressSelectionForAnnotationInteraction(view ?? undefined, event);
+        if (event.detail >= 2) {
+          onAnnotationDoubleClickRef.current(noteId);
+        } else {
+          onAnnotationClickRef.current(noteId);
+        }
+        return true;
+      },
+      dblclick(event) {
+        const noteId = noteIdFromAnnotationPointerEvent(event);
+        if (!noteId) return false;
+        const view = viewRef.current;
+        if (view && editorHasTextSelection(view)) {
+          return false;
+        }
+
+        event.preventDefault();
+        suppressSelectionForAnnotationInteraction(view ?? undefined, event);
+        onAnnotationDoubleClickRef.current(noteId);
         return true;
       },
     });
@@ -309,12 +562,80 @@ export function MarkdownEditor({
     view.dispatch({ effects: setAnnotationsEffect.of(annotations) });
     viewRef.current = view;
 
+    function handleWindowMouseUp(event: MouseEvent) {
+      handleWindowSelectionPointerEnd(event);
+    }
+
+    function handleWindowPointerUp(event: PointerEvent) {
+      handleWindowSelectionPointerEnd(event);
+    }
+
+    function handleWindowSelectionPointerEnd(event: MouseEvent | PointerEvent) {
+      const browserSelection = window.getSelection();
+      const activeElement = document.activeElement;
+      if (noteIdFromAnnotationPointerEvent(event)) {
+        if (editorHasTextSelection(view)) {
+          mouseSelectionStartedRef.current = false;
+          publishSelectionAfterMouseUp(view);
+          return;
+        }
+
+        event.preventDefault();
+        suppressSelectionForAnnotationInteraction(view, event);
+        return;
+      }
+
+      const eventTargetIsInEditor =
+        event.target instanceof Node ? view.dom.contains(event.target) : false;
+      const selectionIsInEditor = browserSelectionBelongsToView(view, browserSelection);
+      const editorHasFocus = activeElement ? view.dom.contains(activeElement) : false;
+
+      if (!mouseSelectionStartedRef.current && !eventTargetIsInEditor) {
+        return;
+      }
+
+      if (
+        event.button !== 0 ||
+        (!mouseSelectionStartedRef.current &&
+          !eventTargetIsInEditor &&
+          !selectionIsInEditor &&
+          !editorHasFocus)
+      ) {
+        return;
+      }
+
+      mouseSelectionStartedRef.current = false;
+      publishSelectionAfterMouseUp(view);
+    }
+
+    function handleDocumentSelectionChange() {
+      window.clearTimeout(selectionFallbackTimerRef.current);
+      selectionFallbackTimerRef.current = window.setTimeout(() => {
+        if (Date.now() < annotationInteractionUntilRef.current) {
+          window.getSelection()?.removeAllRanges();
+          return;
+        }
+        if (mouseSelectionStartedRef.current) return;
+        if (!browserSelectionBelongsToView(view, window.getSelection())) return;
+
+        publishSelectionAfterMouseUp(view);
+      }, 220);
+    }
+
     const scroller = containerRef.current.querySelector<HTMLElement>(".cm-scroller");
     scroller?.addEventListener("scroll", scheduleAnnotationFrameUpdate);
+    document.addEventListener("selectionchange", handleDocumentSelectionChange);
+    window.addEventListener("mouseup", handleWindowMouseUp, true);
+    window.addEventListener("pointerup", handleWindowPointerUp, true);
     scheduleAnnotationFrameUpdate();
 
     return () => {
+      window.cancelAnimationFrame(selectionFrameRef.current);
+      window.clearTimeout(selectionFallbackTimerRef.current);
       scroller?.removeEventListener("scroll", scheduleAnnotationFrameUpdate);
+      document.removeEventListener("selectionchange", handleDocumentSelectionChange);
+      window.removeEventListener("mouseup", handleWindowMouseUp, true);
+      window.removeEventListener("pointerup", handleWindowPointerUp, true);
       view.destroy();
       viewRef.current = null;
     };
@@ -350,6 +671,8 @@ export function MarkdownEditor({
         {annotationFrames.map((frame) => (
           <span
             className="cm-annotation-frame"
+            data-note-id={frame.noteId}
+            data-note-tone={frame.tone}
             key={frame.noteId}
             style={{
               height: frame.height,
