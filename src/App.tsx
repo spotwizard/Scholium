@@ -24,6 +24,7 @@ import {
 } from "./MarkdownEditor";
 
 type NoteStatus = "active" | "orphaned" | "deleted";
+type AnnotationKind = "note" | "glossary";
 
 type MarkdownDocument = {
   id: string;
@@ -48,12 +49,36 @@ type SelectionNote = {
   deletedAt: string | null;
 };
 
+type GlossaryTerm = {
+  id: string;
+  term: string;
+  normalizedTerm: string;
+  definition: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type GlossaryBinding = {
+  id: string;
+  documentId: string;
+  termId: string;
+  term: string;
+  normalizedTerm: string;
+  status: NoteStatus;
+  anchor: TextSelectionAnchor;
+  createdAt: string;
+  updatedAt: string;
+  deletedAt: string | null;
+};
+
 type OpenMarkdownFileResult = {
   path: string;
   notesPath: string;
   title: string;
   body: string;
   notes: SelectionNote[];
+  glossaryTerms?: GlossaryTerm[];
+  glossaryBindings?: GlossaryBinding[];
 };
 
 type OpenDirectoryEntryResult =
@@ -72,6 +97,7 @@ type OpenDirectoryEntryResult =
 
 type OpenMarkdownDirectoryResult = {
   path: string;
+  parentPath: string | null;
   title: string;
   entries: OpenDirectoryEntryResult[];
 };
@@ -86,7 +112,18 @@ type SaveMarkdownFileResult = {
   notesPath: string;
 };
 
+type DeleteMarkdownFileResult = {
+  path: string;
+  notesPath: string;
+};
+
 type WorkspaceEntry =
+  | {
+      kind: "parent-directory";
+      id: string;
+      title: string;
+      path: string;
+    }
   | {
       kind: "directory";
       id: string;
@@ -106,11 +143,22 @@ type DirtyDocumentState = {
   notes: boolean;
 };
 
+const emptyDocument: MarkdownDocument = {
+  id: "__empty__",
+  title: "",
+  path: "",
+  filePath: null,
+  notesPath: null,
+  updatedAt: "",
+  body: "",
+};
+
 type EditorMode = "edit" | "preview";
 type ActiveNoteMode = "view" | "edit";
 
 type PreviewAnnotationFrame = {
   frameKey: string;
+  kind: AnnotationKind;
   noteId: string;
   tone: AnnotationTone;
   left: number;
@@ -133,6 +181,12 @@ type SelectionWarningPosition = {
   top: number;
 };
 
+type FileContextMenuState = {
+  documentId: string;
+  left: number;
+  top: number;
+};
+
 function TrashIcon() {
   return (
     <svg
@@ -146,6 +200,34 @@ function TrashIcon() {
       <path d="m19 6-1 14c-.1 1.1-1 2-2.1 2H8.1c-1.1 0-2-.9-2.1-2L5 6" />
       <path d="M10 11v6" />
       <path d="M14 11v6" />
+    </svg>
+  );
+}
+
+function DuplicateIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      className="note-action-icon"
+      fill="none"
+      viewBox="0 0 24 24"
+    >
+      <path d="M8 7h10v13H8z" />
+      <path d="M5 17H4V4h10v1" />
+    </svg>
+  );
+}
+
+function CopyIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      className="note-action-icon"
+      fill="none"
+      viewBox="0 0 24 24"
+    >
+      <path d="M8 8h10v12H8z" />
+      <path d="M6 16H4V4h10v2" />
     </svg>
   );
 }
@@ -169,9 +251,17 @@ type PreviewTextMap = {
 };
 
 type PreviewAnnotationTextRange = {
-  note: SelectionNote;
+  annotation: TextRangeAnnotation;
   start: number;
   end: number;
+};
+
+type TextRangeAnnotation = {
+  id: string;
+  kind: AnnotationKind;
+  status: NoteStatus;
+  anchor: TextSelectionAnchor;
+  tone?: AnnotationTone;
 };
 
 type MarkdownPreviewBlock =
@@ -329,6 +419,32 @@ const notesSeed: SelectionNote[] = [
   },
 ];
 
+const glossaryTermsSeed: GlossaryTerm[] = [
+  {
+    id: "glossary-1",
+    term: "Markdown",
+    normalizedTerm: "markdown",
+    definition: "A lightweight plain-text markup format used for readable writing and publishing.",
+    createdAt: "10:30",
+    updatedAt: "10:30",
+  },
+];
+
+const glossaryBindingsSeed: GlossaryBinding[] = [
+  {
+    id: "glossary-binding-1",
+    documentId: "roadmap",
+    termId: "glossary-1",
+    term: "Markdown",
+    normalizedTerm: "markdown",
+    status: "active",
+    anchor: makeAnchor(documentsSeed[0].body, "Markdown"),
+    createdAt: "10:30",
+    updatedAt: "10:30",
+    deletedAt: null,
+  },
+];
+
 function nowLabel() {
   return new Date().toLocaleTimeString([], {
     hour: "2-digit",
@@ -375,6 +491,50 @@ function reconcileNote(note: SelectionNote, nextBody: string): SelectionNote {
   };
 }
 
+function reconcileGlossaryBinding(
+  binding: GlossaryBinding,
+  nextBody: string,
+): GlossaryBinding {
+  if (binding.status !== "active") return binding;
+
+  const exactText = nextBody.slice(binding.anchor.from, binding.anchor.to);
+  const exactNormalizedTerm = normalizeGlossaryTerm(exactText);
+  const bindingNormalizedTerms = new Set([
+    binding.normalizedTerm,
+    normalizeGlossaryTerm(binding.term),
+  ]);
+  if (bindingNormalizedTerms.has(exactNormalizedTerm)) {
+    return {
+      ...binding,
+      anchor: refreshAnchor(nextBody, binding.anchor),
+    };
+  }
+
+  const nextIndex = nextBody.toLowerCase().indexOf(binding.term.toLowerCase());
+  if (nextIndex >= 0) {
+    const nextAnchor = makeAnchorFromRange(
+      nextBody,
+      nextIndex,
+      nextIndex + binding.term.length,
+      nextBody.slice(nextIndex, nextIndex + binding.term.length),
+    );
+    return {
+      ...binding,
+      anchor: {
+        ...nextAnchor,
+        from: nextIndex,
+        to: nextIndex + binding.term.length,
+      },
+    };
+  }
+
+  return {
+    ...binding,
+    status: "orphaned",
+    updatedAt: nowLabel(),
+  };
+}
+
 function assignAnnotationTones(notes: SelectionNote[]): SelectionNote[] {
   return [...notes]
     .sort(
@@ -390,8 +550,95 @@ function assignAnnotationTones(notes: SelectionNote[]): SelectionNote[] {
     }));
 }
 
+const glossaryTokenNormalizationOverrides: Record<string, string> = {
+  commited: "commit",
+  commiting: "commit",
+  committed: "commit",
+  committing: "commit",
+};
+
+function normalizeGlossaryTerm(term: string) {
+  return term
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase()
+    .split(" ")
+    .map(normalizeGlossaryToken)
+    .join(" ");
+}
+
+function normalizeGlossaryToken(token: string) {
+  const normalized = token.toLowerCase();
+  if (!/^[a-z]+$/.test(normalized) || normalized.length <= 3) return normalized;
+
+  const override = glossaryTokenNormalizationOverrides[normalized];
+  if (override) return override;
+
+  if (normalized.endsWith("ies") && normalized.length > 4) {
+    return `${normalized.slice(0, -3)}y`;
+  }
+
+  if (normalized.endsWith("ing") && normalized.length > 5) {
+    return normalizeDoubledFinalConsonant(normalized.slice(0, -3));
+  }
+
+  if (normalized.endsWith("ed") && normalized.length > 4) {
+    return normalizeDoubledFinalConsonant(normalized.slice(0, -2));
+  }
+
+  if (/(ches|shes|sses|xes|zes)$/.test(normalized) && normalized.length > 4) {
+    return normalized.slice(0, -2);
+  }
+
+  if (normalized.endsWith("s") && !normalized.endsWith("ss") && normalized.length > 4) {
+    return normalized.slice(0, -1);
+  }
+
+  return normalized;
+}
+
+function normalizeDoubledFinalConsonant(token: string) {
+  if (/(bb|dd|ff|gg|ll|mm|nn|pp|rr|tt)$/.test(token)) {
+    return token.slice(0, -1);
+  }
+
+  return token;
+}
+
+function glossaryTermWordCount(term: string) {
+  const normalizedTerm = term.replace(/\s+/g, " ").trim();
+  if (!normalizedTerm) return 0;
+
+  return normalizedTerm.split(" ").length;
+}
+
+function isGlossarySelectionCandidate(anchor: TextSelectionAnchor) {
+  const normalizedTerm = anchor.selectedText.replace(/\s+/g, " ").trim();
+  const wordCount = glossaryTermWordCount(normalizedTerm);
+
+  return (
+    wordCount >= 1 &&
+    wordCount <= 3 &&
+    !/[\r\n]/.test(anchor.selectedText) &&
+    !/[.!?。！？,，;；:：]$/.test(normalizedTerm)
+  );
+}
+
 function selectionOverlapsNote(anchor: TextSelectionAnchor, note: SelectionNote) {
   return anchor.to > note.anchor.from && anchor.from < note.anchor.to;
+}
+
+function selectionOverlapsGlossaryBinding(anchor: TextSelectionAnchor, binding: GlossaryBinding) {
+  return anchor.to > binding.anchor.from && anchor.from < binding.anchor.to;
+}
+
+function textSelectionAnchorsMatch(left: TextSelectionAnchor, right: TextSelectionAnchor) {
+  return (
+    left.from === right.from &&
+    left.to === right.to &&
+    left.selectedText.replace(/\s+/g, " ").trim() ===
+      right.selectedText.replace(/\s+/g, " ").trim()
+  );
 }
 
 function hasNativeStorageAccess() {
@@ -414,6 +661,15 @@ function workspaceEntryFromDocument(document: MarkdownDocument): WorkspaceEntry 
 
 function savedBodiesFromDocuments(documents: MarkdownDocument[]) {
   return Object.fromEntries(documents.map((document) => [document.id, document.body]));
+}
+
+function mergeGlossaryTerms(incomingTerms: GlossaryTerm[], currentTerms: GlossaryTerm[]) {
+  const termsById = new Map<string, GlossaryTerm>();
+
+  currentTerms.forEach((term) => termsById.set(term.id, term));
+  incomingTerms.forEach((term) => termsById.set(term.id, term));
+
+  return Array.from(termsById.values());
 }
 
 function readLastOpenedMarkdownPath() {
@@ -845,6 +1101,126 @@ function sourceRangeFromTextMapMatch(textMap: PreviewTextMap, start: number, end
   };
 }
 
+function closestPreviewBlockElement(node: Node | null) {
+  const element = node instanceof Element ? node : node?.parentElement;
+
+  return element?.closest<HTMLElement>("[data-preview-block-key]") ?? null;
+}
+
+function findTextIndices(text: string, query: string) {
+  const indices: number[] = [];
+  if (!query) return indices;
+
+  let index = text.indexOf(query);
+  while (index >= 0) {
+    indices.push(index);
+    index = text.indexOf(query, index + query.length);
+  }
+
+  return indices;
+}
+
+function closestTextIndex(indices: number[], approximateStart: number) {
+  if (indices.length === 0) return -1;
+
+  return indices.reduce((closestIndex, index) =>
+    Math.abs(index - approximateStart) < Math.abs(closestIndex - approximateStart)
+      ? index
+      : closestIndex,
+  );
+}
+
+function makePreviewAnchorFromTextMap(
+  body: string,
+  textMap: PreviewTextMap,
+  selectedText: string,
+  approximateStart: number,
+) {
+  const exactSelection = selectedText.trim();
+  const normalizedSelection = selectedText.replace(/\s+/g, " ").trim();
+  if (!normalizedSelection) return null;
+
+  const exactIndex = closestTextIndex(findTextIndices(textMap.text, exactSelection), approximateStart);
+  if (exactIndex >= 0) {
+    const sourceRange = sourceRangeFromTextMapMatch(
+      textMap,
+      exactIndex,
+      exactIndex + exactSelection.length,
+    );
+
+    if (sourceRange) {
+      return makeAnchorFromRange(
+        body,
+        sourceRange.from,
+        sourceRange.to,
+        body.slice(sourceRange.from, sourceRange.to),
+      );
+    }
+  }
+
+  const normalizedTextMap = normalizeTextMapForMatch(textMap);
+  const normalizedIndex = closestTextIndex(
+    findTextIndices(normalizedTextMap.text, normalizedSelection),
+    approximateStart,
+  );
+  if (normalizedIndex < 0) return null;
+
+  const sourceRange = sourceRangeFromTextMapMatch(
+    normalizedTextMap,
+    normalizedIndex,
+    normalizedIndex + normalizedSelection.length,
+  );
+  if (!sourceRange) return null;
+
+  return makeAnchorFromRange(
+    body,
+    sourceRange.from,
+    sourceRange.to,
+    body.slice(sourceRange.from, sourceRange.to),
+  );
+}
+
+function makePreviewAnchorFromSelection(
+  body: string,
+  blocks: MarkdownPreviewBlock[],
+  previewElement: HTMLElement,
+  selection: Selection,
+) {
+  const selectedText = selection.toString();
+  if (!selectedText.trim() || selection.rangeCount === 0) return null;
+
+  const range = selection.getRangeAt(0);
+  if (
+    !previewElement.contains(range.startContainer) ||
+    !previewElement.contains(range.endContainer)
+  ) {
+    return null;
+  }
+
+  const startBlockElement = closestPreviewBlockElement(range.startContainer);
+  const endBlockElement = closestPreviewBlockElement(range.endContainer);
+
+  if (startBlockElement && startBlockElement === endBlockElement) {
+    const blockKey = startBlockElement.dataset.previewBlockKey;
+    const block = blocks.find((candidate) => candidate.key === blockKey);
+
+    if (block) {
+      const leadingRange = range.cloneRange();
+      leadingRange.selectNodeContents(startBlockElement);
+      leadingRange.setEnd(range.startContainer, range.startOffset);
+
+      return makePreviewAnchorFromTextMap(
+        body,
+        getPreviewBlockTextMap(body, block),
+        selectedText,
+        leadingRange.toString().length,
+      );
+    }
+  }
+
+  return makePreviewAnchor(body, selectedText);
+}
+
 function makePreviewAnchor(body: string, selectedText: string) {
   const normalizedSelection = selectedText.replace(/\s+/g, " ").trim();
   if (!normalizedSelection) return null;
@@ -880,43 +1256,48 @@ function makePreviewAnchor(body: string, selectedText: string) {
   );
 }
 
-function getNotesForPreviewBlock(
+function getAnnotationsForPreviewBlock(
   markdown: string,
   block: MarkdownPreviewBlock,
-  notes: SelectionNote[],
+  annotations: TextRangeAnnotation[],
 ) {
   const blockRange = getBlockRange(markdown, block);
 
-  return notes.filter(
-    (note) =>
-      note.status === "active" &&
-      note.anchor.to > blockRange.start &&
-      note.anchor.from < blockRange.end,
+  return annotations.filter(
+    (annotation) =>
+      annotation.status === "active" &&
+      annotation.anchor.to > blockRange.start &&
+      annotation.anchor.from < blockRange.end,
   );
 }
 
-function getAnnotationRangesForTextMap(textMap: PreviewTextMap, notes: SelectionNote[]) {
+function getAnnotationRangesForTextMap(
+  textMap: PreviewTextMap,
+  annotations: TextRangeAnnotation[],
+) {
   const ranges: PreviewAnnotationTextRange[] = [];
 
-  notes.forEach((note) => {
+  annotations.forEach((annotation) => {
     let rangeStart: number | null = null;
 
     textMap.sourceOffsets.forEach((sourceOffset, index) => {
       const isMarked =
-        sourceOffset !== null && sourceOffset >= note.anchor.from && sourceOffset < note.anchor.to;
+        sourceOffset !== null &&
+        sourceOffset >= annotation.anchor.from &&
+        sourceOffset < annotation.anchor.to;
 
       if (isMarked && rangeStart === null) {
         rangeStart = index;
       }
 
       if (!isMarked && rangeStart !== null) {
-        ranges.push({ note, start: rangeStart, end: index });
+        ranges.push({ annotation, start: rangeStart, end: index });
         rangeStart = null;
       }
     });
 
     if (rangeStart !== null) {
-      ranges.push({ note, start: rangeStart, end: textMap.text.length });
+      ranges.push({ annotation, start: rangeStart, end: textMap.text.length });
     }
   });
 
@@ -928,11 +1309,11 @@ function getAnnotationRangesForTextMap(textMap: PreviewTextMap, notes: Selection
 function renderAnnotatedPlainText(
   textMap: PreviewTextMap,
   keyPrefix: string,
-  notes: SelectionNote[],
-  onAnnotationClick: (noteId: string) => void,
-  onAnnotationDoubleClick: (noteId: string) => void,
+  annotations: TextRangeAnnotation[],
+  onAnnotationClick: (annotationId: string) => void,
+  onAnnotationDoubleClick: (annotationId: string) => void,
 ) {
-  const ranges = getAnnotationRangesForTextMap(textMap, notes);
+  const ranges = getAnnotationRangesForTextMap(textMap, annotations);
   const nodes: ReactNode[] = [];
   let cursor = 0;
 
@@ -946,20 +1327,18 @@ function renderAnnotatedPlainText(
     nodes.push(
       <span
         className="preview-note-annotation"
-        data-note-id={range.note.id}
-        data-note-tone={range.note.tone ?? 0}
+        data-annotation-kind={range.annotation.kind}
+        data-note-id={range.annotation.id}
+        data-note-tone={range.annotation.tone ?? 0}
         key={`${keyPrefix}-note-${rangeIndex}`}
         onClick={(event) => {
           if (window.getSelection()?.toString().trim()) return;
-          event.preventDefault();
-          event.stopPropagation();
-          onAnnotationClick(range.note.id);
+          if (event.detail >= 2) return;
+
+          onAnnotationClick(range.annotation.id);
         }}
-        onDoubleClick={(event) => {
-          if (window.getSelection()?.toString().trim()) return;
-          event.preventDefault();
-          event.stopPropagation();
-          onAnnotationDoubleClick(range.note.id);
+        onDoubleClick={() => {
+          onAnnotationDoubleClick(range.annotation.id);
         }}
       >
         {textMap.text.slice(range.start, range.end)}
@@ -978,15 +1357,15 @@ function renderAnnotatedPlainText(
 function renderPreviewInline(
   textMap: PreviewTextMap,
   keyPrefix: string,
-  notes: SelectionNote[],
-  onAnnotationClick: (noteId: string) => void,
-  onAnnotationDoubleClick: (noteId: string) => void,
+  annotations: TextRangeAnnotation[],
+  onAnnotationClick: (annotationId: string) => void,
+  onAnnotationDoubleClick: (annotationId: string) => void,
 ) {
-  if (notes.length === 0) {
+  if (annotations.length === 0) {
     return renderInlineMarkdown(textMap.text, keyPrefix);
   }
 
-  const ranges = getAnnotationRangesForTextMap(textMap, notes);
+  const ranges = getAnnotationRangesForTextMap(textMap, annotations);
 
   if (ranges.length === 0) {
     return renderInlineMarkdown(textMap.text, keyPrefix);
@@ -1010,20 +1389,18 @@ function renderPreviewInline(
     nodes.push(
       <span
         className="preview-note-annotation"
-        data-note-id={range.note.id}
-        data-note-tone={range.note.tone ?? 0}
+        data-annotation-kind={range.annotation.kind}
+        data-note-id={range.annotation.id}
+        data-note-tone={range.annotation.tone ?? 0}
         key={`${keyPrefix}-note-${rangeIndex}`}
         onClick={(event) => {
           if (window.getSelection()?.toString().trim()) return;
-          event.preventDefault();
-          event.stopPropagation();
-          onAnnotationClick(range.note.id);
+          if (event.detail >= 2) return;
+
+          onAnnotationClick(range.annotation.id);
         }}
-        onDoubleClick={(event) => {
-          if (window.getSelection()?.toString().trim()) return;
-          event.preventDefault();
-          event.stopPropagation();
-          onAnnotationDoubleClick(range.note.id);
+        onDoubleClick={() => {
+          onAnnotationDoubleClick(range.annotation.id);
         }}
       >
         {renderInlineMarkdown(
@@ -1057,6 +1434,7 @@ function measurePreviewAnnotationFrames(container: HTMLDivElement): PreviewAnnot
   function frameFromBounds(
     noteId: string,
     frameKey: string,
+    kind: AnnotationKind,
     tone: AnnotationTone,
     left: number,
     top: number,
@@ -1065,6 +1443,7 @@ function measurePreviewAnnotationFrames(container: HTMLDivElement): PreviewAnnot
   ): PreviewAnnotationFrame {
     return {
       frameKey,
+      kind,
       noteId,
       tone,
       left: roundPreviewFrameValue(
@@ -1090,6 +1469,8 @@ function measurePreviewAnnotationFrames(container: HTMLDivElement): PreviewAnnot
       const noteId = annotation.dataset.noteId;
       if (!noteId) return;
       const tone: AnnotationTone = annotation.dataset.noteTone === "1" ? 1 : 0;
+      const kind: AnnotationKind =
+        annotation.dataset.annotationKind === "glossary" ? "glossary" : "note";
 
       const annotationRects = Array.from(annotation.getClientRects()).filter(
         (rect) => rect.width > 0 && rect.height > 0,
@@ -1124,6 +1505,7 @@ function measurePreviewAnnotationFrames(container: HTMLDivElement): PreviewAnnot
           frameFromBounds(
             noteId,
             `${noteId}:inline:${annotationIndex}:${rectIndex}`,
+            kind,
             tone,
             rect.left - previewAnnotationFramePadding,
             top,
@@ -1153,6 +1535,7 @@ function arePreviewAnnotationFramesEqual(
 
     return (
       leftFrame.frameKey === rightFrame.frameKey &&
+      leftFrame.kind === rightFrame.kind &&
       leftFrame.noteId === rightFrame.noteId &&
       leftFrame.tone === rightFrame.tone &&
       leftFrame.left === rightFrame.left &&
@@ -1369,19 +1752,19 @@ function markEditableBlockChanged(event: FormEvent<HTMLElement>) {
 function MarkdownPreviewBlockView({
   block,
   markdown,
-  notes,
+  annotations,
   onChange,
   onAnnotationClick,
   onAnnotationDoubleClick,
 }: {
   block: MarkdownPreviewBlock;
   markdown: string;
-  notes: SelectionNote[];
+  annotations: TextRangeAnnotation[];
   onChange: (block: MarkdownPreviewBlock, text: string) => void;
-  onAnnotationClick: (noteId: string) => void;
-  onAnnotationDoubleClick: (noteId: string) => void;
+  onAnnotationClick: (annotationId: string) => void;
+  onAnnotationDoubleClick: (annotationId: string) => void;
 }) {
-  const blockNotes = getNotesForPreviewBlock(markdown, block, notes);
+  const blockAnnotations = getAnnotationsForPreviewBlock(markdown, block, annotations);
 
   function commitEditableBlock(event: FocusEvent<HTMLElement>) {
     if (event.currentTarget.dataset.edited !== "true") return;
@@ -1411,7 +1794,7 @@ function MarkdownPreviewBlockView({
       renderPreviewInline(
         textMap,
         `${block.key}-heading`,
-        blockNotes,
+        blockAnnotations,
         onAnnotationClick,
         onAnnotationDoubleClick,
       ),
@@ -1430,7 +1813,7 @@ function MarkdownPreviewBlockView({
             {renderPreviewInline(
               getQuoteLineTextMap(markdown, block, quoteIndex),
               `${block.key}-quote-${quoteIndex}`,
-              blockNotes,
+              blockAnnotations,
               onAnnotationClick,
               onAnnotationDoubleClick,
             )}
@@ -1450,7 +1833,7 @@ function MarkdownPreviewBlockView({
             {renderPreviewInline(
               getListItemTextMap(markdown, block, itemIndex),
               `${block.key}-item-${itemIndex}`,
-              blockNotes,
+              blockAnnotations,
               onAnnotationClick,
               onAnnotationDoubleClick,
             )}
@@ -1467,7 +1850,7 @@ function MarkdownPreviewBlockView({
           {renderAnnotatedPlainText(
             getPreviewBlockTextMap(markdown, block),
             `${block.key}-code`,
-            blockNotes,
+            blockAnnotations,
             onAnnotationClick,
             onAnnotationDoubleClick,
           )}
@@ -1486,7 +1869,7 @@ function MarkdownPreviewBlockView({
         {renderPreviewInline(
           getPreviewBlockTextMap(markdown, block),
           `${block.key}-paragraph`,
-          blockNotes,
+          blockAnnotations,
           onAnnotationClick,
           onAnnotationDoubleClick,
         )}
@@ -1499,22 +1882,32 @@ function MarkdownPreviewBlockView({
 
 function MarkdownPreview({
   value,
-  notes,
+  annotations,
   onChange,
   onSelectionChange,
+  onSelectionEnter,
   onAnnotationClick,
   onAnnotationDoubleClick,
 }: {
   value: string;
-  notes: SelectionNote[];
+  annotations: TextRangeAnnotation[];
   onChange: (value: string, source: EditorChangeSource) => void;
   onSelectionChange: (anchor: TextSelectionAnchor | null) => void;
-  onAnnotationClick: (noteId: string) => void;
-  onAnnotationDoubleClick: (noteId: string) => void;
+  onSelectionEnter: (anchor: TextSelectionAnchor) => boolean;
+  onAnnotationClick: (annotationId: string) => void;
+  onAnnotationDoubleClick: (annotationId: string) => void;
 }) {
   const blocks = parseMarkdownPreviewBlocks(value);
   const previewRef = useRef<HTMLDivElement | null>(null);
+  const annotationClickTimerRef = useRef(0);
   const [annotationFrames, setAnnotationFrames] = useState<PreviewAnnotationFrame[]>([]);
+
+  useEffect(
+    () => () => {
+      window.clearTimeout(annotationClickTimerRef.current);
+    },
+    [],
+  );
 
   useLayoutEffect(() => {
     const previewElement = previewRef.current;
@@ -1544,7 +1937,7 @@ function MarkdownPreview({
       resizeObserver.disconnect();
       window.removeEventListener("resize", scheduleAnnotationFrameUpdate);
     };
-  }, [notes, value]);
+  }, [annotations, value]);
 
   function handlePreviewSelection() {
     const selection = window.getSelection();
@@ -1555,7 +1948,13 @@ function MarkdownPreview({
       return;
     }
 
-    onSelectionChange(makePreviewAnchor(value, selectedText));
+    const previewElement = previewRef.current;
+    const anchor = previewElement
+      ? makePreviewAnchorFromSelection(value, blocks, previewElement, selection)
+      : makePreviewAnchor(value, selectedText);
+
+    clearQueuedAnnotationClick();
+    onSelectionChange(anchor);
   }
 
   function noteIdFromPreviewFrameEvent(event: MouseEvent<HTMLDivElement>) {
@@ -1594,6 +1993,25 @@ function MarkdownPreview({
     return selection && !selection.isCollapsed ? selection.toString().trim() : "";
   }
 
+  function clearQueuedAnnotationClick() {
+    window.clearTimeout(annotationClickTimerRef.current);
+    annotationClickTimerRef.current = 0;
+  }
+
+  function queueAnnotationClick(annotationId: string) {
+    clearQueuedAnnotationClick();
+    annotationClickTimerRef.current = window.setTimeout(() => {
+      annotationClickTimerRef.current = 0;
+      if (selectedPreviewText()) return;
+
+      onAnnotationClick(annotationId);
+    }, 320);
+  }
+
+  function handleAnnotationDoubleClick(_annotationId: string) {
+    clearQueuedAnnotationClick();
+  }
+
   function noteIdFromPreviewFrameClick(event: MouseEvent<HTMLDivElement>) {
     if (selectedPreviewText()) return null;
 
@@ -1608,12 +2026,16 @@ function MarkdownPreview({
 
   function handlePreviewMouseDown(event: MouseEvent<HTMLDivElement>) {
     if (event.button !== 0) return;
+    if (event.detail >= 2) {
+      clearQueuedAnnotationClick();
+    }
   }
 
   function handlePreviewMouseUp(event: MouseEvent<HTMLDivElement>) {
     if (event.button !== 0) return;
 
     if (selectedPreviewText()) {
+      clearQueuedAnnotationClick();
       handlePreviewSelection();
       return;
     }
@@ -1631,6 +2053,34 @@ function MarkdownPreview({
     handlePreviewSelection();
   }
 
+  function handlePreviewKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
+    const isPlainEnter =
+      event.key === "Enter" &&
+      !event.metaKey &&
+      !event.ctrlKey &&
+      !event.altKey &&
+      !event.shiftKey;
+    if (!isPlainEnter) return;
+
+    const selection = window.getSelection();
+    const selectedText = selection?.toString() ?? "";
+    if (!selection || selection.isCollapsed || !selectedText.trim()) return;
+
+    const previewElement = previewRef.current;
+    const anchor = previewElement
+      ? makePreviewAnchorFromSelection(value, blocks, previewElement, selection)
+      : makePreviewAnchor(value, selectedText);
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    if (anchor) {
+      onSelectionEnter(anchor);
+    } else {
+      onSelectionChange(null);
+    }
+  }
+
   function updatePreviewBlock(block: MarkdownPreviewBlock, text: string) {
     const nextBlock = markdownFromPreviewBlock(block, text);
     const nextValue = replaceMarkdownBlock(value, block, nextBlock);
@@ -1642,26 +2092,28 @@ function MarkdownPreview({
     <div
       className="markdown-preview"
       ref={previewRef}
+      onKeyDownCapture={handlePreviewKeyDown}
       onKeyUp={handlePreviewSelection}
       onMouseDownCapture={handlePreviewMouseDown}
       onMouseUpCapture={handlePreviewMouseUp}
       onMouseUp={handlePreviewMouseUp}
     >
-      {blocks.map((block) => (
-        <MarkdownPreviewBlockView
-          block={block}
-          key={block.key}
-          markdown={value}
-          notes={notes}
-          onAnnotationClick={onAnnotationClick}
-          onAnnotationDoubleClick={onAnnotationDoubleClick}
-          onChange={updatePreviewBlock}
-        />
-      ))}
+        {blocks.map((block) => (
+          <MarkdownPreviewBlockView
+            block={block}
+            key={block.key}
+            markdown={value}
+            annotations={annotations}
+            onAnnotationClick={queueAnnotationClick}
+            onAnnotationDoubleClick={handleAnnotationDoubleClick}
+            onChange={updatePreviewBlock}
+          />
+        ))}
       <div aria-hidden="true" className="preview-annotation-layer">
         {annotationFrames.map((frame) => (
           <span
             className="preview-annotation-frame"
+            data-annotation-kind={frame.kind}
             data-note-id={frame.noteId}
             data-note-tone={frame.tone}
             key={frame.frameKey}
@@ -1785,10 +2237,17 @@ function App() {
   );
   const [selectedDocumentId, setSelectedDocumentId] = useState(documentsSeed[0].id);
   const [notes, setNotes] = useState(notesSeed);
+  const [glossaryTerms, setGlossaryTerms] = useState(glossaryTermsSeed);
+  const [glossaryBindings, setGlossaryBindings] = useState(glossaryBindingsSeed);
   const [pendingAnchor, setPendingAnchor] = useState<TextSelectionAnchor | null>(null);
+  const [pendingGlossaryTerm, setPendingGlossaryTerm] = useState<GlossaryTerm | null>(null);
   const [noteDraft, setNoteDraft] = useState("");
+  const [glossaryDraft, setGlossaryDraft] = useState("");
   const [activeNoteId, setActiveNoteId] = useState("");
+  const [activeGlossaryBindingId, setActiveGlossaryBindingId] = useState("");
+  const [activeGlossaryTermId, setActiveGlossaryTermId] = useState("");
   const [activeNoteMode, setActiveNoteMode] = useState<ActiveNoteMode>("view");
+  const [activeGlossaryMode, setActiveGlossaryMode] = useState<ActiveNoteMode>("view");
   const [floatingNotePanelPosition, setFloatingNotePanelPosition] =
     useState<FloatingNotePosition | null>(null);
   const [selectionWarningPosition, setSelectionWarningPosition] =
@@ -1806,6 +2265,7 @@ function App() {
     savedBodiesFromDocuments(documentsSeed),
   );
   const [storageError, setStorageError] = useState("");
+  const [fileContextMenu, setFileContextMenu] = useState<FileContextMenuState | null>(null);
   const notePanelRef = useRef<HTMLElement | null>(null);
   const floatingNoteCardRef = useRef<HTMLDivElement | null>(null);
   const noteTextareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -1818,44 +2278,102 @@ function App() {
   const noteTextareaEnterIgnoredDuringCompositionRef = useRef(false);
   const noteTextareaPostCompositionGuardUntilRef = useRef(0);
   const transientSelectionNoteIdRef = useRef("");
+  const transientGlossaryBindingIdRef = useRef("");
+  const transientGlossaryTermIdRef = useRef("");
+  const pendingGlossaryPromptLockUntilRef = useRef(0);
   const autosaveTimerRef = useRef(0);
   const autosaveInFlightRef = useRef(false);
   const autosaveRequestedWhileSavingRef = useRef(false);
   const documentsRef = useRef(documents);
   const notesRef = useRef(notes);
+  const glossaryTermsRef = useRef(glossaryTerms);
+  const glossaryBindingsRef = useRef(glossaryBindings);
   const dirtyDocumentStatesRef = useRef(dirtyDocumentStates);
   const notePanelHasContentRef = useRef(false);
   const selectionDismissedUntilRef = useRef(0);
   const lastOpenedFileRestoreAttemptedRef = useRef(false);
+  const newMarkdownFileHandlerRef = useRef<() => void>(() => undefined);
+  const openMarkdownFileHandlerRef = useRef<() => void>(() => undefined);
+  const openMarkdownFolderHandlerRef = useRef<() => void>(() => undefined);
 
   documentsRef.current = documents;
   notesRef.current = notes;
+  glossaryTermsRef.current = glossaryTerms;
+  glossaryBindingsRef.current = glossaryBindings;
   dirtyDocumentStatesRef.current = dirtyDocumentStates;
+  newMarkdownFileHandlerRef.current = () => {
+    void newMarkdownFile();
+  };
+  openMarkdownFileHandlerRef.current = () => {
+    void openMarkdownFileFromPicker();
+  };
+  openMarkdownFolderHandlerRef.current = () => {
+    void openMarkdownFolder();
+  };
 
+  const hasOpenDocument = documents.length > 0;
   const selectedDocument =
-    documents.find((document) => document.id === selectedDocumentId) ?? documents[0];
+    documents.find((document) => document.id === selectedDocumentId) ??
+    documents[0] ??
+    emptyDocument;
 
   const documentNotes = notes.filter(
     (note) => note.documentId === selectedDocument.id && note.status !== "deleted",
+  );
+  const documentGlossaryBindings = glossaryBindings.filter(
+    (binding) => binding.documentId === selectedDocument.id && binding.status !== "deleted",
   );
   const nativeStorageAvailable = hasNativeStorageAccess();
   const activeNotes = assignAnnotationTones(
     documentNotes.filter((note) => note.status === "active"),
   );
   const activeNote = documentNotes.find((note) => note.id === activeNoteId);
+  const activeGlossaryBinding = documentGlossaryBindings.find(
+    (binding) => binding.id === activeGlossaryBindingId,
+  );
+  const activeGlossaryTerm = glossaryTerms.find(
+    (term) => term.id === (activeGlossaryTermId || activeGlossaryBinding?.termId),
+  );
 
-  const annotations: TextAnnotation[] = activeNotes.map((note) => ({
+  const activeGlossaryAnnotations: TextRangeAnnotation[] = documentGlossaryBindings
+    .filter((binding) => binding.status === "active")
+    .map((binding) => ({
+      id: `glossary:${binding.id}`,
+      kind: "glossary",
+      status: binding.status,
+      anchor: binding.anchor,
+      tone: 0,
+    }));
+  const activeNoteAnnotations: TextRangeAnnotation[] = activeNotes.map((note) => ({
     id: note.id,
-    from: note.anchor.from,
+    kind: "note",
+    status: note.status,
+    anchor: note.anchor,
     tone: note.tone,
-    to: note.anchor.to,
+  }));
+  const activeTextAnnotations = [...activeNoteAnnotations, ...activeGlossaryAnnotations];
+  const annotations: TextAnnotation[] = activeTextAnnotations.map((annotation) => ({
+    id: annotation.id,
+    kind: annotation.kind,
+    from: annotation.anchor.from,
+    tone: annotation.tone,
+    to: annotation.anchor.to,
   }));
   const pendingAnchorIsCompleteBlock = Boolean(
     pendingAnchor && isSelectionCompleteMarkdownBlock(selectedDocument.body, pendingAnchor),
   );
+  const pendingAnchorIsGlossaryTerm = Boolean(
+    pendingAnchor && isGlossarySelectionCandidate(pendingAnchor),
+  );
   const activeNoteIsEditing = Boolean(activeNote && activeNoteMode === "edit");
+  const activeGlossaryIsEditing = Boolean(activeGlossaryTerm && activeGlossaryMode === "edit");
   const shouldShowSelectionConfirmation = Boolean(pendingAnchor && isMobileViewport);
-  const notePanelHasContent = Boolean(shouldShowSelectionConfirmation || activeNote);
+  const notePanelHasContent = Boolean(
+    shouldShowSelectionConfirmation ||
+      activeNote ||
+      activeGlossaryTerm ||
+      pendingGlossaryTerm,
+  );
   const floatingNotePanelShouldRender = notePanelHasContent;
 
   useEffect(() => {
@@ -1893,7 +2411,7 @@ function App() {
     noteTextareaShouldRefocusRef.current = false;
     textarea.focus();
     textarea.setSelectionRange(textarea.value.length, textarea.value.length);
-  }, [activeNoteId, activeNoteMode, pendingAnchor]);
+  }, [activeGlossaryMode, activeGlossaryTermId, activeNoteId, activeNoteMode, pendingAnchor]);
 
   useLayoutEffect(() => {
     if (!notePanelHasContent) {
@@ -1909,14 +2427,15 @@ function App() {
         const card = floatingNoteCardRef.current;
         const measuredAnchorRect = activeNote
           ? activeNoteAnchorRect(activeNote.id)
-          : pendingAnchor
-            ? currentSelectionAnchorRect()
-            : null;
+          : activeGlossaryBinding
+            ? activeGlossaryAnchorRect(activeGlossaryBinding.id)
+            : pendingAnchor
+              ? currentSelectionAnchorRect()
+              : null;
         if (measuredAnchorRect) {
           floatingNoteAnchorRectRef.current = measuredAnchorRect;
         }
-        const anchorRect =
-          measuredAnchorRect ?? (activeNote ? null : floatingNoteAnchorRectRef.current);
+        const anchorRect = measuredAnchorRect ?? floatingNoteAnchorRectRef.current;
 
         if (!card) {
           setFloatingNotePanelPosition(null);
@@ -1943,7 +2462,20 @@ function App() {
       document.removeEventListener("scroll", updateFloatingNotePanelPosition, true);
       window.removeEventListener("resize", updateFloatingNotePanelPosition);
     };
-  }, [activeNote, activeNoteMode, editorMode, noteDraft, notePanelHasContent, pendingAnchor, selectedDocument.body]);
+  }, [
+    activeGlossaryBinding,
+    activeGlossaryMode,
+    activeGlossaryTerm,
+    activeNote,
+    activeNoteMode,
+    editorMode,
+    glossaryDraft,
+    noteDraft,
+    notePanelHasContent,
+    pendingAnchor,
+    pendingGlossaryTerm,
+    selectedDocument.body,
+  ]);
 
   function elementFromEventTarget(target: EventTarget | null) {
     return target instanceof HTMLElement
@@ -2051,6 +2583,21 @@ function App() {
     return textAnchorRectFromClientRects(rects);
   }
 
+  function activeGlossaryAnchorRect(bindingId: string) {
+    const annotationId = `glossary:${bindingId}`;
+    const glossaryElements = Array.from(
+      document.querySelectorAll<HTMLElement>(
+        '.cm-note-annotation[data-note-id], .preview-note-annotation[data-note-id]',
+      ),
+    ).filter((element) => element.dataset.noteId === annotationId);
+
+    const rects = glossaryElements.flatMap((element) =>
+      Array.from(element.getClientRects()).filter((rect) => rect.width > 0 && rect.height > 0),
+    );
+
+    return textAnchorRectFromClientRects(rects);
+  }
+
   function calculateFloatingNotePosition(
     anchorRect: TextRangeRect,
     cardRect: DOMRect,
@@ -2058,8 +2605,7 @@ function App() {
     const viewportWidth = window.innerWidth;
     const viewportHeight = window.innerHeight;
     const viewportMargin = 12;
-    const noteGap = 12;
-    const belowNoteOffset = 8;
+    const noteGap = 8;
     const cardWidth = Math.min(
       cardRect.width || 300,
       Math.max(180, viewportWidth - viewportMargin * 2),
@@ -2078,41 +2624,24 @@ function App() {
     );
     const positionedHeight = Math.min(cardHeight, maxHeight);
     const targetY = placement === "below" ? anchorRect.bottom : anchorRect.top;
-    const targetInset = Math.min(
-      Math.max(24, anchorRect.width * 0.18),
-      Math.max(0, anchorRect.width / 2 - 1),
-    );
-    const targetX = clampNumber(
-      anchorRect.left + anchorRect.width * 0.78,
-      anchorRect.left + targetInset,
-      anchorRect.right - targetInset,
-    );
-    const minimumVerticalDistance = noteGap + (placement === "below" ? belowNoteOffset : 0);
-    const preferredSlant = Math.min(24, Math.max(10, minimumVerticalDistance * 0.55));
-    const centeredLeft = clampNumber(
+    const targetX = anchorRect.left + anchorRect.width / 2;
+    const preferredLeft = clampNumber(
       targetX - cardWidth / 2,
       viewportMargin,
       viewportWidth - viewportMargin - cardWidth,
     );
-    const panelShouldLeanRight = centeredLeft + cardWidth / 2 < viewportWidth / 2;
-    const preferredSourceX = targetX + (panelShouldLeanRight ? -preferredSlant : preferredSlant);
-    const left = clampNumber(
-      preferredSourceX - cardWidth / 2,
-      viewportMargin,
-      viewportWidth - viewportMargin - cardWidth,
-    );
+    const left = preferredLeft;
     const right = left + cardWidth;
-    const connectorInset = Math.min(36, Math.max(18, cardWidth * 0.12));
-    const sourceX = clampNumber(
-      preferredSourceX,
-      left + connectorInset,
-      right - connectorInset,
-    );
-    // Keep the connector within 45 degrees from the vertical axis: |dx| <= |dy|.
-    const verticalDistance = Math.max(
-      minimumVerticalDistance,
-      Math.abs(sourceX - targetX),
-    );
+    const verticalDistance = 14;
+    const connectorTilt = verticalDistance * 0.65;
+    const preferredSourceX =
+      targetX + (targetX < viewportWidth / 2 ? connectorTilt : -connectorTilt);
+    const minSourceX = Math.max(left, targetX - verticalDistance);
+    const maxSourceX = Math.min(right, targetX + verticalDistance);
+    const sourceX =
+      minSourceX <= maxSourceX
+        ? clampNumber(preferredSourceX, minSourceX, maxSourceX)
+        : clampNumber(targetX, left, right);
     const top =
       placement === "below"
         ? targetY + verticalDistance
@@ -2182,25 +2711,30 @@ function App() {
   }
 
   function targetIsActiveNoteRange(target: EventTarget | null) {
-    if (!activeNoteId) return false;
+    if (!activeNoteId && !activeGlossaryBindingId) return false;
 
     const targetElement = elementFromEventTarget(target);
     const noteElement = targetElement?.closest<HTMLElement>(
       ".cm-note-annotation[data-note-id], .cm-annotation-frame[data-note-id], .preview-note-annotation[data-note-id], .preview-annotation-frame[data-note-id]",
     );
 
-    return noteElement?.dataset.noteId === activeNoteId;
+    return (
+      noteElement?.dataset.noteId === activeNoteId ||
+      noteElement?.dataset.noteId === `glossary:${activeGlossaryBindingId}`
+    );
   }
 
   function pointHitsActiveNoteRange(clientX: number, clientY: number) {
-    if (!activeNoteId) return false;
+    if (!activeNoteId && !activeGlossaryBindingId) return false;
 
     return Array.from(
       document.querySelectorAll<HTMLElement>(
         ".cm-note-annotation[data-note-id], .cm-annotation-frame[data-note-id], .preview-note-annotation[data-note-id], .preview-annotation-frame[data-note-id]",
       ),
     ).some((element) => {
-      if (element.dataset.noteId !== activeNoteId) return false;
+      const isActiveNote = element.dataset.noteId === activeNoteId;
+      const isActiveGlossary = element.dataset.noteId === `glossary:${activeGlossaryBindingId}`;
+      if (!isActiveNote && !isActiveGlossary) return false;
       return pointHitsAnyRect(clientX, clientY, Array.from(element.getClientRects()));
     });
   }
@@ -2285,7 +2819,7 @@ function App() {
       document.removeEventListener("mousedown", handleDocumentMouseDown, true);
       document.removeEventListener("focusin", handleDocumentFocusIn, true);
     };
-  }, [activeNoteId, isNotePanelClosing, notePanelHasContent, pendingAnchor]);
+  }, [activeGlossaryBindingId, activeNoteId, isNotePanelClosing, notePanelHasContent, pendingAnchor]);
 
   useEffect(() => {
     if (!selectionWarningPosition) return;
@@ -2300,6 +2834,31 @@ function App() {
       document.removeEventListener("pointerdown", dismissSelectionWarning, true);
     };
   }, [selectionWarningPosition]);
+
+  useEffect(() => {
+    if (!fileContextMenu) return;
+
+    function dismissFileContextMenu() {
+      setFileContextMenu(null);
+    }
+
+    function handleFileContextMenuKeyDown(event: KeyboardEvent) {
+      if (event.key !== "Escape") return;
+
+      event.preventDefault();
+      setFileContextMenu(null);
+    }
+
+    document.addEventListener("pointerdown", dismissFileContextMenu);
+    document.addEventListener("scroll", dismissFileContextMenu, true);
+    window.addEventListener("keydown", handleFileContextMenuKeyDown, true);
+
+    return () => {
+      document.removeEventListener("pointerdown", dismissFileContextMenu);
+      document.removeEventListener("scroll", dismissFileContextMenu, true);
+      window.removeEventListener("keydown", handleFileContextMenuKeyDown, true);
+    };
+  }, [fileContextMenu]);
 
   useEffect(() => {
     return () => {
@@ -2327,7 +2886,7 @@ function App() {
     return () => {
       window.clearTimeout(autosaveTimerRef.current);
     };
-  }, [dirtyDocumentStates, documents, nativeStorageAvailable, notes]);
+  }, [dirtyDocumentStates, documents, glossaryBindings, glossaryTerms, nativeStorageAvailable, notes]);
 
   useEffect(() => {
     if (!nativeStorageAvailable || lastOpenedFileRestoreAttemptedRef.current) return;
@@ -2362,13 +2921,13 @@ function App() {
 
     void Promise.all([
       listen("scholium-new-file", () => {
-        void newMarkdownFile();
+        newMarkdownFileHandlerRef.current();
       }),
       listen("scholium-open-file", () => {
-        void openMarkdownFileFromPicker();
+        openMarkdownFileHandlerRef.current();
       }),
       listen("scholium-open-folder", () => {
-        void openMarkdownFolder();
+        openMarkdownFolderHandlerRef.current();
       }),
     ]).then(([newFileListener, openFileListener, openFolderListener]) => {
       unlistenNewFile = newFileListener;
@@ -2398,6 +2957,14 @@ function App() {
         !event.altKey &&
         !event.shiftKey;
 
+      if (isPlainEnter && pendingAnchor && pendingAnchorIsGlossaryTerm) {
+        if (targetIsFormControl(event.target)) return;
+
+        event.preventDefault();
+        startPendingGlossaryFlow();
+        return;
+      }
+
       if (isPlainEnter && pendingAnchor && pendingAnchorIsCompleteBlock) {
         if (targetIsFormControl(event.target)) return;
 
@@ -2419,7 +2986,12 @@ function App() {
     return () => {
       window.removeEventListener("keydown", handleModeShortcut, true);
     };
-  }, [closeNotePanel, pendingAnchor, pendingAnchorIsCompleteBlock]);
+  }, [
+    closeNotePanel,
+    pendingAnchor,
+    pendingAnchorIsCompleteBlock,
+    pendingAnchorIsGlossaryTerm,
+  ]);
 
   function updateDocumentDirtyState(documentId: string, patch: Partial<DirtyDocumentState>) {
     setDirtyDocumentStates((currentStates) => {
@@ -2445,7 +3017,24 @@ function App() {
   }
 
   function markDocumentNotesDirty(documentId = selectedDocument.id) {
+    if (!documentId || documentId === emptyDocument.id) return;
+
     updateDocumentDirtyState(documentId, { notes: true });
+  }
+
+  function markGlossaryTermDirty(termId: string) {
+    const documentIds = new Set(
+      glossaryBindingsRef.current
+        .filter((binding) => binding.termId === termId && binding.status !== "deleted")
+        .map((binding) => binding.documentId),
+    );
+
+    if (documentIds.size === 0) {
+      markDocumentNotesDirty();
+      return;
+    }
+
+    documentIds.forEach((documentId) => markDocumentNotesDirty(documentId));
   }
 
   function markLoadedDocumentsClean(loadedDocuments: MarkdownDocument[]) {
@@ -2509,6 +3098,7 @@ function App() {
     }
 
     discardTransientEmptySelectionNote();
+    discardTransientEmptyGlossary();
 
     const loadedDocuments = loadedFiles.map(documentFromLoadedFile);
     const loadedDocumentIds = new Set(loadedDocuments.map((document) => document.id));
@@ -2517,6 +3107,15 @@ function App() {
         ...note,
         documentId: loadedFile.path,
       })),
+    );
+    const loadedGlossaryBindings = loadedFiles.flatMap((loadedFile) =>
+      (loadedFile.glossaryBindings ?? []).map((binding) => ({
+        ...binding,
+        documentId: loadedFile.path,
+      })),
+    );
+    const loadedGlossaryTerms = loadedFiles.flatMap(
+      (loadedFile) => loadedFile.glossaryTerms ?? [],
     );
     const firstDocument = loadedDocuments[0];
 
@@ -2524,41 +3123,64 @@ function App() {
       ...loadedDocuments,
       ...currentDocuments.filter((document) => !loadedDocumentIds.has(document.id)),
     ]);
-    setWorkspaceEntries((currentEntries) => [
-      ...loadedDocuments.map(workspaceEntryFromDocument),
-      ...currentEntries.filter(
-        (entry) => entry.kind !== "file" || !loadedDocumentIds.has(entry.documentId),
-      ),
-    ]);
+    setWorkspaceEntries((currentEntries) => {
+      const parentEntries = currentEntries.filter((entry) => entry.kind === "parent-directory");
+      const otherEntries = currentEntries.filter(
+        (entry) =>
+          entry.kind !== "parent-directory" &&
+          (entry.kind !== "file" || !loadedDocumentIds.has(entry.documentId)),
+      );
+
+      return [...parentEntries, ...loadedDocuments.map(workspaceEntryFromDocument), ...otherEntries];
+    });
     setNotes((currentNotes) => [
       ...loadedNotes,
       ...currentNotes.filter((note) => !loadedDocumentIds.has(note.documentId)),
     ]);
+    setGlossaryBindings((currentBindings) => [
+      ...loadedGlossaryBindings,
+      ...currentBindings.filter((binding) => !loadedDocumentIds.has(binding.documentId)),
+    ]);
+    setGlossaryTerms((currentTerms) => mergeGlossaryTerms(loadedGlossaryTerms, currentTerms));
     setSelectedDocumentId(firstDocument.id);
     setSelectionWarningPosition(null);
     setPendingAnchor(null);
+    setPendingGlossaryTerm(null);
     setNoteDraft("");
+    setGlossaryDraft("");
     setActiveNoteId("");
+    setActiveGlossaryBindingId("");
+    setActiveGlossaryTermId("");
     setActiveNoteMode("view");
+    setActiveGlossaryMode("view");
     markLoadedDocumentsClean(loadedDocuments);
     rememberLastOpenedMarkdownPath(firstDocument.filePath);
   }
 
   function applyOpenedDirectory(openedDirectory: OpenMarkdownDirectoryResult, selectedPath?: string) {
     discardTransientEmptySelectionNote();
+    discardTransientEmptyGlossary();
 
     const loadedFiles = openedDirectory.entries.flatMap((entry) =>
       entry.kind === "file" ? [entry.file] : [],
     );
     const loadedDocuments = loadedFiles.map(documentFromLoadedFile);
-    const loadedDocumentIds = new Set(loadedDocuments.map((document) => document.id));
     const loadedNotes = loadedFiles.flatMap((loadedFile) =>
       loadedFile.notes.map((note) => ({
         ...note,
         documentId: loadedFile.path,
       })),
     );
-    const nextEntries = openedDirectory.entries.map((entry): WorkspaceEntry => {
+    const loadedGlossaryBindings = loadedFiles.flatMap((loadedFile) =>
+      (loadedFile.glossaryBindings ?? []).map((binding) => ({
+        ...binding,
+        documentId: loadedFile.path,
+      })),
+    );
+    const loadedGlossaryTerms = loadedFiles.flatMap(
+      (loadedFile) => loadedFile.glossaryTerms ?? [],
+    );
+    const childEntries = openedDirectory.entries.map((entry): WorkspaceEntry => {
       if (entry.kind === "directory") {
         return {
           kind: "directory",
@@ -2570,37 +3192,54 @@ function App() {
 
       return workspaceEntryFromDocument(documentFromLoadedFile(entry.file));
     });
+    const nextEntries: WorkspaceEntry[] = openedDirectory.parentPath
+      ? [
+          {
+            kind: "parent-directory",
+            id: `parent-directory:${openedDirectory.parentPath}`,
+            title: "上一層",
+            path: openedDirectory.parentPath,
+          },
+          ...childEntries,
+        ]
+      : childEntries;
     const firstDocument = loadedDocuments[0];
     const selectedDocument = selectedPath
       ? loadedDocuments.find((document) => document.id === selectedPath)
       : firstDocument;
     const documentToSelect = selectedDocument ?? firstDocument;
 
-    setDocuments((currentDocuments) => [
-      ...loadedDocuments,
-      ...currentDocuments.filter((document) => !loadedDocumentIds.has(document.id)),
-    ]);
-    setNotes((currentNotes) => [
-      ...loadedNotes,
-      ...currentNotes.filter((note) => !loadedDocumentIds.has(note.documentId)),
-    ]);
+    setDocuments(loadedDocuments);
+    setNotes(loadedNotes);
+    setGlossaryBindings(loadedGlossaryBindings);
+    setGlossaryTerms(mergeGlossaryTerms(loadedGlossaryTerms, []));
     setWorkspaceTitle(openedDirectory.title);
     setWorkspacePath(openedDirectory.path);
     setWorkspaceEntries(nextEntries);
     setSelectionWarningPosition(null);
     setPendingAnchor(null);
+    setPendingGlossaryTerm(null);
     setNoteDraft("");
+    setGlossaryDraft("");
     markLoadedDocumentsClean(loadedDocuments);
 
     if (documentToSelect) {
       setSelectedDocumentId(documentToSelect.id);
       rememberLastOpenedMarkdownPath(documentToSelect.filePath);
+    } else {
+      setSelectedDocumentId("");
+      forgetLastOpenedMarkdownPath();
     }
     setActiveNoteId("");
+    setActiveGlossaryBindingId("");
+    setActiveGlossaryTermId("");
     setActiveNoteMode("view");
+    setActiveGlossaryMode("view");
 
     if (nextEntries.length === 0) {
       setStorageError("No folders or Markdown files found in the selected folder.");
+    } else {
+      setStorageError("");
     }
   }
 
@@ -2610,7 +3249,7 @@ function App() {
       return;
     }
 
-    setStorageError("");
+    setStorageError("Opening folder...");
 
     try {
       const openedDirectory = await invoke<OpenMarkdownDirectoryResult>("open_markdown_directory", {
@@ -2662,12 +3301,11 @@ function App() {
         return;
       }
 
-      const context = await invoke<OpenMarkdownFileContextResult>("open_markdown_file_context", {
+      const loaded = await invoke<OpenMarkdownFileResult>("open_markdown_file", {
         path: selectedPath,
       });
-      const directory = directoryWithSelectedFile(context);
 
-      applyOpenedDirectory(directory, context.selectedFile.path);
+      applyLoadedFiles([loaded]);
       setStorageError("");
     } catch (error) {
       setStorageError(error instanceof Error ? error.message : String(error));
@@ -2690,17 +3328,20 @@ function App() {
       if (!selectedPath) return;
 
       const path = ensureMarkdownExtension(selectedPath);
-      const body = "# Untitled\n";
+      const body = "";
       const saved = await invoke<SaveMarkdownFileResult>("save_markdown_file", {
         path,
         body,
         notes: [],
+        glossaryTerms: [],
+        glossaryBindings: [],
       });
       const loaded = await invoke<OpenMarkdownFileResult>("open_markdown_file", {
         path: saved.path,
       });
 
       applyLoadedFiles([loaded]);
+      setEditorMode("edit");
     } catch (error) {
       setStorageError(error instanceof Error ? error.message : String(error));
     }
@@ -2716,14 +3357,43 @@ function App() {
     );
   }
 
-  function notesFingerprint(sourceNotes: SelectionNote[]) {
-    return JSON.stringify(sourceNotes);
+  function glossaryBindingsForDocument(
+    documentId: string,
+    sourceBindings = glossaryBindingsRef.current,
+  ) {
+    return sourceBindings.filter(
+      (binding) => binding.documentId === documentId && binding.status !== "deleted",
+    );
+  }
+
+  function glossaryTermsForDocument(
+    documentId: string,
+    sourceBindings = glossaryBindingsRef.current,
+    sourceTerms = glossaryTermsRef.current,
+  ) {
+    const termIds = new Set(
+      glossaryBindingsForDocument(documentId, sourceBindings).map((binding) => binding.termId),
+    );
+
+    return sourceTerms.filter((term) => termIds.has(term.id));
+  }
+
+  function sidecarFingerprint(
+    sourceNotes: SelectionNote[],
+    sourceGlossaryTerms: GlossaryTerm[],
+    sourceGlossaryBindings: GlossaryBinding[],
+  ) {
+    return JSON.stringify({
+      notes: sourceNotes,
+      glossaryTerms: sourceGlossaryTerms,
+      glossaryBindings: sourceGlossaryBindings,
+    });
   }
 
   function markDocumentSnapshotSaved(
     documentId: string,
     savedBody: string,
-    savedNotesFingerprint: string,
+    savedSidecarFingerprint: string,
   ) {
     setSavedDocumentBodies((currentBodies) => ({
       ...currentBodies,
@@ -2731,10 +3401,14 @@ function App() {
     }));
     setDirtyDocumentStates((currentStates) => {
       const currentDocument = documentsRef.current.find((document) => document.id === documentId);
-      const currentNotesFingerprint = notesFingerprint(notesForDocument(documentId));
+      const currentSidecarFingerprint = sidecarFingerprint(
+        notesForDocument(documentId),
+        glossaryTermsForDocument(documentId),
+        glossaryBindingsForDocument(documentId),
+      );
       const nextState: DirtyDocumentState = {
         body: currentDocument ? currentDocument.body !== savedBody : false,
-        notes: currentNotesFingerprint !== savedNotesFingerprint,
+        notes: currentSidecarFingerprint !== savedSidecarFingerprint,
       };
       const nextStates = { ...currentStates };
 
@@ -2753,11 +3427,19 @@ function App() {
 
     const bodyToSave = documentToSave.body;
     const notesToSave = notesForDocument(documentToSave.id);
-    const savedNotesFingerprint = notesFingerprint(notesToSave);
+    const glossaryBindingsToSave = glossaryBindingsForDocument(documentToSave.id);
+    const glossaryTermsToSave = glossaryTermsForDocument(documentToSave.id);
+    const savedSidecarFingerprint = sidecarFingerprint(
+      notesToSave,
+      glossaryTermsToSave,
+      glossaryBindingsToSave,
+    );
     const saved = await invoke<SaveMarkdownFileResult>("save_markdown_file", {
       path: documentToSave.filePath,
       body: bodyToSave,
       notes: notesToSave,
+      glossaryTerms: glossaryTermsToSave,
+      glossaryBindings: glossaryBindingsToSave,
     });
 
     setDocuments((currentDocuments) =>
@@ -2773,7 +3455,7 @@ function App() {
           : document,
       ),
     );
-    markDocumentSnapshotSaved(documentToSave.id, bodyToSave, savedNotesFingerprint);
+    markDocumentSnapshotSaved(documentToSave.id, bodyToSave, savedSidecarFingerprint);
   }
 
   async function saveDirtyDocuments() {
@@ -2813,6 +3495,205 @@ function App() {
     }
   }
 
+  function fileNameFromPath(path: string | null | undefined) {
+    const segments = path?.split(/[\\/]/).filter(Boolean) ?? [];
+
+    return segments[segments.length - 1] ?? "";
+  }
+
+  function defaultDuplicateFileName(documentToDuplicate: MarkdownDocument) {
+    const fileName = fileNameFromPath(documentToDuplicate.filePath ?? documentToDuplicate.path);
+    const fallbackName = `${documentToDuplicate.title || "Untitled"} 副本.md`;
+    if (!fileName) return fallbackName;
+
+    const extensionStart = fileName.lastIndexOf(".");
+    if (extensionStart <= 0) return `${fileName} 副本.md`;
+
+    return `${fileName.slice(0, extensionStart)} 副本${fileName.slice(extensionStart)}`;
+  }
+
+  async function writeTextToClipboard(text: string) {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return;
+    }
+
+    const textarea = document.createElement("textarea");
+    textarea.value = text;
+    textarea.style.position = "fixed";
+    textarea.style.opacity = "0";
+    document.body.append(textarea);
+    textarea.focus();
+    textarea.select();
+
+    try {
+      if (!document.execCommand("copy")) {
+        throw new Error("copy command failed");
+      }
+    } finally {
+      textarea.remove();
+    }
+  }
+
+  function removeDocumentFromWorkspace(documentId: string) {
+    const nextDocuments = documentsRef.current.filter((document) => document.id !== documentId);
+    const nextNotes = notesRef.current.filter((note) => note.documentId !== documentId);
+    const nextGlossaryBindings = glossaryBindingsRef.current.filter(
+      (binding) => binding.documentId !== documentId,
+    );
+    const remainingGlossaryTermIds = new Set(
+      nextGlossaryBindings
+        .filter((binding) => binding.status !== "deleted")
+        .map((binding) => binding.termId),
+    );
+    const nextGlossaryTerms = glossaryTermsRef.current.filter((term) =>
+      remainingGlossaryTermIds.has(term.id),
+    );
+    const nextDirtyDocumentStates = { ...dirtyDocumentStatesRef.current };
+    delete nextDirtyDocumentStates[documentId];
+
+    documentsRef.current = nextDocuments;
+    notesRef.current = nextNotes;
+    glossaryBindingsRef.current = nextGlossaryBindings;
+    glossaryTermsRef.current = nextGlossaryTerms;
+    dirtyDocumentStatesRef.current = nextDirtyDocumentStates;
+
+    clearNotePanelCloseTimer();
+    clearReturnToViewTimer();
+    resetNoteTextareaCompositionState();
+    setDocuments(nextDocuments);
+    setWorkspaceEntries((currentEntries) =>
+      currentEntries.filter((entry) => entry.kind !== "file" || entry.documentId !== documentId),
+    );
+    setNotes(nextNotes);
+    setGlossaryBindings(nextGlossaryBindings);
+    setGlossaryTerms(nextGlossaryTerms);
+    setDirtyDocumentStates(nextDirtyDocumentStates);
+    setSavedDocumentBodies((currentBodies) => {
+      const nextBodies = { ...currentBodies };
+      delete nextBodies[documentId];
+      return nextBodies;
+    });
+    setSelectionWarningPosition(null);
+    setPendingAnchor(null);
+    setPendingGlossaryTerm(null);
+    setNoteDraft("");
+    setGlossaryDraft("");
+    setActiveNoteId("");
+    setActiveGlossaryBindingId("");
+    setActiveGlossaryTermId("");
+    setActiveNoteMode("view");
+    setActiveGlossaryMode("view");
+    setFloatingNotePanelPosition(null);
+    setIsNotePanelClosing(false);
+    notePanelHasContentRef.current = false;
+
+    if (selectedDocumentId === documentId) {
+      const nextSelectedDocument = nextDocuments[0] ?? null;
+      setSelectedDocumentId(nextSelectedDocument?.id ?? "");
+      if (nextSelectedDocument?.filePath) {
+        rememberLastOpenedMarkdownPath(nextSelectedDocument.filePath);
+      } else {
+        forgetLastOpenedMarkdownPath();
+      }
+    }
+  }
+
+  async function duplicateDocumentFile(documentId: string) {
+    if (!nativeStorageAvailable) {
+      setStorageError("Open/save requires the Scholium macOS app runtime.");
+      return;
+    }
+
+    if (autosaveInFlightRef.current) {
+      setStorageError("請稍候目前儲存完成後再建立副本。");
+      return;
+    }
+
+    const documentToDuplicate = documentsRef.current.find((document) => document.id === documentId);
+    if (!documentToDuplicate?.filePath) {
+      setStorageError("This document is not backed by a local Markdown file.");
+      return;
+    }
+
+    setFileContextMenu(null);
+
+    const requestedFileName = window.prompt(
+      "請輸入副本檔名",
+      defaultDuplicateFileName(documentToDuplicate),
+    );
+    const fileName = requestedFileName?.trim();
+    if (!fileName) return;
+
+    setStorageError("Creating duplicate...");
+
+    try {
+      if (hasDirtyState(dirtyDocumentStatesRef.current[documentId])) {
+        await saveDocumentToDisk(documentToDuplicate);
+      }
+
+      const loaded = await invoke<OpenMarkdownFileResult>("duplicate_markdown_file", {
+        path: documentToDuplicate.filePath,
+        fileName,
+      });
+      applyLoadedFiles([loaded]);
+      setStorageError("");
+    } catch (error) {
+      setStorageError(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function copyDocumentContent(documentId: string) {
+    const documentToCopy = documentsRef.current.find((document) => document.id === documentId);
+    if (!documentToCopy) return;
+
+    setFileContextMenu(null);
+
+    try {
+      await writeTextToClipboard(documentToCopy.body);
+      setStorageError("");
+    } catch (error) {
+      setStorageError(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function deleteDocumentFile(documentId: string) {
+    if (!nativeStorageAvailable) {
+      setStorageError("Open/save requires the Scholium macOS app runtime.");
+      return;
+    }
+
+    if (autosaveInFlightRef.current) {
+      setStorageError("請稍候目前儲存完成後再刪除檔案。");
+      return;
+    }
+
+    const documentToDelete = documentsRef.current.find((document) => document.id === documentId);
+    if (!documentToDelete?.filePath) {
+      setStorageError("This document is not backed by a local Markdown file.");
+      return;
+    }
+
+    setFileContextMenu(null);
+
+    const confirmed = window.confirm(
+      `確定要刪除「${documentToDelete.title}」嗎？\n\n這會刪除 Markdown 檔案與對應的 notes sidecar。`,
+    );
+    if (!confirmed) return;
+
+    setStorageError("Deleting file...");
+
+    try {
+      await invoke<DeleteMarkdownFileResult>("delete_markdown_file", {
+        path: documentToDelete.filePath,
+      });
+      removeDocumentFromWorkspace(documentId);
+      setStorageError("");
+    } catch (error) {
+      setStorageError(error instanceof Error ? error.message : String(error));
+    }
+  }
+
   function updateSelectedDocumentBody(body: string, source: EditorChangeSource) {
     if (body === selectedDocument.body) return;
 
@@ -2829,6 +3710,11 @@ function App() {
         note.documentId === documentId ? reconcileNote(note, body) : note,
       ),
     );
+    setGlossaryBindings((currentBindings) =>
+      currentBindings.map((binding) =>
+        binding.documentId === documentId ? reconcileGlossaryBinding(binding, body) : binding,
+      ),
+    );
     markDocumentBodyDirty(documentId, !(source === "undo" && body === savedBody));
   }
 
@@ -2837,13 +3723,19 @@ function App() {
     if (!nextDocument) return;
 
     discardTransientEmptySelectionNote();
+    discardTransientEmptyGlossary();
     setSelectedDocumentId(documentId);
     setSelectionWarningPosition(null);
     setPendingAnchor(null);
+    setPendingGlossaryTerm(null);
     setNoteDraft("");
+    setGlossaryDraft("");
     setStorageError("");
     setActiveNoteId("");
+    setActiveGlossaryBindingId("");
+    setActiveGlossaryTermId("");
     setActiveNoteMode("view");
+    setActiveGlossaryMode("view");
     clearReturnToViewTimer();
     rememberLastOpenedMarkdownPath(nextDocument.filePath);
   }
@@ -2880,8 +3772,48 @@ function App() {
     return true;
   }
 
+  function discardTransientEmptyGlossary() {
+    const bindingId = transientGlossaryBindingIdRef.current;
+    const termId = transientGlossaryTermIdRef.current;
+    if (!bindingId || !termId) return false;
+
+    const term = glossaryTermsRef.current.find((candidate) => candidate.id === termId);
+    if (!term) {
+      transientGlossaryBindingIdRef.current = "";
+      transientGlossaryTermIdRef.current = "";
+      return false;
+    }
+
+    if (term.definition.trim()) {
+      transientGlossaryBindingIdRef.current = "";
+      transientGlossaryTermIdRef.current = "";
+      return false;
+    }
+
+    glossaryBindingsRef.current = glossaryBindingsRef.current.filter(
+      (candidate) => candidate.id !== bindingId,
+    );
+    setGlossaryBindings((currentBindings) =>
+      currentBindings.filter((candidate) => candidate.id !== bindingId),
+    );
+
+    const hasOtherBindings = glossaryBindingsRef.current.some(
+      (candidate) => candidate.termId === termId && candidate.status !== "deleted",
+    );
+    if (!hasOtherBindings) {
+      glossaryTermsRef.current = glossaryTermsRef.current.filter((candidate) => candidate.id !== termId);
+      setGlossaryTerms((currentTerms) =>
+        currentTerms.filter((candidate) => candidate.id !== termId),
+      );
+    }
+
+    transientGlossaryBindingIdRef.current = "";
+    transientGlossaryTermIdRef.current = "";
+    return true;
+  }
+
   function returnActiveNoteToViewMode() {
-    if (!activeNoteIsEditing || isReturningToView) return;
+    if ((!activeNoteIsEditing && !activeGlossaryIsEditing) || isReturningToView) return;
 
     if (
       activeNote &&
@@ -2893,10 +3825,21 @@ function App() {
       return;
     }
 
+    if (
+      activeGlossaryTerm &&
+      activeGlossaryTerm.id === transientGlossaryTermIdRef.current &&
+      !activeGlossaryTerm.definition.trim() &&
+      !glossaryDraft.trim()
+    ) {
+      closeNotePanel();
+      return;
+    }
+
     setIsReturningToView(true);
     window.clearTimeout(returnToViewTimerRef.current);
     returnToViewTimerRef.current = window.setTimeout(() => {
       setActiveNoteMode("view");
+      setActiveGlossaryMode("view");
       setIsReturningToView(false);
       returnToViewTimerRef.current = 0;
     }, 1000);
@@ -2916,9 +3859,14 @@ function App() {
 
     if (!notePanelHasContentRef.current) {
       setPendingAnchor(null);
+      setPendingGlossaryTerm(null);
       setActiveNoteId("");
+      setActiveGlossaryBindingId("");
+      setActiveGlossaryTermId("");
       setActiveNoteMode("view");
+      setActiveGlossaryMode("view");
       setNoteDraft("");
+      setGlossaryDraft("");
       floatingNoteAnchorRectRef.current = null;
       setIsNotePanelClosing(false);
       return;
@@ -2927,10 +3875,16 @@ function App() {
     setIsNotePanelClosing(true);
     notePanelCloseTimerRef.current = window.setTimeout(() => {
       discardTransientEmptySelectionNote();
+      discardTransientEmptyGlossary();
       setPendingAnchor(null);
+      setPendingGlossaryTerm(null);
       setActiveNoteId("");
+      setActiveGlossaryBindingId("");
+      setActiveGlossaryTermId("");
       setActiveNoteMode("view");
+      setActiveGlossaryMode("view");
       setNoteDraft("");
+      setGlossaryDraft("");
       setIsNotePanelClosing(false);
       floatingNoteAnchorRectRef.current = null;
       notePanelHasContentRef.current = false;
@@ -2987,6 +3941,14 @@ function App() {
 
   function handleSelectionChange(anchor: TextSelectionAnchor | null) {
     if (!anchor) {
+      if (
+        Date.now() < pendingGlossaryPromptLockUntilRef.current &&
+        pendingAnchor &&
+        pendingGlossaryTerm
+      ) {
+        return;
+      }
+
       setSelectionWarningPosition(null);
       if (pendingAnchor) {
         closeNotePanel();
@@ -2998,7 +3960,15 @@ function App() {
       return;
     }
 
-    if (activeNotes.some((note) => selectionOverlapsNote(anchor, note))) {
+    if (
+      pendingAnchor &&
+      pendingGlossaryTerm &&
+      textSelectionAnchorsMatch(anchor, pendingAnchor)
+    ) {
+      return;
+    }
+
+    if (selectionIsBlockedByExistingAnnotations(anchor)) {
       setSelectionWarningPosition(null);
       if (pendingAnchor) {
         closeNotePanel();
@@ -3006,10 +3976,15 @@ function App() {
       return;
     }
 
-    if (!isSelectionCompleteMarkdownBlock(selectedDocument.body, anchor)) {
+    if (
+      !isGlossarySelectionCandidate(anchor) &&
+      !isSelectionCompleteMarkdownBlock(selectedDocument.body, anchor)
+    ) {
       const anchorRect = currentSelectionAnchorRect();
       setPendingAnchor(null);
       setNoteDraft("");
+      setPendingGlossaryTerm(null);
+      setGlossaryDraft("");
       if (notePanelHasContentRef.current) {
         closeNotePanel();
       }
@@ -3023,10 +3998,58 @@ function App() {
     setIsNotePanelClosing(false);
     floatingNoteAnchorRectRef.current = currentSelectionAnchorRect();
     setPendingAnchor(anchor);
+    setPendingGlossaryTerm(null);
     setActiveNoteId("");
+    setActiveGlossaryBindingId("");
+    setActiveGlossaryTermId("");
     setActiveNoteMode("view");
+    setActiveGlossaryMode("view");
     setNoteDraft("");
+    setGlossaryDraft("");
     notePanelHasContentRef.current = isMobileViewport;
+  }
+
+  function selectionOverlapsActiveNote(anchor: TextSelectionAnchor) {
+    return activeNotes.some((note) => selectionOverlapsNote(anchor, note));
+  }
+
+  function selectionOverlapsActiveGlossary(anchor: TextSelectionAnchor) {
+    return documentGlossaryBindings.some((binding) =>
+      selectionOverlapsGlossaryBinding(anchor, binding),
+    );
+  }
+
+  function selectionIsBlockedByExistingAnnotations(anchor: TextSelectionAnchor) {
+    if (isGlossarySelectionCandidate(anchor)) {
+      return selectionOverlapsActiveGlossary(anchor);
+    }
+
+    return selectionOverlapsActiveNote(anchor) || selectionOverlapsActiveGlossary(anchor);
+  }
+
+  function handleSelectionEnter(anchor: TextSelectionAnchor) {
+    if (!hasOpenDocument) return false;
+
+    if (selectionIsBlockedByExistingAnnotations(anchor)) {
+      return true;
+    }
+
+    if (isGlossarySelectionCandidate(anchor)) {
+      startGlossaryFlowForAnchor(anchor);
+      return true;
+    }
+
+    if (isSelectionCompleteMarkdownBlock(selectedDocument.body, anchor)) {
+      confirmSelectionNoteForAnchor(anchor);
+      return true;
+    }
+
+    setPendingAnchor(null);
+    setNoteDraft("");
+    setPendingGlossaryTerm(null);
+    setGlossaryDraft("");
+    setSelectionWarningPosition(selectionWarningPositionFromAnchor(currentSelectionAnchorRect()));
+    return true;
   }
 
   function showNoteViewer(noteId: string) {
@@ -3062,9 +4085,234 @@ function App() {
     notePanelHasContentRef.current = true;
   }
 
+  function glossaryTermForAnchor(anchor: TextSelectionAnchor) {
+    const normalizedTerm = normalizeGlossaryTerm(anchor.selectedText);
+
+    return (
+      glossaryTerms.find(
+        (term) =>
+          term.normalizedTerm === normalizedTerm ||
+          normalizeGlossaryTerm(term.term) === normalizedTerm,
+      ) ?? null
+    );
+  }
+
+  function createGlossaryBinding(term: GlossaryTerm, anchor: TextSelectionAnchor) {
+    const binding: GlossaryBinding = {
+      id: crypto.randomUUID(),
+      documentId: selectedDocument.id,
+      termId: term.id,
+      term: term.term,
+      normalizedTerm: normalizeGlossaryTerm(term.term),
+      status: "active",
+      anchor: {
+        ...anchor,
+        selectedText: anchor.selectedText.replace(/\s+/g, " ").trim(),
+      },
+      createdAt: nowLabel(),
+      updatedAt: nowLabel(),
+      deletedAt: null,
+    };
+
+    setGlossaryBindings((currentBindings) => [binding, ...currentBindings]);
+    markDocumentNotesDirty();
+    return binding;
+  }
+
+  function startPendingGlossaryFlow() {
+    if (!pendingAnchor || !pendingAnchorIsGlossaryTerm) return;
+
+    startGlossaryFlowForAnchor(pendingAnchor);
+  }
+
+  function startGlossaryFlowForAnchor(anchor: TextSelectionAnchor) {
+    discardTransientEmptySelectionNote();
+    setSelectionWarningPosition(null);
+    const anchorRect = currentSelectionAnchorRect();
+    if (anchorRect) {
+      floatingNoteAnchorRectRef.current = anchorRect;
+    }
+
+    const existingTerm = glossaryTermForAnchor(anchor);
+    if (existingTerm) {
+      clearNotePanelCloseTimer();
+      clearReturnToViewTimer();
+      setIsNotePanelClosing(false);
+      setPendingAnchor(anchor);
+      setPendingGlossaryTerm(existingTerm);
+      pendingGlossaryPromptLockUntilRef.current = Date.now() + 350;
+      setActiveNoteId("");
+      setActiveGlossaryBindingId("");
+      setActiveGlossaryTermId(existingTerm.id);
+      setActiveGlossaryMode("view");
+      setGlossaryDraft(existingTerm.definition);
+      notePanelHasContentRef.current = true;
+      return;
+    }
+
+    const now = nowLabel();
+    const termText = anchor.selectedText.replace(/\s+/g, " ").trim();
+    const term: GlossaryTerm = {
+      id: crypto.randomUUID(),
+      term: termText,
+      normalizedTerm: normalizeGlossaryTerm(termText),
+      definition: "",
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    setGlossaryTerms((currentTerms) => [term, ...currentTerms]);
+    const binding = createGlossaryBinding(term, anchor);
+    transientGlossaryBindingIdRef.current = binding.id;
+    transientGlossaryTermIdRef.current = term.id;
+    setPendingAnchor(null);
+    setPendingGlossaryTerm(null);
+    setActiveNoteId("");
+    setActiveGlossaryBindingId(binding.id);
+    setActiveGlossaryTermId(term.id);
+    setActiveGlossaryMode("edit");
+    setGlossaryDraft("");
+    noteTextareaShouldRefocusRef.current = true;
+    setIsNotePanelClosing(false);
+    notePanelHasContentRef.current = true;
+  }
+
+  function bindPendingGlossaryTerm() {
+    if (!pendingAnchor || !pendingGlossaryTerm) return;
+
+    const binding = createGlossaryBinding(pendingGlossaryTerm, pendingAnchor);
+    setPendingAnchor(null);
+    setPendingGlossaryTerm(null);
+    setActiveNoteId("");
+    setActiveGlossaryBindingId(binding.id);
+    setActiveGlossaryTermId(pendingGlossaryTerm.id);
+    setActiveGlossaryMode("view");
+    setGlossaryDraft(pendingGlossaryTerm.definition);
+    notePanelHasContentRef.current = true;
+  }
+
+  function rejectPendingGlossaryTerm() {
+    closeNotePanel();
+  }
+
+  function showGlossaryViewer(bindingId: string) {
+    const binding = glossaryBindings.find(
+      (candidate) => candidate.id === bindingId && candidate.status !== "deleted",
+    );
+    if (!binding) return;
+
+    const term = glossaryTerms.find((candidate) => candidate.id === binding.termId);
+    if (!term) return;
+
+    setSelectionWarningPosition(null);
+    clearNotePanelCloseTimer();
+    clearReturnToViewTimer();
+    setIsNotePanelClosing(false);
+    floatingNoteAnchorRectRef.current = activeGlossaryAnchorRect(bindingId);
+    setPendingAnchor(null);
+    setPendingGlossaryTerm(null);
+    setActiveNoteId("");
+    setActiveGlossaryBindingId(bindingId);
+    setActiveGlossaryTermId(term.id);
+    setActiveGlossaryMode("view");
+    setGlossaryDraft(term.definition);
+    notePanelHasContentRef.current = true;
+  }
+
+  function openGlossaryEditor(termId: string) {
+    const term = glossaryTerms.find((candidate) => candidate.id === termId);
+    if (!term) return;
+
+    setSelectionWarningPosition(null);
+    clearNotePanelCloseTimer();
+    clearReturnToViewTimer();
+    setIsNotePanelClosing(false);
+    setPendingAnchor(null);
+    setPendingGlossaryTerm(null);
+    setActiveNoteId("");
+    setActiveGlossaryTermId(term.id);
+    noteTextareaShouldRefocusRef.current = true;
+    setActiveGlossaryMode("edit");
+    setGlossaryDraft(term.definition);
+    notePanelHasContentRef.current = true;
+  }
+
+  function showAnnotationViewer(annotationId: string) {
+    if (annotationId.startsWith("glossary:")) {
+      showGlossaryViewer(annotationId.slice("glossary:".length));
+      return;
+    }
+
+    showNoteViewer(annotationId);
+  }
+
+  function updateGlossaryDefinition(termId: string, definition: string) {
+    setGlossaryTerms((currentTerms) =>
+      currentTerms.map((term) =>
+        term.id === termId
+          ? {
+              ...term,
+              definition,
+              updatedAt: nowLabel(),
+            }
+          : term,
+      ),
+    );
+    markGlossaryTermDirty(termId);
+
+    if (termId === transientGlossaryTermIdRef.current && definition.trim()) {
+      transientGlossaryBindingIdRef.current = "";
+      transientGlossaryTermIdRef.current = "";
+    }
+  }
+
+  function updateActiveGlossaryDraft(definition: string) {
+    if (!activeGlossaryTerm) return;
+
+    setGlossaryDraft(definition);
+    updateGlossaryDefinition(activeGlossaryTerm.id, definition);
+  }
+
+  function deleteGlossaryBinding(bindingId: string) {
+    clearNotePanelCloseTimer();
+    clearReturnToViewTimer();
+    if (transientGlossaryBindingIdRef.current === bindingId) {
+      transientGlossaryBindingIdRef.current = "";
+      transientGlossaryTermIdRef.current = "";
+    }
+    setGlossaryBindings((currentBindings) =>
+      currentBindings.map((binding) =>
+        binding.id === bindingId
+          ? {
+              ...binding,
+              status: "deleted",
+              deletedAt: new Date().toISOString(),
+              updatedAt: nowLabel(),
+            }
+          : binding,
+      ),
+    );
+
+    if (activeGlossaryBindingId === bindingId) {
+      setPendingAnchor(null);
+      setPendingGlossaryTerm(null);
+      setActiveGlossaryBindingId("");
+      setActiveGlossaryTermId("");
+      setActiveGlossaryMode("view");
+      setGlossaryDraft("");
+      setIsNotePanelClosing(false);
+      notePanelHasContentRef.current = false;
+    }
+    markDocumentNotesDirty();
+  }
+
   function confirmPendingSelectionNote() {
     if (!pendingAnchor || !pendingAnchorIsCompleteBlock) return;
 
+    confirmSelectionNoteForAnchor(pendingAnchor);
+  }
+
+  function confirmSelectionNoteForAnchor(anchor: TextSelectionAnchor) {
     discardTransientEmptySelectionNote();
     setSelectionWarningPosition(null);
 
@@ -3072,8 +4320,8 @@ function App() {
       id: crypto.randomUUID(),
       documentId: selectedDocument.id,
       status: "active",
-      selectedText: pendingAnchor.selectedText,
-      anchor: pendingAnchor,
+      selectedText: anchor.selectedText,
+      anchor,
       body: "",
       createdAt: nowLabel(),
       updatedAt: nowLabel(),
@@ -3161,6 +4409,16 @@ function App() {
         top: selectionWarningPosition.top,
       }
     : undefined;
+  const fileContextMenuStyle: CSSProperties | undefined = fileContextMenu
+    ? {
+        left: Math.round(
+          clampNumber(fileContextMenu.left, 8, Math.max(8, window.innerWidth - 188)),
+        ),
+        top: Math.round(
+          clampNumber(fileContextMenu.top, 8, Math.max(8, window.innerHeight - 64)),
+        ),
+      }
+    : undefined;
   const floatingNoteConnectorStyle: CSSProperties | null = floatingNotePanelPosition
     ?.connector
     ? {
@@ -3170,6 +4428,41 @@ function App() {
         width: floatingNotePanelPosition.connector.width,
       }
     : null;
+  const fileContextMenuActions = fileContextMenu
+    ? [
+        {
+          id: "duplicate",
+          label: "建立副本",
+          icon: <DuplicateIcon />,
+          onSelect: () => {
+            void duplicateDocumentFile(fileContextMenu.documentId);
+          },
+        },
+        {
+          id: "copy-content",
+          label: "複製內容",
+          icon: <CopyIcon />,
+          onSelect: () => {
+            void copyDocumentContent(fileContextMenu.documentId);
+          },
+        },
+        {
+          id: "delete",
+          label: "刪除檔案",
+          icon: <TrashIcon />,
+          tone: "danger",
+          onSelect: () => {
+            void deleteDocumentFile(fileContextMenu.documentId);
+          },
+        },
+      ]
+    : [];
+  const floatingPanelIsGlossary = Boolean(
+    pendingGlossaryTerm ||
+      activeGlossaryTerm ||
+      activeGlossaryIsEditing ||
+      (pendingAnchor && pendingAnchorIsGlossaryTerm),
+  );
 
   return (
     <main className="scholium-shell">
@@ -3183,26 +4476,52 @@ function App() {
 
         <div className="document-list">
           {workspaceEntries.map((entry) => {
-            const isSelected = entry.kind === "file" && entry.documentId === selectedDocument.id;
+            const isSelected =
+              hasOpenDocument && entry.kind === "file" && entry.documentId === selectedDocument.id;
 
             return (
               <button
-                className={`document-row ${entry.kind === "directory" ? "is-folder" : ""} ${
+                className={`document-row ${
+                  entry.kind === "directory" || entry.kind === "parent-directory"
+                    ? "is-folder"
+                    : ""
+                } ${entry.kind === "parent-directory" ? "is-parent" : ""} ${
                   isSelected ? "is-selected" : ""
                 }`}
                 key={entry.id}
                 onClick={() => {
-                  if (entry.kind === "directory") {
+                  if (entry.kind === "directory" || entry.kind === "parent-directory") {
                     void openDirectoryPath(entry.path);
                     return;
                   }
 
                   selectDocument(entry.documentId);
                 }}
+                onContextMenu={(event) => {
+                  if (entry.kind !== "file") return;
+
+                  event.preventDefault();
+                  event.stopPropagation();
+                  setFileContextMenu({
+                    documentId: entry.documentId,
+                    left: event.clientX,
+                    top: event.clientY,
+                  });
+                }}
+                aria-label={entry.kind === "parent-directory" ? "回到上一層目錄" : undefined}
+                title={entry.kind === "parent-directory" ? "回到上一層目錄" : undefined}
                 type="button"
               >
-                <span className="document-icon" aria-hidden="true" />
-                <span className="document-title">{entry.title}</span>
+                {entry.kind === "parent-directory" ? (
+                  <span className="parent-directory-icon" aria-hidden="true">
+                    ←
+                  </span>
+                ) : (
+                  <>
+                    <span className="document-icon" aria-hidden="true" />
+                    <span className="document-title">{entry.title}</span>
+                  </>
+                )}
               </button>
             );
           })}
@@ -3211,26 +4530,56 @@ function App() {
         {storageError ? <p className="storage-error">{storageError}</p> : null}
       </aside>
 
+      {fileContextMenu ? (
+        <div
+          className="file-context-menu"
+          role="menu"
+          style={fileContextMenuStyle}
+          onContextMenu={(event) => event.preventDefault()}
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          {fileContextMenuActions.map((action) => (
+            <button
+              className={action.tone === "danger" ? "is-danger" : ""}
+              key={action.id}
+              type="button"
+              role="menuitem"
+              onClick={action.onSelect}
+            >
+              {action.icon}
+              <span>{action.label}</span>
+            </button>
+          ))}
+        </div>
+      ) : null}
+
       <section className="editor-pane" aria-label="Markdown editor">
         <div className="editor-grid">
           <div className="editor-surface">
-            {editorMode === "preview" ? (
+            {!hasOpenDocument ? (
+              <div className="empty-editor-state">
+                <h2>此目錄沒有 Markdown 檔案</h2>
+                <p>請選擇左側子目錄，或開啟其他 Markdown 檔案。</p>
+              </div>
+            ) : editorMode === "preview" ? (
                 <MarkdownPreview
-                  notes={activeNotes}
+                  annotations={activeTextAnnotations}
                   value={selectedDocument.body}
-                  onAnnotationClick={showNoteViewer}
-                  onAnnotationDoubleClick={showNoteViewer}
+                  onAnnotationClick={showAnnotationViewer}
+                  onAnnotationDoubleClick={showAnnotationViewer}
                   onChange={updateSelectedDocumentBody}
                   onSelectionChange={handleSelectionChange}
+                  onSelectionEnter={handleSelectionEnter}
                 />
             ) : (
                 <MarkdownEditor
                   annotations={annotations}
                   value={selectedDocument.body}
-                  onAnnotationClick={showNoteViewer}
-                  onAnnotationDoubleClick={showNoteViewer}
+                  onAnnotationClick={showAnnotationViewer}
+                  onAnnotationDoubleClick={showAnnotationViewer}
                   onChange={updateSelectedDocumentBody}
                   onSelectionChange={handleSelectionChange}
+                  onSelectionEnter={handleSelectionEnter}
                 />
             )}
           </div>
@@ -3239,7 +4588,7 @@ function App() {
 
       {selectionWarningPosition ? (
         <div className="selection-warning-popover" role="status" style={selectionWarningStyle}>
-          請選取完整句子或段落後再新增筆記。
+          請選取 1-3 個單詞建立名詞解釋，或選取完整句子/段落新增筆記。
         </div>
       ) : null}
 
@@ -3250,7 +4599,7 @@ function App() {
               aria-hidden="true"
               className={`floating-note-connector ${
                 isNotePanelClosing ? "is-closing" : "is-open"
-              }`}
+              } ${floatingPanelIsGlossary ? "is-glossary" : "is-note"}`}
               style={floatingNoteConnectorStyle}
             />
           ) : null}
@@ -3261,15 +4610,21 @@ function App() {
                 : floatingNotePanelPosition?.placement === "detached"
                   ? "is-detached"
                   : "is-below"
-            }`}
+            } ${floatingPanelIsGlossary ? "is-glossary" : "is-note"}`}
             ref={notePanelRef}
             style={floatingNotePanelStyle}
             aria-label={
               pendingAnchor
-                ? "Create selection note"
-                : activeNoteIsEditing
-                  ? "Edit selection note"
-                  : "View selection note"
+                ? pendingAnchorIsGlossaryTerm
+                  ? "Create glossary term"
+                  : "Create selection note"
+                : activeGlossaryIsEditing
+                  ? "Edit glossary term"
+                  : activeGlossaryTerm
+                    ? "View glossary term"
+                    : activeNoteIsEditing
+                      ? "Edit selection note"
+                      : "View selection note"
             }
           >
             <div className="floating-note-card" ref={floatingNoteCardRef}>
@@ -3283,11 +4638,71 @@ function App() {
               </button>
               <div className="bottom-note-context">
                 <p className="eyebrow">
-                  {pendingAnchor ? "Selection note" : activeNoteIsEditing ? "Edit note" : "Note"}
+                  {pendingGlossaryTerm
+                    ? "Glossary"
+                    : pendingAnchor
+                      ? pendingAnchorIsGlossaryTerm
+                        ? "Glossary"
+                        : "Selection note"
+                      : activeGlossaryTerm
+                        ? "Glossary"
+                        : activeNoteIsEditing
+                          ? "Edit note"
+                          : "Note"}
                 </p>
+                {activeGlossaryTerm ? (
+                  <h2 className="glossary-panel-title">{activeGlossaryTerm.term}</h2>
+                ) : pendingGlossaryTerm ? (
+                  <h2 className="glossary-panel-title">{pendingGlossaryTerm.term}</h2>
+                ) : null}
               </div>
 
-              {pendingAnchor && pendingAnchorIsCompleteBlock ? (
+              {pendingAnchor && pendingGlossaryTerm ? (
+                <div className="selection-confirmation">
+                  <p>已存在於詞彙庫中，是否綁定？</p>
+                  <MarkdownPreviewContent
+                    className="bottom-note-body glossary-existing-definition"
+                    emptyLabel="尚未填寫說明"
+                    value={pendingGlossaryTerm.definition}
+                  />
+                  <div className="note-actions bottom-note-actions">
+                    <button
+                      className="selection-confirmation-button"
+                      type="button"
+                      onClick={rejectPendingGlossaryTerm}
+                    >
+                      不綁定
+                    </button>
+                    <button
+                      className="is-primary selection-confirmation-button"
+                      type="button"
+                      onClick={bindPendingGlossaryTerm}
+                    >
+                      綁定
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+
+              {pendingAnchor && !pendingGlossaryTerm && pendingAnchorIsGlossaryTerm ? (
+                <div className="selection-confirmation">
+                  <p>要建立或綁定「{pendingAnchor.selectedText.replace(/\s+/g, " ").trim()}」的名詞解釋嗎？</p>
+                  <div className="note-actions bottom-note-actions">
+                    <button
+                      className="is-primary selection-confirmation-button"
+                      type="button"
+                      onClick={startPendingGlossaryFlow}
+                    >
+                      處理名詞
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+
+              {pendingAnchor &&
+              !pendingGlossaryTerm &&
+              !pendingAnchorIsGlossaryTerm &&
+              pendingAnchorIsCompleteBlock ? (
                 <div className="selection-confirmation">
                   <p>要新增筆記嗎？</p>
                   <div className="note-actions bottom-note-actions">
@@ -3314,14 +4729,59 @@ function App() {
                   onCompositionEnd={handleNoteEditorCompositionEnd}
                   onKeyDown={handleNoteEditorKeyDown}
                   disabled={isReturningToView}
+                  spellCheck={false}
+                  autoCorrect="off"
+                  autoCapitalize="off"
                   placeholder="Add a note..."
                 />
               ) : null}
 
-              {!pendingAnchor && activeNoteIsEditing && isReturningToView ? (
+              {!pendingAnchor && activeGlossaryIsEditing ? (
+                <textarea
+                  aria-label="Edit glossary term"
+                  ref={noteTextareaRef}
+                  value={glossaryDraft}
+                  onChange={(event) => updateActiveGlossaryDraft(event.currentTarget.value)}
+                  onCompositionStart={handleNoteEditorCompositionStart}
+                  onCompositionEnd={handleNoteEditorCompositionEnd}
+                  onKeyDown={handleNoteEditorKeyDown}
+                  disabled={isReturningToView}
+                  spellCheck={false}
+                  autoCorrect="off"
+                  autoCapitalize="off"
+                  placeholder="輸入名詞解釋..."
+                />
+              ) : null}
+
+              {!pendingAnchor && (activeNoteIsEditing || activeGlossaryIsEditing) && isReturningToView ? (
                 <div className="note-returning-status" role="status">
                   <span className="note-returning-spinner" aria-hidden="true" />
                   <span>正在回到閱覽模式</span>
+                </div>
+              ) : null}
+
+              {!pendingAnchor && activeGlossaryTerm && !activeGlossaryIsEditing ? (
+                <MarkdownPreviewContent
+                  className="bottom-note-body"
+                  emptyLabel="尚未填寫說明"
+                  onDoubleClick={() => openGlossaryEditor(activeGlossaryTerm.id)}
+                  value={activeGlossaryTerm.definition}
+                />
+              ) : null}
+
+              {!pendingAnchor && activeGlossaryTerm && !activeGlossaryIsEditing ? (
+                <div className="note-actions bottom-note-actions">
+                  {activeGlossaryBinding ? (
+                    <button
+                      className="is-glossary-action"
+                      type="button"
+                      aria-label="Remove glossary binding"
+                      title="Remove glossary binding"
+                      onClick={() => deleteGlossaryBinding(activeGlossaryBinding.id)}
+                    >
+                      <TrashIcon />
+                    </button>
+                  ) : null}
                 </div>
               ) : null}
 

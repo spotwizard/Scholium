@@ -20,6 +20,9 @@
   --color-annotation-surface-alt: #ffe0cc;
   --color-annotation-surface-soft: #fff4bf;
   --color-annotation-surface-alt-soft: #ffe0cc;
+  --color-glossary-surface: #dff7ef;
+  --color-glossary-surface-soft: #dff7ef;
+  --color-glossary-border: rgba(33, 132, 96, 0.84);
   --color-annotation-border: rgba(208, 138, 46, 0.9);
   --color-note-surface: #fff8df;
   --color-note-border: #dfc265;
@@ -263,6 +266,30 @@ button:disabled {
   background: rgba(32, 35, 41, 0.09);
 }
 
+.document-row.is-parent {
+  grid-template-columns: 1fr;
+  color: var(--color-muted);
+  background: var(--color-surface);
+}
+
+.parent-directory-icon {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  color: var(--color-muted);
+  background: var(--color-surface-raised);
+  font-size: 1.05rem;
+  line-height: 1;
+}
+
+.document-row.is-parent:hover .parent-directory-icon {
+  color: var(--color-text);
+  border-color: var(--color-muted);
+}
+
 .document-title {
   overflow: hidden;
   color: var(--color-heading);
@@ -275,6 +302,46 @@ button:disabled {
 .document-row .document-title {
   font-size: 0.95rem;
   font-weight: 680;
+}
+
+.file-context-menu {
+  position: fixed;
+  z-index: 80;
+  min-width: 180px;
+  padding: 6px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface-raised);
+  box-shadow: var(--shadow-high);
+}
+
+.file-context-menu button {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 8px;
+  width: 100%;
+  min-height: 34px;
+  align-items: center;
+  border: 0;
+  border-radius: 6px;
+  padding: 0 10px;
+  color: var(--color-text);
+  text-align: left;
+  background: transparent;
+  font-size: 0.9rem;
+  font-weight: 650;
+}
+
+.file-context-menu button:hover {
+  background: var(--color-surface-soft);
+}
+
+.file-context-menu button.is-danger {
+  color: var(--color-danger-text);
+}
+
+.file-context-menu .note-action-icon {
+  justify-self: center;
 }
 
 .editor-pane {
@@ -310,18 +377,44 @@ button:disabled {
   position: relative;
   min-width: 0;
   min-height: 0;
+  padding: var(--editor-content-gutter);
   background: var(--color-surface);
+}
+
+.empty-editor-state {
+  display: grid;
+  align-content: center;
+  min-height: 100vh;
+  padding: 48px;
+  color: var(--color-muted);
+}
+
+.empty-editor-state h2 {
+  margin: 0 0 8px;
+  color: var(--color-text);
+  font-size: 1.25rem;
+  line-height: 1.3;
+}
+
+.empty-editor-state p {
+  max-width: 36rem;
+  margin: 0;
+  font-size: 0.95rem;
+  line-height: 1.6;
 }
 
 .markdown-editor-host {
   position: relative;
   min-height: 100%;
+  background: var(--color-surface);
 }
 
 .cm-editor {
+  position: relative;
+  z-index: 1;
   min-height: 100%;
   color: var(--color-text);
-  background: var(--color-surface);
+  background: transparent;
 }
 
 .cm-editor.cm-focused {
@@ -329,7 +422,7 @@ button:disabled {
 }
 
 .cm-scroller {
-  min-height: 100vh;
+  min-height: calc(100vh - var(--editor-content-gutter) * 2);
   font-family:
     "SFMono-Regular", "Cascadia Code", "Roboto Mono", Consolas, "Liberation Mono",
     monospace;
@@ -338,8 +431,8 @@ button:disabled {
 }
 
 .cm-content {
-  min-height: 100vh;
-  padding: var(--editor-content-gutter);
+  min-height: calc(100vh - var(--editor-content-gutter) * 2);
+  padding: 0;
   caret-color: var(--color-accent);
 }
 
@@ -358,10 +451,17 @@ button:disabled {
   user-select: text;
 }
 
+.cm-glossary-annotation {
+  text-decoration: underline;
+  text-decoration-color: var(--color-glossary-border);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 0.18em;
+}
+
 .cm-annotation-layer {
   position: absolute;
   inset: 0;
-  z-index: 2;
+  z-index: 0;
   pointer-events: none;
 }
 
@@ -376,11 +476,15 @@ button:disabled {
   background: var(--color-annotation-surface-alt-soft);
 }
 
+.cm-annotation-frame[data-annotation-kind="glossary"] {
+  background: var(--color-glossary-surface-soft);
+}
+
 .markdown-preview {
   position: relative;
-  min-height: 100vh;
+  min-height: calc(100vh - var(--editor-content-gutter) * 2);
   overflow: auto;
-  padding: var(--editor-content-gutter);
+  padding: 0;
   color: var(--color-text);
   background: var(--color-surface);
   font-size: 1.08rem;
@@ -521,6 +625,17 @@ button:disabled {
   background: var(--color-annotation-surface-alt);
 }
 
+.preview-note-annotation[data-annotation-kind="glossary"] {
+  text-decoration: underline;
+  text-decoration-color: var(--color-glossary-border);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 0.18em;
+}
+
+.preview-annotation-frame[data-annotation-kind="glossary"] {
+  background: var(--color-glossary-surface);
+}
+
 .floating-note-panel {
   position: fixed;
   z-index: 9;
@@ -536,6 +651,10 @@ button:disabled {
   background: var(--color-annotation-border);
   pointer-events: none;
   transform-origin: left center;
+}
+
+.floating-note-connector.is-glossary {
+  background: var(--color-glossary-border);
 }
 
 .floating-note-connector.is-open {
@@ -582,6 +701,14 @@ button:disabled {
   pointer-events: auto;
 }
 
+.floating-note-panel.is-glossary .floating-note-card {
+  border-color: var(--color-glossary-border);
+  background: var(--color-glossary-surface);
+  box-shadow:
+    0 14px 28px rgba(33, 132, 96, 0.14),
+    inset 0 1px 0 rgba(255, 255, 255, 0.72);
+}
+
 .floating-note-close-button {
   position: absolute;
   top: 8px;
@@ -604,6 +731,11 @@ button:disabled {
 .floating-note-close-button:hover {
   border-color: rgba(32, 35, 41, 0.16);
   background: var(--color-accent-softer);
+}
+
+.floating-note-panel.is-glossary .floating-note-close-button:hover {
+  border-color: rgba(33, 132, 96, 0.22);
+  background: rgba(33, 132, 96, 0.08);
 }
 
 .floating-note-card .bottom-note-context {
@@ -659,6 +791,21 @@ button:disabled {
   align-content: start;
   gap: 6px;
   min-width: 0;
+}
+
+.glossary-panel-title {
+  margin: 0;
+  padding-right: 34px;
+  color: var(--color-heading);
+  font-size: 1.02rem;
+  font-weight: 760;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.glossary-existing-definition {
+  border-left: 3px solid var(--color-glossary-border);
+  padding-left: 10px;
 }
 
 .selection-confirmation {
@@ -895,6 +1042,16 @@ button:disabled {
   background: var(--color-danger-surface);
 }
 
+.note-actions button.is-glossary-action {
+  border-color: var(--color-glossary-border);
+  color: #1f6f52;
+  background: rgba(223, 247, 239, 0.72);
+}
+
+.note-actions button.is-glossary-action:hover {
+  background: rgba(33, 132, 96, 0.12);
+}
+
 @media (max-width: 1180px) {
   .scholium-shell {
     --document-pane-width: 248px;
@@ -925,12 +1082,16 @@ button:disabled {
   }
 
   .editor-surface {
-    min-height: 460px;
+    min-height: calc(460px + var(--editor-content-gutter) * 2);
     border-right: 0;
   }
 
   .cm-scroller,
   .cm-content {
+    min-height: 460px;
+  }
+
+  .markdown-preview {
     min-height: 460px;
   }
 
