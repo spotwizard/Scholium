@@ -22,6 +22,8 @@ import {
   type TextAnnotation,
   type TextSelectionAnchor,
 } from "./MarkdownEditor";
+import fileGlyphSvg from "./assets/file-glyph.svg?raw";
+import folderGlyphSvg from "./assets/folder-glyph.svg?raw";
 
 type NoteStatus = "active" | "orphaned" | "deleted";
 type AnnotationKind = "note" | "glossary";
@@ -186,6 +188,16 @@ type FileContextMenuState = {
   left: number;
   top: number;
 };
+
+function DocumentGlyphIcon({ kind }: { kind: "file" | "folder" }) {
+  return (
+    <span
+      aria-hidden="true"
+      className="document-icon"
+      dangerouslySetInnerHTML={{ __html: kind === "folder" ? folderGlyphSvg : fileGlyphSvg }}
+    />
+  );
+}
 
 function TrashIcon() {
   return (
@@ -822,6 +834,27 @@ function isSelectionCompleteSentenceSpan(
   return startsAtSentenceBoundary;
 }
 
+function getListItemSemanticRanges(
+  markdown: string,
+  block: Extract<MarkdownPreviewBlock, { kind: "unordered-list" | "ordered-list" }>,
+) {
+  return block.items
+    .map((_item, itemIndex) => {
+      const textMap = getListItemTextMap(markdown, block, itemIndex);
+      const sourceOffsets = textMap.sourceOffsets.filter(
+        (sourceOffset): sourceOffset is number => sourceOffset !== null,
+      );
+      if (sourceOffsets.length === 0) return null;
+
+      return trimRange(
+        markdown,
+        Math.min(...sourceOffsets),
+        Math.max(...sourceOffsets) + 1,
+      );
+    })
+    .filter((range): range is ReturnType<typeof trimRange> => Boolean(range));
+}
+
 function getBlockSemanticRange(markdown: string, block: MarkdownPreviewBlock) {
   const lines = markdown.replace(/\r\n/g, "\n").split("\n");
   const lineStartOffsets = getLineStartOffsets(markdown);
@@ -843,6 +876,18 @@ function getBlockSemanticRange(markdown: string, block: MarkdownPreviewBlock) {
     const contentStart = (lineStartOffsets[block.startLine] ?? 0) + openingLine.length + 1;
     const contentEnd = Math.max(contentStart, (lineStartOffsets[block.endLine] ?? blockRange.end) - 1);
     return trimRange(markdown, contentStart, contentEnd);
+  }
+
+  if (block.kind === "unordered-list" || block.kind === "ordered-list") {
+    const itemRanges = getListItemSemanticRanges(markdown, block);
+
+    if (itemRanges.length === 0) return trimRange(markdown, blockRange.start, blockRange.end);
+
+    return trimRange(
+      markdown,
+      Math.min(...itemRanges.map((range) => range.from)),
+      Math.max(...itemRanges.map((range) => range.to)),
+    );
   }
 
   return trimRange(markdown, blockRange.start, blockRange.end);
@@ -1018,6 +1063,28 @@ function isSelectionCompleteMarkdownBlock(markdown: string, anchor: TextSelectio
 
     if (selection.from <= semanticRange.from && selection.to >= semanticRange.to) {
       return true;
+    }
+
+    if (block.kind === "unordered-list" || block.kind === "ordered-list") {
+      const intersectedItemRanges = getListItemSemanticRanges(markdown, block).filter(
+        (itemRange) => selection.to > itemRange.from && selection.from < itemRange.to,
+      );
+
+      if (intersectedItemRanges.length === 0) return true;
+
+      return intersectedItemRanges.every((itemRange) => {
+        if (selection.from <= itemRange.from && selection.to >= itemRange.to) {
+          return true;
+        }
+
+        const itemSelection = trimRange(
+          markdown,
+          Math.max(selection.from, itemRange.from),
+          Math.min(selection.to, itemRange.to),
+        );
+
+        return isSelectionCompleteSentenceSpan(markdown, itemSelection, itemRange);
+      });
     }
 
     return (
@@ -1306,6 +1373,115 @@ function getAnnotationRangesForTextMap(
     .sort((left, right) => left.start - right.start || left.end - right.end);
 }
 
+function annotationKindLayer(kind: AnnotationKind | undefined) {
+  return kind === "glossary" ? 1 : 0;
+}
+
+function sortAnnotationRangesForNesting(
+  left: PreviewAnnotationTextRange,
+  right: PreviewAnnotationTextRange,
+) {
+  return (
+    left.start - right.start ||
+    right.end - left.end ||
+    annotationKindLayer(left.annotation.kind) - annotationKindLayer(right.annotation.kind) ||
+    left.annotation.id.localeCompare(right.annotation.id)
+  );
+}
+
+function renderAnnotationSpan(
+  range: PreviewAnnotationTextRange,
+  key: string,
+  children: ReactNode,
+  onAnnotationClick: (annotationId: string) => void,
+  onAnnotationDoubleClick: (annotationId: string) => void,
+) {
+  return (
+    <span
+      className="preview-note-annotation"
+      data-annotation-kind={range.annotation.kind}
+      data-note-id={range.annotation.id}
+      data-note-tone={range.annotation.tone ?? 0}
+      key={key}
+      onClick={(event) => {
+        if (window.getSelection()?.toString().trim()) return;
+        if (event.detail >= 2) return;
+
+        event.stopPropagation();
+        onAnnotationClick(range.annotation.id);
+      }}
+      onDoubleClick={(event) => {
+        event.stopPropagation();
+        onAnnotationDoubleClick(range.annotation.id);
+      }}
+    >
+      {children}
+    </span>
+  );
+}
+
+function renderAnnotatedTextFragments(
+  textMap: PreviewTextMap,
+  keyPrefix: string,
+  annotations: TextRangeAnnotation[],
+  onAnnotationClick: (annotationId: string) => void,
+  onAnnotationDoubleClick: (annotationId: string) => void,
+  renderTextFragment: (text: string, keyPrefix: string) => ReactNode[],
+) {
+  const ranges = getAnnotationRangesForTextMap(textMap, annotations);
+  const nodes: ReactNode[] = [];
+
+  if (ranges.length === 0) {
+    return renderTextFragment(textMap.text, keyPrefix);
+  }
+
+  const boundaries = Array.from(
+    new Set(
+      [0, textMap.text.length].concat(
+        ranges.flatMap((range) => [
+          clampNumber(range.start, 0, textMap.text.length),
+          clampNumber(range.end, 0, textMap.text.length),
+        ]),
+      ),
+    ),
+  ).sort((left, right) => left - right);
+
+  boundaries.slice(0, -1).forEach((start, segmentIndex) => {
+    const end = boundaries[segmentIndex + 1];
+    if (end <= start) return;
+
+    const segmentText = textMap.text.slice(start, end);
+    const segmentContent = renderTextFragment(
+      segmentText,
+      `${keyPrefix}-segment-${segmentIndex}`,
+    );
+    const coveringRanges = ranges
+      .filter((range) => range.start <= start && range.end >= end)
+      .sort(sortAnnotationRangesForNesting);
+
+    if (coveringRanges.length === 0) {
+      nodes.push(...segmentContent);
+      return;
+    }
+
+    const annotatedSegment = coveringRanges.reduceRight<ReactNode>(
+      (children, range, depthIndex) =>
+        renderAnnotationSpan(
+          range,
+          `${keyPrefix}-annotation-${segmentIndex}-${depthIndex}-${range.annotation.id}`,
+          children,
+          onAnnotationClick,
+          onAnnotationDoubleClick,
+        ),
+      segmentContent,
+    );
+
+    nodes.push(annotatedSegment);
+  });
+
+  return nodes;
+}
+
 function renderAnnotatedPlainText(
   textMap: PreviewTextMap,
   keyPrefix: string,
@@ -1313,45 +1489,14 @@ function renderAnnotatedPlainText(
   onAnnotationClick: (annotationId: string) => void,
   onAnnotationDoubleClick: (annotationId: string) => void,
 ) {
-  const ranges = getAnnotationRangesForTextMap(textMap, annotations);
-  const nodes: ReactNode[] = [];
-  let cursor = 0;
-
-  ranges.forEach((range, rangeIndex) => {
-    if (range.start < cursor) return;
-
-    if (range.start > cursor) {
-      nodes.push(textMap.text.slice(cursor, range.start));
-    }
-
-    nodes.push(
-      <span
-        className="preview-note-annotation"
-        data-annotation-kind={range.annotation.kind}
-        data-note-id={range.annotation.id}
-        data-note-tone={range.annotation.tone ?? 0}
-        key={`${keyPrefix}-note-${rangeIndex}`}
-        onClick={(event) => {
-          if (window.getSelection()?.toString().trim()) return;
-          if (event.detail >= 2) return;
-
-          onAnnotationClick(range.annotation.id);
-        }}
-        onDoubleClick={() => {
-          onAnnotationDoubleClick(range.annotation.id);
-        }}
-      >
-        {textMap.text.slice(range.start, range.end)}
-      </span>,
-    );
-    cursor = range.end;
-  });
-
-  if (cursor < textMap.text.length) {
-    nodes.push(textMap.text.slice(cursor));
-  }
-
-  return nodes;
+  return renderAnnotatedTextFragments(
+    textMap,
+    keyPrefix,
+    annotations,
+    onAnnotationClick,
+    onAnnotationDoubleClick,
+    (text) => [text],
+  );
 }
 
 function renderPreviewInline(
@@ -1365,58 +1510,14 @@ function renderPreviewInline(
     return renderInlineMarkdown(textMap.text, keyPrefix);
   }
 
-  const ranges = getAnnotationRangesForTextMap(textMap, annotations);
-
-  if (ranges.length === 0) {
-    return renderInlineMarkdown(textMap.text, keyPrefix);
-  }
-
-  const nodes: ReactNode[] = [];
-  let cursor = 0;
-
-  ranges.forEach((range, rangeIndex) => {
-    if (range.start < cursor) return;
-
-    if (range.start > cursor) {
-      nodes.push(
-        ...renderInlineMarkdown(
-          textMap.text.slice(cursor, range.start),
-          `${keyPrefix}-before-${rangeIndex}`,
-        ),
-      );
-    }
-
-    nodes.push(
-      <span
-        className="preview-note-annotation"
-        data-annotation-kind={range.annotation.kind}
-        data-note-id={range.annotation.id}
-        data-note-tone={range.annotation.tone ?? 0}
-        key={`${keyPrefix}-note-${rangeIndex}`}
-        onClick={(event) => {
-          if (window.getSelection()?.toString().trim()) return;
-          if (event.detail >= 2) return;
-
-          onAnnotationClick(range.annotation.id);
-        }}
-        onDoubleClick={() => {
-          onAnnotationDoubleClick(range.annotation.id);
-        }}
-      >
-        {renderInlineMarkdown(
-          textMap.text.slice(range.start, range.end),
-          `${keyPrefix}-marked-${rangeIndex}`,
-        )}
-      </span>,
-    );
-    cursor = range.end;
-  });
-
-  if (cursor < textMap.text.length) {
-    nodes.push(...renderInlineMarkdown(textMap.text.slice(cursor), `${keyPrefix}-after`));
-  }
-
-  return nodes;
+  return renderAnnotatedTextFragments(
+    textMap,
+    keyPrefix,
+    annotations,
+    onAnnotationClick,
+    onAnnotationDoubleClick,
+    renderInlineMarkdown,
+  );
 }
 
 function roundPreviewFrameValue(value: number) {
@@ -1520,6 +1621,8 @@ function measurePreviewAnnotationFrames(container: HTMLDivElement): PreviewAnnot
     (left, right) =>
       left.top - right.top ||
       left.left - right.left ||
+      annotationKindLayer(left.kind) - annotationKindLayer(right.kind) ||
+      right.width - left.width ||
       left.frameKey.localeCompare(right.frameKey),
   );
 }
@@ -2231,7 +2334,6 @@ function MarkdownPreviewContent({
 function App() {
   const [documents, setDocuments] = useState(documentsSeed);
   const [workspaceTitle, setWorkspaceTitle] = useState("Scholium");
-  const [workspacePath, setWorkspacePath] = useState("Workspace");
   const [workspaceEntries, setWorkspaceEntries] = useState<WorkspaceEntry[]>(() =>
     documentsSeed.map(workspaceEntryFromDocument),
   );
@@ -3214,7 +3316,6 @@ function App() {
     setGlossaryBindings(loadedGlossaryBindings);
     setGlossaryTerms(mergeGlossaryTerms(loadedGlossaryTerms, []));
     setWorkspaceTitle(openedDirectory.title);
-    setWorkspacePath(openedDirectory.path);
     setWorkspaceEntries(nextEntries);
     setSelectionWarningPosition(null);
     setPendingAnchor(null);
@@ -4469,7 +4570,6 @@ function App() {
       <aside className="document-pane" aria-label="Documents">
         <div className="pane-header">
           <div>
-            <p className="eyebrow">{workspacePath}</p>
             <h1>{workspaceTitle}</h1>
           </div>
         </div>
@@ -4518,7 +4618,7 @@ function App() {
                   </span>
                 ) : (
                   <>
-                    <span className="document-icon" aria-hidden="true" />
+                    <DocumentGlyphIcon kind={entry.kind === "file" ? "file" : "folder"} />
                     <span className="document-title">{entry.title}</span>
                   </>
                 )}

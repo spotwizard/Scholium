@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none">
+  
+  <path fill="currentColor" d="M5 4.80 Q5 2.6 7.20 2.6 H13.6 L19 8 V19.20 Q19 21.4 16.80 21.4 H7.20 Q5 21.4 5 19.20 Z"></path>
+  <path fill="rgba(255,255,255,0.32)" d="M13.6 4.6 V7.6 Q13.6 8 14 8 H17.4 Z"></path>
+  <g stroke="rgba(255,255,255,0.85)" stroke-width="1.4" stroke-linecap="round">
+    <line x1="8.5" y1="13" x2="15.5" y2="13"></line>
+    <line x1="8.5" y1="16" x2="15.5" y2="16"></line>
+    <line x1="8.5" y1="19" x2="12.5" y2="19"></line>
+  </g>
+</svg>
