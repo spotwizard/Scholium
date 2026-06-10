@@ -132,6 +132,74 @@ function buildAnchorFromSelection(view: EditorView): TextSelectionAnchor | null 
   return buildAnchor(doc, range.from, range.to);
 }
 
+function markerIsPartOfLongerRun(doc: string, marker: "*" | "**", from: number, to: number) {
+  if (marker !== "*") return false;
+
+  return doc[from - 2] === "*" || doc[from] === "*" || doc[to - 1] === "*" || doc[to + 1] === "*";
+}
+
+function applyMarkdownInlineMark(view: EditorView, marker: "*" | "**") {
+  const range = view.state.selection.main;
+  const markerLength = marker.length;
+  const doc = view.state.doc.toString();
+  const { from, to } = range;
+
+  if (from === to) {
+    view.dispatch({
+      changes: { from, insert: `${marker}${marker}` },
+      selection: { anchor: from + markerLength },
+      scrollIntoView: true,
+    });
+    return true;
+  }
+
+  const selectedText = doc.slice(from, to);
+  const hasOuterMarkers =
+    from >= markerLength &&
+    doc.slice(from - markerLength, from) === marker &&
+    doc.slice(to, to + markerLength) === marker &&
+    !markerIsPartOfLongerRun(doc, marker, from, to);
+
+  if (hasOuterMarkers) {
+    view.dispatch({
+      changes: [
+        { from: from - markerLength, to: from },
+        { from: to, to: to + markerLength },
+      ],
+      selection: { anchor: from - markerLength, head: to - markerLength },
+      scrollIntoView: true,
+    });
+    return true;
+  }
+
+  const hasInnerMarkers =
+    selectedText.length >= markerLength * 2 &&
+    selectedText.startsWith(marker) &&
+    selectedText.endsWith(marker);
+
+  if (hasInnerMarkers) {
+    view.dispatch({
+      changes: [
+        { from, to: from + markerLength },
+        { from: to - markerLength, to },
+      ],
+      selection: { anchor: from, head: to - markerLength * 2 },
+      scrollIntoView: true,
+    });
+    return true;
+  }
+
+  view.dispatch({
+    changes: [
+      { from, insert: marker },
+      { from: to, insert: marker },
+    ],
+    selection: { anchor: from + markerLength, head: to + markerLength },
+    scrollIntoView: true,
+  });
+  return true;
+}
+
 function buildDecorations(annotations: TextAnnotation[]) {
   const ranges: Range<Decoration>[] = annotations
     .filter((annotation) => annotation.to > annotation.from)
@@ -598,6 +666,18 @@ export function MarkdownEditor({
         annotationClickHandler,
         EditorView.lineWrapping,
         keymap.of([
+          {
+            key: "Mod-b",
+            run(view) {
+              return applyMarkdownInlineMark(view, "**");
+            },
+          },
+          {
+            key: "Mod-i",
+            run(view) {
+              return applyMarkdownInlineMark(view, "*");
+            },
+          },
           {
             key: "Enter",
             run(view) {
