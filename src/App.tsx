@@ -2709,7 +2709,7 @@ function App() {
     const viewportMargin = 12;
     const noteGap = 8;
     const cardWidth = Math.min(
-      cardRect.width || 400,
+      cardRect.width || 450,
       Math.max(180, viewportWidth - viewportMargin * 2),
     );
     const cardHeight = cardRect.height || 260;
