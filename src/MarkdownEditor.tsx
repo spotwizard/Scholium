@@ -35,6 +35,7 @@ type MarkdownEditorProps = {
   annotations: TextAnnotation[];
   onChange: (value: string, source: EditorChangeSource) => void;
   onSelectionChange: (anchor: TextSelectionAnchor | null) => void;
+  onSelectionEnter: (anchor: TextSelectionAnchor) => boolean;
   onAnnotationClick: (noteId: string) => void;
   onAnnotationDoubleClick: (noteId: string) => void;
 };
@@ -283,6 +284,7 @@ export function MarkdownEditor({
   annotations,
   onChange,
   onSelectionChange,
+  onSelectionEnter,
   onAnnotationClick,
   onAnnotationDoubleClick,
 }: MarkdownEditorProps) {
@@ -290,6 +292,7 @@ export function MarkdownEditor({
   const viewRef = useRef<EditorView | null>(null);
   const onChangeRef = useRef(onChange);
   const onSelectionChangeRef = useRef(onSelectionChange);
+  const onSelectionEnterRef = useRef(onSelectionEnter);
   const onAnnotationClickRef = useRef(onAnnotationClick);
   const onAnnotationDoubleClickRef = useRef(onAnnotationDoubleClick);
   const animationFrameRef = useRef(0);
@@ -318,6 +321,10 @@ export function MarkdownEditor({
   useEffect(() => {
     onSelectionChangeRef.current = onSelectionChange;
   }, [onSelectionChange]);
+
+  useEffect(() => {
+    onSelectionEnterRef.current = onSelectionEnter;
+  }, [onSelectionEnter]);
 
   useEffect(() => {
     onAnnotationClickRef.current = onAnnotationClick;
@@ -590,7 +597,19 @@ export function MarkdownEditor({
         updateListener,
         annotationClickHandler,
         EditorView.lineWrapping,
-        keymap.of([...defaultKeymap, ...historyKeymap]),
+        keymap.of([
+          {
+            key: "Enter",
+            run(view) {
+              const anchor = buildAnchorFromSelection(view);
+              if (!anchor) return false;
+
+              return onSelectionEnterRef.current(anchor);
+            },
+          },
+          ...defaultKeymap,
+          ...historyKeymap,
+        ]),
       ],
     });
 

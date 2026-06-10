@@ -95,6 +95,7 @@ struct OpenDirectoryEntry {
 #[serde(rename_all = "camelCase")]
 struct OpenMarkdownDirectory {
     path: String,
+    parent_path: Option<String>,
     title: String,
     entries: Vec<OpenDirectoryEntry>,
 }
@@ -111,6 +112,27 @@ struct OpenMarkdownFileContext {
 struct SaveMarkdownFile {
     path: String,
     notes_path: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DeleteMarkdownFile {
+    path: String,
+    notes_path: String,
+}
+
+fn validate_markdown_file_name(file_name: &str) -> Result<PathBuf, String> {
+    let trimmed_file_name = file_name.trim();
+    if trimmed_file_name.is_empty() {
+        return Err("duplicate file name is empty".to_string());
+    }
+
+    let file_name_path = PathBuf::from(trimmed_file_name);
+    if file_name_path.components().count() != 1 {
+        return Err("duplicate file name must not include folders".to_string());
+    }
+
+    Ok(file_name_path)
 }
 
 fn sidecar_path(markdown_path: &Path) -> Result<PathBuf, String> {
@@ -203,6 +225,10 @@ fn read_markdown_directory(directory: PathBuf) -> Result<OpenMarkdownDirectory, 
     Ok(OpenMarkdownDirectory {
         title: directory_title(&directory),
         path: directory.to_string_lossy().to_string(),
+        parent_path: directory
+            .parent()
+            .map(|parent| parent.to_string_lossy().to_string())
+            .filter(|parent| !parent.is_empty()),
         entries,
     })
 }
@@ -311,6 +337,80 @@ fn save_markdown_file(
         .map_err(|error| format!("failed to write sidecar notes: {error}"))?;
 
     Ok(SaveMarkdownFile {
+        path: markdown_path.to_string_lossy().to_string(),
+        notes_path: notes_path.to_string_lossy().to_string(),
+    })
+}
+
+#[tauri::command]
+fn duplicate_markdown_file(path: String, file_name: String) -> Result<OpenMarkdownFile, String> {
+    let source_path = PathBuf::from(path);
+    if !source_path.is_file() {
+        return Err("selected path is not a file".to_string());
+    }
+    if !is_markdown_path(&source_path) {
+        return Err("selected file is not a Markdown file".to_string());
+    }
+
+    let target_file_name = validate_markdown_file_name(&file_name)?;
+    let mut target_path = source_path.with_file_name(target_file_name);
+    if !is_markdown_path(&target_path) {
+        target_path.set_extension("md");
+    }
+    if target_path.exists() {
+        return Err("duplicate file already exists".to_string());
+    }
+
+    fs::copy(&source_path, &target_path)
+        .map_err(|error| format!("failed to duplicate Markdown file: {error}"))?;
+
+    let source_notes_path = sidecar_path(&source_path)?;
+    let target_notes_path = sidecar_path(&target_path)?;
+    if source_notes_path.exists() {
+        let raw_notes = fs::read_to_string(&source_notes_path)
+            .map_err(|error| format!("failed to read sidecar notes: {error}"))?;
+        let mut parsed: NotesFile = serde_json::from_str(&raw_notes)
+            .map_err(|error| format!("failed to parse sidecar notes: {error}"))?;
+        let target_path_string = target_path.to_string_lossy().to_string();
+
+        parsed.markdown_path = target_path_string.clone();
+        for note in parsed.notes.iter_mut() {
+            note.document_id = target_path_string.clone();
+        }
+        for binding in parsed.glossary_bindings.iter_mut() {
+            binding.document_id = target_path_string.clone();
+        }
+
+        let serialized = serde_json::to_string_pretty(&parsed)
+            .map_err(|error| format!("failed to serialize sidecar notes: {error}"))?;
+        fs::write(&target_notes_path, serialized)
+            .map_err(|error| format!("failed to duplicate sidecar notes: {error}"))?;
+    }
+
+    read_markdown_file(target_path)
+}
+
+#[tauri::command]
+fn delete_markdown_file(path: String) -> Result<DeleteMarkdownFile, String> {
+    let markdown_path = PathBuf::from(path);
+    if !markdown_path.is_file() {
+        return Err("selected path is not a file".to_string());
+    }
+    if !is_markdown_path(&markdown_path) {
+        return Err("selected file is not a Markdown file".to_string());
+    }
+
+    let notes_path = sidecar_path(&markdown_path)?;
+
+    fs::remove_file(&markdown_path)
+        .map_err(|error| format!("failed to delete Markdown file: {error}"))?;
+
+    if notes_path.exists() {
+        fs::remove_file(&notes_path)
+            .map_err(|error| format!("failed to delete sidecar notes: {error}"))?;
+    }
+
+    Ok(DeleteMarkdownFile {
         path: markdown_path.to_string_lossy().to_string(),
         notes_path: notes_path.to_string_lossy().to_string(),
     })
@@ -468,6 +568,8 @@ pub fn run() {
             open_markdown_directory,
             open_markdown_file,
             open_markdown_file_context,
+            duplicate_markdown_file,
+            delete_markdown_file,
             save_markdown_file
         ])
         .run(tauri::generate_context!())
