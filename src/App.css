@@ -172,7 +172,7 @@ button:disabled {
 .document-row {
   position: relative;
   display: grid;
-  grid-template-columns: 18px minmax(0, 1fr);
+  grid-template-columns: 24px minmax(0, 1fr);
   gap: 10px;
   min-height: 46px;
   align-items: center;
@@ -188,51 +188,26 @@ button:disabled {
 }
 
 .document-icon {
-  position: relative;
-  display: block;
-  width: 14px;
-  height: 17px;
-  border: 1.5px solid var(--color-muted);
-  border-radius: 3px;
-  background: var(--color-surface-raised);
+  display: inline-flex;
+  width: 24px;
+  height: 24px;
+  align-items: center;
+  justify-content: center;
+  color: #5f6672;
 }
 
-.document-icon::after {
-  position: absolute;
-  top: -1.5px;
-  right: -1.5px;
-  width: 6px;
-  height: 6px;
-  border-bottom: 1.5px solid var(--color-muted);
-  border-left: 1.5px solid var(--color-muted);
-  border-radius: 0 2px 0 2px;
-  content: "";
-  background: var(--color-surface-soft);
+.document-icon svg {
+  display: block;
+  width: 24px;
+  height: 24px;
 }
 
 .document-row.is-folder .document-icon {
-  width: 16px;
-  height: 12px;
-  border-color: var(--color-accent);
-  border-radius: 3px;
-  background: var(--color-accent-soft);
+  color: var(--color-accent);
 }
 
-.document-row.is-folder .document-icon::before {
-  position: absolute;
-  top: -5px;
-  left: -1.5px;
-  width: 8px;
-  height: 5px;
-  border: 1.5px solid var(--color-accent);
-  border-bottom: 0;
-  border-radius: 3px 3px 0 0;
-  content: "";
-  background: var(--color-accent-soft);
-}
-
-.document-row.is-folder .document-icon::after {
-  content: none;
+.document-row.is-selected .document-icon {
+  color: var(--color-accent-strong);
 }
 
 .document-row::after {
