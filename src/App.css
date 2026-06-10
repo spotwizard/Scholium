@@ -20,6 +20,9 @@
   --color-annotation-surface-alt: #ffe0cc;
   --color-annotation-surface-soft: #fff4bf;
   --color-annotation-surface-alt-soft: #ffe0cc;
+  --color-glossary-surface: #dff7ef;
+  --color-glossary-surface-soft: #dff7ef;
+  --color-glossary-border: rgba(33, 132, 96, 0.84);
   --color-annotation-border: rgba(208, 138, 46, 0.9);
   --color-note-surface: #fff8df;
   --color-note-border: #dfc265;
@@ -316,12 +319,15 @@ button:disabled {
 .markdown-editor-host {
   position: relative;
   min-height: 100%;
+  background: var(--color-surface);
 }
 
 .cm-editor {
+  position: relative;
+  z-index: 1;
   min-height: 100%;
   color: var(--color-text);
-  background: var(--color-surface);
+  background: transparent;
 }
 
 .cm-editor.cm-focused {
@@ -358,10 +364,17 @@ button:disabled {
   user-select: text;
 }
 
+.cm-glossary-annotation {
+  text-decoration: underline;
+  text-decoration-color: var(--color-glossary-border);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 0.18em;
+}
+
 .cm-annotation-layer {
   position: absolute;
   inset: 0;
-  z-index: 2;
+  z-index: 0;
   pointer-events: none;
 }
 
@@ -374,6 +387,10 @@ button:disabled {
 
 .cm-annotation-frame[data-note-tone="1"] {
   background: var(--color-annotation-surface-alt-soft);
+}
+
+.cm-annotation-frame[data-annotation-kind="glossary"] {
+  background: var(--color-glossary-surface-soft);
 }
 
 .markdown-preview {
@@ -521,6 +538,17 @@ button:disabled {
   background: var(--color-annotation-surface-alt);
 }
 
+.preview-note-annotation[data-annotation-kind="glossary"] {
+  text-decoration: underline;
+  text-decoration-color: var(--color-glossary-border);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 0.18em;
+}
+
+.preview-annotation-frame[data-annotation-kind="glossary"] {
+  background: var(--color-glossary-surface);
+}
+
 .floating-note-panel {
   position: fixed;
   z-index: 9;
@@ -659,6 +687,21 @@ button:disabled {
   align-content: start;
   gap: 6px;
   min-width: 0;
+}
+
+.glossary-panel-title {
+  margin: 0;
+  padding-right: 34px;
+  color: var(--color-heading);
+  font-size: 1.02rem;
+  font-weight: 760;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.glossary-existing-definition {
+  border-left: 3px solid var(--color-glossary-border);
+  padding-left: 10px;
 }
 
 .selection-confirmation {

@@ -24,6 +24,7 @@ import {
 } from "./MarkdownEditor";
 
 type NoteStatus = "active" | "orphaned" | "deleted";
+type AnnotationKind = "note" | "glossary";
 
 type MarkdownDocument = {
   id: string;
@@ -48,12 +49,36 @@ type SelectionNote = {
   deletedAt: string | null;
 };
 
+type GlossaryTerm = {
+  id: string;
+  term: string;
+  normalizedTerm: string;
+  definition: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type GlossaryBinding = {
+  id: string;
+  documentId: string;
+  termId: string;
+  term: string;
+  normalizedTerm: string;
+  status: NoteStatus;
+  anchor: TextSelectionAnchor;
+  createdAt: string;
+  updatedAt: string;
+  deletedAt: string | null;
+};
+
 type OpenMarkdownFileResult = {
   path: string;
   notesPath: string;
   title: string;
   body: string;
   notes: SelectionNote[];
+  glossaryTerms?: GlossaryTerm[];
+  glossaryBindings?: GlossaryBinding[];
 };
 
 type OpenDirectoryEntryResult =
@@ -111,6 +136,7 @@ type ActiveNoteMode = "view" | "edit";
 
 type PreviewAnnotationFrame = {
   frameKey: string;
+  kind: AnnotationKind;
   noteId: string;
   tone: AnnotationTone;
   left: number;
@@ -169,9 +195,17 @@ type PreviewTextMap = {
 };
 
 type PreviewAnnotationTextRange = {
-  note: SelectionNote;
+  annotation: TextRangeAnnotation;
   start: number;
   end: number;
+};
+
+type TextRangeAnnotation = {
+  id: string;
+  kind: AnnotationKind;
+  status: NoteStatus;
+  anchor: TextSelectionAnchor;
+  tone?: AnnotationTone;
 };
 
 type MarkdownPreviewBlock =
@@ -329,6 +363,32 @@ const notesSeed: SelectionNote[] = [
   },
 ];
 
+const glossaryTermsSeed: GlossaryTerm[] = [
+  {
+    id: "glossary-1",
+    term: "Markdown",
+    normalizedTerm: "markdown",
+    definition: "A lightweight plain-text markup format used for readable writing and publishing.",
+    createdAt: "10:30",
+    updatedAt: "10:30",
+  },
+];
+
+const glossaryBindingsSeed: GlossaryBinding[] = [
+  {
+    id: "glossary-binding-1",
+    documentId: "roadmap",
+    termId: "glossary-1",
+    term: "Markdown",
+    normalizedTerm: "markdown",
+    status: "active",
+    anchor: makeAnchor(documentsSeed[0].body, "Markdown"),
+    createdAt: "10:30",
+    updatedAt: "10:30",
+    deletedAt: null,
+  },
+];
+
 function nowLabel() {
   return new Date().toLocaleTimeString([], {
     hour: "2-digit",
@@ -375,6 +435,45 @@ function reconcileNote(note: SelectionNote, nextBody: string): SelectionNote {
   };
 }
 
+function reconcileGlossaryBinding(
+  binding: GlossaryBinding,
+  nextBody: string,
+): GlossaryBinding {
+  if (binding.status !== "active") return binding;
+
+  const exactText = nextBody.slice(binding.anchor.from, binding.anchor.to);
+  if (normalizeGlossaryTerm(exactText) === binding.normalizedTerm) {
+    return {
+      ...binding,
+      anchor: refreshAnchor(nextBody, binding.anchor),
+    };
+  }
+
+  const nextIndex = nextBody.toLowerCase().indexOf(binding.term.toLowerCase());
+  if (nextIndex >= 0) {
+    const nextAnchor = makeAnchorFromRange(
+      nextBody,
+      nextIndex,
+      nextIndex + binding.term.length,
+      nextBody.slice(nextIndex, nextIndex + binding.term.length),
+    );
+    return {
+      ...binding,
+      anchor: {
+        ...nextAnchor,
+        from: nextIndex,
+        to: nextIndex + binding.term.length,
+      },
+    };
+  }
+
+  return {
+    ...binding,
+    status: "orphaned",
+    updatedAt: nowLabel(),
+  };
+}
+
 function assignAnnotationTones(notes: SelectionNote[]): SelectionNote[] {
   return [...notes]
     .sort(
@@ -390,8 +489,35 @@ function assignAnnotationTones(notes: SelectionNote[]): SelectionNote[] {
     }));
 }
 
+function normalizeGlossaryTerm(term: string) {
+  return term.replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+function glossaryTermWordCount(term: string) {
+  const normalizedTerm = term.replace(/\s+/g, " ").trim();
+  if (!normalizedTerm) return 0;
+
+  return normalizedTerm.split(" ").length;
+}
+
+function isGlossarySelectionCandidate(anchor: TextSelectionAnchor) {
+  const normalizedTerm = anchor.selectedText.replace(/\s+/g, " ").trim();
+  const wordCount = glossaryTermWordCount(normalizedTerm);
+
+  return (
+    wordCount >= 1 &&
+    wordCount <= 3 &&
+    !/[\r\n]/.test(anchor.selectedText) &&
+    !/[.!?。！？,，;；:：]$/.test(normalizedTerm)
+  );
+}
+
 function selectionOverlapsNote(anchor: TextSelectionAnchor, note: SelectionNote) {
   return anchor.to > note.anchor.from && anchor.from < note.anchor.to;
+}
+
+function selectionOverlapsGlossaryBinding(anchor: TextSelectionAnchor, binding: GlossaryBinding) {
+  return anchor.to > binding.anchor.from && anchor.from < binding.anchor.to;
 }
 
 function hasNativeStorageAccess() {
@@ -414,6 +540,15 @@ function workspaceEntryFromDocument(document: MarkdownDocument): WorkspaceEntry 
 
 function savedBodiesFromDocuments(documents: MarkdownDocument[]) {
   return Object.fromEntries(documents.map((document) => [document.id, document.body]));
+}
+
+function mergeGlossaryTerms(incomingTerms: GlossaryTerm[], currentTerms: GlossaryTerm[]) {
+  const termsById = new Map<string, GlossaryTerm>();
+
+  currentTerms.forEach((term) => termsById.set(term.id, term));
+  incomingTerms.forEach((term) => termsById.set(term.id, term));
+
+  return Array.from(termsById.values());
 }
 
 function readLastOpenedMarkdownPath() {
@@ -880,43 +1015,48 @@ function makePreviewAnchor(body: string, selectedText: string) {
   );
 }
 
-function getNotesForPreviewBlock(
+function getAnnotationsForPreviewBlock(
   markdown: string,
   block: MarkdownPreviewBlock,
-  notes: SelectionNote[],
+  annotations: TextRangeAnnotation[],
 ) {
   const blockRange = getBlockRange(markdown, block);
 
-  return notes.filter(
-    (note) =>
-      note.status === "active" &&
-      note.anchor.to > blockRange.start &&
-      note.anchor.from < blockRange.end,
+  return annotations.filter(
+    (annotation) =>
+      annotation.status === "active" &&
+      annotation.anchor.to > blockRange.start &&
+      annotation.anchor.from < blockRange.end,
   );
 }
 
-function getAnnotationRangesForTextMap(textMap: PreviewTextMap, notes: SelectionNote[]) {
+function getAnnotationRangesForTextMap(
+  textMap: PreviewTextMap,
+  annotations: TextRangeAnnotation[],
+) {
   const ranges: PreviewAnnotationTextRange[] = [];
 
-  notes.forEach((note) => {
+  annotations.forEach((annotation) => {
     let rangeStart: number | null = null;
 
     textMap.sourceOffsets.forEach((sourceOffset, index) => {
       const isMarked =
-        sourceOffset !== null && sourceOffset >= note.anchor.from && sourceOffset < note.anchor.to;
+        sourceOffset !== null &&
+        sourceOffset >= annotation.anchor.from &&
+        sourceOffset < annotation.anchor.to;
 
       if (isMarked && rangeStart === null) {
         rangeStart = index;
       }
 
       if (!isMarked && rangeStart !== null) {
-        ranges.push({ note, start: rangeStart, end: index });
+        ranges.push({ annotation, start: rangeStart, end: index });
         rangeStart = null;
       }
     });
 
     if (rangeStart !== null) {
-      ranges.push({ note, start: rangeStart, end: textMap.text.length });
+      ranges.push({ annotation, start: rangeStart, end: textMap.text.length });
     }
   });
 
@@ -928,11 +1068,11 @@ function getAnnotationRangesForTextMap(textMap: PreviewTextMap, notes: Selection
 function renderAnnotatedPlainText(
   textMap: PreviewTextMap,
   keyPrefix: string,
-  notes: SelectionNote[],
-  onAnnotationClick: (noteId: string) => void,
-  onAnnotationDoubleClick: (noteId: string) => void,
+  annotations: TextRangeAnnotation[],
+  onAnnotationClick: (annotationId: string) => void,
+  onAnnotationDoubleClick: (annotationId: string) => void,
 ) {
-  const ranges = getAnnotationRangesForTextMap(textMap, notes);
+  const ranges = getAnnotationRangesForTextMap(textMap, annotations);
   const nodes: ReactNode[] = [];
   let cursor = 0;
 
@@ -946,20 +1086,21 @@ function renderAnnotatedPlainText(
     nodes.push(
       <span
         className="preview-note-annotation"
-        data-note-id={range.note.id}
-        data-note-tone={range.note.tone ?? 0}
+        data-annotation-kind={range.annotation.kind}
+        data-note-id={range.annotation.id}
+        data-note-tone={range.annotation.tone ?? 0}
         key={`${keyPrefix}-note-${rangeIndex}`}
         onClick={(event) => {
           if (window.getSelection()?.toString().trim()) return;
           event.preventDefault();
           event.stopPropagation();
-          onAnnotationClick(range.note.id);
+          onAnnotationClick(range.annotation.id);
         }}
         onDoubleClick={(event) => {
           if (window.getSelection()?.toString().trim()) return;
           event.preventDefault();
           event.stopPropagation();
-          onAnnotationDoubleClick(range.note.id);
+          onAnnotationDoubleClick(range.annotation.id);
         }}
       >
         {textMap.text.slice(range.start, range.end)}
@@ -978,15 +1119,15 @@ function renderAnnotatedPlainText(
 function renderPreviewInline(
   textMap: PreviewTextMap,
   keyPrefix: string,
-  notes: SelectionNote[],
-  onAnnotationClick: (noteId: string) => void,
-  onAnnotationDoubleClick: (noteId: string) => void,
+  annotations: TextRangeAnnotation[],
+  onAnnotationClick: (annotationId: string) => void,
+  onAnnotationDoubleClick: (annotationId: string) => void,
 ) {
-  if (notes.length === 0) {
+  if (annotations.length === 0) {
     return renderInlineMarkdown(textMap.text, keyPrefix);
   }
 
-  const ranges = getAnnotationRangesForTextMap(textMap, notes);
+  const ranges = getAnnotationRangesForTextMap(textMap, annotations);
 
   if (ranges.length === 0) {
     return renderInlineMarkdown(textMap.text, keyPrefix);
@@ -1010,20 +1151,21 @@ function renderPreviewInline(
     nodes.push(
       <span
         className="preview-note-annotation"
-        data-note-id={range.note.id}
-        data-note-tone={range.note.tone ?? 0}
+        data-annotation-kind={range.annotation.kind}
+        data-note-id={range.annotation.id}
+        data-note-tone={range.annotation.tone ?? 0}
         key={`${keyPrefix}-note-${rangeIndex}`}
         onClick={(event) => {
           if (window.getSelection()?.toString().trim()) return;
           event.preventDefault();
           event.stopPropagation();
-          onAnnotationClick(range.note.id);
+          onAnnotationClick(range.annotation.id);
         }}
         onDoubleClick={(event) => {
           if (window.getSelection()?.toString().trim()) return;
           event.preventDefault();
           event.stopPropagation();
-          onAnnotationDoubleClick(range.note.id);
+          onAnnotationDoubleClick(range.annotation.id);
         }}
       >
         {renderInlineMarkdown(
@@ -1057,6 +1199,7 @@ function measurePreviewAnnotationFrames(container: HTMLDivElement): PreviewAnnot
   function frameFromBounds(
     noteId: string,
     frameKey: string,
+    kind: AnnotationKind,
     tone: AnnotationTone,
     left: number,
     top: number,
@@ -1065,6 +1208,7 @@ function measurePreviewAnnotationFrames(container: HTMLDivElement): PreviewAnnot
   ): PreviewAnnotationFrame {
     return {
       frameKey,
+      kind,
       noteId,
       tone,
       left: roundPreviewFrameValue(
@@ -1090,6 +1234,8 @@ function measurePreviewAnnotationFrames(container: HTMLDivElement): PreviewAnnot
       const noteId = annotation.dataset.noteId;
       if (!noteId) return;
       const tone: AnnotationTone = annotation.dataset.noteTone === "1" ? 1 : 0;
+      const kind: AnnotationKind =
+        annotation.dataset.annotationKind === "glossary" ? "glossary" : "note";
 
       const annotationRects = Array.from(annotation.getClientRects()).filter(
         (rect) => rect.width > 0 && rect.height > 0,
@@ -1124,6 +1270,7 @@ function measurePreviewAnnotationFrames(container: HTMLDivElement): PreviewAnnot
           frameFromBounds(
             noteId,
             `${noteId}:inline:${annotationIndex}:${rectIndex}`,
+            kind,
             tone,
             rect.left - previewAnnotationFramePadding,
             top,
@@ -1153,6 +1300,7 @@ function arePreviewAnnotationFramesEqual(
 
     return (
       leftFrame.frameKey === rightFrame.frameKey &&
+      leftFrame.kind === rightFrame.kind &&
       leftFrame.noteId === rightFrame.noteId &&
       leftFrame.tone === rightFrame.tone &&
       leftFrame.left === rightFrame.left &&
@@ -1369,19 +1517,19 @@ function markEditableBlockChanged(event: FormEvent<HTMLElement>) {
 function MarkdownPreviewBlockView({
   block,
   markdown,
-  notes,
+  annotations,
   onChange,
   onAnnotationClick,
   onAnnotationDoubleClick,
 }: {
   block: MarkdownPreviewBlock;
   markdown: string;
-  notes: SelectionNote[];
+  annotations: TextRangeAnnotation[];
   onChange: (block: MarkdownPreviewBlock, text: string) => void;
-  onAnnotationClick: (noteId: string) => void;
-  onAnnotationDoubleClick: (noteId: string) => void;
+  onAnnotationClick: (annotationId: string) => void;
+  onAnnotationDoubleClick: (annotationId: string) => void;
 }) {
-  const blockNotes = getNotesForPreviewBlock(markdown, block, notes);
+  const blockAnnotations = getAnnotationsForPreviewBlock(markdown, block, annotations);
 
   function commitEditableBlock(event: FocusEvent<HTMLElement>) {
     if (event.currentTarget.dataset.edited !== "true") return;
@@ -1411,7 +1559,7 @@ function MarkdownPreviewBlockView({
       renderPreviewInline(
         textMap,
         `${block.key}-heading`,
-        blockNotes,
+        blockAnnotations,
         onAnnotationClick,
         onAnnotationDoubleClick,
       ),
@@ -1430,7 +1578,7 @@ function MarkdownPreviewBlockView({
             {renderPreviewInline(
               getQuoteLineTextMap(markdown, block, quoteIndex),
               `${block.key}-quote-${quoteIndex}`,
-              blockNotes,
+              blockAnnotations,
               onAnnotationClick,
               onAnnotationDoubleClick,
             )}
@@ -1450,7 +1598,7 @@ function MarkdownPreviewBlockView({
             {renderPreviewInline(
               getListItemTextMap(markdown, block, itemIndex),
               `${block.key}-item-${itemIndex}`,
-              blockNotes,
+              blockAnnotations,
               onAnnotationClick,
               onAnnotationDoubleClick,
             )}
@@ -1467,7 +1615,7 @@ function MarkdownPreviewBlockView({
           {renderAnnotatedPlainText(
             getPreviewBlockTextMap(markdown, block),
             `${block.key}-code`,
-            blockNotes,
+            blockAnnotations,
             onAnnotationClick,
             onAnnotationDoubleClick,
           )}
@@ -1486,7 +1634,7 @@ function MarkdownPreviewBlockView({
         {renderPreviewInline(
           getPreviewBlockTextMap(markdown, block),
           `${block.key}-paragraph`,
-          blockNotes,
+          blockAnnotations,
           onAnnotationClick,
           onAnnotationDoubleClick,
         )}
@@ -1499,18 +1647,18 @@ function MarkdownPreviewBlockView({
 
 function MarkdownPreview({
   value,
-  notes,
+  annotations,
   onChange,
   onSelectionChange,
   onAnnotationClick,
   onAnnotationDoubleClick,
 }: {
   value: string;
-  notes: SelectionNote[];
+  annotations: TextRangeAnnotation[];
   onChange: (value: string, source: EditorChangeSource) => void;
   onSelectionChange: (anchor: TextSelectionAnchor | null) => void;
-  onAnnotationClick: (noteId: string) => void;
-  onAnnotationDoubleClick: (noteId: string) => void;
+  onAnnotationClick: (annotationId: string) => void;
+  onAnnotationDoubleClick: (annotationId: string) => void;
 }) {
   const blocks = parseMarkdownPreviewBlocks(value);
   const previewRef = useRef<HTMLDivElement | null>(null);
@@ -1544,7 +1692,7 @@ function MarkdownPreview({
       resizeObserver.disconnect();
       window.removeEventListener("resize", scheduleAnnotationFrameUpdate);
     };
-  }, [notes, value]);
+  }, [annotations, value]);
 
   function handlePreviewSelection() {
     const selection = window.getSelection();
@@ -1652,7 +1800,7 @@ function MarkdownPreview({
           block={block}
           key={block.key}
           markdown={value}
-          notes={notes}
+          annotations={annotations}
           onAnnotationClick={onAnnotationClick}
           onAnnotationDoubleClick={onAnnotationDoubleClick}
           onChange={updatePreviewBlock}
@@ -1662,6 +1810,7 @@ function MarkdownPreview({
         {annotationFrames.map((frame) => (
           <span
             className="preview-annotation-frame"
+            data-annotation-kind={frame.kind}
             data-note-id={frame.noteId}
             data-note-tone={frame.tone}
             key={frame.frameKey}
@@ -1785,10 +1934,17 @@ function App() {
   );
   const [selectedDocumentId, setSelectedDocumentId] = useState(documentsSeed[0].id);
   const [notes, setNotes] = useState(notesSeed);
+  const [glossaryTerms, setGlossaryTerms] = useState(glossaryTermsSeed);
+  const [glossaryBindings, setGlossaryBindings] = useState(glossaryBindingsSeed);
   const [pendingAnchor, setPendingAnchor] = useState<TextSelectionAnchor | null>(null);
+  const [pendingGlossaryTerm, setPendingGlossaryTerm] = useState<GlossaryTerm | null>(null);
   const [noteDraft, setNoteDraft] = useState("");
+  const [glossaryDraft, setGlossaryDraft] = useState("");
   const [activeNoteId, setActiveNoteId] = useState("");
+  const [activeGlossaryBindingId, setActiveGlossaryBindingId] = useState("");
+  const [activeGlossaryTermId, setActiveGlossaryTermId] = useState("");
   const [activeNoteMode, setActiveNoteMode] = useState<ActiveNoteMode>("view");
+  const [activeGlossaryMode, setActiveGlossaryMode] = useState<ActiveNoteMode>("view");
   const [floatingNotePanelPosition, setFloatingNotePanelPosition] =
     useState<FloatingNotePosition | null>(null);
   const [selectionWarningPosition, setSelectionWarningPosition] =
@@ -1823,6 +1979,8 @@ function App() {
   const autosaveRequestedWhileSavingRef = useRef(false);
   const documentsRef = useRef(documents);
   const notesRef = useRef(notes);
+  const glossaryTermsRef = useRef(glossaryTerms);
+  const glossaryBindingsRef = useRef(glossaryBindings);
   const dirtyDocumentStatesRef = useRef(dirtyDocumentStates);
   const notePanelHasContentRef = useRef(false);
   const selectionDismissedUntilRef = useRef(0);
@@ -1830,6 +1988,8 @@ function App() {
 
   documentsRef.current = documents;
   notesRef.current = notes;
+  glossaryTermsRef.current = glossaryTerms;
+  glossaryBindingsRef.current = glossaryBindings;
   dirtyDocumentStatesRef.current = dirtyDocumentStates;
 
   const selectedDocument =
@@ -1838,24 +1998,60 @@ function App() {
   const documentNotes = notes.filter(
     (note) => note.documentId === selectedDocument.id && note.status !== "deleted",
   );
+  const documentGlossaryBindings = glossaryBindings.filter(
+    (binding) => binding.documentId === selectedDocument.id && binding.status !== "deleted",
+  );
   const nativeStorageAvailable = hasNativeStorageAccess();
   const activeNotes = assignAnnotationTones(
     documentNotes.filter((note) => note.status === "active"),
   );
   const activeNote = documentNotes.find((note) => note.id === activeNoteId);
+  const activeGlossaryBinding = documentGlossaryBindings.find(
+    (binding) => binding.id === activeGlossaryBindingId,
+  );
+  const activeGlossaryTerm = glossaryTerms.find(
+    (term) => term.id === (activeGlossaryTermId || activeGlossaryBinding?.termId),
+  );
 
-  const annotations: TextAnnotation[] = activeNotes.map((note) => ({
+  const activeGlossaryAnnotations: TextRangeAnnotation[] = documentGlossaryBindings
+    .filter((binding) => binding.status === "active")
+    .map((binding) => ({
+      id: `glossary:${binding.id}`,
+      kind: "glossary",
+      status: binding.status,
+      anchor: binding.anchor,
+      tone: 0,
+    }));
+  const activeNoteAnnotations: TextRangeAnnotation[] = activeNotes.map((note) => ({
     id: note.id,
-    from: note.anchor.from,
+    kind: "note",
+    status: note.status,
+    anchor: note.anchor,
     tone: note.tone,
-    to: note.anchor.to,
+  }));
+  const activeTextAnnotations = [...activeNoteAnnotations, ...activeGlossaryAnnotations];
+  const annotations: TextAnnotation[] = activeTextAnnotations.map((annotation) => ({
+    id: annotation.id,
+    kind: annotation.kind,
+    from: annotation.anchor.from,
+    tone: annotation.tone,
+    to: annotation.anchor.to,
   }));
   const pendingAnchorIsCompleteBlock = Boolean(
     pendingAnchor && isSelectionCompleteMarkdownBlock(selectedDocument.body, pendingAnchor),
   );
+  const pendingAnchorIsGlossaryTerm = Boolean(
+    pendingAnchor && isGlossarySelectionCandidate(pendingAnchor),
+  );
   const activeNoteIsEditing = Boolean(activeNote && activeNoteMode === "edit");
+  const activeGlossaryIsEditing = Boolean(activeGlossaryTerm && activeGlossaryMode === "edit");
   const shouldShowSelectionConfirmation = Boolean(pendingAnchor && isMobileViewport);
-  const notePanelHasContent = Boolean(shouldShowSelectionConfirmation || activeNote);
+  const notePanelHasContent = Boolean(
+    shouldShowSelectionConfirmation ||
+      activeNote ||
+      activeGlossaryTerm ||
+      pendingGlossaryTerm,
+  );
   const floatingNotePanelShouldRender = notePanelHasContent;
 
   useEffect(() => {
@@ -1893,7 +2089,7 @@ function App() {
     noteTextareaShouldRefocusRef.current = false;
     textarea.focus();
     textarea.setSelectionRange(textarea.value.length, textarea.value.length);
-  }, [activeNoteId, activeNoteMode, pendingAnchor]);
+  }, [activeGlossaryMode, activeGlossaryTermId, activeNoteId, activeNoteMode, pendingAnchor]);
 
   useLayoutEffect(() => {
     if (!notePanelHasContent) {
@@ -1909,14 +2105,17 @@ function App() {
         const card = floatingNoteCardRef.current;
         const measuredAnchorRect = activeNote
           ? activeNoteAnchorRect(activeNote.id)
-          : pendingAnchor
-            ? currentSelectionAnchorRect()
-            : null;
+          : activeGlossaryBinding
+            ? activeGlossaryAnchorRect(activeGlossaryBinding.id)
+            : pendingAnchor
+              ? currentSelectionAnchorRect()
+              : null;
         if (measuredAnchorRect) {
           floatingNoteAnchorRectRef.current = measuredAnchorRect;
         }
         const anchorRect =
-          measuredAnchorRect ?? (activeNote ? null : floatingNoteAnchorRectRef.current);
+          measuredAnchorRect ??
+          (activeNote || activeGlossaryBinding ? null : floatingNoteAnchorRectRef.current);
 
         if (!card) {
           setFloatingNotePanelPosition(null);
@@ -1943,7 +2142,20 @@ function App() {
       document.removeEventListener("scroll", updateFloatingNotePanelPosition, true);
       window.removeEventListener("resize", updateFloatingNotePanelPosition);
     };
-  }, [activeNote, activeNoteMode, editorMode, noteDraft, notePanelHasContent, pendingAnchor, selectedDocument.body]);
+  }, [
+    activeGlossaryBinding,
+    activeGlossaryMode,
+    activeGlossaryTerm,
+    activeNote,
+    activeNoteMode,
+    editorMode,
+    glossaryDraft,
+    noteDraft,
+    notePanelHasContent,
+    pendingAnchor,
+    pendingGlossaryTerm,
+    selectedDocument.body,
+  ]);
 
   function elementFromEventTarget(target: EventTarget | null) {
     return target instanceof HTMLElement
@@ -2045,6 +2257,21 @@ function App() {
     ).filter((element) => element.dataset.noteId === noteId);
 
     const rects = noteElements.flatMap((element) =>
+      Array.from(element.getClientRects()).filter((rect) => rect.width > 0 && rect.height > 0),
+    );
+
+    return textAnchorRectFromClientRects(rects);
+  }
+
+  function activeGlossaryAnchorRect(bindingId: string) {
+    const annotationId = `glossary:${bindingId}`;
+    const glossaryElements = Array.from(
+      document.querySelectorAll<HTMLElement>(
+        '.cm-note-annotation[data-note-id], .preview-note-annotation[data-note-id]',
+      ),
+    ).filter((element) => element.dataset.noteId === annotationId);
+
+    const rects = glossaryElements.flatMap((element) =>
       Array.from(element.getClientRects()).filter((rect) => rect.width > 0 && rect.height > 0),
     );
 
@@ -2182,25 +2409,30 @@ function App() {
   }
 
   function targetIsActiveNoteRange(target: EventTarget | null) {
-    if (!activeNoteId) return false;
+    if (!activeNoteId && !activeGlossaryBindingId) return false;
 
     const targetElement = elementFromEventTarget(target);
     const noteElement = targetElement?.closest<HTMLElement>(
       ".cm-note-annotation[data-note-id], .cm-annotation-frame[data-note-id], .preview-note-annotation[data-note-id], .preview-annotation-frame[data-note-id]",
     );
 
-    return noteElement?.dataset.noteId === activeNoteId;
+    return (
+      noteElement?.dataset.noteId === activeNoteId ||
+      noteElement?.dataset.noteId === `glossary:${activeGlossaryBindingId}`
+    );
   }
 
   function pointHitsActiveNoteRange(clientX: number, clientY: number) {
-    if (!activeNoteId) return false;
+    if (!activeNoteId && !activeGlossaryBindingId) return false;
 
     return Array.from(
       document.querySelectorAll<HTMLElement>(
         ".cm-note-annotation[data-note-id], .cm-annotation-frame[data-note-id], .preview-note-annotation[data-note-id], .preview-annotation-frame[data-note-id]",
       ),
     ).some((element) => {
-      if (element.dataset.noteId !== activeNoteId) return false;
+      const isActiveNote = element.dataset.noteId === activeNoteId;
+      const isActiveGlossary = element.dataset.noteId === `glossary:${activeGlossaryBindingId}`;
+      if (!isActiveNote && !isActiveGlossary) return false;
       return pointHitsAnyRect(clientX, clientY, Array.from(element.getClientRects()));
     });
   }
@@ -2285,7 +2517,7 @@ function App() {
       document.removeEventListener("mousedown", handleDocumentMouseDown, true);
       document.removeEventListener("focusin", handleDocumentFocusIn, true);
     };
-  }, [activeNoteId, isNotePanelClosing, notePanelHasContent, pendingAnchor]);
+  }, [activeGlossaryBindingId, activeNoteId, isNotePanelClosing, notePanelHasContent, pendingAnchor]);
 
   useEffect(() => {
     if (!selectionWarningPosition) return;
@@ -2327,7 +2559,7 @@ function App() {
     return () => {
       window.clearTimeout(autosaveTimerRef.current);
     };
-  }, [dirtyDocumentStates, documents, nativeStorageAvailable, notes]);
+  }, [dirtyDocumentStates, documents, glossaryBindings, glossaryTerms, nativeStorageAvailable, notes]);
 
   useEffect(() => {
     if (!nativeStorageAvailable || lastOpenedFileRestoreAttemptedRef.current) return;
@@ -2398,6 +2630,14 @@ function App() {
         !event.altKey &&
         !event.shiftKey;
 
+      if (isPlainEnter && pendingAnchor && pendingAnchorIsGlossaryTerm) {
+        if (targetIsFormControl(event.target)) return;
+
+        event.preventDefault();
+        startPendingGlossaryFlow();
+        return;
+      }
+
       if (isPlainEnter && pendingAnchor && pendingAnchorIsCompleteBlock) {
         if (targetIsFormControl(event.target)) return;
 
@@ -2419,7 +2659,12 @@ function App() {
     return () => {
       window.removeEventListener("keydown", handleModeShortcut, true);
     };
-  }, [closeNotePanel, pendingAnchor, pendingAnchorIsCompleteBlock]);
+  }, [
+    closeNotePanel,
+    pendingAnchor,
+    pendingAnchorIsCompleteBlock,
+    pendingAnchorIsGlossaryTerm,
+  ]);
 
   function updateDocumentDirtyState(documentId: string, patch: Partial<DirtyDocumentState>) {
     setDirtyDocumentStates((currentStates) => {
@@ -2446,6 +2691,21 @@ function App() {
 
   function markDocumentNotesDirty(documentId = selectedDocument.id) {
     updateDocumentDirtyState(documentId, { notes: true });
+  }
+
+  function markGlossaryTermDirty(termId: string) {
+    const documentIds = new Set(
+      glossaryBindingsRef.current
+        .filter((binding) => binding.termId === termId && binding.status !== "deleted")
+        .map((binding) => binding.documentId),
+    );
+
+    if (documentIds.size === 0) {
+      markDocumentNotesDirty();
+      return;
+    }
+
+    documentIds.forEach((documentId) => markDocumentNotesDirty(documentId));
   }
 
   function markLoadedDocumentsClean(loadedDocuments: MarkdownDocument[]) {
@@ -2518,6 +2778,15 @@ function App() {
         documentId: loadedFile.path,
       })),
     );
+    const loadedGlossaryBindings = loadedFiles.flatMap((loadedFile) =>
+      (loadedFile.glossaryBindings ?? []).map((binding) => ({
+        ...binding,
+        documentId: loadedFile.path,
+      })),
+    );
+    const loadedGlossaryTerms = loadedFiles.flatMap(
+      (loadedFile) => loadedFile.glossaryTerms ?? [],
+    );
     const firstDocument = loadedDocuments[0];
 
     setDocuments((currentDocuments) => [
@@ -2534,12 +2803,22 @@ function App() {
       ...loadedNotes,
       ...currentNotes.filter((note) => !loadedDocumentIds.has(note.documentId)),
     ]);
+    setGlossaryBindings((currentBindings) => [
+      ...loadedGlossaryBindings,
+      ...currentBindings.filter((binding) => !loadedDocumentIds.has(binding.documentId)),
+    ]);
+    setGlossaryTerms((currentTerms) => mergeGlossaryTerms(loadedGlossaryTerms, currentTerms));
     setSelectedDocumentId(firstDocument.id);
     setSelectionWarningPosition(null);
     setPendingAnchor(null);
+    setPendingGlossaryTerm(null);
     setNoteDraft("");
+    setGlossaryDraft("");
     setActiveNoteId("");
+    setActiveGlossaryBindingId("");
+    setActiveGlossaryTermId("");
     setActiveNoteMode("view");
+    setActiveGlossaryMode("view");
     markLoadedDocumentsClean(loadedDocuments);
     rememberLastOpenedMarkdownPath(firstDocument.filePath);
   }
@@ -2557,6 +2836,15 @@ function App() {
         ...note,
         documentId: loadedFile.path,
       })),
+    );
+    const loadedGlossaryBindings = loadedFiles.flatMap((loadedFile) =>
+      (loadedFile.glossaryBindings ?? []).map((binding) => ({
+        ...binding,
+        documentId: loadedFile.path,
+      })),
+    );
+    const loadedGlossaryTerms = loadedFiles.flatMap(
+      (loadedFile) => loadedFile.glossaryTerms ?? [],
     );
     const nextEntries = openedDirectory.entries.map((entry): WorkspaceEntry => {
       if (entry.kind === "directory") {
@@ -2584,12 +2872,19 @@ function App() {
       ...loadedNotes,
       ...currentNotes.filter((note) => !loadedDocumentIds.has(note.documentId)),
     ]);
+    setGlossaryBindings((currentBindings) => [
+      ...loadedGlossaryBindings,
+      ...currentBindings.filter((binding) => !loadedDocumentIds.has(binding.documentId)),
+    ]);
+    setGlossaryTerms((currentTerms) => mergeGlossaryTerms(loadedGlossaryTerms, currentTerms));
     setWorkspaceTitle(openedDirectory.title);
     setWorkspacePath(openedDirectory.path);
     setWorkspaceEntries(nextEntries);
     setSelectionWarningPosition(null);
     setPendingAnchor(null);
+    setPendingGlossaryTerm(null);
     setNoteDraft("");
+    setGlossaryDraft("");
     markLoadedDocumentsClean(loadedDocuments);
 
     if (documentToSelect) {
@@ -2597,7 +2892,10 @@ function App() {
       rememberLastOpenedMarkdownPath(documentToSelect.filePath);
     }
     setActiveNoteId("");
+    setActiveGlossaryBindingId("");
+    setActiveGlossaryTermId("");
     setActiveNoteMode("view");
+    setActiveGlossaryMode("view");
 
     if (nextEntries.length === 0) {
       setStorageError("No folders or Markdown files found in the selected folder.");
@@ -2695,6 +2993,8 @@ function App() {
         path,
         body,
         notes: [],
+        glossaryTerms: [],
+        glossaryBindings: [],
       });
       const loaded = await invoke<OpenMarkdownFileResult>("open_markdown_file", {
         path: saved.path,
@@ -2716,14 +3016,43 @@ function App() {
     );
   }
 
-  function notesFingerprint(sourceNotes: SelectionNote[]) {
-    return JSON.stringify(sourceNotes);
+  function glossaryBindingsForDocument(
+    documentId: string,
+    sourceBindings = glossaryBindingsRef.current,
+  ) {
+    return sourceBindings.filter(
+      (binding) => binding.documentId === documentId && binding.status !== "deleted",
+    );
+  }
+
+  function glossaryTermsForDocument(
+    documentId: string,
+    sourceBindings = glossaryBindingsRef.current,
+    sourceTerms = glossaryTermsRef.current,
+  ) {
+    const termIds = new Set(
+      glossaryBindingsForDocument(documentId, sourceBindings).map((binding) => binding.termId),
+    );
+
+    return sourceTerms.filter((term) => termIds.has(term.id));
+  }
+
+  function sidecarFingerprint(
+    sourceNotes: SelectionNote[],
+    sourceGlossaryTerms: GlossaryTerm[],
+    sourceGlossaryBindings: GlossaryBinding[],
+  ) {
+    return JSON.stringify({
+      notes: sourceNotes,
+      glossaryTerms: sourceGlossaryTerms,
+      glossaryBindings: sourceGlossaryBindings,
+    });
   }
 
   function markDocumentSnapshotSaved(
     documentId: string,
     savedBody: string,
-    savedNotesFingerprint: string,
+    savedSidecarFingerprint: string,
   ) {
     setSavedDocumentBodies((currentBodies) => ({
       ...currentBodies,
@@ -2731,10 +3060,14 @@ function App() {
     }));
     setDirtyDocumentStates((currentStates) => {
       const currentDocument = documentsRef.current.find((document) => document.id === documentId);
-      const currentNotesFingerprint = notesFingerprint(notesForDocument(documentId));
+      const currentSidecarFingerprint = sidecarFingerprint(
+        notesForDocument(documentId),
+        glossaryTermsForDocument(documentId),
+        glossaryBindingsForDocument(documentId),
+      );
       const nextState: DirtyDocumentState = {
         body: currentDocument ? currentDocument.body !== savedBody : false,
-        notes: currentNotesFingerprint !== savedNotesFingerprint,
+        notes: currentSidecarFingerprint !== savedSidecarFingerprint,
       };
       const nextStates = { ...currentStates };
 
@@ -2753,11 +3086,19 @@ function App() {
 
     const bodyToSave = documentToSave.body;
     const notesToSave = notesForDocument(documentToSave.id);
-    const savedNotesFingerprint = notesFingerprint(notesToSave);
+    const glossaryBindingsToSave = glossaryBindingsForDocument(documentToSave.id);
+    const glossaryTermsToSave = glossaryTermsForDocument(documentToSave.id);
+    const savedSidecarFingerprint = sidecarFingerprint(
+      notesToSave,
+      glossaryTermsToSave,
+      glossaryBindingsToSave,
+    );
     const saved = await invoke<SaveMarkdownFileResult>("save_markdown_file", {
       path: documentToSave.filePath,
       body: bodyToSave,
       notes: notesToSave,
+      glossaryTerms: glossaryTermsToSave,
+      glossaryBindings: glossaryBindingsToSave,
     });
 
     setDocuments((currentDocuments) =>
@@ -2773,7 +3114,7 @@ function App() {
           : document,
       ),
     );
-    markDocumentSnapshotSaved(documentToSave.id, bodyToSave, savedNotesFingerprint);
+    markDocumentSnapshotSaved(documentToSave.id, bodyToSave, savedSidecarFingerprint);
   }
 
   async function saveDirtyDocuments() {
@@ -2829,6 +3170,11 @@ function App() {
         note.documentId === documentId ? reconcileNote(note, body) : note,
       ),
     );
+    setGlossaryBindings((currentBindings) =>
+      currentBindings.map((binding) =>
+        binding.documentId === documentId ? reconcileGlossaryBinding(binding, body) : binding,
+      ),
+    );
     markDocumentBodyDirty(documentId, !(source === "undo" && body === savedBody));
   }
 
@@ -2840,10 +3186,15 @@ function App() {
     setSelectedDocumentId(documentId);
     setSelectionWarningPosition(null);
     setPendingAnchor(null);
+    setPendingGlossaryTerm(null);
     setNoteDraft("");
+    setGlossaryDraft("");
     setStorageError("");
     setActiveNoteId("");
+    setActiveGlossaryBindingId("");
+    setActiveGlossaryTermId("");
     setActiveNoteMode("view");
+    setActiveGlossaryMode("view");
     clearReturnToViewTimer();
     rememberLastOpenedMarkdownPath(nextDocument.filePath);
   }
@@ -2881,7 +3232,7 @@ function App() {
   }
 
   function returnActiveNoteToViewMode() {
-    if (!activeNoteIsEditing || isReturningToView) return;
+    if ((!activeNoteIsEditing && !activeGlossaryIsEditing) || isReturningToView) return;
 
     if (
       activeNote &&
@@ -2897,6 +3248,7 @@ function App() {
     window.clearTimeout(returnToViewTimerRef.current);
     returnToViewTimerRef.current = window.setTimeout(() => {
       setActiveNoteMode("view");
+      setActiveGlossaryMode("view");
       setIsReturningToView(false);
       returnToViewTimerRef.current = 0;
     }, 1000);
@@ -2916,9 +3268,14 @@ function App() {
 
     if (!notePanelHasContentRef.current) {
       setPendingAnchor(null);
+      setPendingGlossaryTerm(null);
       setActiveNoteId("");
+      setActiveGlossaryBindingId("");
+      setActiveGlossaryTermId("");
       setActiveNoteMode("view");
+      setActiveGlossaryMode("view");
       setNoteDraft("");
+      setGlossaryDraft("");
       floatingNoteAnchorRectRef.current = null;
       setIsNotePanelClosing(false);
       return;
@@ -2928,9 +3285,14 @@ function App() {
     notePanelCloseTimerRef.current = window.setTimeout(() => {
       discardTransientEmptySelectionNote();
       setPendingAnchor(null);
+      setPendingGlossaryTerm(null);
       setActiveNoteId("");
+      setActiveGlossaryBindingId("");
+      setActiveGlossaryTermId("");
       setActiveNoteMode("view");
+      setActiveGlossaryMode("view");
       setNoteDraft("");
+      setGlossaryDraft("");
       setIsNotePanelClosing(false);
       floatingNoteAnchorRectRef.current = null;
       notePanelHasContentRef.current = false;
@@ -2998,7 +3360,10 @@ function App() {
       return;
     }
 
-    if (activeNotes.some((note) => selectionOverlapsNote(anchor, note))) {
+    if (
+      activeNotes.some((note) => selectionOverlapsNote(anchor, note)) ||
+      documentGlossaryBindings.some((binding) => selectionOverlapsGlossaryBinding(anchor, binding))
+    ) {
       setSelectionWarningPosition(null);
       if (pendingAnchor) {
         closeNotePanel();
@@ -3006,10 +3371,15 @@ function App() {
       return;
     }
 
-    if (!isSelectionCompleteMarkdownBlock(selectedDocument.body, anchor)) {
+    if (
+      !isGlossarySelectionCandidate(anchor) &&
+      !isSelectionCompleteMarkdownBlock(selectedDocument.body, anchor)
+    ) {
       const anchorRect = currentSelectionAnchorRect();
       setPendingAnchor(null);
       setNoteDraft("");
+      setPendingGlossaryTerm(null);
+      setGlossaryDraft("");
       if (notePanelHasContentRef.current) {
         closeNotePanel();
       }
@@ -3023,9 +3393,14 @@ function App() {
     setIsNotePanelClosing(false);
     floatingNoteAnchorRectRef.current = currentSelectionAnchorRect();
     setPendingAnchor(anchor);
+    setPendingGlossaryTerm(null);
     setActiveNoteId("");
+    setActiveGlossaryBindingId("");
+    setActiveGlossaryTermId("");
     setActiveNoteMode("view");
+    setActiveGlossaryMode("view");
     setNoteDraft("");
+    setGlossaryDraft("");
     notePanelHasContentRef.current = isMobileViewport;
   }
 
@@ -3060,6 +3435,201 @@ function App() {
     setActiveNoteMode("edit");
     setNoteDraft(note.body);
     notePanelHasContentRef.current = true;
+  }
+
+  function glossaryTermForAnchor(anchor: TextSelectionAnchor) {
+    const normalizedTerm = normalizeGlossaryTerm(anchor.selectedText);
+
+    return glossaryTerms.find((term) => term.normalizedTerm === normalizedTerm) ?? null;
+  }
+
+  function createGlossaryBinding(term: GlossaryTerm, anchor: TextSelectionAnchor) {
+    const binding: GlossaryBinding = {
+      id: crypto.randomUUID(),
+      documentId: selectedDocument.id,
+      termId: term.id,
+      term: term.term,
+      normalizedTerm: term.normalizedTerm,
+      status: "active",
+      anchor: {
+        ...anchor,
+        selectedText: anchor.selectedText.replace(/\s+/g, " ").trim(),
+      },
+      createdAt: nowLabel(),
+      updatedAt: nowLabel(),
+      deletedAt: null,
+    };
+
+    setGlossaryBindings((currentBindings) => [binding, ...currentBindings]);
+    markDocumentNotesDirty();
+    return binding;
+  }
+
+  function startPendingGlossaryFlow() {
+    if (!pendingAnchor || !pendingAnchorIsGlossaryTerm) return;
+
+    discardTransientEmptySelectionNote();
+    setSelectionWarningPosition(null);
+
+    const existingTerm = glossaryTermForAnchor(pendingAnchor);
+    if (existingTerm) {
+      clearNotePanelCloseTimer();
+      clearReturnToViewTimer();
+      setIsNotePanelClosing(false);
+      floatingNoteAnchorRectRef.current = currentSelectionAnchorRect();
+      setPendingGlossaryTerm(existingTerm);
+      setActiveNoteId("");
+      setActiveGlossaryBindingId("");
+      setActiveGlossaryTermId(existingTerm.id);
+      setActiveGlossaryMode("view");
+      setGlossaryDraft(existingTerm.definition);
+      notePanelHasContentRef.current = true;
+      return;
+    }
+
+    const now = nowLabel();
+    const termText = pendingAnchor.selectedText.replace(/\s+/g, " ").trim();
+    const term: GlossaryTerm = {
+      id: crypto.randomUUID(),
+      term: termText,
+      normalizedTerm: normalizeGlossaryTerm(termText),
+      definition: "",
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    setGlossaryTerms((currentTerms) => [term, ...currentTerms]);
+    const binding = createGlossaryBinding(term, pendingAnchor);
+    setPendingAnchor(null);
+    setPendingGlossaryTerm(null);
+    setActiveNoteId("");
+    setActiveGlossaryBindingId(binding.id);
+    setActiveGlossaryTermId(term.id);
+    setActiveGlossaryMode("edit");
+    setGlossaryDraft("");
+    noteTextareaShouldRefocusRef.current = true;
+    setIsNotePanelClosing(false);
+    notePanelHasContentRef.current = true;
+  }
+
+  function bindPendingGlossaryTerm() {
+    if (!pendingAnchor || !pendingGlossaryTerm) return;
+
+    const binding = createGlossaryBinding(pendingGlossaryTerm, pendingAnchor);
+    setPendingAnchor(null);
+    setPendingGlossaryTerm(null);
+    setActiveNoteId("");
+    setActiveGlossaryBindingId(binding.id);
+    setActiveGlossaryTermId(pendingGlossaryTerm.id);
+    setActiveGlossaryMode("view");
+    setGlossaryDraft(pendingGlossaryTerm.definition);
+    notePanelHasContentRef.current = true;
+  }
+
+  function rejectPendingGlossaryTerm() {
+    closeNotePanel();
+  }
+
+  function showGlossaryViewer(bindingId: string) {
+    const binding = glossaryBindings.find(
+      (candidate) => candidate.id === bindingId && candidate.status !== "deleted",
+    );
+    if (!binding) return;
+
+    const term = glossaryTerms.find((candidate) => candidate.id === binding.termId);
+    if (!term) return;
+
+    setSelectionWarningPosition(null);
+    clearNotePanelCloseTimer();
+    clearReturnToViewTimer();
+    setIsNotePanelClosing(false);
+    floatingNoteAnchorRectRef.current = activeGlossaryAnchorRect(bindingId);
+    setPendingAnchor(null);
+    setPendingGlossaryTerm(null);
+    setActiveNoteId("");
+    setActiveGlossaryBindingId(bindingId);
+    setActiveGlossaryTermId(term.id);
+    setActiveGlossaryMode("view");
+    setGlossaryDraft(term.definition);
+    notePanelHasContentRef.current = true;
+  }
+
+  function openGlossaryEditor(termId: string) {
+    const term = glossaryTerms.find((candidate) => candidate.id === termId);
+    if (!term) return;
+
+    setSelectionWarningPosition(null);
+    clearNotePanelCloseTimer();
+    clearReturnToViewTimer();
+    setIsNotePanelClosing(false);
+    setPendingAnchor(null);
+    setPendingGlossaryTerm(null);
+    setActiveNoteId("");
+    setActiveGlossaryTermId(term.id);
+    noteTextareaShouldRefocusRef.current = true;
+    setActiveGlossaryMode("edit");
+    setGlossaryDraft(term.definition);
+    notePanelHasContentRef.current = true;
+  }
+
+  function showAnnotationViewer(annotationId: string) {
+    if (annotationId.startsWith("glossary:")) {
+      showGlossaryViewer(annotationId.slice("glossary:".length));
+      return;
+    }
+
+    showNoteViewer(annotationId);
+  }
+
+  function updateGlossaryDefinition(termId: string, definition: string) {
+    setGlossaryTerms((currentTerms) =>
+      currentTerms.map((term) =>
+        term.id === termId
+          ? {
+              ...term,
+              definition,
+              updatedAt: nowLabel(),
+            }
+          : term,
+      ),
+    );
+    markGlossaryTermDirty(termId);
+  }
+
+  function updateActiveGlossaryDraft(definition: string) {
+    if (!activeGlossaryTerm) return;
+
+    setGlossaryDraft(definition);
+    updateGlossaryDefinition(activeGlossaryTerm.id, definition);
+  }
+
+  function deleteGlossaryBinding(bindingId: string) {
+    clearNotePanelCloseTimer();
+    clearReturnToViewTimer();
+    setGlossaryBindings((currentBindings) =>
+      currentBindings.map((binding) =>
+        binding.id === bindingId
+          ? {
+              ...binding,
+              status: "deleted",
+              deletedAt: new Date().toISOString(),
+              updatedAt: nowLabel(),
+            }
+          : binding,
+      ),
+    );
+
+    if (activeGlossaryBindingId === bindingId) {
+      setPendingAnchor(null);
+      setPendingGlossaryTerm(null);
+      setActiveGlossaryBindingId("");
+      setActiveGlossaryTermId("");
+      setActiveGlossaryMode("view");
+      setGlossaryDraft("");
+      setIsNotePanelClosing(false);
+      notePanelHasContentRef.current = false;
+    }
+    markDocumentNotesDirty();
   }
 
   function confirmPendingSelectionNote() {
@@ -3216,10 +3786,10 @@ function App() {
           <div className="editor-surface">
             {editorMode === "preview" ? (
                 <MarkdownPreview
-                  notes={activeNotes}
+                  annotations={activeTextAnnotations}
                   value={selectedDocument.body}
-                  onAnnotationClick={showNoteViewer}
-                  onAnnotationDoubleClick={showNoteViewer}
+                  onAnnotationClick={showAnnotationViewer}
+                  onAnnotationDoubleClick={showAnnotationViewer}
                   onChange={updateSelectedDocumentBody}
                   onSelectionChange={handleSelectionChange}
                 />
@@ -3227,8 +3797,8 @@ function App() {
                 <MarkdownEditor
                   annotations={annotations}
                   value={selectedDocument.body}
-                  onAnnotationClick={showNoteViewer}
-                  onAnnotationDoubleClick={showNoteViewer}
+                  onAnnotationClick={showAnnotationViewer}
+                  onAnnotationDoubleClick={showAnnotationViewer}
                   onChange={updateSelectedDocumentBody}
                   onSelectionChange={handleSelectionChange}
                 />
@@ -3239,7 +3809,7 @@ function App() {
 
       {selectionWarningPosition ? (
         <div className="selection-warning-popover" role="status" style={selectionWarningStyle}>
-          請選取完整句子或段落後再新增筆記。
+          請選取 1-3 個單詞建立名詞解釋，或選取完整句子/段落新增筆記。
         </div>
       ) : null}
 
@@ -3266,10 +3836,16 @@ function App() {
             style={floatingNotePanelStyle}
             aria-label={
               pendingAnchor
-                ? "Create selection note"
-                : activeNoteIsEditing
-                  ? "Edit selection note"
-                  : "View selection note"
+                ? pendingAnchorIsGlossaryTerm
+                  ? "Create glossary term"
+                  : "Create selection note"
+                : activeGlossaryIsEditing
+                  ? "Edit glossary term"
+                  : activeGlossaryTerm
+                    ? "View glossary term"
+                    : activeNoteIsEditing
+                      ? "Edit selection note"
+                      : "View selection note"
             }
           >
             <div className="floating-note-card" ref={floatingNoteCardRef}>
@@ -3283,11 +3859,71 @@ function App() {
               </button>
               <div className="bottom-note-context">
                 <p className="eyebrow">
-                  {pendingAnchor ? "Selection note" : activeNoteIsEditing ? "Edit note" : "Note"}
+                  {pendingGlossaryTerm
+                    ? "Glossary"
+                    : pendingAnchor
+                      ? pendingAnchorIsGlossaryTerm
+                        ? "Glossary"
+                        : "Selection note"
+                      : activeGlossaryTerm
+                        ? "Glossary"
+                        : activeNoteIsEditing
+                          ? "Edit note"
+                          : "Note"}
                 </p>
+                {activeGlossaryTerm ? (
+                  <h2 className="glossary-panel-title">{activeGlossaryTerm.term}</h2>
+                ) : pendingGlossaryTerm ? (
+                  <h2 className="glossary-panel-title">{pendingGlossaryTerm.term}</h2>
+                ) : null}
               </div>
 
-              {pendingAnchor && pendingAnchorIsCompleteBlock ? (
+              {pendingAnchor && pendingGlossaryTerm ? (
+                <div className="selection-confirmation">
+                  <p>「{pendingGlossaryTerm.term}」已有名詞解釋，要綁定這個詞彙嗎？</p>
+                  <MarkdownPreviewContent
+                    className="bottom-note-body glossary-existing-definition"
+                    emptyLabel="尚未填寫說明"
+                    value={pendingGlossaryTerm.definition}
+                  />
+                  <div className="note-actions bottom-note-actions">
+                    <button
+                      className="selection-confirmation-button"
+                      type="button"
+                      onClick={rejectPendingGlossaryTerm}
+                    >
+                      不綁定
+                    </button>
+                    <button
+                      className="is-primary selection-confirmation-button"
+                      type="button"
+                      onClick={bindPendingGlossaryTerm}
+                    >
+                      綁定
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+
+              {pendingAnchor && !pendingGlossaryTerm && pendingAnchorIsGlossaryTerm ? (
+                <div className="selection-confirmation">
+                  <p>要建立或綁定「{pendingAnchor.selectedText.replace(/\s+/g, " ").trim()}」的名詞解釋嗎？</p>
+                  <div className="note-actions bottom-note-actions">
+                    <button
+                      className="is-primary selection-confirmation-button"
+                      type="button"
+                      onClick={startPendingGlossaryFlow}
+                    >
+                      處理名詞
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+
+              {pendingAnchor &&
+              !pendingGlossaryTerm &&
+              !pendingAnchorIsGlossaryTerm &&
+              pendingAnchorIsCompleteBlock ? (
                 <div className="selection-confirmation">
                   <p>要新增筆記嗎？</p>
                   <div className="note-actions bottom-note-actions">
@@ -3318,10 +3954,56 @@ function App() {
                 />
               ) : null}
 
-              {!pendingAnchor && activeNoteIsEditing && isReturningToView ? (
+              {!pendingAnchor && activeGlossaryIsEditing ? (
+                <textarea
+                  aria-label="Edit glossary term"
+                  ref={noteTextareaRef}
+                  value={glossaryDraft}
+                  onChange={(event) => updateActiveGlossaryDraft(event.currentTarget.value)}
+                  onCompositionStart={handleNoteEditorCompositionStart}
+                  onCompositionEnd={handleNoteEditorCompositionEnd}
+                  onKeyDown={handleNoteEditorKeyDown}
+                  disabled={isReturningToView}
+                  placeholder="輸入名詞解釋..."
+                />
+              ) : null}
+
+              {!pendingAnchor && (activeNoteIsEditing || activeGlossaryIsEditing) && isReturningToView ? (
                 <div className="note-returning-status" role="status">
                   <span className="note-returning-spinner" aria-hidden="true" />
                   <span>正在回到閱覽模式</span>
+                </div>
+              ) : null}
+
+              {!pendingAnchor && activeGlossaryTerm && !activeGlossaryIsEditing ? (
+                <MarkdownPreviewContent
+                  className="bottom-note-body"
+                  emptyLabel="尚未填寫說明"
+                  onDoubleClick={() => openGlossaryEditor(activeGlossaryTerm.id)}
+                  value={activeGlossaryTerm.definition}
+                />
+              ) : null}
+
+              {!pendingAnchor && activeGlossaryTerm && !activeGlossaryIsEditing ? (
+                <div className="note-actions bottom-note-actions">
+                  <button
+                    className="selection-confirmation-button"
+                    type="button"
+                    onClick={() => openGlossaryEditor(activeGlossaryTerm.id)}
+                  >
+                    編輯
+                  </button>
+                  {activeGlossaryBinding ? (
+                    <button
+                      className="is-danger"
+                      type="button"
+                      aria-label="Remove glossary binding"
+                      title="Remove glossary binding"
+                      onClick={() => deleteGlossaryBinding(activeGlossaryBinding.id)}
+                    >
+                      <TrashIcon />
+                    </button>
+                  ) : null}
                 </div>
               ) : null}
 

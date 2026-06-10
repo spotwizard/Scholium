@@ -22,6 +22,7 @@ export type AnnotationTone = 0 | 1;
 
 export type TextAnnotation = {
   id: string;
+  kind?: "note" | "glossary";
   from: number;
   tone?: AnnotationTone;
   to: number;
@@ -39,7 +40,9 @@ type MarkdownEditorProps = {
 };
 
 type EditorAnnotationFrame = {
+  frameKey: string;
   noteId: string;
+  kind: "note" | "glossary";
   tone: AnnotationTone;
   left: number;
   top: number;
@@ -61,6 +64,7 @@ type EditorBrowserSelection = Selection & {
 
 const setAnnotationsEffect = StateEffect.define<TextAnnotation[]>();
 const editorAnnotationFramePadding = 4;
+const editorAnnotationLineJoinMaxGap = 20;
 const annotationSelectionSuppressionMs = 1200;
 
 function buildAnchor(value: string, from: number, to: number): TextSelectionAnchor | null {
@@ -133,10 +137,13 @@ function buildDecorations(annotations: TextAnnotation[]) {
     .map((annotation) =>
       Decoration.mark({
         attributes: {
+          "data-annotation-kind": annotation.kind ?? "note",
           "data-note-id": annotation.id,
           "data-note-tone": String(annotation.tone ?? 0),
         },
-        class: "cm-note-annotation",
+        class: `cm-note-annotation ${
+          annotation.kind === "glossary" ? "cm-glossary-annotation" : ""
+        }`,
       }).range(annotation.from, annotation.to),
     );
 
@@ -151,6 +158,7 @@ function measureEditorAnnotationFrames(container: HTMLDivElement): EditorAnnotat
   const containerRect = container.getBoundingClientRect();
   const rectsByNoteId = new Map<string, EditorAnnotationRect[]>();
   const tonesByNoteId = new Map<string, AnnotationTone>();
+  const kindsByNoteId = new Map<string, "note" | "glossary">();
 
   container
     .querySelectorAll<HTMLElement>(".cm-note-annotation[data-note-id]")
@@ -158,6 +166,10 @@ function measureEditorAnnotationFrames(container: HTMLDivElement): EditorAnnotat
       const noteId = annotation.dataset.noteId;
       if (!noteId) return;
       tonesByNoteId.set(noteId, annotation.dataset.noteTone === "1" ? 1 : 0);
+      kindsByNoteId.set(
+        noteId,
+        annotation.dataset.annotationKind === "glossary" ? "glossary" : "note",
+      );
 
       const annotationRects = Array.from(annotation.getClientRects())
         .map((rect) => {
@@ -175,28 +187,54 @@ function measureEditorAnnotationFrames(container: HTMLDivElement): EditorAnnotat
     });
 
   return Array.from(rectsByNoteId.entries())
-    .map(([noteId, rects]) => {
-      const left = Math.min(...rects.map((rect) => rect.left));
-      const top = Math.min(...rects.map((rect) => rect.top));
-      const right = Math.max(...rects.map((rect) => rect.right));
-      const bottom = Math.max(...rects.map((rect) => rect.bottom));
+    .flatMap(([noteId, rects]) => {
+      const kind = kindsByNoteId.get(noteId) ?? "note";
+      const tone = tonesByNoteId.get(noteId) ?? 0;
+      const sortedRects = rects.sort(
+        (left, right) => left.top - right.top || left.left - right.left,
+      );
 
-      return {
-        noteId,
-        tone: tonesByNoteId.get(noteId) ?? 0,
-        left: roundEditorFrameValue(
-          Math.max(0, left - containerRect.left - editorAnnotationFramePadding),
-        ),
-        top: roundEditorFrameValue(
-          Math.max(0, top - containerRect.top - editorAnnotationFramePadding),
-        ),
-        width: roundEditorFrameValue(right - left + editorAnnotationFramePadding * 2),
-        height: roundEditorFrameValue(bottom - top + editorAnnotationFramePadding * 2),
-      };
+      return sortedRects.map((rect, rectIndex) => {
+        let top = rect.top - editorAnnotationFramePadding;
+        let bottom = rect.bottom + editorAnnotationFramePadding;
+        const previousRect = sortedRects[rectIndex - 1];
+        const nextRect = sortedRects[rectIndex + 1];
+
+        if (previousRect) {
+          const previousGap = rect.top - previousRect.bottom;
+          if (previousGap >= 0 && previousGap <= editorAnnotationLineJoinMaxGap) {
+            top = Math.min(top, previousRect.bottom + previousGap / 2 - 1);
+          }
+        }
+
+        if (nextRect) {
+          const nextGap = nextRect.top - rect.bottom;
+          if (nextGap >= 0 && nextGap <= editorAnnotationLineJoinMaxGap) {
+            bottom = Math.max(bottom, rect.bottom + nextGap / 2 + 1);
+          }
+        }
+
+        return {
+          frameKey: `${kind}:${noteId}:source:${rectIndex}`,
+          noteId,
+          kind,
+          tone,
+          left: roundEditorFrameValue(
+            Math.max(0, rect.left - containerRect.left - editorAnnotationFramePadding),
+          ),
+          top: roundEditorFrameValue(Math.max(0, top - containerRect.top)),
+          width: roundEditorFrameValue(
+            rect.right - rect.left + editorAnnotationFramePadding * 2,
+          ),
+          height: roundEditorFrameValue(bottom - top),
+        };
+      });
     })
     .sort(
       (left, right) =>
-        left.top - right.top || left.left - right.left || left.noteId.localeCompare(right.noteId),
+        left.top - right.top ||
+        left.left - right.left ||
+        left.frameKey.localeCompare(right.frameKey),
     );
 }
 
@@ -210,7 +248,9 @@ function areEditorAnnotationFramesEqual(
     const rightFrame = rightFrames[index];
 
     return (
+      leftFrame.frameKey === rightFrame.frameKey &&
       leftFrame.noteId === rightFrame.noteId &&
+      leftFrame.kind === rightFrame.kind &&
       leftFrame.tone === rightFrame.tone &&
       leftFrame.left === rightFrame.left &&
       leftFrame.top === rightFrame.top &&
@@ -671,9 +711,10 @@ export function MarkdownEditor({
         {annotationFrames.map((frame) => (
           <span
             className="cm-annotation-frame"
+            data-annotation-kind={frame.kind}
             data-note-id={frame.noteId}
             data-note-tone={frame.tone}
-            key={frame.noteId}
+            key={frame.frameKey}
             style={{
               height: frame.height,
               left: frame.left,

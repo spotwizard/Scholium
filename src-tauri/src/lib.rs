@@ -34,10 +34,40 @@ struct SelectionNote {
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct GlossaryTerm {
+    id: String,
+    term: String,
+    normalized_term: String,
+    definition: String,
+    created_at: String,
+    updated_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GlossaryBinding {
+    id: String,
+    document_id: String,
+    term_id: String,
+    term: String,
+    normalized_term: String,
+    status: String,
+    anchor: TextSelectionAnchor,
+    created_at: String,
+    updated_at: String,
+    deleted_at: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct NotesFile {
     version: u32,
     markdown_path: String,
     notes: Vec<SelectionNote>,
+    #[serde(default)]
+    glossary_terms: Vec<GlossaryTerm>,
+    #[serde(default)]
+    glossary_bindings: Vec<GlossaryBinding>,
 }
 
 #[derive(Debug, Serialize)]
@@ -48,6 +78,8 @@ struct OpenMarkdownFile {
     title: String,
     body: String,
     notes: Vec<SelectionNote>,
+    glossary_terms: Vec<GlossaryTerm>,
+    glossary_bindings: Vec<GlossaryBinding>,
 }
 
 #[derive(Debug, Serialize)]
@@ -180,19 +212,27 @@ fn read_markdown_file(markdown_path: PathBuf) -> Result<OpenMarkdownFile, String
         .map_err(|error| format!("failed to read Markdown file: {error}"))?;
     let notes_path = sidecar_path(&markdown_path)?;
 
-    let notes = if notes_path.exists() {
+    let (notes, glossary_terms, glossary_bindings) = if notes_path.exists() {
         let raw_notes = fs::read_to_string(&notes_path)
             .map_err(|error| format!("failed to read sidecar notes: {error}"))?;
         let parsed: NotesFile = serde_json::from_str(&raw_notes)
             .map_err(|error| format!("failed to parse sidecar notes: {error}"))?;
 
-        parsed
-            .notes
-            .into_iter()
-            .filter(|note| note.status != "deleted")
-            .collect()
+        (
+            parsed
+                .notes
+                .into_iter()
+                .filter(|note| note.status != "deleted")
+                .collect(),
+            parsed.glossary_terms,
+            parsed
+                .glossary_bindings
+                .into_iter()
+                .filter(|binding| binding.status != "deleted")
+                .collect(),
+        )
     } else {
-        Vec::new()
+        (Vec::new(), Vec::new(), Vec::new())
     };
 
     Ok(OpenMarkdownFile {
@@ -201,6 +241,8 @@ fn read_markdown_file(markdown_path: PathBuf) -> Result<OpenMarkdownFile, String
         title: document_title(&markdown_path),
         body,
         notes,
+        glossary_terms,
+        glossary_bindings,
     })
 }
 
@@ -240,6 +282,8 @@ fn save_markdown_file(
     path: String,
     body: String,
     notes: Vec<SelectionNote>,
+    glossary_terms: Vec<GlossaryTerm>,
+    glossary_bindings: Vec<GlossaryBinding>,
 ) -> Result<SaveMarkdownFile, String> {
     let markdown_path = PathBuf::from(path);
     let notes_path = sidecar_path(&markdown_path)?;
@@ -253,6 +297,11 @@ fn save_markdown_file(
         notes: notes
             .into_iter()
             .filter(|note| note.status != "deleted")
+            .collect(),
+        glossary_terms,
+        glossary_bindings: glossary_bindings
+            .into_iter()
+            .filter(|binding| binding.status != "deleted")
             .collect(),
     };
     let serialized = serde_json::to_string_pretty(&notes_file)
