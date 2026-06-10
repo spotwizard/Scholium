@@ -614,7 +614,7 @@ button:disabled {
 .floating-note-panel {
   position: fixed;
   z-index: 9;
-  width: min(300px, calc(100vw - 24px));
+  width: min(400px, calc(100vw - 24px));
   pointer-events: none;
 }
 
@@ -1077,6 +1077,6 @@ button:disabled {
   }
 
   .floating-note-panel {
-    width: min(280px, calc(100vw - 24px));
+    width: min(380px, calc(100vw - 24px));
   }
 }
