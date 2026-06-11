@@ -10,6 +10,7 @@ import {
   type MouseEvent,
   type ReactNode,
   useEffect,
+  useId,
   useLayoutEffect,
   useRef,
   useState,
@@ -24,6 +25,37 @@ import {
 } from "./MarkdownEditor";
 import fileGlyphSvg from "./assets/file-glyph.svg?raw";
 import folderGlyphSvg from "./assets/folder-glyph.svg?raw";
+
+const mermaidConfig = {
+  startOnLoad: false,
+  securityLevel: "strict",
+  theme: "base",
+  themeVariables: {
+    background: "#fcfcfd",
+    primaryColor: "#fff4bf",
+    primaryTextColor: "#202329",
+    primaryBorderColor: "#d08a2e",
+    lineColor: "#2f333b",
+    secondaryColor: "#dff7ef",
+    tertiaryColor: "#f3f4f6",
+    fontFamily: "Inter, ui-sans-serif, system-ui, sans-serif",
+  },
+} as const;
+
+let mermaidInitialized = false;
+let mermaidModulePromise: Promise<(typeof import("mermaid"))["default"]> | null = null;
+
+async function loadMermaid() {
+  mermaidModulePromise ??= import("mermaid").then((module) => module.default);
+  const mermaid = await mermaidModulePromise;
+
+  if (!mermaidInitialized) {
+    mermaid.initialize(mermaidConfig);
+    mermaidInitialized = true;
+  }
+
+  return mermaid;
+}
 
 type NoteStatus = "active" | "orphaned" | "deleted";
 type AnnotationKind = "note" | "glossary";
@@ -276,6 +308,11 @@ type TextRangeAnnotation = {
   tone?: AnnotationTone;
 };
 
+type BodyAnchorTransform = (
+  anchor: TextSelectionAnchor,
+  nextBody: string,
+) => TextSelectionAnchor;
+
 type MarkdownPreviewBlock =
   | {
       kind: "heading";
@@ -304,6 +341,8 @@ type MarkdownPreviewBlock =
       key: string;
       startLine: number;
       endLine: number;
+      info: string;
+      language: string;
       text: string;
     }
   | {
@@ -1041,6 +1080,40 @@ function getPreviewBlockTextMap(markdown: string, block: MarkdownPreviewBlock): 
   return { text: "", sourceOffsets: [] };
 }
 
+function normalizeSelectionTextForComparison(text: string) {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+function selectionCoversListItems(
+  markdown: string,
+  anchor: TextSelectionAnchor,
+  itemRanges: ReturnType<typeof trimRange>[],
+) {
+  const selectedText = normalizeSelectionTextForComparison(anchor.selectedText);
+  const itemText = normalizeSelectionTextForComparison(
+    itemRanges.map((itemRange) => markdown.slice(itemRange.from, itemRange.to).trim()).join(" "),
+  );
+
+  return Boolean(itemText && selectedText.length >= itemText.length * 0.9);
+}
+
+function selectionRangeCoversTrimmedRange(
+  selection: ReturnType<typeof trimRange>,
+  range: ReturnType<typeof trimRange>,
+  boundaryTolerance = 0,
+) {
+  return (
+    selection.from <= range.from + boundaryTolerance &&
+    selection.to >= range.to - boundaryTolerance
+  );
+}
+
+function blockIsList(
+  block: MarkdownPreviewBlock,
+): block is Extract<MarkdownPreviewBlock, { kind: "unordered-list" | "ordered-list" }> {
+  return block.kind === "unordered-list" || block.kind === "ordered-list";
+}
+
 function isSelectionCompleteMarkdownBlock(markdown: string, anchor: TextSelectionAnchor) {
   const selection = trimRange(markdown, anchor.from, anchor.to);
   if (selection.from === selection.to) return true;
@@ -1058,6 +1131,10 @@ function isSelectionCompleteMarkdownBlock(markdown: string, anchor: TextSelectio
 
   if (intersectedBlocks.length === 0) return true;
 
+  if (intersectedBlocks.length > 1) {
+    return true;
+  }
+
   return intersectedBlocks.every(({ block, semanticRange }) => {
     if (!semanticRange) return true;
 
@@ -1065,15 +1142,25 @@ function isSelectionCompleteMarkdownBlock(markdown: string, anchor: TextSelectio
       return true;
     }
 
-    if (block.kind === "unordered-list" || block.kind === "ordered-list") {
+    if (blockIsList(block)) {
       const intersectedItemRanges = getListItemSemanticRanges(markdown, block).filter(
         (itemRange) => selection.to > itemRange.from && selection.from < itemRange.to,
       );
 
       if (intersectedItemRanges.length === 0) return true;
 
+      if (
+        intersectedItemRanges.length > 1 &&
+        (intersectedItemRanges.every((itemRange) =>
+          selectionRangeCoversTrimmedRange(selection, itemRange, 1),
+        ) ||
+          selectionCoversListItems(markdown, anchor, intersectedItemRanges))
+      ) {
+        return true;
+      }
+
       return intersectedItemRanges.every((itemRange) => {
-        if (selection.from <= itemRange.from && selection.to >= itemRange.to) {
+        if (selectionRangeCoversTrimmedRange(selection, itemRange)) {
           return true;
         }
 
@@ -1520,6 +1607,76 @@ function renderPreviewInline(
   );
 }
 
+function isMermaidLanguage(language: string) {
+  return language.toLowerCase() === "mermaid";
+}
+
+function MermaidDiagram({ definition }: { definition: string }) {
+  const reactId = useId();
+  const diagramId = `scholium-mermaid-${reactId.replace(/[^A-Za-z0-9_-]/g, "")}`;
+  const [renderState, setRenderState] = useState<
+    | { status: "rendering"; svg: ""; error: "" }
+    | { status: "rendered"; svg: string; error: "" }
+    | { status: "error"; svg: ""; error: string }
+  >({ status: "rendering", svg: "", error: "" });
+
+  useEffect(() => {
+    const trimmedDefinition = definition.trim();
+    let cancelled = false;
+
+    if (!trimmedDefinition) {
+      setRenderState({
+        status: "error",
+        svg: "",
+        error: "Mermaid diagram is empty.",
+      });
+      return;
+    }
+
+    setRenderState({ status: "rendering", svg: "", error: "" });
+
+    async function renderDiagram() {
+      try {
+        const mermaid = await loadMermaid();
+        const { svg } = await mermaid.render(diagramId, trimmedDefinition);
+
+        if (!cancelled) {
+          setRenderState({ status: "rendered", svg, error: "" });
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setRenderState({
+            status: "error",
+            svg: "",
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+    }
+
+    void renderDiagram();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [definition, diagramId]);
+
+  return (
+    <figure className="mermaid-diagram">
+      {renderState.status === "rendered" ? (
+        <div
+          className="mermaid-diagram__svg"
+          dangerouslySetInnerHTML={{ __html: renderState.svg }}
+        />
+      ) : renderState.status === "error" ? (
+        <pre className="mermaid-diagram__error">{renderState.error}</pre>
+      ) : (
+        <div className="mermaid-diagram__loading">Rendering diagram...</div>
+      )}
+    </figure>
+  );
+}
+
 function roundPreviewFrameValue(value: number) {
   return Math.round(value * 100) / 100;
 }
@@ -1660,6 +1817,13 @@ function isMarkdownBlockStart(line: string) {
   );
 }
 
+function parseCodeFenceInfo(line: string) {
+  const info = line.trim().slice(3).trim();
+  const language = info.split(/\s+/, 1)[0]?.toLowerCase() ?? "";
+
+  return { info, language };
+}
+
 function parseMarkdownPreviewBlocks(markdown: string): MarkdownPreviewBlock[] {
   const lines = markdown.replace(/\r\n/g, "\n").split("\n");
   const blocks: MarkdownPreviewBlock[] = [];
@@ -1677,6 +1841,7 @@ function parseMarkdownPreviewBlocks(markdown: string): MarkdownPreviewBlock[] {
 
     if (trimmed.startsWith("```")) {
       const codeLines: string[] = [];
+      const { info, language } = parseCodeFenceInfo(trimmed);
       const startLine = index;
       index += 1;
 
@@ -1690,6 +1855,8 @@ function parseMarkdownPreviewBlocks(markdown: string): MarkdownPreviewBlock[] {
         key,
         startLine,
         endLine: index,
+        info,
+        language,
         text: codeLines.join("\n"),
       });
       index += 1;
@@ -1803,6 +1970,11 @@ function markdownFromPreviewBlock(block: MarkdownPreviewBlock, text: string) {
     .replace(/\u00a0/g, " ")
     .split("\n")
     .map((line) => line.trimEnd());
+  const typedMarkdownBlock = markdownFromTypedPreviewBlock(lines);
+
+  if (typedMarkdownBlock && block.kind !== "code") {
+    return typedMarkdownBlock;
+  }
 
   if (block.kind === "heading") {
     return `${"#".repeat(block.level)} ${lines.join(" ").trim() || "Untitled"}`;
@@ -1829,7 +2001,7 @@ function markdownFromPreviewBlock(block: MarkdownPreviewBlock, text: string) {
   }
 
   if (block.kind === "code") {
-    return `\`\`\`\n${text.replace(/\n+$/, "")}\n\`\`\``;
+    return `\`\`\`${block.info}\n${text.replace(/\n+$/, "")}\n\`\`\``;
   }
 
   if (block.kind === "rule") {
@@ -1837,6 +2009,23 @@ function markdownFromPreviewBlock(block: MarkdownPreviewBlock, text: string) {
   }
 
   return lines.join("\n").trim();
+}
+
+function markdownFromTypedPreviewBlock(lines: string[]) {
+  const contentLines = lines.map((line) => line.trim()).filter(Boolean);
+  if (contentLines.length === 0) return null;
+
+  const unorderedItems = contentLines.map((line) => line.match(/^[-*]\s+(.+)$/)?.[1]?.trim());
+  if (unorderedItems.every(Boolean)) {
+    return unorderedItems.map((item) => `- ${item}`).join("\n");
+  }
+
+  const orderedItems = contentLines.map((line) => line.match(/^\d+\.\s+(.+)$/)?.[1]?.trim());
+  if (orderedItems.every(Boolean)) {
+    return orderedItems.map((item, index) => `${index + 1}. ${item}`).join("\n");
+  }
+
+  return null;
 }
 
 function replaceMarkdownBlock(markdown: string, block: MarkdownPreviewBlock, nextBlock: string) {
@@ -1848,40 +2037,262 @@ function replaceMarkdownBlock(markdown: string, block: MarkdownPreviewBlock, nex
   return lines.join("\n");
 }
 
-function markEditableBlockChanged(event: FormEvent<HTMLElement>) {
-  event.currentTarget.dataset.edited = "true";
+function isUndoKeyboardShortcut(
+  event: Pick<KeyboardEvent | ReactKeyboardEvent, "altKey" | "ctrlKey" | "key" | "metaKey" | "shiftKey">,
+) {
+  return (
+    event.key.toLowerCase() === "z" &&
+    (event.metaKey || event.ctrlKey) &&
+    !event.altKey &&
+    !event.shiftKey
+  );
+}
+
+function selectionOffsetsInElement(element: HTMLElement, selection: Selection) {
+  if (selection.rangeCount === 0) return null;
+
+  const range = selection.getRangeAt(0);
+  if (
+    !element.contains(range.startContainer) ||
+    !element.contains(range.endContainer)
+  ) {
+    return null;
+  }
+
+  const leadingRange = range.cloneRange();
+  leadingRange.selectNodeContents(element);
+  leadingRange.setEnd(range.startContainer, range.startOffset);
+
+  return {
+    from: leadingRange.toString().length,
+    to: leadingRange.toString().length + range.toString().length,
+  };
+}
+
+function focusEditableBlockEnd(blockKey: string) {
+  window.requestAnimationFrame(() => {
+    const blockElement = Array.from(
+      document.querySelectorAll<HTMLElement>("[data-preview-block-key]"),
+    ).find((element) => element.dataset.previewBlockKey === blockKey);
+
+    if (!blockElement) return;
+
+    blockElement.closest<HTMLElement>(".markdown-preview")?.focus();
+    const focusTarget =
+      blockElement.matches("ul, ol")
+        ? blockElement.querySelector<HTMLElement>("li:last-child") ?? blockElement
+        : blockElement;
+
+    const selection = window.getSelection();
+    if (!selection) return;
+
+    const range = document.createRange();
+    range.selectNodeContents(focusTarget);
+    range.collapse(false);
+    selection.removeAllRanges();
+    selection.addRange(range);
+  });
+}
+
+function sourcePositionForPreviewTextOffset(textMap: PreviewTextMap, offset: number) {
+  if (textMap.sourceOffsets.length === 0) return null;
+
+  const clampedOffset = clampNumber(offset, 0, textMap.sourceOffsets.length);
+  const exactOffset = textMap.sourceOffsets[clampedOffset];
+  if (exactOffset !== null && exactOffset !== undefined) return exactOffset;
+
+  for (let index = clampedOffset - 1; index >= 0; index -= 1) {
+    const sourceOffset = textMap.sourceOffsets[index];
+    if (sourceOffset !== null) return sourceOffset + 1;
+  }
+
+  for (let index = clampedOffset; index < textMap.sourceOffsets.length; index += 1) {
+    const sourceOffset = textMap.sourceOffsets[index];
+    if (sourceOffset !== null) return sourceOffset;
+  }
+
+  return null;
+}
+
+function sourceRangeForPreviewTextOffsets(textMap: PreviewTextMap, from: number, to: number) {
+  if (from === to) {
+    const sourcePosition = sourcePositionForPreviewTextOffset(textMap, from);
+    return sourcePosition === null ? null : { from: sourcePosition, to: sourcePosition };
+  }
+
+  const sourceOffsets = textMap.sourceOffsets
+    .slice(from, to)
+    .filter((sourceOffset): sourceOffset is number => sourceOffset !== null);
+  if (sourceOffsets.length === 0) return null;
+
+  return {
+    from: Math.min(...sourceOffsets),
+    to: Math.max(...sourceOffsets) + 1,
+  };
+}
+
+type MarkdownTextEdit = {
+  from: number;
+  to: number;
+  insert: string;
+};
+
+function transformTextPositionWithEdits(
+  position: number,
+  affinity: "start" | "end",
+  edits: MarkdownTextEdit[],
+) {
+  let delta = 0;
+
+  for (const edit of edits) {
+    const deletedLength = edit.to - edit.from;
+    const insertedLength = edit.insert.length;
+
+    if (deletedLength === 0) {
+      if (position > edit.from || (position === edit.from && affinity === "start")) {
+        delta += insertedLength;
+      }
+      continue;
+    }
+
+    if (position < edit.from) {
+      continue;
+    }
+
+    if (position <= edit.to) {
+      return edit.from + delta;
+    }
+
+    delta += insertedLength - deletedLength;
+  }
+
+  return position + delta;
+}
+
+function transformAnchorWithTextEdits(
+  anchor: TextSelectionAnchor,
+  nextBody: string,
+  edits: MarkdownTextEdit[],
+) {
+  const nextFrom = clampNumber(
+    transformTextPositionWithEdits(anchor.from, "start", edits),
+    0,
+    nextBody.length,
+  );
+  const nextTo = clampNumber(
+    transformTextPositionWithEdits(anchor.to, "end", edits),
+    nextFrom,
+    nextBody.length,
+  );
+
+  return refreshAnchor(nextBody, {
+    ...anchor,
+    from: nextFrom,
+    to: nextTo,
+  });
+}
+
+function applyMarkdownInlineMarker(markdown: string, from: number, to: number, marker: "*" | "**") {
+  const markerLength = marker.length;
+  const selectedText = markdown.slice(from, to);
+
+  if (
+    from >= markerLength &&
+    markdown.slice(from - markerLength, from) === marker &&
+    markdown.slice(to, to + markerLength) === marker
+  ) {
+    const edits = [
+      { from: from - markerLength, to: from, insert: "" },
+      { from: to, to: to + markerLength, insert: "" },
+    ];
+
+    return {
+      edits,
+      value:
+      markdown.slice(0, from - markerLength) +
+      selectedText +
+      markdown.slice(to + markerLength),
+    };
+  }
+
+  if (
+    selectedText.length >= markerLength * 2 &&
+    selectedText.startsWith(marker) &&
+    selectedText.endsWith(marker)
+  ) {
+    const edits = [
+      { from, to: from + markerLength, insert: "" },
+      { from: to - markerLength, to, insert: "" },
+    ];
+
+    return {
+      edits,
+      value:
+      markdown.slice(0, from) +
+      selectedText.slice(markerLength, -markerLength) +
+      markdown.slice(to),
+    };
+  }
+
+  const edits = [
+    { from, to: from, insert: marker },
+    { from: to, to, insert: marker },
+  ];
+
+  return {
+    edits,
+    value:
+    markdown.slice(0, from) +
+    marker +
+    selectedText +
+    marker +
+    markdown.slice(to),
+  };
+}
+
+function applyInlineMarkdownShortcutToValue(
+  markdown: string,
+  block: MarkdownPreviewBlock,
+  element: HTMLElement,
+  marker: "*" | "**",
+) {
+  const selection = window.getSelection();
+  if (!selection) return null;
+
+  const offsets = selectionOffsetsInElement(element, selection);
+  if (!offsets) return null;
+  if (offsets.from === offsets.to) return null;
+
+  const textMap = getPreviewBlockTextMap(markdown, block);
+  const sourceRange = sourceRangeForPreviewTextOffsets(textMap, offsets.from, offsets.to);
+  if (!sourceRange) return null;
+
+  const change = applyMarkdownInlineMarker(markdown, sourceRange.from, sourceRange.to, marker);
+
+  return {
+    transformAnchor: (anchor: TextSelectionAnchor, nextBody: string) =>
+      transformAnchorWithTextEdits(anchor, nextBody, change.edits),
+    value: change.value,
+  };
 }
 
 function MarkdownPreviewBlockView({
   block,
   markdown,
   annotations,
-  onChange,
   onAnnotationClick,
   onAnnotationDoubleClick,
 }: {
   block: MarkdownPreviewBlock;
   markdown: string;
   annotations: TextRangeAnnotation[];
-  onChange: (block: MarkdownPreviewBlock, text: string) => void;
   onAnnotationClick: (annotationId: string) => void;
   onAnnotationDoubleClick: (annotationId: string) => void;
 }) {
   const blockAnnotations = getAnnotationsForPreviewBlock(markdown, block, annotations);
 
-  function commitEditableBlock(event: FocusEvent<HTMLElement>) {
-    if (event.currentTarget.dataset.edited !== "true") return;
-
-    delete event.currentTarget.dataset.edited;
-    onChange(block, event.currentTarget.innerText);
-  }
-
-  const editableProps = {
-    contentEditable: true,
-    suppressContentEditableWarning: true,
+  const blockProps = {
     "data-preview-block-key": block.key,
-    onBlur: commitEditableBlock,
-    onInput: markEditableBlockChanged,
   };
 
   if (block.kind === "heading") {
@@ -1891,7 +2302,7 @@ function MarkdownPreviewBlockView({
     return createElement(
       tagName,
       {
-        ...editableProps,
+        ...blockProps,
         className: "markdown-preview-editable",
       },
       renderPreviewInline(
@@ -1907,7 +2318,7 @@ function MarkdownPreviewBlockView({
   if (block.kind === "quote") {
     return (
       <blockquote
-        {...editableProps}
+        {...blockProps}
         className="markdown-preview-editable"
         key={block.key}
       >
@@ -1930,7 +2341,7 @@ function MarkdownPreviewBlockView({
     const ListTag = block.kind === "unordered-list" ? "ul" : "ol";
 
     return (
-      <ListTag {...editableProps} className="markdown-preview-editable" key={block.key}>
+      <ListTag {...blockProps} className="markdown-preview-editable" key={block.key}>
         {block.items.map((_item, itemIndex) => (
           <li key={`${block.key}-item-${itemIndex}`}>
             {renderPreviewInline(
@@ -1947,8 +2358,12 @@ function MarkdownPreviewBlockView({
   }
 
   if (block.kind === "code") {
+    if (isMermaidLanguage(block.language)) {
+      return <MermaidDiagram definition={block.text} key={block.key} />;
+    }
+
     return (
-      <pre {...editableProps} className="markdown-preview-editable" key={block.key}>
+      <pre {...blockProps} className="markdown-preview-editable" key={block.key}>
         <code>
           {renderAnnotatedPlainText(
             getPreviewBlockTextMap(markdown, block),
@@ -1968,7 +2383,7 @@ function MarkdownPreviewBlockView({
 
   if (block.kind === "paragraph") {
     return (
-      <p {...editableProps} className="markdown-preview-editable" key={block.key}>
+      <p {...blockProps} className="markdown-preview-editable" key={block.key}>
         {renderPreviewInline(
           getPreviewBlockTextMap(markdown, block),
           `${block.key}-paragraph`,
@@ -1994,7 +2409,11 @@ function MarkdownPreview({
 }: {
   value: string;
   annotations: TextRangeAnnotation[];
-  onChange: (value: string, source: EditorChangeSource) => void;
+  onChange: (
+    value: string,
+    source: EditorChangeSource,
+    anchorTransform?: BodyAnchorTransform,
+  ) => void;
   onSelectionChange: (anchor: TextSelectionAnchor | null) => void;
   onSelectionEnter: (anchor: TextSelectionAnchor) => boolean;
   onAnnotationClick: (annotationId: string) => void;
@@ -2003,6 +2422,8 @@ function MarkdownPreview({
   const blocks = parseMarkdownPreviewBlocks(value);
   const previewRef = useRef<HTMLDivElement | null>(null);
   const annotationClickTimerRef = useRef(0);
+  const previewUndoStackRef = useRef<string[]>([]);
+  const previewRedoStackRef = useRef<string[]>([]);
   const [annotationFrames, setAnnotationFrames] = useState<PreviewAnnotationFrame[]>([]);
 
   useEffect(
@@ -2041,6 +2462,23 @@ function MarkdownPreview({
       window.removeEventListener("resize", scheduleAnnotationFrameUpdate);
     };
   }, [annotations, value]);
+
+  useEffect(() => {
+    function handleDocumentKeyDown(event: KeyboardEvent) {
+      if (!isUndoKeyboardShortcut(event)) return;
+      if (!previewShouldHandleDocumentShortcut(event.target)) return;
+      if (!undoPreviewChange()) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+    }
+
+    document.addEventListener("keydown", handleDocumentKeyDown, true);
+
+    return () => {
+      document.removeEventListener("keydown", handleDocumentKeyDown, true);
+    };
+  }, [onChange, onSelectionChange, value]);
 
   function handlePreviewSelection() {
     const selection = window.getSelection();
@@ -2156,7 +2594,139 @@ function MarkdownPreview({
     handlePreviewSelection();
   }
 
+  function previewBlockElementFromNode(node: Node | null) {
+    const previewElement = previewRef.current;
+    const element = node instanceof Element ? node : node?.parentElement;
+    const blockElement = element?.closest<HTMLElement>("[data-preview-block-key]") ?? null;
+
+    return blockElement && previewElement?.contains(blockElement) ? blockElement : null;
+  }
+
+  function previewBlockElementFromTarget(target: EventTarget | null) {
+    return target instanceof Node ? previewBlockElementFromNode(target) : null;
+  }
+
+  function previewBlockElementFromSelection() {
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0) return null;
+
+    return previewBlockElementFromNode(selection.focusNode);
+  }
+
+  function blockForPreviewElement(blockElement: HTMLElement) {
+    const blockKey = blockElement.dataset.previewBlockKey;
+    if (!blockKey) return null;
+
+    return blocks.find((block) => block.key === blockKey) ?? null;
+  }
+
+  function markPreviewBlockChanged(blockElement: HTMLElement) {
+    blockElement.dataset.edited = "true";
+  }
+
+  function handlePreviewInput(event: FormEvent<HTMLDivElement>) {
+    const blockElement =
+      previewBlockElementFromTarget(event.target) ?? previewBlockElementFromSelection();
+    if (!blockElement) return;
+
+    markPreviewBlockChanged(blockElement);
+
+    const block = blockForPreviewElement(blockElement);
+    if (!block || block.kind === "code") return;
+
+    const lines = blockElement.innerText
+      .replace(/\u00a0/g, " ")
+      .split("\n")
+      .map((line) => line.trimEnd());
+    if (!markdownFromTypedPreviewBlock(lines)) return;
+
+    delete blockElement.dataset.edited;
+    updatePreviewBlock(block, blockElement.innerText);
+    focusEditableBlockEnd(block.key);
+  }
+
+  function commitEditedPreviewBlocks() {
+    const previewElement = previewRef.current;
+    if (!previewElement) return false;
+
+    const editedBlocks = Array.from(
+      previewElement.querySelectorAll<HTMLElement>("[data-preview-block-key][data-edited='true']"),
+    )
+      .map((element) => {
+        const block = blockForPreviewElement(element);
+        return block ? { block, element } : null;
+      })
+      .filter((edit): edit is { block: MarkdownPreviewBlock; element: HTMLElement } =>
+        Boolean(edit),
+      )
+      .sort((left, right) => right.block.startLine - left.block.startLine);
+
+    if (editedBlocks.length === 0) return false;
+
+    let nextValue = value;
+    editedBlocks.forEach(({ block, element }) => {
+      nextValue = replaceMarkdownBlock(
+        nextValue,
+        block,
+        markdownFromPreviewBlock(block, element.innerText),
+      );
+      delete element.dataset.edited;
+    });
+
+    if (nextValue === value) return false;
+
+    commitPreviewChange(nextValue);
+    return true;
+  }
+
+  function handlePreviewBlur(event: FocusEvent<HTMLDivElement>) {
+    if (event.relatedTarget instanceof Node && event.currentTarget.contains(event.relatedTarget)) {
+      return;
+    }
+
+    commitEditedPreviewBlocks();
+  }
+
+  function handlePreviewInlineShortcut(event: ReactKeyboardEvent<HTMLDivElement>) {
+    if (!(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey) return false;
+
+    const key = event.key.toLowerCase();
+    if (key !== "b" && key !== "i") return false;
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    const selection = window.getSelection();
+    if (!selection || selection.isCollapsed || selection.rangeCount === 0) return true;
+
+    const startBlockElement = previewBlockElementFromNode(selection.anchorNode);
+    const endBlockElement = previewBlockElementFromNode(selection.focusNode);
+    if (!startBlockElement || startBlockElement !== endBlockElement) return true;
+
+    const block = blockForPreviewElement(startBlockElement);
+    if (!block || block.kind === "code") return true;
+
+    delete startBlockElement.dataset.edited;
+    applyPreviewInlineShortcut(
+      block,
+      startBlockElement,
+      key === "b" ? "**" : "*",
+    );
+
+    return true;
+  }
+
   function handlePreviewKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
+    if (isUndoKeyboardShortcut(event)) {
+      if (!undoPreviewChange()) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+
+    if (handlePreviewInlineShortcut(event)) return;
+
     const isPlainEnter =
       event.key === "Enter" &&
       !event.metaKey &&
@@ -2188,13 +2758,73 @@ function MarkdownPreview({
     const nextBlock = markdownFromPreviewBlock(block, text);
     const nextValue = replaceMarkdownBlock(value, block, nextBlock);
 
-    onChange(nextValue, "user");
+    commitPreviewChange(nextValue);
+  }
+
+  function applyPreviewInlineShortcut(
+    block: MarkdownPreviewBlock,
+    element: HTMLElement,
+    marker: "*" | "**",
+  ) {
+    const change = applyInlineMarkdownShortcutToValue(value, block, element, marker);
+    if (!change || change.value === value) return;
+
+    window.getSelection()?.removeAllRanges();
+    onSelectionChange(null);
+    commitPreviewChange(change.value, change.transformAnchor);
+  }
+
+  function previewShouldHandleDocumentShortcut(target: EventTarget | null) {
+    const previewElement = previewRef.current;
+    if (!previewElement) return false;
+    if (target instanceof Node && previewElement.contains(target)) return true;
+
+    const activeElement = document.activeElement;
+    if (activeElement === document.body || activeElement === document.documentElement) {
+      return true;
+    }
+    if (!(activeElement instanceof HTMLElement)) return false;
+    if (previewElement.contains(activeElement)) return true;
+    if (activeElement.matches("input, textarea, select") || activeElement.isContentEditable) {
+      return false;
+    }
+
+    return false;
+  }
+
+  function undoPreviewChange() {
+    const previousValue = previewUndoStackRef.current.pop();
+    if (!previousValue) return false;
+
+    previewRedoStackRef.current.push(value);
+    onSelectionChange(null);
+    onChange(previousValue, "undo");
+    return true;
+  }
+
+  function commitPreviewChange(nextValue: string, anchorTransform?: BodyAnchorTransform) {
+    if (nextValue === value) return;
+
+    const undoStack = previewUndoStackRef.current;
+    if (undoStack[undoStack.length - 1] !== value) {
+      undoStack.push(value);
+      if (undoStack.length > 100) {
+        undoStack.shift();
+      }
+    }
+    previewRedoStackRef.current = [];
+    onChange(nextValue, "user", anchorTransform);
   }
 
   return (
     <div
       className="markdown-preview"
+      contentEditable
       ref={previewRef}
+      suppressContentEditableWarning
+      tabIndex={0}
+      onBlur={handlePreviewBlur}
+      onInput={handlePreviewInput}
       onKeyDownCapture={handlePreviewKeyDown}
       onKeyUp={handlePreviewSelection}
       onMouseDownCapture={handlePreviewMouseDown}
@@ -2209,7 +2839,6 @@ function MarkdownPreview({
             annotations={annotations}
             onAnnotationClick={queueAnnotationClick}
             onAnnotationDoubleClick={handleAnnotationDoubleClick}
-            onChange={updatePreviewBlock}
           />
         ))}
       <div aria-hidden="true" className="preview-annotation-layer">
@@ -2277,6 +2906,10 @@ function MarkdownPreviewContentBlock({
   }
 
   if (block.kind === "code") {
+    if (isMermaidLanguage(block.language)) {
+      return <MermaidDiagram definition={block.text} key={block.key} />;
+    }
+
     return (
       <pre key={block.key}>
         <code>{block.text}</code>
@@ -2709,7 +3342,7 @@ function App() {
     const viewportMargin = 12;
     const noteGap = 8;
     const cardWidth = Math.min(
-      cardRect.width || 300,
+      cardRect.width || 450,
       Math.max(180, viewportWidth - viewportMargin * 2),
     );
     const cardHeight = cardRect.height || 260;
@@ -3795,7 +4428,11 @@ function App() {
     }
   }
 
-  function updateSelectedDocumentBody(body: string, source: EditorChangeSource) {
+  function updateSelectedDocumentBody(
+    body: string,
+    source: EditorChangeSource,
+    anchorTransform?: BodyAnchorTransform,
+  ) {
     if (body === selectedDocument.body) return;
 
     const documentId = selectedDocument.id;
@@ -3808,12 +4445,26 @@ function App() {
     );
     setNotes((currentNotes) =>
       currentNotes.map((note) =>
-        note.documentId === documentId ? reconcileNote(note, body) : note,
+        note.documentId === documentId
+          ? anchorTransform && note.status === "active"
+            ? {
+                ...note,
+                anchor: anchorTransform(note.anchor, body),
+              }
+            : reconcileNote(note, body)
+          : note,
       ),
     );
     setGlossaryBindings((currentBindings) =>
       currentBindings.map((binding) =>
-        binding.documentId === documentId ? reconcileGlossaryBinding(binding, body) : binding,
+        binding.documentId === documentId
+          ? anchorTransform && binding.status === "active"
+            ? {
+                ...binding,
+                anchor: anchorTransform(binding.anchor, body),
+              }
+            : reconcileGlossaryBinding(binding, body)
+          : binding,
       ),
     );
     markDocumentBodyDirty(documentId, !(source === "undo" && body === savedBody));
@@ -4664,6 +5315,7 @@ function App() {
             ) : editorMode === "preview" ? (
                 <MarkdownPreview
                   annotations={activeTextAnnotations}
+                  key={selectedDocument.id}
                   value={selectedDocument.body}
                   onAnnotationClick={showAnnotationViewer}
                   onAnnotationDoubleClick={showAnnotationViewer}
