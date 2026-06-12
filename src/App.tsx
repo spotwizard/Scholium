@@ -26,42 +26,13 @@ import {
 } from "./MarkdownEditor";
 import fileGlyphSvg from "./assets/file-glyph.svg?raw";
 import folderGlyphSvg from "./assets/folder-glyph.svg?raw";
+import { loadScholiumMermaid } from "./mermaid";
 
-const mermaidConfig = {
-  startOnLoad: false,
-  securityLevel: "strict",
-  theme: "base",
-  themeVariables: {
-    background: "#fcfcfd",
-    primaryColor: "#dbeafe",
-    primaryTextColor: "#202329",
-    primaryBorderColor: "#3b82c4",
-    lineColor: "#2f333b",
-    secondaryColor: "#dff7ef",
-    tertiaryColor: "#f3f4f6",
-    fontFamily: "Inter, ui-sans-serif, system-ui, sans-serif",
-  },
-} as const;
-
-let mermaidInitialized = false;
-let mermaidModulePromise: Promise<(typeof import("mermaid"))["default"]> | null = null;
 const unorderedListMarkerPattern = /^ {0,3}[-*+]\s+/;
 const typedUnorderedListMarkerPattern = /^[-*+]\s+(.*)$/;
 const orderedListMarkerPattern = /^ {0,3}\d+[.)]\s+/;
 const typedOrderedListMarkerPattern = /^\d+[.)]\s+(.*)$/;
 const emptyPreviewListItemText = "\u200b";
-
-async function loadMermaid() {
-  mermaidModulePromise ??= import("mermaid").then((module) => module.default);
-  const mermaid = await mermaidModulePromise;
-
-  if (!mermaidInitialized) {
-    mermaid.initialize(mermaidConfig);
-    mermaidInitialized = true;
-  }
-
-  return mermaid;
-}
 
 type NoteStatus = "active" | "orphaned" | "deleted";
 type AnnotationKind = "note" | "glossary";
@@ -1656,7 +1627,7 @@ function MermaidDiagram({ definition }: { definition: string }) {
 
     async function renderDiagram() {
       try {
-        const mermaid = await loadMermaid();
+        const mermaid = await loadScholiumMermaid();
         const { svg } = await mermaid.render(diagramId, trimmedDefinition);
 
         if (!cancelled) {

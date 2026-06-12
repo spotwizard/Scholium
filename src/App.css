@@ -556,7 +556,8 @@ button:disabled {
 }
 
 .markdown-preview .mermaid-diagram,
-.bottom-note-body .mermaid-diagram {
+.bottom-note-body .mermaid-diagram,
+.milkdown-markdown-editor .milkdown-mermaid-diagram {
   overflow: auto;
   margin: 0 0 1em;
   border: 1px solid var(--color-border);
@@ -566,23 +567,55 @@ button:disabled {
 }
 
 .markdown-preview .mermaid-diagram__svg,
-.bottom-note-body .mermaid-diagram__svg {
+.bottom-note-body .mermaid-diagram__svg,
+.milkdown-markdown-editor .milkdown-mermaid-diagram__svg {
   display: grid;
   min-width: min-content;
   justify-items: center;
 }
 
 .markdown-preview .mermaid-diagram svg,
-.bottom-note-body .mermaid-diagram svg {
+.bottom-note-body .mermaid-diagram svg,
+.milkdown-markdown-editor .milkdown-mermaid-diagram svg {
   width: auto;
   max-width: 100%;
   height: auto;
+  overflow: visible;
+}
+
+.markdown-preview .mermaid-diagram foreignObject,
+.bottom-note-body .mermaid-diagram foreignObject,
+.milkdown-markdown-editor .milkdown-mermaid-diagram foreignObject {
+  overflow: visible;
+}
+
+.markdown-preview .mermaid-diagram .nodeLabel,
+.markdown-preview .mermaid-diagram .edgeLabel,
+.bottom-note-body .mermaid-diagram .nodeLabel,
+.bottom-note-body .mermaid-diagram .edgeLabel,
+.milkdown-markdown-editor .milkdown-mermaid-diagram .nodeLabel,
+.milkdown-markdown-editor .milkdown-mermaid-diagram .edgeLabel {
+  font-size: 16px !important;
+  line-height: 1.2 !important;
+}
+
+.markdown-preview .mermaid-diagram .nodeLabel p,
+.markdown-preview .mermaid-diagram .edgeLabel p,
+.bottom-note-body .mermaid-diagram .nodeLabel p,
+.bottom-note-body .mermaid-diagram .edgeLabel p,
+.milkdown-markdown-editor .milkdown-mermaid-diagram .nodeLabel p,
+.milkdown-markdown-editor .milkdown-mermaid-diagram .edgeLabel p {
+  margin: 0 !important;
+  font-size: inherit !important;
+  line-height: inherit !important;
 }
 
 .markdown-preview .mermaid-diagram__loading,
 .markdown-preview .mermaid-diagram__error,
 .bottom-note-body .mermaid-diagram__loading,
-.bottom-note-body .mermaid-diagram__error {
+.bottom-note-body .mermaid-diagram__error,
+.milkdown-markdown-editor .milkdown-mermaid-diagram__loading,
+.milkdown-markdown-editor .milkdown-mermaid-diagram__error {
   margin: 0;
   color: var(--color-muted);
   font-size: 0.9rem;
@@ -591,7 +624,8 @@ button:disabled {
 }
 
 .markdown-preview .mermaid-diagram__error,
-.bottom-note-body .mermaid-diagram__error {
+.bottom-note-body .mermaid-diagram__error,
+.milkdown-markdown-editor .milkdown-mermaid-diagram__error {
   color: var(--color-danger-text);
 }
 

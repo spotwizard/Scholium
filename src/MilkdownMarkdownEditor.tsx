@@ -1,4 +1,5 @@
 import { Crepe, CrepeFeature } from "@milkdown/crepe";
+import { codeBlockConfig } from "@milkdown/kit/component/code-block";
 import { editorViewCtx, prosePluginsCtx } from "@milkdown/kit/core";
 import type { Node as ProseMirrorNode } from "@milkdown/prose/model";
 import { Plugin, PluginKey } from "@milkdown/prose/state";
@@ -19,6 +20,7 @@ import type {
   TextAnnotation,
   TextSelectionAnchor,
 } from "./MarkdownEditor";
+import { loadScholiumMermaid } from "./mermaid";
 
 type MilkdownMarkdownEditorProps = {
   value: string;
@@ -36,6 +38,9 @@ const milkdownAnnotationPluginKey = new PluginKey<DecorationSet>(
 const milkdownAnnotationFramePadding = 4;
 const milkdownAnnotationLineJoinMaxGap = 20;
 const milkdownAnnotationClassPrefix = "scholium-milkdown-annotation-";
+let milkdownMermaidRenderIndex = 0;
+
+type MilkdownCodeBlockApplyPreview = (value: null | string | HTMLElement) => void;
 
 type MilkdownAnnotationFrame = {
   frameKey: string;
@@ -72,6 +77,58 @@ function normalizeMarkdownForScholium(markdown: string) {
       /^(\s*(?:[-+]|\d+[.)])\s+\S[^\n]*)\n\n(?=\s*(?:[-+]|\d+[.)])\s+\S)/gm,
       "$1\n",
     );
+}
+
+function isMermaidLanguage(language: string) {
+  return language.trim().toLowerCase() === "mermaid";
+}
+
+function escapeHtml(text: string) {
+  const element = document.createElement("div");
+  element.textContent = text;
+  return element.innerHTML;
+}
+
+function renderMilkdownMermaidFrame(content: string) {
+  return `<figure class="milkdown-mermaid-diagram">${content}</figure>`;
+}
+
+function renderMilkdownMermaidPreview(
+  definition: string,
+  applyPreview: MilkdownCodeBlockApplyPreview,
+) {
+  const trimmedDefinition = definition.trim();
+  if (!trimmedDefinition) {
+    return renderMilkdownMermaidFrame(
+      '<pre class="milkdown-mermaid-diagram__error">Mermaid diagram is empty.</pre>',
+    );
+  }
+
+  applyPreview(
+    renderMilkdownMermaidFrame(
+      '<div class="milkdown-mermaid-diagram__loading">Rendering diagram...</div>',
+    ),
+  );
+
+  const diagramId = `scholium-milkdown-mermaid-${++milkdownMermaidRenderIndex}`;
+  void loadScholiumMermaid()
+    .then((mermaid) => mermaid.render(diagramId, trimmedDefinition))
+    .then(({ svg }) => {
+      applyPreview(
+        renderMilkdownMermaidFrame(
+          `<div class="milkdown-mermaid-diagram__svg">${svg}</div>`,
+        ),
+      );
+    })
+    .catch((error: unknown) => {
+      const errorMessage =
+        error instanceof Error ? error.message : "Unable to render Mermaid diagram.";
+      applyPreview(
+        renderMilkdownMermaidFrame(
+          `<pre class="milkdown-mermaid-diagram__error">${escapeHtml(errorMessage)}</pre>`,
+        ),
+      );
+    });
 }
 
 function roundFrameValue(value: number) {
@@ -608,13 +665,25 @@ export function MilkdownMarkdownEditor({
       defaultValue: currentMarkdownRef.current,
       features: {
         [CrepeFeature.AI]: false,
-        [CrepeFeature.CodeMirror]: false,
+        [CrepeFeature.CodeMirror]: true,
         [CrepeFeature.ImageBlock]: false,
         [CrepeFeature.Latex]: false,
         [CrepeFeature.TopBar]: false,
       },
     });
     crepe.editor.config((ctx) => {
+      ctx.update(codeBlockConfig.key, (previousConfig) => ({
+        ...previousConfig,
+        previewOnlyByDefault: true,
+        renderPreview: (language, content, applyPreview) => {
+          if (isMermaidLanguage(language)) {
+            return renderMilkdownMermaidPreview(content, applyPreview);
+          }
+
+          return previousConfig.renderPreview(language, content, applyPreview);
+        },
+      }));
+
       ctx.update(prosePluginsCtx, (plugins) => [
         ...plugins,
         createAnnotationPlugin({
