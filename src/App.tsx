@@ -16,6 +16,7 @@ import {
   useState,
 } from "react";
 import "./App.css";
+import { MilkdownMarkdownEditor } from "./MilkdownMarkdownEditor";
 import {
   MarkdownEditor,
   type AnnotationTone,
@@ -25,42 +26,13 @@ import {
 } from "./MarkdownEditor";
 import fileGlyphSvg from "./assets/file-glyph.svg?raw";
 import folderGlyphSvg from "./assets/folder-glyph.svg?raw";
+import { loadScholiumMermaid } from "./mermaid";
 
-const mermaidConfig = {
-  startOnLoad: false,
-  securityLevel: "strict",
-  theme: "base",
-  themeVariables: {
-    background: "#fcfcfd",
-    primaryColor: "#dbeafe",
-    primaryTextColor: "#202329",
-    primaryBorderColor: "#3b82c4",
-    lineColor: "#2f333b",
-    secondaryColor: "#dff7ef",
-    tertiaryColor: "#f3f4f6",
-    fontFamily: "Inter, ui-sans-serif, system-ui, sans-serif",
-  },
-} as const;
-
-let mermaidInitialized = false;
-let mermaidModulePromise: Promise<(typeof import("mermaid"))["default"]> | null = null;
 const unorderedListMarkerPattern = /^ {0,3}[-*+]\s+/;
 const typedUnorderedListMarkerPattern = /^[-*+]\s+(.*)$/;
 const orderedListMarkerPattern = /^ {0,3}\d+[.)]\s+/;
 const typedOrderedListMarkerPattern = /^\d+[.)]\s+(.*)$/;
 const emptyPreviewListItemText = "\u200b";
-
-async function loadMermaid() {
-  mermaidModulePromise ??= import("mermaid").then((module) => module.default);
-  const mermaid = await mermaidModulePromise;
-
-  if (!mermaidInitialized) {
-    mermaid.initialize(mermaidConfig);
-    mermaidInitialized = true;
-  }
-
-  return mermaid;
-}
 
 type NoteStatus = "active" | "orphaned" | "deleted";
 type AnnotationKind = "note" | "glossary";
@@ -1655,7 +1627,7 @@ function MermaidDiagram({ definition }: { definition: string }) {
 
     async function renderDiagram() {
       try {
-        const mermaid = await loadMermaid();
+        const mermaid = await loadScholiumMermaid();
         const { svg } = await mermaid.render(diagramId, trimmedDefinition);
 
         if (!cancelled) {
@@ -2503,7 +2475,7 @@ function MarkdownPreviewBlockView({
   return null;
 }
 
-function MarkdownPreview({
+export function MarkdownPreview({
   value,
   annotations,
   onChange,
@@ -3566,6 +3538,9 @@ function App() {
     id: annotation.id,
     kind: annotation.kind,
     from: annotation.anchor.from,
+    prefix: annotation.anchor.prefix,
+    selectedText: annotation.anchor.selectedText,
+    suffix: annotation.anchor.suffix,
     tone: annotation.tone,
     to: annotation.anchor.to,
   }));
@@ -3782,7 +3757,7 @@ function App() {
   function activeNoteAnchorRect(noteId: string) {
     const noteElements = Array.from(
       document.querySelectorAll<HTMLElement>(
-        ".cm-note-annotation[data-note-id], .preview-note-annotation[data-note-id]",
+        ".cm-note-annotation[data-note-id], .preview-note-annotation[data-note-id], .milkdown-note-annotation[data-note-id]",
       ),
     ).filter((element) => element.dataset.noteId === noteId);
 
@@ -3797,7 +3772,7 @@ function App() {
     const annotationId = `glossary:${bindingId}`;
     const glossaryElements = Array.from(
       document.querySelectorAll<HTMLElement>(
-        '.cm-note-annotation[data-note-id], .preview-note-annotation[data-note-id]',
+        ".cm-note-annotation[data-note-id], .preview-note-annotation[data-note-id], .milkdown-note-annotation[data-note-id]",
       ),
     ).filter((element) => element.dataset.noteId === annotationId);
 
@@ -3925,7 +3900,7 @@ function App() {
 
     const targetElement = elementFromEventTarget(target);
     const noteElement = targetElement?.closest<HTMLElement>(
-      ".cm-note-annotation[data-note-id], .cm-annotation-frame[data-note-id], .preview-note-annotation[data-note-id], .preview-annotation-frame[data-note-id]",
+      ".cm-note-annotation[data-note-id], .cm-annotation-frame[data-note-id], .preview-note-annotation[data-note-id], .preview-annotation-frame[data-note-id], .milkdown-note-annotation[data-note-id], .milkdown-annotation-frame[data-note-id]",
     );
 
     return (
@@ -3939,7 +3914,7 @@ function App() {
 
     return Array.from(
       document.querySelectorAll<HTMLElement>(
-        ".cm-note-annotation[data-note-id], .cm-annotation-frame[data-note-id], .preview-note-annotation[data-note-id], .preview-annotation-frame[data-note-id]",
+        ".cm-note-annotation[data-note-id], .cm-annotation-frame[data-note-id], .preview-note-annotation[data-note-id], .preview-annotation-frame[data-note-id], .milkdown-note-annotation[data-note-id], .milkdown-annotation-frame[data-note-id]",
       ),
     ).some((element) => {
       const isActiveNote = element.dataset.noteId === activeNoteId;
@@ -5951,8 +5926,8 @@ function App() {
                 <p>請選擇左側子目錄，或開啟其他 Markdown 檔案。</p>
               </div>
             ) : editorMode === "preview" ? (
-                <MarkdownPreview
-                  annotations={activeTextAnnotations}
+                <MilkdownMarkdownEditor
+                  annotations={annotations}
                   key={selectedDocument.id}
                   value={selectedDocument.body}
                   onAnnotationClick={showAnnotationViewer}

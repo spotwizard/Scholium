@@ -24,6 +24,9 @@ export type TextAnnotation = {
   id: string;
   kind?: "note" | "glossary";
   from: number;
+  prefix?: string;
+  selectedText?: string;
+  suffix?: string;
   tone?: AnnotationTone;
   to: number;
 };

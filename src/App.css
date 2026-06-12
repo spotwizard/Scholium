@@ -39,7 +39,7 @@
   font-family:
     Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
     sans-serif;
-  font-size: 16px;
+  font-size: 18px;
   font-weight: 400;
   line-height: 1.5;
   font-synthesis: none;
@@ -556,7 +556,8 @@ button:disabled {
 }
 
 .markdown-preview .mermaid-diagram,
-.bottom-note-body .mermaid-diagram {
+.bottom-note-body .mermaid-diagram,
+.milkdown-markdown-editor .milkdown-mermaid-diagram {
   overflow: auto;
   margin: 0 0 1em;
   border: 1px solid var(--color-border);
@@ -566,23 +567,55 @@ button:disabled {
 }
 
 .markdown-preview .mermaid-diagram__svg,
-.bottom-note-body .mermaid-diagram__svg {
+.bottom-note-body .mermaid-diagram__svg,
+.milkdown-markdown-editor .milkdown-mermaid-diagram__svg {
   display: grid;
   min-width: min-content;
   justify-items: center;
 }
 
 .markdown-preview .mermaid-diagram svg,
-.bottom-note-body .mermaid-diagram svg {
+.bottom-note-body .mermaid-diagram svg,
+.milkdown-markdown-editor .milkdown-mermaid-diagram svg {
   width: auto;
   max-width: 100%;
   height: auto;
+  overflow: visible;
+}
+
+.markdown-preview .mermaid-diagram foreignObject,
+.bottom-note-body .mermaid-diagram foreignObject,
+.milkdown-markdown-editor .milkdown-mermaid-diagram foreignObject {
+  overflow: visible;
+}
+
+.markdown-preview .mermaid-diagram .nodeLabel,
+.markdown-preview .mermaid-diagram .edgeLabel,
+.bottom-note-body .mermaid-diagram .nodeLabel,
+.bottom-note-body .mermaid-diagram .edgeLabel,
+.milkdown-markdown-editor .milkdown-mermaid-diagram .nodeLabel,
+.milkdown-markdown-editor .milkdown-mermaid-diagram .edgeLabel {
+  font-size: 16px !important;
+  line-height: 1.2 !important;
+}
+
+.markdown-preview .mermaid-diagram .nodeLabel p,
+.markdown-preview .mermaid-diagram .edgeLabel p,
+.bottom-note-body .mermaid-diagram .nodeLabel p,
+.bottom-note-body .mermaid-diagram .edgeLabel p,
+.milkdown-markdown-editor .milkdown-mermaid-diagram .nodeLabel p,
+.milkdown-markdown-editor .milkdown-mermaid-diagram .edgeLabel p {
+  margin: 0 !important;
+  font-size: inherit !important;
+  line-height: inherit !important;
 }
 
 .markdown-preview .mermaid-diagram__loading,
 .markdown-preview .mermaid-diagram__error,
 .bottom-note-body .mermaid-diagram__loading,
-.bottom-note-body .mermaid-diagram__error {
+.bottom-note-body .mermaid-diagram__error,
+.milkdown-markdown-editor .milkdown-mermaid-diagram__loading,
+.milkdown-markdown-editor .milkdown-mermaid-diagram__error {
   margin: 0;
   color: var(--color-muted);
   font-size: 0.9rem;
@@ -591,7 +624,8 @@ button:disabled {
 }
 
 .markdown-preview .mermaid-diagram__error,
-.bottom-note-body .mermaid-diagram__error {
+.bottom-note-body .mermaid-diagram__error,
+.milkdown-markdown-editor .milkdown-mermaid-diagram__error {
   color: var(--color-danger-text);
 }
 
@@ -656,6 +690,120 @@ button:disabled {
 
 .preview-annotation-frame[data-annotation-kind="glossary"] {
   background: var(--color-glossary-surface);
+}
+
+.milkdown-markdown-editor-shell {
+  position: relative;
+  min-height: calc(100vh - var(--editor-content-gutter) * 2);
+  color: var(--color-text);
+  background: var(--color-surface);
+  font-size: 18px;
+  line-height: 1.72;
+}
+
+.milkdown-markdown-editor {
+  position: relative;
+  z-index: 1;
+  min-height: inherit;
+  color: inherit;
+  background: transparent;
+  font-size: inherit;
+  line-height: inherit;
+}
+
+.milkdown-annotation-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+}
+
+.milkdown-annotation-frame {
+  position: absolute;
+  z-index: 0;
+  box-sizing: border-box;
+  border-radius: 4px;
+  background: var(--color-annotation-surface);
+}
+
+.milkdown-annotation-frame[data-note-tone="1"] {
+  background: var(--color-annotation-surface-alt);
+}
+
+.milkdown-annotation-frame[data-annotation-kind="glossary"] {
+  z-index: 1;
+  background: var(--color-glossary-surface);
+}
+
+.milkdown-markdown-editor .milkdown {
+  min-height: inherit;
+  background: transparent;
+}
+
+.milkdown-markdown-editor .milkdown .ProseMirror {
+  box-sizing: border-box;
+  min-height: inherit;
+  padding: 0;
+  font-size: 18px !important;
+  line-height: 31px !important;
+  outline: none;
+  caret-color: var(--color-accent);
+}
+
+.milkdown-markdown-editor .milkdown .ProseMirror p,
+.milkdown-markdown-editor .milkdown .ProseMirror li,
+.milkdown-markdown-editor .milkdown .ProseMirror blockquote {
+  font-size: 18px !important;
+  line-height: 31px !important;
+}
+
+.milkdown-markdown-editor .ProseMirror > :first-child {
+  margin-top: 0;
+}
+
+.milkdown-markdown-editor .ProseMirror h1,
+.milkdown-markdown-editor .ProseMirror h2,
+.milkdown-markdown-editor .ProseMirror h3,
+.milkdown-markdown-editor .ProseMirror h4,
+.milkdown-markdown-editor .ProseMirror h5,
+.milkdown-markdown-editor .ProseMirror h6 {
+  color: var(--color-heading);
+  letter-spacing: 0;
+}
+
+.milkdown-markdown-editor .ProseMirror h2 {
+  border-bottom: 1px solid var(--color-border);
+}
+
+.milkdown-markdown-editor .ProseMirror blockquote {
+  border-left-color: var(--color-accent);
+  color: var(--color-muted);
+  background: var(--color-accent-soft);
+}
+
+.milkdown-markdown-editor .ProseMirror code {
+  color: var(--color-accent-ink);
+  background: var(--color-surface-soft);
+}
+
+.milkdown-markdown-editor .ProseMirror pre {
+  border-color: var(--color-border);
+  background: var(--color-surface-soft);
+}
+
+.milkdown-note-annotation {
+  border-radius: 2px;
+  cursor: pointer;
+  background: transparent;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.milkdown-glossary-annotation {
+  text-decoration: underline;
+  text-decoration-color: var(--color-glossary-border);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 0.18em;
 }
 
 .floating-note-panel {
