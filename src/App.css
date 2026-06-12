@@ -712,6 +712,26 @@ button:disabled {
   background: var(--color-surface-soft);
 }
 
+.milkdown-note-annotation {
+  border-radius: 2px;
+  cursor: pointer;
+  background: var(--color-annotation-surface);
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.milkdown-note-annotation[data-note-tone="1"] {
+  background: var(--color-annotation-surface-alt);
+}
+
+.milkdown-glossary-annotation {
+  background: var(--color-glossary-surface);
+  text-decoration: underline;
+  text-decoration-color: var(--color-glossary-border);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 0.18em;
+}
+
 .floating-note-panel {
   position: fixed;
   z-index: 9;

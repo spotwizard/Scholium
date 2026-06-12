@@ -3567,6 +3567,9 @@ function App() {
     id: annotation.id,
     kind: annotation.kind,
     from: annotation.anchor.from,
+    prefix: annotation.anchor.prefix,
+    selectedText: annotation.anchor.selectedText,
+    suffix: annotation.anchor.suffix,
     tone: annotation.tone,
     to: annotation.anchor.to,
   }));
@@ -3783,7 +3786,7 @@ function App() {
   function activeNoteAnchorRect(noteId: string) {
     const noteElements = Array.from(
       document.querySelectorAll<HTMLElement>(
-        ".cm-note-annotation[data-note-id], .preview-note-annotation[data-note-id]",
+        ".cm-note-annotation[data-note-id], .preview-note-annotation[data-note-id], .milkdown-note-annotation[data-note-id]",
       ),
     ).filter((element) => element.dataset.noteId === noteId);
 
@@ -3798,7 +3801,7 @@ function App() {
     const annotationId = `glossary:${bindingId}`;
     const glossaryElements = Array.from(
       document.querySelectorAll<HTMLElement>(
-        '.cm-note-annotation[data-note-id], .preview-note-annotation[data-note-id]',
+        ".cm-note-annotation[data-note-id], .preview-note-annotation[data-note-id], .milkdown-note-annotation[data-note-id]",
       ),
     ).filter((element) => element.dataset.noteId === annotationId);
 
@@ -3926,7 +3929,7 @@ function App() {
 
     const targetElement = elementFromEventTarget(target);
     const noteElement = targetElement?.closest<HTMLElement>(
-      ".cm-note-annotation[data-note-id], .cm-annotation-frame[data-note-id], .preview-note-annotation[data-note-id], .preview-annotation-frame[data-note-id]",
+      ".cm-note-annotation[data-note-id], .cm-annotation-frame[data-note-id], .preview-note-annotation[data-note-id], .preview-annotation-frame[data-note-id], .milkdown-note-annotation[data-note-id]",
     );
 
     return (
@@ -3940,7 +3943,7 @@ function App() {
 
     return Array.from(
       document.querySelectorAll<HTMLElement>(
-        ".cm-note-annotation[data-note-id], .cm-annotation-frame[data-note-id], .preview-note-annotation[data-note-id], .preview-annotation-frame[data-note-id]",
+        ".cm-note-annotation[data-note-id], .cm-annotation-frame[data-note-id], .preview-note-annotation[data-note-id], .preview-annotation-frame[data-note-id], .milkdown-note-annotation[data-note-id]",
       ),
     ).some((element) => {
       const isActiveNote = element.dataset.noteId === activeNoteId;
