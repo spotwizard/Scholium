@@ -74,6 +74,12 @@ npm run preview
 預覽 production frontend bundle。
 
 ```bash
+npm run install:app
+```
+
+建立 Tauri macOS app、替換 `/Applications/Scholium.app`、重新簽章、refresh LaunchServices，並重新啟動安裝版 app。這個指令包裝 repo root 的 `scripts/install-app.sh`。
+
+```bash
 npm run tauri dev
 ```
 
