@@ -16,6 +16,7 @@ import {
   useState,
 } from "react";
 import "./App.css";
+import { MilkdownMarkdownEditor } from "./MilkdownMarkdownEditor";
 import {
   MarkdownEditor,
   type AnnotationTone,
@@ -2503,7 +2504,7 @@ function MarkdownPreviewBlockView({
   return null;
 }
 
-function MarkdownPreview({
+export function MarkdownPreview({
   value,
   annotations,
   onChange,
@@ -5951,8 +5952,8 @@ function App() {
                 <p>請選擇左側子目錄，或開啟其他 Markdown 檔案。</p>
               </div>
             ) : editorMode === "preview" ? (
-                <MarkdownPreview
-                  annotations={activeTextAnnotations}
+                <MilkdownMarkdownEditor
+                  annotations={annotations}
                   key={selectedDocument.id}
                   value={selectedDocument.body}
                   onAnnotationClick={showAnnotationViewer}

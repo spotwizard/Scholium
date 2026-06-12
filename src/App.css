@@ -658,6 +658,60 @@ button:disabled {
   background: var(--color-glossary-surface);
 }
 
+.milkdown-markdown-editor {
+  min-height: calc(100vh - var(--editor-content-gutter) * 2);
+  color: var(--color-text);
+  background: var(--color-surface);
+  font-size: 1.08rem;
+  line-height: 1.72;
+}
+
+.milkdown-markdown-editor .milkdown {
+  min-height: inherit;
+}
+
+.milkdown-markdown-editor .ProseMirror {
+  box-sizing: border-box;
+  min-height: inherit;
+  padding: 0;
+  outline: none;
+  caret-color: var(--color-accent);
+}
+
+.milkdown-markdown-editor .ProseMirror > :first-child {
+  margin-top: 0;
+}
+
+.milkdown-markdown-editor .ProseMirror h1,
+.milkdown-markdown-editor .ProseMirror h2,
+.milkdown-markdown-editor .ProseMirror h3,
+.milkdown-markdown-editor .ProseMirror h4,
+.milkdown-markdown-editor .ProseMirror h5,
+.milkdown-markdown-editor .ProseMirror h6 {
+  color: var(--color-heading);
+  letter-spacing: 0;
+}
+
+.milkdown-markdown-editor .ProseMirror h2 {
+  border-bottom: 1px solid var(--color-border);
+}
+
+.milkdown-markdown-editor .ProseMirror blockquote {
+  border-left-color: var(--color-accent);
+  color: var(--color-muted);
+  background: var(--color-accent-soft);
+}
+
+.milkdown-markdown-editor .ProseMirror code {
+  color: var(--color-accent-ink);
+  background: var(--color-surface-soft);
+}
+
+.milkdown-markdown-editor .ProseMirror pre {
+  border-color: var(--color-border);
+  background: var(--color-surface-soft);
+}
+
 .floating-note-panel {
   position: fixed;
   z-index: 9;
