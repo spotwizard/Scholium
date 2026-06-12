@@ -30,6 +30,7 @@
   --color-danger-surface: #fff3ee;
   --color-danger-border: #d8a08b;
   --shadow-low: 0 1px 2px rgba(32, 35, 41, 0.06);
+  --shadow-high: 0 18px 36px rgba(32, 35, 41, 0.18);
   --shadow-note:
     0 14px 28px rgba(32, 35, 41, 0.16),
     inset 0 1px 0 rgba(255, 255, 255, 0.75);
