@@ -3,7 +3,7 @@ import { codeBlockConfig } from "@milkdown/kit/component/code-block";
 import { editorViewCtx, prosePluginsCtx } from "@milkdown/kit/core";
 import type { Node as ProseMirrorNode } from "@milkdown/prose/model";
 import { Plugin, PluginKey } from "@milkdown/prose/state";
-import { Decoration, DecorationSet } from "@milkdown/prose/view";
+import { Decoration, DecorationSet, type EditorView } from "@milkdown/prose/view";
 import "@milkdown/crepe/theme/common/style.css";
 import "@milkdown/crepe/theme/frame.css";
 import {
@@ -65,6 +65,14 @@ type MilkdownAnnotationSource = {
   kind: "note" | "glossary";
   tone: AnnotationTone;
 };
+
+type MilkdownTextMap = {
+  text: string;
+  sourceOffsets: (number | null)[];
+};
+
+const markdownUnorderedListMarkerPattern = /^ {0,3}[-*+]\s+/;
+const markdownOrderedListMarkerPattern = /^ {0,3}\d+[.)]\s+/;
 
 function normalizeSelectedText(text: string) {
   return text.replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
@@ -129,6 +137,211 @@ function renderMilkdownMermaidPreview(
         ),
       );
     });
+}
+
+function appendTextMap(target: MilkdownTextMap, text: string, sourceStart: number | null) {
+  target.text += text;
+  for (let index = 0; index < text.length; index += 1) {
+    target.sourceOffsets.push(sourceStart === null ? null : sourceStart + index);
+  }
+}
+
+function appendInlineMarkdownTextMap(
+  target: MilkdownTextMap,
+  text: string,
+  sourceStart: number,
+) {
+  let index = 0;
+
+  while (index < text.length) {
+    const twoCharacterMarker = text.slice(index, index + 2);
+
+    if (twoCharacterMarker === "**" || twoCharacterMarker === "__") {
+      const endIndex = text.indexOf(twoCharacterMarker, index + 2);
+      if (endIndex > index + 2) {
+        appendInlineMarkdownTextMap(
+          target,
+          text.slice(index + 2, endIndex),
+          sourceStart + index + 2,
+        );
+        index = endIndex + 2;
+        continue;
+      }
+    }
+
+    const character = text[index];
+
+    if (character === "*" || character === "_") {
+      const endIndex = text.indexOf(character, index + 1);
+      if (endIndex > index + 1) {
+        appendInlineMarkdownTextMap(
+          target,
+          text.slice(index + 1, endIndex),
+          sourceStart + index + 1,
+        );
+        index = endIndex + 1;
+        continue;
+      }
+    }
+
+    if (character === "`") {
+      const endIndex = text.indexOf("`", index + 1);
+      if (endIndex > index + 1) {
+        appendTextMap(target, text.slice(index + 1, endIndex), sourceStart + index + 1);
+        index = endIndex + 1;
+        continue;
+      }
+    }
+
+    if (character === "[") {
+      const labelEndIndex = text.indexOf("](", index + 1);
+      if (labelEndIndex > index + 1) {
+        const linkEndIndex = text.indexOf(")", labelEndIndex + 2);
+        if (linkEndIndex > labelEndIndex + 2) {
+          appendInlineMarkdownTextMap(
+            target,
+            text.slice(index + 1, labelEndIndex),
+            sourceStart + index + 1,
+          );
+          index = linkEndIndex + 1;
+          continue;
+        }
+      }
+    }
+
+    appendTextMap(target, character, sourceStart + index);
+    index += 1;
+  }
+}
+
+function lineVisibleStartOffset(line: string) {
+  let startOffset = 0;
+  const quoteMatch = line.match(/^ {0,3}>\s?/);
+  if (quoteMatch) {
+    startOffset += quoteMatch[0].length;
+  }
+
+  const remainingLine = line.slice(startOffset);
+  const headingMatch = remainingLine.match(/^#{1,6}\s+/);
+  if (headingMatch) return startOffset + headingMatch[0].length;
+
+  const unorderedListMatch = remainingLine.match(markdownUnorderedListMarkerPattern);
+  if (unorderedListMatch) return startOffset + unorderedListMatch[0].length;
+
+  const orderedListMatch = remainingLine.match(markdownOrderedListMarkerPattern);
+  if (orderedListMatch) return startOffset + orderedListMatch[0].length;
+
+  return startOffset;
+}
+
+function markdownLineStartOffsets(markdown: string) {
+  const offsets = [0];
+
+  for (let index = 0; index < markdown.length; index += 1) {
+    if (markdown[index] === "\n") {
+      offsets.push(index + 1);
+    }
+  }
+
+  return offsets;
+}
+
+function buildMarkdownVisibleTextMap(markdown: string) {
+  const normalizedMarkdown = markdown.replace(/\r\n/g, "\n");
+  const lines = normalizedMarkdown.split("\n");
+  const lineStartOffsets = markdownLineStartOffsets(normalizedMarkdown);
+  const textMap: MilkdownTextMap = { text: "", sourceOffsets: [] };
+  let inFencedCodeBlock = false;
+
+  lines.forEach((line, lineIndex) => {
+    const fenceMatch = line.match(/^ {0,3}(```|~~~)/);
+    if (fenceMatch) {
+      inFencedCodeBlock = !inFencedCodeBlock;
+      return;
+    }
+
+    if (textMap.text.length > 0) {
+      appendTextMap(textMap, "\n", lineStartOffsets[lineIndex] ?? null);
+    }
+
+    if (inFencedCodeBlock) {
+      appendTextMap(textMap, line, lineStartOffsets[lineIndex] ?? 0);
+      return;
+    }
+
+    const visibleStartOffset = lineVisibleStartOffset(line);
+    appendInlineMarkdownTextMap(
+      textMap,
+      line.slice(visibleStartOffset),
+      (lineStartOffsets[lineIndex] ?? 0) + visibleStartOffset,
+    );
+  });
+
+  return textMap;
+}
+
+function normalizeTextMapForMatch(textMap: MilkdownTextMap) {
+  const normalizedTextMap: MilkdownTextMap = { text: "", sourceOffsets: [] };
+  let hasPendingWhitespace = false;
+  let pendingWhitespaceOffset: number | null = null;
+
+  for (let index = 0; index < textMap.text.length; index += 1) {
+    const character = textMap.text[index];
+    const sourceOffset = textMap.sourceOffsets[index] ?? null;
+
+    if (/\s/.test(character)) {
+      hasPendingWhitespace = true;
+      if (pendingWhitespaceOffset === null && sourceOffset !== null) {
+        pendingWhitespaceOffset = sourceOffset;
+      }
+      continue;
+    }
+
+    if (hasPendingWhitespace && normalizedTextMap.text.length > 0) {
+      appendTextMap(normalizedTextMap, " ", pendingWhitespaceOffset);
+    }
+
+    appendTextMap(normalizedTextMap, character, sourceOffset);
+    hasPendingWhitespace = false;
+    pendingWhitespaceOffset = null;
+  }
+
+  return normalizedTextMap;
+}
+
+function textMapSourceRange(textMap: MilkdownTextMap, from: number, to: number) {
+  const sourceOffsets = textMap.sourceOffsets
+    .slice(from, to)
+    .filter((offset): offset is number => offset !== null);
+  if (sourceOffsets.length === 0) return null;
+
+  return {
+    from: Math.min(...sourceOffsets),
+    to: Math.max(...sourceOffsets) + 1,
+  };
+}
+
+function textIndices(text: string, query: string) {
+  const indices: number[] = [];
+  if (!query) return indices;
+
+  let index = text.indexOf(query);
+  while (index >= 0) {
+    indices.push(index);
+    index = text.indexOf(query, index + query.length);
+  }
+
+  return indices;
+}
+
+function closestTextIndex(indices: number[], approximateIndex: number) {
+  if (indices.length === 0) return -1;
+
+  return indices.reduce((closestIndex, index) =>
+    Math.abs(index - approximateIndex) < Math.abs(closestIndex - approximateIndex)
+      ? index
+      : closestIndex,
+  );
 }
 
 function roundFrameValue(value: number) {
@@ -303,38 +516,60 @@ function milkdownAnnotationFramesAreEqual(
   });
 }
 
-function buildAnchor(markdown: string, selectedText: string): TextSelectionAnchor | null {
+function makeAnchorFromSourceRange(markdown: string, from: number, to: number) {
+  return {
+    from,
+    to,
+    selectedText: markdown.slice(from, to),
+    prefix: markdown.slice(Math.max(0, from - 48), from),
+    suffix: markdown.slice(to, Math.min(markdown.length, to + 48)),
+  };
+}
+
+function buildAnchor(
+  markdown: string,
+  selectedText: string,
+  approximateVisibleStart = 0,
+): TextSelectionAnchor | null {
   const normalizedSelection = normalizeSelectedText(selectedText);
   if (!normalizedSelection) return null;
 
   const exactIndex = markdown.indexOf(selectedText);
   if (exactIndex >= 0) {
-    return {
-      from: exactIndex,
-      to: exactIndex + selectedText.length,
-      selectedText,
-      prefix: markdown.slice(Math.max(0, exactIndex - 48), exactIndex),
-      suffix: markdown.slice(
-        exactIndex + selectedText.length,
-        Math.min(markdown.length, exactIndex + selectedText.length + 48),
-      ),
-    };
+    return makeAnchorFromSourceRange(markdown, exactIndex, exactIndex + selectedText.length);
   }
 
-  const normalizedMarkdown = markdown.replace(/\u00a0/g, " ");
-  const normalizedIndex = normalizedMarkdown.indexOf(normalizedSelection);
+  const markdownTextMap = buildMarkdownVisibleTextMap(markdown);
+  const exactVisibleIndex = closestTextIndex(
+    textIndices(markdownTextMap.text, selectedText.trim()),
+    approximateVisibleStart,
+  );
+  if (exactVisibleIndex >= 0) {
+    const sourceRange = textMapSourceRange(
+      markdownTextMap,
+      exactVisibleIndex,
+      exactVisibleIndex + selectedText.trim().length,
+    );
+    if (sourceRange) {
+      return makeAnchorFromSourceRange(markdown, sourceRange.from, sourceRange.to);
+    }
+  }
+
+  const normalizedTextMap = normalizeTextMapForMatch(markdownTextMap);
+  const normalizedIndex = closestTextIndex(
+    textIndices(normalizedTextMap.text, normalizedSelection),
+    approximateVisibleStart,
+  );
   if (normalizedIndex < 0) return null;
 
-  return {
-    from: normalizedIndex,
-    to: normalizedIndex + normalizedSelection.length,
-    selectedText: normalizedSelection,
-    prefix: markdown.slice(Math.max(0, normalizedIndex - 48), normalizedIndex),
-    suffix: markdown.slice(
-      normalizedIndex + normalizedSelection.length,
-      Math.min(markdown.length, normalizedIndex + normalizedSelection.length + 48),
-    ),
-  };
+  const sourceRange = textMapSourceRange(
+    normalizedTextMap,
+    normalizedIndex,
+    normalizedIndex + normalizedSelection.length,
+  );
+  if (!sourceRange) return null;
+
+  return makeAnchorFromSourceRange(markdown, sourceRange.from, sourceRange.to);
 }
 
 function selectionBelongsToRoot(root: HTMLElement, selection: Selection | null) {
@@ -383,6 +618,70 @@ function buildNormalizedVisibleTextIndex(doc: ProseMirrorNode) {
   return { positions, text: chars.join("") };
 }
 
+function visibleTextIndexFromProsePosition(doc: ProseMirrorNode, position: number) {
+  const visibleTextIndex = buildNormalizedVisibleTextIndex(doc);
+  const index = visibleTextIndex.positions.findIndex(
+    (visiblePosition) => visiblePosition >= position,
+  );
+
+  return index >= 0 ? index : visibleTextIndex.text.length;
+}
+
+function buildProseNonWhitespacePositionIndex(doc: ProseMirrorNode) {
+  const positions: number[] = [];
+
+  doc.descendants((node, position) => {
+    if (!node.isText || !node.text) return true;
+
+    for (let offset = 0; offset < node.text.length; offset += 1) {
+      if (!/\s/.test(node.text[offset])) {
+        positions.push(position + offset);
+      }
+    }
+
+    return true;
+  });
+
+  return positions;
+}
+
+function proseRangeFromMarkdownSourceRange(
+  doc: ProseMirrorNode,
+  markdown: string,
+  from: number,
+  to: number,
+) {
+  const textMap = buildMarkdownVisibleTextMap(markdown);
+  let firstVisibleOrdinal: number | null = null;
+  let lastVisibleOrdinal: number | null = null;
+  let visibleOrdinal = 0;
+
+  for (let index = 0; index < textMap.text.length; index += 1) {
+    const character = textMap.text[index];
+    const sourceOffset = textMap.sourceOffsets[index];
+    if (sourceOffset === null || /\s/.test(character)) continue;
+
+    if (sourceOffset >= from && sourceOffset < to) {
+      firstVisibleOrdinal ??= visibleOrdinal;
+      lastVisibleOrdinal = visibleOrdinal;
+    }
+
+    visibleOrdinal += 1;
+  }
+
+  if (firstVisibleOrdinal === null || lastVisibleOrdinal === null) return null;
+
+  const prosePositions = buildProseNonWhitespacePositionIndex(doc);
+  const proseFrom = prosePositions[firstVisibleOrdinal];
+  const proseTo = prosePositions[lastVisibleOrdinal];
+  if (proseFrom === undefined || proseTo === undefined || proseTo < proseFrom) return null;
+
+  return {
+    from: proseFrom,
+    to: proseTo + 1,
+  };
+}
+
 function countOccurrencesBefore(markdown: string, annotation: TextAnnotation, target: string) {
   if (!target) return 0;
 
@@ -423,6 +722,30 @@ function buildAnnotationDecorations(
 ) {
   const { positions, text } = buildNormalizedVisibleTextIndex(doc);
   const decorations = annotations.flatMap((annotation, annotationIndex) => {
+    const decorationAttributes = {
+      class: `milkdown-note-annotation ${
+        annotation.kind === "glossary" ? "milkdown-glossary-annotation" : ""
+      } ${milkdownAnnotationClassName(annotationIndex)}`,
+      "data-annotation-kind": annotation.kind ?? "note",
+      "data-note-id": annotation.id,
+      "data-note-tone": String(annotation.tone ?? 0),
+    };
+    const proseSourceRange = proseRangeFromMarkdownSourceRange(
+      doc,
+      markdown,
+      annotation.from,
+      annotation.to,
+    );
+    if (proseSourceRange) {
+      return [
+        Decoration.inline(
+          proseSourceRange.from,
+          proseSourceRange.to,
+          decorationAttributes,
+        ),
+      ];
+    }
+
     const target = normalizeSelectedText(
       annotation.selectedText || markdown.slice(annotation.from, annotation.to),
     );
@@ -436,14 +759,7 @@ function buildAnnotationDecorations(
     const end = positions[normalizedIndex + target.length - 1] + 1;
     if (start === undefined || end === undefined || end <= start) return [];
 
-    return Decoration.inline(start, end, {
-      class: `milkdown-note-annotation ${
-        annotation.kind === "glossary" ? "milkdown-glossary-annotation" : ""
-      } ${milkdownAnnotationClassName(annotationIndex)}`,
-      "data-annotation-kind": annotation.kind ?? "note",
-      "data-note-id": annotation.id,
-      "data-note-tone": String(annotation.tone ?? 0),
-    });
+    return Decoration.inline(start, end, decorationAttributes);
   });
 
   return DecorationSet.create(doc, decorations);
@@ -641,12 +957,46 @@ export function MilkdownMarkdownEditor({
     setEditorRevision((revision) => revision + 1);
   }, [value]);
 
+  function currentEditorView(): EditorView | null {
+    const crepe = crepeRef.current;
+    if (!crepe) return null;
+
+    let view: EditorView | null = null;
+    try {
+      crepe.editor.action((ctx) => {
+        view = ctx.get(editorViewCtx) as EditorView;
+      });
+    } catch {
+      return null;
+    }
+
+    return view;
+  }
+
+  function anchorFromEditorSelection() {
+    const view = currentEditorView();
+    if (!view || view.state.selection.empty) return null;
+
+    const { from, to } = view.state.selection;
+    const selectedText = view.state.doc.textBetween(from, to, " ");
+    return buildAnchor(
+      currentMarkdownRef.current,
+      selectedText,
+      visibleTextIndexFromProsePosition(view.state.doc, from),
+    );
+  }
+
   function anchorFromCurrentSelection() {
     const root = rootRef.current;
     const selection = window.getSelection();
-    if (!root || !nonCollapsedSelectionInRoot(root, selection)) return null;
+    if (!root || !nonCollapsedSelectionInRoot(root, selection)) {
+      return anchorFromEditorSelection();
+    }
 
-    return buildAnchor(currentMarkdownRef.current, selection.toString());
+    return (
+      buildAnchor(currentMarkdownRef.current, selection.toString()) ??
+      anchorFromEditorSelection()
+    );
   }
 
   function updateSelectionFromDom() {
@@ -730,7 +1080,9 @@ export function MilkdownMarkdownEditor({
     };
   }, [editorRevision]);
 
-  function handleKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
+  function handleSelectionEnterKeyDown(
+    event: KeyboardEvent | ReactKeyboardEvent<HTMLDivElement>,
+  ) {
     const isPlainEnter =
       event.key === "Enter" &&
       !event.metaKey &&
@@ -746,6 +1098,50 @@ export function MilkdownMarkdownEditor({
     event.stopPropagation();
     onSelectionEnterRef.current(anchor);
   }
+
+  function handleKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
+    handleSelectionEnterKeyDown(event);
+  }
+
+  useEffect(() => {
+    function targetShouldKeepEnter(target: EventTarget | null) {
+      const root = rootRef.current;
+      if (!root || !(target instanceof Element)) return false;
+      if (root.contains(target)) return false;
+
+      return Boolean(
+        target.closest("button, input, textarea, select") ||
+          (target instanceof HTMLElement && target.isContentEditable),
+      );
+    }
+
+    function handleDocumentKeyDown(event: KeyboardEvent) {
+      if (event.defaultPrevented) return;
+      const isPlainEnter =
+        event.key === "Enter" &&
+        !event.metaKey &&
+        !event.ctrlKey &&
+        !event.altKey &&
+        !event.shiftKey;
+      if (!isPlainEnter) return;
+
+      const root = rootRef.current;
+      if (!root || targetShouldKeepEnter(event.target)) return;
+
+      const selection = window.getSelection();
+      const activeElement = document.activeElement;
+      const editorHasFocus = activeElement instanceof Node && root.contains(activeElement);
+      if (!selectionBelongsToRoot(root, selection) && !editorHasFocus) return;
+
+      handleSelectionEnterKeyDown(event);
+    }
+
+    document.addEventListener("keydown", handleDocumentKeyDown, true);
+
+    return () => {
+      document.removeEventListener("keydown", handleDocumentKeyDown, true);
+    };
+  }, [editorRevision]);
 
   return (
     <div className="milkdown-markdown-editor-shell" ref={containerRef}>
