@@ -371,20 +371,16 @@ button:disabled {
 }
 
 .note-mode-switch {
-  display: inline-flex;
-  min-width: 0;
-  min-height: 36px;
-  align-items: center;
-  gap: 8px;
+  display: grid;
+  width: 44px;
+  height: 44px;
+  place-items: center;
   border: 1px solid var(--color-border);
   border-radius: 999px;
-  padding: 5px 10px 5px 12px;
+  padding: 0;
   color: var(--color-accent-ink);
   background: rgba(255, 255, 255, 0.92);
   box-shadow: var(--shadow-low);
-  font-size: 0.82rem;
-  font-weight: 700;
-  line-height: 1.2;
 }
 
 .note-mode-switch:hover {
@@ -395,41 +391,13 @@ button:disabled {
 .note-mode-switch[aria-checked="true"] {
   border-color: var(--color-accent);
   color: var(--color-accent-strong);
+  background: var(--color-selected-surface);
 }
 
-.note-mode-switch__label {
-  white-space: nowrap;
-}
-
-.note-mode-switch__track {
-  position: relative;
-  flex: 0 0 auto;
-  width: 34px;
-  height: 20px;
-  border-radius: 999px;
-  background: var(--color-border);
-}
-
-.note-mode-switch__thumb {
-  position: absolute;
-  top: 3px;
-  left: 3px;
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  background: var(--color-surface-raised);
-  box-shadow: 0 1px 2px rgba(32, 35, 41, 0.2);
-  transition:
-    transform 140ms ease,
-    background 140ms ease;
-}
-
-.note-mode-switch[aria-checked="true"] .note-mode-switch__track {
-  background: var(--color-accent);
-}
-
-.note-mode-switch[aria-checked="true"] .note-mode-switch__thumb {
-  transform: translateX(14px);
+.note-mode-switch__icon {
+  display: block;
+  width: 32px;
+  height: 32px;
 }
 
 .empty-editor-state {

@@ -39,6 +39,7 @@ const milkdownAnnotationPluginKey = new PluginKey<DecorationSet>(
 const milkdownAnnotationFramePadding = 4;
 const milkdownAnnotationLineJoinMaxGap = 20;
 const milkdownAnnotationClassPrefix = "scholium-milkdown-annotation-";
+const milkdownSelectionFallbackMs = 220;
 let milkdownMermaidRenderIndex = 0;
 
 type MilkdownCodeBlockApplyPreview = (value: null | string | HTMLElement) => void;
@@ -860,6 +861,9 @@ export function MilkdownMarkdownEditor({
   const onAnnotationClickRef = useRef(onAnnotationClick);
   const onAnnotationDoubleClickRef = useRef(onAnnotationDoubleClick);
   const animationFrameRef = useRef(0);
+  const selectionFrameRef = useRef(0);
+  const selectionFallbackTimerRef = useRef(0);
+  const mouseSelectionStartedRef = useRef(false);
   const [editorRevision, setEditorRevision] = useState(0);
   const [annotationFrames, setAnnotationFrames] = useState<MilkdownAnnotationFrame[]>([]);
   const annotationSignature = useMemo(
@@ -1017,11 +1021,78 @@ export function MilkdownMarkdownEditor({
     );
   }
 
-  function updateSelectionFromDom() {
+  function publishSelectionAfterSelectionComplete() {
     if (!noteModeEnabledRef.current) return;
 
-    onSelectionChangeRef.current(anchorFromCurrentSelection());
+    window.clearTimeout(selectionFallbackTimerRef.current);
+    window.cancelAnimationFrame(selectionFrameRef.current);
+    selectionFrameRef.current = window.requestAnimationFrame(() => {
+      if (mouseSelectionStartedRef.current) return;
+
+      onSelectionChangeRef.current(anchorFromCurrentSelection());
+      selectionFrameRef.current = 0;
+    });
   }
+
+  function scheduleSelectionPublishFromDom() {
+    if (!noteModeEnabledRef.current) return;
+
+    window.clearTimeout(selectionFallbackTimerRef.current);
+    selectionFallbackTimerRef.current = window.setTimeout(() => {
+      if (mouseSelectionStartedRef.current) return;
+
+      publishSelectionAfterSelectionComplete();
+    }, milkdownSelectionFallbackMs);
+  }
+
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root) return;
+
+    function handleSelectionPointerDown(event: MouseEvent | PointerEvent) {
+      if (event.button !== 0) return;
+
+      mouseSelectionStartedRef.current = true;
+    }
+
+    function handleSelectionPointerUp(event: MouseEvent | PointerEvent) {
+      if (event.button !== 0) return;
+
+      const currentRoot = rootRef.current;
+      if (!currentRoot) return;
+
+      const targetIsInEditor = event.target instanceof Node && currentRoot.contains(event.target);
+      const selectionIsInEditor = selectionBelongsToRoot(currentRoot, window.getSelection());
+      const activeElement = document.activeElement;
+      const editorHasFocus = activeElement instanceof Node && currentRoot.contains(activeElement);
+
+      if (
+        !mouseSelectionStartedRef.current &&
+        !targetIsInEditor &&
+        !selectionIsInEditor &&
+        !editorHasFocus
+      ) {
+        return;
+      }
+
+      mouseSelectionStartedRef.current = false;
+      publishSelectionAfterSelectionComplete();
+    }
+
+    root.addEventListener("mousedown", handleSelectionPointerDown, true);
+    root.addEventListener("pointerdown", handleSelectionPointerDown, true);
+    window.addEventListener("mouseup", handleSelectionPointerUp, true);
+    window.addEventListener("pointerup", handleSelectionPointerUp, true);
+
+    return () => {
+      window.cancelAnimationFrame(selectionFrameRef.current);
+      window.clearTimeout(selectionFallbackTimerRef.current);
+      root.removeEventListener("mousedown", handleSelectionPointerDown, true);
+      root.removeEventListener("pointerdown", handleSelectionPointerDown, true);
+      window.removeEventListener("mouseup", handleSelectionPointerUp, true);
+      window.removeEventListener("pointerup", handleSelectionPointerUp, true);
+    };
+  }, [editorRevision]);
 
   useEffect(() => {
     const root = rootRef.current;
@@ -1076,7 +1147,7 @@ export function MilkdownMarkdownEditor({
       });
 
       listener.selectionUpdated(() => {
-        window.requestAnimationFrame(updateSelectionFromDom);
+        scheduleSelectionPublishFromDom();
         scheduleAnnotationFrameUpdate();
       });
     });
@@ -1187,8 +1258,8 @@ export function MilkdownMarkdownEditor({
       <div
         className="milkdown-markdown-editor"
         onKeyDownCapture={handleKeyDown}
-        onKeyUp={updateSelectionFromDom}
-        onMouseUp={updateSelectionFromDom}
+        onKeyUp={publishSelectionAfterSelectionComplete}
+        onMouseUp={publishSelectionAfterSelectionComplete}
         ref={rootRef}
       />
     </div>

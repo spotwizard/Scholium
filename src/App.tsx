@@ -26,6 +26,8 @@ import {
 } from "./MarkdownEditor";
 import fileGlyphSvg from "./assets/file-glyph.svg?raw";
 import folderGlyphSvg from "./assets/folder-glyph.svg?raw";
+import notebookRestIcon from "./assets/notebook-rest.svg";
+import notebookSelectedIcon from "./assets/notebook-selected.svg";
 import { loadScholiumMermaid } from "./mermaid";
 
 const unorderedListMarkerPattern = /^ {0,3}[-*+]\s+/;
@@ -501,92 +503,21 @@ function refreshAnchor(body: string, anchor: TextSelectionAnchor): TextSelection
   };
 }
 
-function reconcileNote(note: SelectionNote, nextBody: string): SelectionNote {
-  if (note.status !== "active") return note;
-
-  const exactText = nextBody.slice(note.anchor.from, note.anchor.to);
-  if (exactText === note.selectedText) {
-    return {
-      ...note,
-      anchor: refreshAnchor(nextBody, note.anchor),
-    };
-  }
-
-  const nextIndex = nextBody.indexOf(note.selectedText);
-  if (nextIndex >= 0) {
-    const nextAnchor = makeAnchor(nextBody, note.selectedText);
-    return {
-      ...note,
-      anchor: {
-        ...nextAnchor,
-        from: nextIndex,
-        to: nextIndex + note.selectedText.length,
-      },
-    };
-  }
-
-  return {
-    ...note,
-    status: "orphaned",
-    updatedAt: nowLabel(),
-  };
+function hasRenderableAnchor(anchor: TextSelectionAnchor) {
+  return anchor.to > anchor.from;
 }
 
-function reconcileGlossaryBinding(
-  binding: GlossaryBinding,
-  nextBody: string,
-): GlossaryBinding {
-  if (binding.status !== "active") return binding;
-
-  const exactText = nextBody.slice(binding.anchor.from, binding.anchor.to);
-  const exactNormalizedTerm = normalizeGlossaryTerm(exactText);
-  const bindingNormalizedTerms = new Set([
-    binding.normalizedTerm,
-    normalizeGlossaryTerm(binding.term),
-  ]);
-  if (bindingNormalizedTerms.has(exactNormalizedTerm)) {
-    return {
-      ...binding,
-      anchor: refreshAnchor(nextBody, binding.anchor),
-    };
-  }
-
-  const nextIndex = nextBody.toLowerCase().indexOf(binding.term.toLowerCase());
-  if (nextIndex >= 0) {
-    const nextAnchor = makeAnchorFromRange(
-      nextBody,
-      nextIndex,
-      nextIndex + binding.term.length,
-      nextBody.slice(nextIndex, nextIndex + binding.term.length),
-    );
-    return {
-      ...binding,
-      anchor: {
-        ...nextAnchor,
-        from: nextIndex,
-        to: nextIndex + binding.term.length,
-      },
-    };
-  }
-
-  return {
-    ...binding,
-    status: "orphaned",
-    updatedAt: nowLabel(),
-  };
-}
-
-function assignAnnotationTones(notes: SelectionNote[]): SelectionNote[] {
-  return [...notes]
+function assignAnnotationTones(annotations: TextRangeAnnotation[]): TextRangeAnnotation[] {
+  return [...annotations]
     .sort(
       (left, right) =>
         left.anchor.from - right.anchor.from ||
         left.anchor.to - right.anchor.to ||
-        left.createdAt.localeCompare(right.createdAt) ||
+        left.kind.localeCompare(right.kind) ||
         left.id.localeCompare(right.id),
     )
-    .map((note, index) => ({
-      ...note,
+    .map((annotation, index) => ({
+      ...annotation,
       tone: (index % 2) as AnnotationTone,
     }));
 }
@@ -2263,6 +2194,47 @@ function transformAnchorWithTextEdits(
   });
 }
 
+function textEditFromBodyChange(previousBody: string, nextBody: string): MarkdownTextEdit | null {
+  if (previousBody === nextBody) return null;
+
+  const minLength = Math.min(previousBody.length, nextBody.length);
+  let prefixLength = 0;
+  while (
+    prefixLength < minLength &&
+    previousBody[prefixLength] === nextBody[prefixLength]
+  ) {
+    prefixLength += 1;
+  }
+
+  let previousSuffixIndex = previousBody.length;
+  let nextSuffixIndex = nextBody.length;
+  while (
+    previousSuffixIndex > prefixLength &&
+    nextSuffixIndex > prefixLength &&
+    previousBody[previousSuffixIndex - 1] === nextBody[nextSuffixIndex - 1]
+  ) {
+    previousSuffixIndex -= 1;
+    nextSuffixIndex -= 1;
+  }
+
+  return {
+    from: prefixLength,
+    to: previousSuffixIndex,
+    insert: nextBody.slice(prefixLength, nextSuffixIndex),
+  };
+}
+
+function transformAnchorWithBodyChange(
+  anchor: TextSelectionAnchor,
+  previousBody: string,
+  nextBody: string,
+) {
+  const edit = textEditFromBodyChange(previousBody, nextBody);
+  if (!edit) return refreshAnchor(nextBody, anchor);
+
+  return transformAnchorWithTextEdits(anchor, nextBody, [edit]);
+}
+
 function applyMarkdownInlineMarker(markdown: string, from: number, to: number, marker: "*" | "**") {
   const markerLength = marker.length;
   const selectedText = markdown.slice(from, to);
@@ -3507,9 +3479,7 @@ function App() {
     (binding) => binding.documentId === selectedDocument.id && binding.status !== "deleted",
   );
   const nativeStorageAvailable = hasNativeStorageAccess();
-  const activeNotes = assignAnnotationTones(
-    documentNotes.filter((note) => note.status === "active"),
-  );
+  const activeNotes = documentNotes.filter((note) => note.status === "active");
   const activeNote = documentNotes.find((note) => note.id === activeNoteId);
   const activeGlossaryBinding = documentGlossaryBindings.find(
     (binding) => binding.id === activeGlossaryBindingId,
@@ -3519,22 +3489,26 @@ function App() {
   );
 
   const activeGlossaryAnnotations: TextRangeAnnotation[] = documentGlossaryBindings
-    .filter((binding) => binding.status === "active")
+    .filter((binding) => binding.status === "active" && hasRenderableAnchor(binding.anchor))
     .map((binding) => ({
       id: `glossary:${binding.id}`,
       kind: "glossary",
       status: binding.status,
       anchor: binding.anchor,
-      tone: 0,
     }));
-  const activeNoteAnnotations: TextRangeAnnotation[] = activeNotes.map((note) => ({
-    id: note.id,
-    kind: "note",
-    status: note.status,
-    anchor: note.anchor,
-    tone: note.tone,
-  }));
-  const activeTextAnnotations = [...activeNoteAnnotations, ...activeGlossaryAnnotations];
+  const activeNoteAnnotations: TextRangeAnnotation[] = activeNotes
+    .filter((note) => hasRenderableAnchor(note.anchor))
+    .map((note) => ({
+      id: note.id,
+      kind: "note",
+      status: note.status,
+      anchor: note.anchor,
+      tone: note.tone,
+    }));
+  const activeTextAnnotations = assignAnnotationTones([
+    ...activeNoteAnnotations,
+    ...activeGlossaryAnnotations,
+  ]);
   const visibleTextAnnotations = noteModeEnabled ? activeTextAnnotations : [];
   const annotations: TextAnnotation[] = visibleTextAnnotations.map((annotation) => ({
     id: annotation.id,
@@ -5062,6 +5036,10 @@ function App() {
     if (body === selectedDocument.body) return;
 
     const documentId = selectedDocument.id;
+    const previousBody = selectedDocument.body;
+    const bodyAnchorTransform: BodyAnchorTransform =
+      anchorTransform ??
+      ((anchor, nextBody) => transformAnchorWithBodyChange(anchor, previousBody, nextBody));
     const savedBody = savedDocumentBodies[documentId] ?? selectedDocument.body;
 
     setDocuments((currentDocuments) =>
@@ -5071,25 +5049,21 @@ function App() {
     );
     setNotes((currentNotes) =>
       currentNotes.map((note) =>
-        note.documentId === documentId
-          ? anchorTransform && note.status === "active"
-            ? {
-                ...note,
-                anchor: anchorTransform(note.anchor, body),
-              }
-            : reconcileNote(note, body)
+        note.documentId === documentId && note.status === "active"
+          ? {
+              ...note,
+              anchor: bodyAnchorTransform(note.anchor, body),
+            }
           : note,
       ),
     );
     setGlossaryBindings((currentBindings) =>
       currentBindings.map((binding) =>
-        binding.documentId === documentId
-          ? anchorTransform && binding.status === "active"
-            ? {
-                ...binding,
-                anchor: anchorTransform(binding.anchor, body),
-              }
-            : reconcileGlossaryBinding(binding, body)
+        binding.documentId === documentId && binding.status === "active"
+          ? {
+              ...binding,
+              anchor: bodyAnchorTransform(binding.anchor, body),
+            }
           : binding,
       ),
     );
@@ -5998,10 +5972,12 @@ function App() {
                 role="switch"
                 type="button"
               >
-                <span className="note-mode-switch__label">筆記模式</span>
-                <span className="note-mode-switch__track" aria-hidden="true">
-                  <span className="note-mode-switch__thumb" />
-                </span>
+                <img
+                  alt=""
+                  aria-hidden="true"
+                  className="note-mode-switch__icon"
+                  src={noteModeEnabled ? notebookSelectedIcon : notebookRestIcon}
+                />
               </button>
             </div>
             {!hasOpenDocument ? (
