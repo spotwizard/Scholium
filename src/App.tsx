@@ -3436,6 +3436,7 @@ function App() {
     window.matchMedia(mobileViewportQuery).matches,
   );
   const [editorMode, setEditorMode] = useState<EditorMode>("preview");
+  const [noteModeEnabled, setNoteModeEnabled] = useState(false);
   const [dirtyDocumentStates, setDirtyDocumentStates] = useState<
     Record<string, DirtyDocumentState>
   >({});
@@ -3534,7 +3535,8 @@ function App() {
     tone: note.tone,
   }));
   const activeTextAnnotations = [...activeNoteAnnotations, ...activeGlossaryAnnotations];
-  const annotations: TextAnnotation[] = activeTextAnnotations.map((annotation) => ({
+  const visibleTextAnnotations = noteModeEnabled ? activeTextAnnotations : [];
+  const annotations: TextAnnotation[] = visibleTextAnnotations.map((annotation) => ({
     id: annotation.id,
     kind: annotation.kind,
     from: annotation.anchor.from,
@@ -3545,25 +3547,36 @@ function App() {
     to: annotation.anchor.to,
   }));
   const pendingAnchorIsCompleteBlock = Boolean(
-    pendingAnchor && isSelectionCompleteMarkdownBlock(selectedDocument.body, pendingAnchor),
+    noteModeEnabled &&
+      pendingAnchor &&
+      isSelectionCompleteMarkdownBlock(selectedDocument.body, pendingAnchor),
   );
   const pendingAnchorIsGlossaryTerm = Boolean(
-    pendingAnchor && isGlossarySelectionCandidate(pendingAnchor),
+    noteModeEnabled && pendingAnchor && isGlossarySelectionCandidate(pendingAnchor),
   );
   const activeNoteIsEditing = Boolean(activeNote && activeNoteMode === "edit");
   const activeGlossaryIsEditing = Boolean(activeGlossaryTerm && activeGlossaryMode === "edit");
-  const shouldShowSelectionConfirmation = Boolean(pendingAnchor && isMobileViewport);
-  const notePanelHasContent = Boolean(
-    shouldShowSelectionConfirmation ||
-      activeNote ||
-      activeGlossaryTerm ||
-      pendingGlossaryTerm,
+  const shouldShowSelectionConfirmation = Boolean(
+    noteModeEnabled && pendingAnchor && isMobileViewport,
   );
-  const floatingNotePanelShouldRender = notePanelHasContent;
+  const notePanelHasContent = Boolean(
+    noteModeEnabled &&
+      (shouldShowSelectionConfirmation ||
+        activeNote ||
+        activeGlossaryTerm ||
+        pendingGlossaryTerm),
+  );
+  const floatingNotePanelShouldRender = noteModeEnabled && notePanelHasContent;
 
   useEffect(() => {
     notePanelHasContentRef.current = notePanelHasContent;
   }, [notePanelHasContent]);
+
+  useEffect(() => {
+    if (noteModeEnabled) return;
+
+    resetNoteModeInteractionState();
+  }, [noteModeEnabled]);
 
   useEffect(
     () => () => {
@@ -5177,6 +5190,31 @@ function App() {
     return true;
   }
 
+  function resetNoteModeInteractionState() {
+    clearNotePanelCloseTimer();
+    clearReturnToViewTimer();
+    resetNoteTextareaCompositionState();
+    discardTransientEmptySelectionNote();
+    discardTransientEmptyGlossary();
+    selectionDismissedUntilRef.current = Date.now() + 700;
+    pendingGlossaryPromptLockUntilRef.current = 0;
+    window.getSelection()?.removeAllRanges();
+    setPendingAnchor(null);
+    setPendingGlossaryTerm(null);
+    setActiveNoteId("");
+    setActiveGlossaryBindingId("");
+    setActiveGlossaryTermId("");
+    setActiveNoteMode("view");
+    setActiveGlossaryMode("view");
+    setNoteDraft("");
+    setGlossaryDraft("");
+    setSelectionWarningPosition(null);
+    setFloatingNotePanelPosition(null);
+    setIsNotePanelClosing(false);
+    floatingNoteAnchorRectRef.current = null;
+    notePanelHasContentRef.current = false;
+  }
+
   function returnActiveNoteToViewMode() {
     if ((!activeNoteIsEditing && !activeGlossaryIsEditing) || isReturningToView) return;
 
@@ -5305,6 +5343,10 @@ function App() {
   }
 
   function handleSelectionChange(anchor: TextSelectionAnchor | null) {
+    if (!noteModeEnabled) {
+      return;
+    }
+
     if (!anchor) {
       if (
         Date.now() < pendingGlossaryPromptLockUntilRef.current &&
@@ -5393,6 +5435,7 @@ function App() {
   }
 
   function handleSelectionEnter(anchor: TextSelectionAnchor) {
+    if (!noteModeEnabled) return false;
     if (!hasOpenDocument) return false;
 
     if (selectionIsBlockedByExistingAnnotations(anchor)) {
@@ -5418,6 +5461,8 @@ function App() {
   }
 
   function showNoteViewer(noteId: string) {
+    if (!noteModeEnabled) return;
+
     const note = notes.find((candidate) => candidate.id === noteId && candidate.status !== "deleted");
     if (!note) return;
 
@@ -5434,6 +5479,8 @@ function App() {
   }
 
   function openNoteEditor(noteId: string) {
+    if (!noteModeEnabled) return;
+
     const note = notes.find((candidate) => candidate.id === noteId && candidate.status !== "deleted");
     if (!note) return;
 
@@ -5485,12 +5532,15 @@ function App() {
   }
 
   function startPendingGlossaryFlow() {
+    if (!noteModeEnabled) return;
     if (!pendingAnchor || !pendingAnchorIsGlossaryTerm) return;
 
     startGlossaryFlowForAnchor(pendingAnchor);
   }
 
   function startGlossaryFlowForAnchor(anchor: TextSelectionAnchor) {
+    if (!noteModeEnabled) return;
+
     discardTransientEmptySelectionNote();
     setSelectionWarningPosition(null);
     const anchorRect = currentSelectionAnchorRect();
@@ -5543,6 +5593,7 @@ function App() {
   }
 
   function bindPendingGlossaryTerm() {
+    if (!noteModeEnabled) return;
     if (!pendingAnchor || !pendingGlossaryTerm) return;
 
     const binding = createGlossaryBinding(pendingGlossaryTerm, pendingAnchor);
@@ -5561,6 +5612,8 @@ function App() {
   }
 
   function showGlossaryViewer(bindingId: string) {
+    if (!noteModeEnabled) return;
+
     const binding = glossaryBindings.find(
       (candidate) => candidate.id === bindingId && candidate.status !== "deleted",
     );
@@ -5585,6 +5638,8 @@ function App() {
   }
 
   function openGlossaryEditor(termId: string) {
+    if (!noteModeEnabled) return;
+
     const term = glossaryTerms.find((candidate) => candidate.id === termId);
     if (!term) return;
 
@@ -5603,6 +5658,8 @@ function App() {
   }
 
   function showAnnotationViewer(annotationId: string) {
+    if (!noteModeEnabled) return;
+
     if (annotationId.startsWith("glossary:")) {
       showGlossaryViewer(annotationId.slice("glossary:".length));
       return;
@@ -5672,12 +5729,15 @@ function App() {
   }
 
   function confirmPendingSelectionNote() {
+    if (!noteModeEnabled) return;
     if (!pendingAnchor || !pendingAnchorIsCompleteBlock) return;
 
     confirmSelectionNoteForAnchor(pendingAnchor);
   }
 
   function confirmSelectionNoteForAnchor(anchor: TextSelectionAnchor) {
+    if (!noteModeEnabled) return;
+
     discardTransientEmptySelectionNote();
     setSelectionWarningPosition(null);
 
@@ -5754,6 +5814,15 @@ function App() {
       notePanelHasContentRef.current = false;
     }
     markDocumentNotesDirty();
+  }
+
+  function toggleNoteMode() {
+    const nextNoteModeEnabled = !noteModeEnabled;
+    if (!nextNoteModeEnabled) {
+      resetNoteModeInteractionState();
+    }
+
+    setNoteModeEnabled(nextNoteModeEnabled);
   }
 
   const floatingNotePanelStyle: CSSProperties = floatingNotePanelPosition
@@ -5920,6 +5989,21 @@ function App() {
       <section className="editor-pane" aria-label="Markdown editor">
         <div className="editor-grid">
           <div className="editor-surface">
+            <div className="editor-toolbar" aria-label="Editor tools">
+              <button
+                aria-checked={noteModeEnabled}
+                aria-label={noteModeEnabled ? "關閉筆記模式" : "開啟筆記模式"}
+                className="note-mode-switch"
+                onClick={toggleNoteMode}
+                role="switch"
+                type="button"
+              >
+                <span className="note-mode-switch__label">筆記模式</span>
+                <span className="note-mode-switch__track" aria-hidden="true">
+                  <span className="note-mode-switch__thumb" />
+                </span>
+              </button>
+            </div>
             {!hasOpenDocument ? (
               <div className="empty-editor-state">
                 <h2>此目錄沒有 Markdown 檔案</h2>
@@ -5929,6 +6013,7 @@ function App() {
                 <MilkdownMarkdownEditor
                   annotations={annotations}
                   key={selectedDocument.id}
+                  noteModeEnabled={noteModeEnabled}
                   value={selectedDocument.body}
                   onAnnotationClick={showAnnotationViewer}
                   onAnnotationDoubleClick={showAnnotationViewer}
@@ -5939,6 +6024,7 @@ function App() {
             ) : (
                 <MarkdownEditor
                   annotations={annotations}
+                  noteModeEnabled={noteModeEnabled}
                   value={selectedDocument.body}
                   onAnnotationClick={showAnnotationViewer}
                   onAnnotationDoubleClick={showAnnotationViewer}
@@ -5951,7 +6037,7 @@ function App() {
         </div>
       </section>
 
-      {selectionWarningPosition ? (
+      {noteModeEnabled && selectionWarningPosition ? (
         <div className="selection-warning-popover" role="status" style={selectionWarningStyle}>
           請選取 1-3 個單詞建立名詞解釋，或選取完整句子/段落新增筆記。
         </div>

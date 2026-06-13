@@ -360,6 +360,78 @@ button:disabled {
   background: var(--color-surface);
 }
 
+.editor-toolbar {
+  position: absolute;
+  top: 20px;
+  right: var(--editor-content-inline-end-gutter);
+  z-index: 4;
+  display: flex;
+  justify-content: flex-end;
+  max-width: calc(100% - var(--editor-content-inline-start-gutter) - var(--editor-content-inline-end-gutter));
+}
+
+.note-mode-switch {
+  display: inline-flex;
+  min-width: 0;
+  min-height: 36px;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  padding: 5px 10px 5px 12px;
+  color: var(--color-accent-ink);
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: var(--shadow-low);
+  font-size: 0.82rem;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.note-mode-switch:hover {
+  border-color: var(--color-selected-border);
+  background: var(--color-surface-raised);
+}
+
+.note-mode-switch[aria-checked="true"] {
+  border-color: var(--color-accent);
+  color: var(--color-accent-strong);
+}
+
+.note-mode-switch__label {
+  white-space: nowrap;
+}
+
+.note-mode-switch__track {
+  position: relative;
+  flex: 0 0 auto;
+  width: 34px;
+  height: 20px;
+  border-radius: 999px;
+  background: var(--color-border);
+}
+
+.note-mode-switch__thumb {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--color-surface-raised);
+  box-shadow: 0 1px 2px rgba(32, 35, 41, 0.2);
+  transition:
+    transform 140ms ease,
+    background 140ms ease;
+}
+
+.note-mode-switch[aria-checked="true"] .note-mode-switch__track {
+  background: var(--color-accent);
+}
+
+.note-mode-switch[aria-checked="true"] .note-mode-switch__thumb {
+  transform: translateX(14px);
+}
+
 .empty-editor-state {
   display: grid;
   align-content: center;
@@ -1259,6 +1331,13 @@ button:disabled {
   .editor-surface {
     min-height: calc(460px + var(--editor-content-gutter) * 2);
     border-right: 0;
+    padding-top: 76px;
+  }
+
+  .editor-toolbar {
+    right: var(--editor-content-inline-end-gutter);
+    left: var(--editor-content-inline-start-gutter);
+    max-width: none;
   }
 
   .cm-scroller,

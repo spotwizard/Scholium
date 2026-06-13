@@ -25,6 +25,7 @@ import { loadScholiumMermaid } from "./mermaid";
 type MilkdownMarkdownEditorProps = {
   value: string;
   annotations: TextAnnotation[];
+  noteModeEnabled: boolean;
   onChange: (value: string, source: EditorChangeSource) => void;
   onSelectionChange: (anchor: TextSelectionAnchor | null) => void;
   onSelectionEnter: (anchor: TextSelectionAnchor) => boolean;
@@ -840,6 +841,7 @@ function createAnnotationPlugin({
 export function MilkdownMarkdownEditor({
   value,
   annotations,
+  noteModeEnabled,
   onChange,
   onSelectionChange,
   onSelectionEnter,
@@ -850,6 +852,7 @@ export function MilkdownMarkdownEditor({
   const rootRef = useRef<HTMLDivElement | null>(null);
   const crepeRef = useRef<Crepe | null>(null);
   const annotationsRef = useRef(annotations);
+  const noteModeEnabledRef = useRef(noteModeEnabled);
   const currentMarkdownRef = useRef(normalizeMarkdownForScholium(value));
   const onChangeRef = useRef(onChange);
   const onSelectionChangeRef = useRef(onSelectionChange);
@@ -875,6 +878,11 @@ export function MilkdownMarkdownEditor({
   function updateAnnotationFrames() {
     const container = containerRef.current;
     if (!container) return;
+
+    if (!noteModeEnabledRef.current) {
+      setAnnotationFrames((currentFrames) => (currentFrames.length === 0 ? currentFrames : []));
+      return;
+    }
 
     const nextFrames = measureMilkdownAnnotationFrames(container, annotationsRef.current);
     setAnnotationFrames((currentFrames) =>
@@ -908,6 +916,16 @@ export function MilkdownMarkdownEditor({
   useEffect(() => {
     onAnnotationDoubleClickRef.current = onAnnotationDoubleClick;
   }, [onAnnotationDoubleClick]);
+
+  useEffect(() => {
+    noteModeEnabledRef.current = noteModeEnabled;
+    if (!noteModeEnabled) {
+      onSelectionChangeRef.current(null);
+      setAnnotationFrames([]);
+    } else {
+      scheduleAnnotationFrameUpdate();
+    }
+  }, [noteModeEnabled]);
 
   useEffect(() => {
     annotationsRef.current = annotations;
@@ -1000,6 +1018,8 @@ export function MilkdownMarkdownEditor({
   }
 
   function updateSelectionFromDom() {
+    if (!noteModeEnabledRef.current) return;
+
     onSelectionChangeRef.current(anchorFromCurrentSelection());
   }
 
@@ -1083,6 +1103,8 @@ export function MilkdownMarkdownEditor({
   function handleSelectionEnterKeyDown(
     event: KeyboardEvent | ReactKeyboardEvent<HTMLDivElement>,
   ) {
+    if (!noteModeEnabledRef.current) return;
+
     const isPlainEnter =
       event.key === "Enter" &&
       !event.metaKey &&

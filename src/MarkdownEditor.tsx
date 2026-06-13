@@ -36,6 +36,7 @@ export type EditorChangeSource = "user" | "undo";
 type MarkdownEditorProps = {
   value: string;
   annotations: TextAnnotation[];
+  noteModeEnabled: boolean;
   onChange: (value: string, source: EditorChangeSource) => void;
   onSelectionChange: (anchor: TextSelectionAnchor | null) => void;
   onSelectionEnter: (anchor: TextSelectionAnchor) => boolean;
@@ -353,6 +354,7 @@ const annotationField = StateField.define<DecorationSet>({
 export function MarkdownEditor({
   value,
   annotations,
+  noteModeEnabled,
   onChange,
   onSelectionChange,
   onSelectionEnter,
@@ -366,6 +368,7 @@ export function MarkdownEditor({
   const onSelectionEnterRef = useRef(onSelectionEnter);
   const onAnnotationClickRef = useRef(onAnnotationClick);
   const onAnnotationDoubleClickRef = useRef(onAnnotationDoubleClick);
+  const noteModeEnabledRef = useRef(noteModeEnabled);
   const animationFrameRef = useRef(0);
   const selectionFrameRef = useRef(0);
   const selectionFallbackTimerRef = useRef(0);
@@ -405,9 +408,24 @@ export function MarkdownEditor({
     onAnnotationDoubleClickRef.current = onAnnotationDoubleClick;
   }, [onAnnotationDoubleClick]);
 
+  useEffect(() => {
+    noteModeEnabledRef.current = noteModeEnabled;
+    if (!noteModeEnabled) {
+      onSelectionChangeRef.current(null);
+      setAnnotationFrames([]);
+    } else {
+      scheduleAnnotationFrameUpdate();
+    }
+  }, [noteModeEnabled]);
+
   function updateAnnotationFrames() {
     const container = containerRef.current;
     if (!container) return;
+
+    if (!noteModeEnabledRef.current) {
+      setAnnotationFrames((currentFrames) => (currentFrames.length === 0 ? currentFrames : []));
+      return;
+    }
 
     const nextFrames = measureEditorAnnotationFrames(container);
     setAnnotationFrames((currentFrames) =>
@@ -429,6 +447,7 @@ export function MarkdownEditor({
   }
 
   function publishSelectionAfterMouseUp(view: EditorView) {
+    if (!noteModeEnabledRef.current) return;
     if (Date.now() < annotationInteractionUntilRef.current) return;
 
     window.cancelAnimationFrame(selectionFrameRef.current);
@@ -584,7 +603,9 @@ export function MarkdownEditor({
       mouseup(event, view) {
         if (event.button !== 0) return false;
 
-        const noteId = noteIdFromAnnotationPointerEvent(event);
+        const noteId = noteModeEnabledRef.current
+          ? noteIdFromAnnotationPointerEvent(event)
+          : null;
         if (noteId) {
           if (editorHasTextSelection(view)) {
             mouseSelectionStartedRef.current = false;
@@ -609,7 +630,9 @@ export function MarkdownEditor({
       pointerup(event, view) {
         if (event.button !== 0) return false;
 
-        const noteId = noteIdFromAnnotationPointerEvent(event);
+        const noteId = noteModeEnabledRef.current
+          ? noteIdFromAnnotationPointerEvent(event)
+          : null;
         if (noteId) {
           if (editorHasTextSelection(view)) {
             mouseSelectionStartedRef.current = false;
@@ -628,6 +651,7 @@ export function MarkdownEditor({
         return false;
       },
       click(event) {
+        if (!noteModeEnabledRef.current) return false;
         const noteId = noteIdFromAnnotationPointerEvent(event);
         if (!noteId) return false;
         const view = viewRef.current;
@@ -645,6 +669,7 @@ export function MarkdownEditor({
         return true;
       },
       dblclick(event) {
+        if (!noteModeEnabledRef.current) return false;
         const noteId = noteIdFromAnnotationPointerEvent(event);
         if (!noteId) return false;
         const view = viewRef.current;
@@ -684,6 +709,7 @@ export function MarkdownEditor({
           {
             key: "Enter",
             run(view) {
+              if (!noteModeEnabledRef.current) return false;
               const anchor = buildAnchorFromSelection(view);
               if (!anchor) return false;
 
@@ -713,6 +739,8 @@ export function MarkdownEditor({
     }
 
     function handleWindowSelectionPointerEnd(event: MouseEvent | PointerEvent) {
+      if (!noteModeEnabledRef.current) return;
+
       const browserSelection = window.getSelection();
       const activeElement = document.activeElement;
       if (noteIdFromAnnotationPointerEvent(event)) {
@@ -751,6 +779,8 @@ export function MarkdownEditor({
     }
 
     function handleDocumentSelectionChange() {
+      if (!noteModeEnabledRef.current) return;
+
       window.clearTimeout(selectionFallbackTimerRef.current);
       selectionFallbackTimerRef.current = window.setTimeout(() => {
         if (Date.now() < annotationInteractionUntilRef.current) {
