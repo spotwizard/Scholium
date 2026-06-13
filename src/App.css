@@ -79,6 +79,8 @@ button:disabled {
 .scholium-shell {
   --document-pane-width: 272px;
   --editor-content-gutter: 72px;
+  --editor-content-inline-start-gutter: clamp(96px, 7vw, 120px);
+  --editor-content-inline-end-gutter: var(--editor-content-gutter);
   display: grid;
   grid-template-columns: minmax(220px, var(--document-pane-width)) minmax(0, 1fr);
   min-height: 100vh;
@@ -353,7 +355,8 @@ button:disabled {
   position: relative;
   min-width: 0;
   min-height: 0;
-  padding: var(--editor-content-gutter);
+  padding: var(--editor-content-gutter) var(--editor-content-inline-end-gutter)
+    var(--editor-content-gutter) var(--editor-content-inline-start-gutter);
   background: var(--color-surface);
 }
 
@@ -1233,6 +1236,8 @@ button:disabled {
   .scholium-shell {
     --document-pane-width: 0px;
     --editor-content-gutter: 32px;
+    --editor-content-inline-start-gutter: 32px;
+    --editor-content-inline-end-gutter: 32px;
     display: block;
   }
 
