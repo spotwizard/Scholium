@@ -188,6 +188,7 @@ type ActiveNoteMode = "view" | "edit";
 
 type PreviewAnnotationFrame = {
   frameKey: string;
+  isFocusTarget?: boolean;
   kind: AnnotationKind;
   noteId: string;
   tone: AnnotationTone;
@@ -272,6 +273,37 @@ function CopyIcon() {
   );
 }
 
+function PencilIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      className="note-action-icon"
+      fill="none"
+      viewBox="0 0 24 24"
+    >
+      <path d="M4 20h4l10.5-10.5a2.1 2.1 0 0 0 0-3L17.5 5.5a2.1 2.1 0 0 0-3 0L4 16z" />
+      <path d="m13.5 6.5 4 4" />
+    </svg>
+  );
+}
+
+function NoteLibraryIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      className="note-action-icon"
+      fill="none"
+      viewBox="0 0 24 24"
+    >
+      <path d="M5 4h12c1.1 0 2 .9 2 2v14H7c-1.1 0-2-.9-2-2z" />
+      <path d="M7 4v14" />
+      <path d="M10 8h5" />
+      <path d="M10 12h6" />
+      <path d="M10 16h4" />
+    </svg>
+  );
+}
+
 type FloatingNotePosition = {
   connector: {
     angle: number;
@@ -298,6 +330,7 @@ type PreviewAnnotationTextRange = {
 
 type TextRangeAnnotation = {
   id: string;
+  isFocusTarget?: boolean;
   kind: AnnotationKind;
   status: NoteStatus;
   anchor: TextSelectionAnchor;
@@ -1418,8 +1451,11 @@ function renderAnnotationSpan(
 ) {
   return (
     <span
-      className="preview-note-annotation"
+      className={`preview-note-annotation ${
+        range.annotation.isFocusTarget ? "is-focus-target" : ""
+      }`}
       data-annotation-kind={range.annotation.kind}
+      data-focus-target={range.annotation.isFocusTarget ? "true" : "false"}
       data-note-id={range.annotation.id}
       data-note-tone={range.annotation.tone ?? 0}
       key={key}
@@ -1625,6 +1661,7 @@ function measurePreviewAnnotationFrames(container: HTMLDivElement): PreviewAnnot
   function frameFromBounds(
     noteId: string,
     frameKey: string,
+    isFocusTarget: boolean,
     kind: AnnotationKind,
     tone: AnnotationTone,
     left: number,
@@ -1634,6 +1671,7 @@ function measurePreviewAnnotationFrames(container: HTMLDivElement): PreviewAnnot
   ): PreviewAnnotationFrame {
     return {
       frameKey,
+      isFocusTarget,
       kind,
       noteId,
       tone,
@@ -1659,6 +1697,7 @@ function measurePreviewAnnotationFrames(container: HTMLDivElement): PreviewAnnot
     .forEach((annotation, annotationIndex) => {
       const noteId = annotation.dataset.noteId;
       if (!noteId) return;
+      const isFocusTarget = annotation.dataset.focusTarget === "true";
       const tone: AnnotationTone = annotation.dataset.noteTone === "1" ? 1 : 0;
       const kind: AnnotationKind =
         annotation.dataset.annotationKind === "glossary" ? "glossary" : "note";
@@ -1696,6 +1735,7 @@ function measurePreviewAnnotationFrames(container: HTMLDivElement): PreviewAnnot
           frameFromBounds(
             noteId,
             `${noteId}:inline:${annotationIndex}:${rectIndex}`,
+            isFocusTarget,
             kind,
             tone,
             rect.left - previewAnnotationFramePadding,
@@ -1728,6 +1768,7 @@ function arePreviewAnnotationFramesEqual(
 
     return (
       leftFrame.frameKey === rightFrame.frameKey &&
+      leftFrame.isFocusTarget === rightFrame.isFocusTarget &&
       leftFrame.kind === rightFrame.kind &&
       leftFrame.noteId === rightFrame.noteId &&
       leftFrame.tone === rightFrame.tone &&
@@ -3291,8 +3332,11 @@ export function MarkdownPreview({
       <div aria-hidden="true" className="preview-annotation-layer">
         {annotationFrames.map((frame) => (
           <span
-            className="preview-annotation-frame"
+            className={`preview-annotation-frame ${
+              frame.isFocusTarget ? "is-focus-target" : ""
+            }`}
             data-annotation-kind={frame.kind}
+            data-focus-target={frame.isFocusTarget ? "true" : "false"}
             data-note-id={frame.noteId}
             data-note-tone={frame.tone}
             key={frame.frameKey}
@@ -3442,6 +3486,8 @@ function App() {
   const [editorMode, setEditorMode] = useState<EditorMode>("preview");
   const [noteModeEnabled, setNoteModeEnabled] = useState(false);
   const [glossaryModeEnabled, setGlossaryModeEnabled] = useState(false);
+  const [noteLibraryOpen, setNoteLibraryOpen] = useState(false);
+  const [focusedLibraryNoteId, setFocusedLibraryNoteId] = useState("");
   const [dirtyDocumentStates, setDirtyDocumentStates] = useState<
     Record<string, DirtyDocumentState>
   >({});
@@ -3551,6 +3597,8 @@ function App() {
   const pendingAnchorIsGlossaryTerm = Boolean(
     glossaryModeActive && pendingAnchor && isGlossarySelectionCandidate(pendingAnchor),
   );
+  const noteLibraryFocusedNoteCandidateId =
+    noteModeEnabled && noteLibraryOpen ? focusedLibraryNoteId : "";
 
   const activeGlossaryAnnotations: TextRangeAnnotation[] = glossaryModeActive
     ? documentGlossaryBindings
@@ -3572,6 +3620,7 @@ function App() {
     .filter((note) => hasRenderableAnchor(note.anchor))
     .map((note) => ({
       id: note.id,
+      isFocusTarget: note.id === noteLibraryFocusedNoteCandidateId,
       kind: "note",
       status: note.status,
       anchor: note.anchor,
@@ -3590,6 +3639,27 @@ function App() {
     ...activeNoteAnnotations,
     ...activeGlossaryAnnotations,
   ]);
+  const activeNoteToneById = new Map(
+    activeTextAnnotations
+      .filter((annotation) => annotation.kind === "note")
+      .map((annotation) => [annotation.id, annotation.tone ?? 0]),
+  );
+  const noteLibraryNotes = activeNotes
+    .filter((note) => selectionNoteHasContent(note) && hasRenderableAnchor(note.anchor))
+    .slice()
+    .sort((leftNote, rightNote) => {
+      const positionDifference = leftNote.anchor.from - rightNote.anchor.from;
+      if (positionDifference !== 0) return positionDifference;
+
+      return leftNote.createdAt.localeCompare(rightNote.createdAt);
+    });
+  const noteLibrarySignature = noteLibraryNotes
+    .map((note) => `${note.id}:${note.anchor.from}:${note.anchor.to}:${note.body}`)
+    .join("|");
+  const noteLibraryFocusActive = Boolean(
+    noteLibraryFocusedNoteCandidateId &&
+      noteLibraryNotes.some((note) => note.id === noteLibraryFocusedNoteCandidateId),
+  );
   const visibleTextAnnotations =
     noteModeEnabled && pendingAnchorAnnotation
       ? [...activeTextAnnotations, pendingAnchorAnnotation]
@@ -3598,6 +3668,7 @@ function App() {
         : [];
   const annotations: TextAnnotation[] = visibleTextAnnotations.map((annotation) => ({
     id: annotation.id,
+    isFocusTarget: annotation.isFocusTarget,
     kind: annotation.kind,
     from: annotation.anchor.from,
     prefix: annotation.anchor.prefix,
@@ -3636,7 +3707,18 @@ function App() {
 
     resetNoteModeInteractionState();
     setGlossaryModeEnabled(false);
+    setNoteLibraryOpen(false);
+    setFocusedLibraryNoteId("");
   }, [noteModeEnabled]);
+
+  useEffect(() => {
+    if (
+      focusedLibraryNoteId &&
+      !noteLibraryNotes.some((note) => note.id === focusedLibraryNoteId)
+    ) {
+      setFocusedLibraryNoteId("");
+    }
+  }, [focusedLibraryNoteId, noteLibrarySignature]);
 
   useEffect(() => {
     function recordPointerAnchorRect(event: PointerEvent | globalThis.MouseEvent) {
@@ -3896,33 +3978,36 @@ function App() {
     };
   }
 
-  function activeNoteAnchorRect(noteId: string) {
-    const noteElements = Array.from(
+  function annotationAnchorRect(annotationId: string) {
+    const frameElements = Array.from(
       document.querySelectorAll<HTMLElement>(
-        ".cm-note-annotation[data-note-id], .preview-note-annotation[data-note-id], .milkdown-note-annotation[data-note-id]",
+        ".cm-annotation-frame[data-note-id], .preview-annotation-frame[data-note-id], .milkdown-annotation-frame[data-note-id]",
       ),
-    ).filter((element) => element.dataset.noteId === noteId);
-
-    const rects = noteElements.flatMap((element) =>
+    ).filter((element) => element.dataset.noteId === annotationId);
+    const frameRects = frameElements.flatMap((element) =>
       Array.from(element.getClientRects()).filter((rect) => rect.width > 0 && rect.height > 0),
     );
+    const frameAnchorRect = textAnchorRectFromClientRects(frameRects);
+    if (frameAnchorRect) return frameAnchorRect;
 
-    return textAnchorRectFromClientRects(rects);
-  }
-
-  function activeGlossaryAnchorRect(bindingId: string) {
-    const annotationId = `glossary:${bindingId}`;
-    const glossaryElements = Array.from(
+    const textElements = Array.from(
       document.querySelectorAll<HTMLElement>(
         ".cm-note-annotation[data-note-id], .preview-note-annotation[data-note-id], .milkdown-note-annotation[data-note-id]",
       ),
     ).filter((element) => element.dataset.noteId === annotationId);
-
-    const rects = glossaryElements.flatMap((element) =>
+    const textRects = textElements.flatMap((element) =>
       Array.from(element.getClientRects()).filter((rect) => rect.width > 0 && rect.height > 0),
     );
 
-    return textAnchorRectFromClientRects(rects);
+    return textAnchorRectFromClientRects(textRects);
+  }
+
+  function activeNoteAnchorRect(noteId: string) {
+    return annotationAnchorRect(noteId);
+  }
+
+  function activeGlossaryAnchorRect(bindingId: string) {
+    return annotationAnchorRect(`glossary:${bindingId}`);
   }
 
   function calculateFloatingNotePosition(
@@ -5670,7 +5755,7 @@ function App() {
   }
 
   function handleSelectionChange(anchor: TextSelectionAnchor | null) {
-    if (!noteModeEnabled) {
+    if (!noteModeEnabled || noteLibraryOpen) {
       return;
     }
 
@@ -5799,6 +5884,7 @@ function App() {
   function handleSelectionEnter(anchor: TextSelectionAnchor) {
     if (!noteModeEnabled) return false;
     if (!hasOpenDocument) return false;
+    if (noteLibraryOpen) return false;
 
     if (selectionIsBlockedByExistingAnnotations(anchor)) {
       return true;
@@ -6069,6 +6155,7 @@ function App() {
 
   function showAnnotationViewer(annotationId: string) {
     if (!noteModeEnabled) return;
+    if (noteLibraryOpen) return;
 
     if (annotationId.startsWith("glossary:")) {
       if (!glossaryModeActive) return;
@@ -6249,6 +6336,43 @@ function App() {
     setGlossaryModeEnabled(nextGlossaryModeEnabled);
   }
 
+  function handleNoteLibraryCardBlur(
+    noteId: string,
+    event: FocusEvent<HTMLElement>,
+  ) {
+    const nextFocusedElement = event.relatedTarget;
+    if (nextFocusedElement instanceof Node && event.currentTarget.contains(nextFocusedElement)) {
+      return;
+    }
+
+    setFocusedLibraryNoteId((currentNoteId) =>
+      currentNoteId === noteId ? "" : currentNoteId,
+    );
+  }
+
+  function handleShellMouseDownCapture(event: MouseEvent<HTMLElement>) {
+    if (!noteLibraryFocusActive || !focusedLibraryNoteId) return;
+
+    const target = event.target;
+    if (target instanceof Element && target.closest(".note-library-card.is-focused")) {
+      return;
+    }
+
+    setFocusedLibraryNoteId("");
+  }
+
+  function toggleNoteLibrary() {
+    if (!noteModeEnabled) return;
+
+    const nextNoteLibraryOpen = !noteLibraryOpen;
+    setFocusedLibraryNoteId("");
+    if (nextNoteLibraryOpen) {
+      resetNoteModeInteractionState();
+    }
+
+    setNoteLibraryOpen(nextNoteLibraryOpen);
+  }
+
   const floatingNotePanelStyle: CSSProperties = floatingNotePanelPosition
     ? {
         left: floatingNotePanelPosition.left,
@@ -6325,8 +6449,16 @@ function App() {
     ? "請選取 1-3 個單詞建立名詞解釋，或選取完整句子/段落新增筆記。"
     : "請選取完整句子或段落新增筆記。";
 
+  const shellClassName = [
+    "scholium-shell",
+    noteModeEnabled && noteLibraryOpen ? "is-note-library-open" : "",
+    noteLibraryFocusActive ? "is-note-library-focus-active" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
   return (
-    <main className="scholium-shell">
+    <main className={shellClassName} onMouseDownCapture={handleShellMouseDownCapture}>
       <aside className="document-pane" aria-label="Documents">
         <div className="pane-header">
           <div>
@@ -6419,6 +6551,18 @@ function App() {
             <div className="editor-toolbar" aria-label="Editor tools">
               {noteModeEnabled ? (
                 <button
+                  aria-checked={noteLibraryOpen}
+                  aria-label={noteLibraryOpen ? "收起筆記庫" : "展開筆記庫"}
+                  className="note-mode-switch note-library-toggle"
+                  onClick={toggleNoteLibrary}
+                  role="switch"
+                  type="button"
+                >
+                  <NoteLibraryIcon />
+                </button>
+              ) : null}
+              {noteModeEnabled ? (
+                <button
                   aria-checked={glossaryModeActive}
                   aria-label={glossaryModeActive ? "關閉名詞解釋模式" : "開啟名詞解釋模式"}
                   className="note-mode-switch"
@@ -6484,6 +6628,75 @@ function App() {
           </div>
         </div>
       </section>
+
+      {noteModeEnabled ? (
+        <aside
+          aria-hidden={!noteLibraryOpen}
+          aria-label="筆記庫"
+          className={`note-library-pane ${noteLibraryOpen ? "is-open" : ""} ${
+            noteLibraryFocusActive ? "is-focus-active" : ""
+          }`}
+        >
+          <div className="note-library-header">
+            <h2>筆記庫</h2>
+            <span>{noteLibraryNotes.length}</span>
+          </div>
+          <div className="note-library-list">
+            {noteLibraryNotes.length > 0 ? (
+              noteLibraryNotes.map((note) => (
+                <article
+                  className={`note-library-card ${activeNoteId === note.id ? "is-active" : ""} ${
+                    focusedLibraryNoteId === note.id ? "is-focused" : ""
+                  }`}
+                  data-note-id={note.id}
+                  data-note-tone={activeNoteToneById.get(note.id) ?? note.tone ?? 0}
+                  key={note.id}
+                  tabIndex={0}
+                  onBlur={(event) => handleNoteLibraryCardBlur(note.id, event)}
+                  onClick={() => setFocusedLibraryNoteId(note.id)}
+                >
+                  <div className="note-library-card__header">
+                    <p className="eyebrow">Note</p>
+                    <div className="note-actions note-library-card__actions">
+                      <button
+                        type="button"
+                        aria-label="Edit note"
+                        title="Edit note"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          openNoteEditor(note.id);
+                        }}
+                      >
+                        <PencilIcon />
+                      </button>
+                      <button
+                        className="is-danger"
+                        type="button"
+                        aria-label="Delete note"
+                        title="Delete note"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          deleteNote(note.id);
+                        }}
+                      >
+                        <TrashIcon />
+                      </button>
+                    </div>
+                  </div>
+                  <MarkdownPreviewContent
+                    className="bottom-note-body note-library-card__body"
+                    emptyLabel="無內容"
+                    onDoubleClick={() => openNoteEditor(note.id)}
+                    value={note.body}
+                  />
+                </article>
+              ))
+            ) : (
+              <p className="note-library-empty">尚無筆記</p>
+            )}
+          </div>
+        </aside>
+      ) : null}
 
       {noteModeEnabled && selectionWarningPosition ? (
         <div className="selection-warning-popover" role="status" style={selectionWarningStyle}>

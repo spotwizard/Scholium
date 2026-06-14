@@ -22,6 +22,7 @@ export type AnnotationTone = 0 | 1;
 
 export type TextAnnotation = {
   id: string;
+  isFocusTarget?: boolean;
   kind?: "note" | "glossary";
   from: number;
   prefix?: string;
@@ -47,6 +48,7 @@ type MarkdownEditorProps = {
 
 type EditorAnnotationFrame = {
   frameKey: string;
+  isFocusTarget?: boolean;
   noteId: string;
   kind: "note" | "glossary";
   tone: AnnotationTone;
@@ -249,12 +251,17 @@ function buildDecorations(annotations: TextAnnotation[]) {
       Decoration.mark({
         attributes: {
           "data-annotation-kind": annotation.kind ?? "note",
+          "data-focus-target": annotation.isFocusTarget ? "true" : "false",
           "data-note-id": annotation.id,
           "data-note-tone": String(annotation.tone ?? 0),
         },
-        class: `cm-note-annotation ${
-          annotation.kind === "glossary" ? "cm-glossary-annotation" : ""
-        }`,
+        class: [
+          "cm-note-annotation",
+          annotation.kind === "glossary" ? "cm-glossary-annotation" : "",
+          annotation.isFocusTarget ? "is-focus-target" : "",
+        ]
+          .filter(Boolean)
+          .join(" "),
       }).range(annotation.from, annotation.to),
     );
 
@@ -270,6 +277,7 @@ function measureEditorAnnotationFrames(container: HTMLDivElement): EditorAnnotat
   const rectsByNoteId = new Map<string, EditorAnnotationRect[]>();
   const tonesByNoteId = new Map<string, AnnotationTone>();
   const kindsByNoteId = new Map<string, "note" | "glossary">();
+  const focusByNoteId = new Map<string, boolean>();
 
   container
     .querySelectorAll<HTMLElement>(".cm-note-annotation[data-note-id]")
@@ -277,6 +285,7 @@ function measureEditorAnnotationFrames(container: HTMLDivElement): EditorAnnotat
       const noteId = annotation.dataset.noteId;
       if (!noteId) return;
       tonesByNoteId.set(noteId, annotation.dataset.noteTone === "1" ? 1 : 0);
+      focusByNoteId.set(noteId, annotation.dataset.focusTarget === "true");
       kindsByNoteId.set(
         noteId,
         annotation.dataset.annotationKind === "glossary" ? "glossary" : "note",
@@ -301,6 +310,7 @@ function measureEditorAnnotationFrames(container: HTMLDivElement): EditorAnnotat
     .flatMap(([noteId, rects]) => {
       const kind = kindsByNoteId.get(noteId) ?? "note";
       const tone = tonesByNoteId.get(noteId) ?? 0;
+      const isFocusTarget = focusByNoteId.get(noteId) ?? false;
       const sortedRects = rects.sort(
         (left, right) => left.top - right.top || left.left - right.left,
       );
@@ -327,6 +337,7 @@ function measureEditorAnnotationFrames(container: HTMLDivElement): EditorAnnotat
 
         return {
           frameKey: `${kind}:${noteId}:source:${rectIndex}`,
+          isFocusTarget,
           noteId,
           kind,
           tone,
@@ -360,6 +371,7 @@ function areEditorAnnotationFramesEqual(
 
     return (
       leftFrame.frameKey === rightFrame.frameKey &&
+      leftFrame.isFocusTarget === rightFrame.isFocusTarget &&
       leftFrame.noteId === rightFrame.noteId &&
       leftFrame.kind === rightFrame.kind &&
       leftFrame.tone === rightFrame.tone &&
@@ -424,7 +436,9 @@ export function MarkdownEditor({
       annotations
         .map(
           (annotation) =>
-            `${annotation.id}:${annotation.from}:${annotation.to}:${annotation.tone ?? 0}`,
+            `${annotation.id}:${annotation.from}:${annotation.to}:${annotation.tone ?? 0}:${
+              annotation.isFocusTarget ? 1 : 0
+            }`,
         )
         .join("|"),
     [annotations],
@@ -928,8 +942,11 @@ export function MarkdownEditor({
       <div aria-hidden="true" className="cm-annotation-layer">
         {annotationFrames.map((frame) => (
           <span
-            className="cm-annotation-frame"
+            className={`cm-annotation-frame ${
+              frame.isFocusTarget ? "is-focus-target" : ""
+            }`}
             data-annotation-kind={frame.kind}
+            data-focus-target={frame.isFocusTarget ? "true" : "false"}
             data-note-id={frame.noteId}
             data-note-tone={frame.tone}
             key={frame.frameKey}

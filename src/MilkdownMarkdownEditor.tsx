@@ -48,6 +48,7 @@ type MilkdownCodeBlockApplyPreview = (value: null | string | HTMLElement) => voi
 
 type MilkdownAnnotationFrame = {
   frameKey: string;
+  isFocusTarget?: boolean;
   noteId: string;
   kind: "note" | "glossary";
   tone: AnnotationTone;
@@ -66,6 +67,7 @@ type MilkdownAnnotationRect = {
 
 type MilkdownAnnotationSource = {
   noteId: string;
+  isFocusTarget?: boolean;
   kind: "note" | "glossary";
   tone: AnnotationTone;
 };
@@ -370,6 +372,7 @@ function milkdownAnnotationIndexFromClassName(className: string) {
 function milkdownAnnotationSource(annotation: TextAnnotation): MilkdownAnnotationSource {
   return {
     noteId: annotation.id,
+    isFocusTarget: annotation.isFocusTarget,
     kind: annotation.kind === "glossary" ? "glossary" : "note",
     tone: annotation.tone ?? 0,
   };
@@ -397,10 +400,12 @@ function annotationSourcesFromElement(
   const kind: "note" | "glossary" =
     element.dataset.annotationKind === "glossary" ? "glossary" : "note";
   const tone: AnnotationTone = element.dataset.noteTone === "1" ? 1 : 0;
+  const isFocusTarget = element.dataset.focusTarget === "true";
 
   return [
     {
       noteId,
+      isFocusTarget,
       kind,
       tone,
     },
@@ -415,6 +420,7 @@ function measureMilkdownAnnotationFrames(
   const rectsByNoteId = new Map<string, MilkdownAnnotationRect[]>();
   const tonesByNoteId = new Map<string, AnnotationTone>();
   const kindsByNoteId = new Map<string, "note" | "glossary">();
+  const focusByNoteId = new Map<string, boolean>();
 
   container
     .querySelectorAll<HTMLElement>(".milkdown-note-annotation")
@@ -437,6 +443,7 @@ function measureMilkdownAnnotationFrames(
       sources.forEach((source) => {
         tonesByNoteId.set(source.noteId, source.tone);
         kindsByNoteId.set(source.noteId, source.kind);
+        focusByNoteId.set(source.noteId, Boolean(source.isFocusTarget));
 
         rectsByNoteId.set(source.noteId, [
           ...(rectsByNoteId.get(source.noteId) ?? []),
@@ -449,6 +456,7 @@ function measureMilkdownAnnotationFrames(
     .flatMap(([noteId, rects]) => {
       const kind = kindsByNoteId.get(noteId) ?? "note";
       const tone = tonesByNoteId.get(noteId) ?? 0;
+      const isFocusTarget = focusByNoteId.get(noteId) ?? false;
       const sortedRects = rects.sort(
         (left, right) => left.top - right.top || left.left - right.left,
       );
@@ -475,6 +483,7 @@ function measureMilkdownAnnotationFrames(
 
         return {
           frameKey: `${kind}:${noteId}:milkdown:${rectIndex}`,
+          isFocusTarget,
           noteId,
           kind,
           tone,
@@ -509,6 +518,7 @@ function milkdownAnnotationFramesAreEqual(
 
     return (
       leftFrame.frameKey === rightFrame.frameKey &&
+      leftFrame.isFocusTarget === rightFrame.isFocusTarget &&
       leftFrame.noteId === rightFrame.noteId &&
       leftFrame.kind === rightFrame.kind &&
       leftFrame.tone === rightFrame.tone &&
@@ -727,10 +737,16 @@ function buildAnnotationDecorations(
   const { positions, text } = buildNormalizedVisibleTextIndex(doc);
   const decorations = annotations.flatMap((annotation, annotationIndex) => {
     const decorationAttributes = {
-      class: `milkdown-note-annotation ${
-        annotation.kind === "glossary" ? "milkdown-glossary-annotation" : ""
-      } ${milkdownAnnotationClassName(annotationIndex)}`,
+      class: [
+        "milkdown-note-annotation",
+        annotation.kind === "glossary" ? "milkdown-glossary-annotation" : "",
+        annotation.isFocusTarget ? "is-focus-target" : "",
+        milkdownAnnotationClassName(annotationIndex),
+      ]
+        .filter(Boolean)
+        .join(" "),
       "data-annotation-kind": annotation.kind ?? "note",
+      "data-focus-target": annotation.isFocusTarget ? "true" : "false",
       "data-note-id": annotation.id,
       "data-note-tone": String(annotation.tone ?? 0),
     };
@@ -877,7 +893,7 @@ export function MilkdownMarkdownEditor({
           (annotation) =>
             `${annotation.id}:${annotation.from}:${annotation.to}:${annotation.selectedText ?? ""}:${
               annotation.tone ?? 0
-            }:${annotation.kind ?? "note"}`,
+            }:${annotation.kind ?? "note"}:${annotation.isFocusTarget ? 1 : 0}`,
         )
         .join("|"),
     [annotations],
@@ -1323,8 +1339,11 @@ export function MilkdownMarkdownEditor({
       <div aria-hidden="true" className="milkdown-annotation-layer">
         {annotationFrames.map((frame) => (
           <div
-            className="milkdown-annotation-frame"
+            className={`milkdown-annotation-frame ${
+              frame.isFocusTarget ? "is-focus-target" : ""
+            }`}
             data-annotation-kind={frame.kind}
+            data-focus-target={frame.isFocusTarget ? "true" : "false"}
             data-note-id={frame.noteId}
             data-note-tone={frame.tone}
             key={frame.frameKey}
