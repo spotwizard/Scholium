@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { markdown } from "@codemirror/lang-markdown";
-import { EditorState, Range, StateEffect, StateField } from "@codemirror/state";
+import { Compartment, EditorState, Range, StateEffect, StateField } from "@codemirror/state";
 import {
   Decoration,
   DecorationSet,
@@ -37,6 +37,7 @@ type MarkdownEditorProps = {
   value: string;
   annotations: TextAnnotation[];
   noteModeEnabled: boolean;
+  readOnly?: boolean;
   onChange: (value: string, source: EditorChangeSource) => void;
   onSelectionChange: (anchor: TextSelectionAnchor | null) => void;
   onSelectionEnter: (anchor: TextSelectionAnchor) => boolean;
@@ -71,6 +72,17 @@ const setAnnotationsEffect = StateEffect.define<TextAnnotation[]>();
 const editorAnnotationFramePadding = 4;
 const editorAnnotationLineJoinMaxGap = 20;
 const annotationSelectionSuppressionMs = 1200;
+const annotationClickDelayMs = 500;
+
+function editorReadOnlyExtensions(readOnly: boolean) {
+  return [
+    EditorState.readOnly.of(readOnly),
+    EditorView.editable.of(!readOnly),
+    EditorState.transactionFilter.of((transaction) =>
+      readOnly && transaction.docChanged ? [] : transaction,
+    ),
+  ];
+}
 
 function buildAnchor(value: string, from: number, to: number): TextSelectionAnchor | null {
   if (from === to) return null;
@@ -85,6 +97,29 @@ function buildAnchor(value: string, from: number, to: number): TextSelectionAnch
     prefix: value.slice(Math.max(0, from - 48), from),
     suffix: value.slice(to, Math.min(value.length, to + 48)),
   };
+}
+
+function textIndices(text: string, query: string) {
+  const indices: number[] = [];
+  if (!query) return indices;
+
+  let index = text.indexOf(query);
+  while (index >= 0) {
+    indices.push(index);
+    index = text.indexOf(query, index + query.length);
+  }
+
+  return indices;
+}
+
+function closestTextIndex(indices: number[], approximateIndex: number) {
+  if (indices.length === 0) return -1;
+
+  return indices.reduce((closestIndex, index) =>
+    Math.abs(index - approximateIndex) < Math.abs(closestIndex - approximateIndex)
+      ? index
+      : closestIndex,
+  );
 }
 
 function browserSelectionBelongsToView(
@@ -126,7 +161,10 @@ function buildAnchorFromSelection(view: EditorView): TextSelectionAnchor | null 
     }
 
     const selectedText = browserSelection.toString();
-    const selectedTextIndex = doc.indexOf(selectedText);
+    const selectedTextIndex = closestTextIndex(
+      textIndices(doc, selectedText),
+      view.state.selection.main.from,
+    );
     if (selectedTextIndex >= 0) {
       return buildAnchor(doc, selectedTextIndex, selectedTextIndex + selectedText.length);
     }
@@ -355,6 +393,7 @@ export function MarkdownEditor({
   value,
   annotations,
   noteModeEnabled,
+  readOnly = false,
   onChange,
   onSelectionChange,
   onSelectionEnter,
@@ -369,9 +408,12 @@ export function MarkdownEditor({
   const onAnnotationClickRef = useRef(onAnnotationClick);
   const onAnnotationDoubleClickRef = useRef(onAnnotationDoubleClick);
   const noteModeEnabledRef = useRef(noteModeEnabled);
+  const readOnlyRef = useRef(readOnly);
+  const readOnlyCompartment = useMemo(() => new Compartment(), []);
   const animationFrameRef = useRef(0);
   const selectionFrameRef = useRef(0);
   const selectionFallbackTimerRef = useRef(0);
+  const annotationClickTimerRef = useRef(0);
   const mouseSelectionStartedRef = useRef(false);
   const annotationInteractionUntilRef = useRef(0);
   const suppressNextChangeRef = useRef(false);
@@ -386,6 +428,13 @@ export function MarkdownEditor({
         )
         .join("|"),
     [annotations],
+  );
+
+  useEffect(
+    () => () => {
+      window.clearTimeout(annotationClickTimerRef.current);
+    },
+    [],
   );
 
   useEffect(() => {
@@ -418,6 +467,23 @@ export function MarkdownEditor({
     }
   }, [noteModeEnabled]);
 
+  useEffect(() => {
+    readOnlyRef.current = readOnly;
+
+    const view = viewRef.current;
+    if (!view) return;
+
+    view.dispatch({
+      effects: readOnlyCompartment.reconfigure(editorReadOnlyExtensions(readOnly)),
+    });
+
+    if (readOnly && document.activeElement instanceof Node && view.dom.contains(document.activeElement)) {
+      view.contentDOM.blur();
+      window.getSelection()?.removeAllRanges();
+      onSelectionChangeRef.current(null);
+    }
+  }, [readOnly, readOnlyCompartment]);
+
   function updateAnnotationFrames() {
     const container = containerRef.current;
     if (!container) return;
@@ -447,7 +513,6 @@ export function MarkdownEditor({
   }
 
   function publishSelectionAfterMouseUp(view: EditorView) {
-    if (!noteModeEnabledRef.current) return;
     if (Date.now() < annotationInteractionUntilRef.current) return;
 
     window.cancelAnimationFrame(selectionFrameRef.current);
@@ -531,6 +596,33 @@ export function MarkdownEditor({
     mouseSelectionStartedRef.current = false;
   }
 
+  function clearQueuedAnnotationClick() {
+    window.clearTimeout(annotationClickTimerRef.current);
+    annotationClickTimerRef.current = 0;
+  }
+
+  function selectedEditorText(view: EditorView | null = viewRef.current) {
+    const selection = window.getSelection();
+    if (view && browserSelectionBelongsToView(view, selection)) {
+      return selection.toString().trim();
+    }
+
+    if (!view || view.state.selection.main.empty) return "";
+
+    const range = view.state.selection.main;
+    return view.state.doc.sliceString(range.from, range.to).trim();
+  }
+
+  function queueAnnotationClick(noteId: string) {
+    clearQueuedAnnotationClick();
+    annotationClickTimerRef.current = window.setTimeout(() => {
+      annotationClickTimerRef.current = 0;
+      if (selectedEditorText()) return;
+
+      onAnnotationClickRef.current(noteId);
+    }, annotationClickDelayMs);
+  }
+
   function editorHasTextSelection(view: EditorView) {
     const browserSelection = window.getSelection();
     return (
@@ -569,6 +661,8 @@ export function MarkdownEditor({
       if (update.docChanged) {
         if (suppressNextChangeRef.current) {
           suppressNextChangeRef.current = false;
+        } else if (readOnlyRef.current) {
+          onSelectionChangeRef.current(null);
         } else {
           const source = update.transactions.some((transaction) =>
             transaction.isUserEvent("undo"),
@@ -609,18 +703,13 @@ export function MarkdownEditor({
         if (noteId) {
           if (editorHasTextSelection(view)) {
             mouseSelectionStartedRef.current = false;
+            clearQueuedAnnotationClick();
             publishSelectionAfterMouseUp(view);
             return false;
           }
 
-          event.preventDefault();
-          suppressSelectionForAnnotationInteraction(view, event);
-          if (event.detail >= 2) {
-            onAnnotationDoubleClickRef.current(noteId);
-          } else {
-            onAnnotationClickRef.current(noteId);
-          }
-          return true;
+          mouseSelectionStartedRef.current = false;
+          return false;
         }
 
         mouseSelectionStartedRef.current = false;
@@ -636,14 +725,13 @@ export function MarkdownEditor({
         if (noteId) {
           if (editorHasTextSelection(view)) {
             mouseSelectionStartedRef.current = false;
+            clearQueuedAnnotationClick();
             publishSelectionAfterMouseUp(view);
             return false;
           }
 
-          event.preventDefault();
-          suppressSelectionForAnnotationInteraction(view, event);
-          onAnnotationClickRef.current(noteId);
-          return true;
+          mouseSelectionStartedRef.current = false;
+          return false;
         }
 
         mouseSelectionStartedRef.current = false;
@@ -656,15 +744,15 @@ export function MarkdownEditor({
         if (!noteId) return false;
         const view = viewRef.current;
         if (view && editorHasTextSelection(view)) {
+          clearQueuedAnnotationClick();
           return false;
         }
 
         event.preventDefault();
-        suppressSelectionForAnnotationInteraction(view ?? undefined, event);
         if (event.detail >= 2) {
-          onAnnotationDoubleClickRef.current(noteId);
+          clearQueuedAnnotationClick();
         } else {
-          onAnnotationClickRef.current(noteId);
+          queueAnnotationClick(noteId);
         }
         return true;
       },
@@ -674,13 +762,12 @@ export function MarkdownEditor({
         if (!noteId) return false;
         const view = viewRef.current;
         if (view && editorHasTextSelection(view)) {
+          clearQueuedAnnotationClick();
           return false;
         }
 
-        event.preventDefault();
-        suppressSelectionForAnnotationInteraction(view ?? undefined, event);
-        onAnnotationDoubleClickRef.current(noteId);
-        return true;
+        clearQueuedAnnotationClick();
+        return false;
       },
     });
 
@@ -692,6 +779,7 @@ export function MarkdownEditor({
         annotationField,
         updateListener,
         annotationClickHandler,
+        readOnlyCompartment.of(editorReadOnlyExtensions(readOnly)),
         EditorView.lineWrapping,
         keymap.of([
           {
@@ -779,8 +867,6 @@ export function MarkdownEditor({
     }
 
     function handleDocumentSelectionChange() {
-      if (!noteModeEnabledRef.current) return;
-
       window.clearTimeout(selectionFallbackTimerRef.current);
       selectionFallbackTimerRef.current = window.setTimeout(() => {
         if (Date.now() < annotationInteractionUntilRef.current) {

@@ -24,6 +24,8 @@ import {
   type TextAnnotation,
   type TextSelectionAnchor,
 } from "./MarkdownEditor";
+import dictionaryRestIcon from "./assets/dictionary-rest.svg";
+import dictionarySelectedIcon from "./assets/dictionary-selected.svg";
 import fileGlyphSvg from "./assets/file-glyph.svg?raw";
 import folderGlyphSvg from "./assets/folder-glyph.svg?raw";
 import notebookRestIcon from "./assets/notebook-rest.svg";
@@ -35,6 +37,8 @@ const typedUnorderedListMarkerPattern = /^[-*+]\s+(.*)$/;
 const orderedListMarkerPattern = /^ {0,3}\d+[.)]\s+/;
 const typedOrderedListMarkerPattern = /^\d+[.)]\s+(.*)$/;
 const emptyPreviewListItemText = "\u200b";
+const annotationClickDelayMs = 500;
+const pendingAnchorAnnotationId = "__scholium_pending_anchor__";
 
 type NoteStatus = "active" | "orphaned" | "deleted";
 type AnnotationKind = "note" | "glossary";
@@ -642,6 +646,14 @@ function mergeGlossaryTerms(incomingTerms: GlossaryTerm[], currentTerms: Glossar
   incomingTerms.forEach((term) => termsById.set(term.id, term));
 
   return Array.from(termsById.values());
+}
+
+function selectionNoteHasContent(note: SelectionNote | null | undefined) {
+  return Boolean(note?.body.trim());
+}
+
+function glossaryTermHasContent(term: GlossaryTerm | null | undefined): term is GlossaryTerm {
+  return Boolean(term?.definition.trim());
 }
 
 function readLastOpenedMarkdownPath() {
@@ -2450,14 +2462,15 @@ function MarkdownPreviewBlockView({
 export function MarkdownPreview({
   value,
   annotations,
+  readOnly,
   onChange,
   onSelectionChange,
   onSelectionEnter,
   onAnnotationClick,
-  onAnnotationDoubleClick,
 }: {
   value: string;
   annotations: TextRangeAnnotation[];
+  readOnly?: boolean;
   onChange: (
     value: string,
     source: EditorChangeSource,
@@ -2466,7 +2479,6 @@ export function MarkdownPreview({
   onSelectionChange: (anchor: TextSelectionAnchor | null) => void;
   onSelectionEnter: (anchor: TextSelectionAnchor) => boolean;
   onAnnotationClick: (annotationId: string) => void;
-  onAnnotationDoubleClick: (annotationId: string) => void;
 }) {
   const blocks = parseMarkdownPreviewBlocks(value);
   const previewRef = useRef<HTMLDivElement | null>(null);
@@ -2514,6 +2526,7 @@ export function MarkdownPreview({
 
   useEffect(() => {
     function handleDocumentKeyDown(event: KeyboardEvent) {
+      if (readOnly) return;
       if (!isUndoKeyboardShortcut(event)) return;
       if (!previewShouldHandleDocumentShortcut(event.target)) return;
       if (!undoPreviewChange()) return;
@@ -2527,7 +2540,7 @@ export function MarkdownPreview({
     return () => {
       document.removeEventListener("keydown", handleDocumentKeyDown, true);
     };
-  }, [onChange, onSelectionChange, value]);
+  }, [onChange, onSelectionChange, readOnly, value]);
 
   function handlePreviewSelection() {
     const selection = window.getSelection();
@@ -2595,7 +2608,7 @@ export function MarkdownPreview({
       if (selectedPreviewText()) return;
 
       onAnnotationClick(annotationId);
-    }, 320);
+    }, annotationClickDelayMs);
   }
 
   function handleAnnotationDoubleClick(_annotationId: string) {
@@ -2633,9 +2646,9 @@ export function MarkdownPreview({
     const noteId = noteIdFromPreviewFrameClick(event);
     if (noteId) {
       if (event.detail >= 2) {
-        onAnnotationDoubleClick(noteId);
+        handleAnnotationDoubleClick(noteId);
       } else {
-        onAnnotationClick(noteId);
+        queueAnnotationClick(noteId);
       }
       return;
     }
@@ -2848,6 +2861,11 @@ export function MarkdownPreview({
   }
 
   function handlePreviewBeforeInput(event: FormEvent<HTMLDivElement>) {
+    if (readOnly) {
+      event.preventDefault();
+      return;
+    }
+
     const nativeEvent = event.nativeEvent as InputEvent;
     if (nativeEvent.inputType !== "insertText" || nativeEvent.data !== " ") return;
 
@@ -2881,6 +2899,11 @@ export function MarkdownPreview({
   }
 
   function handlePreviewInput(event: FormEvent<HTMLDivElement>) {
+    if (readOnly) {
+      event.preventDefault();
+      return;
+    }
+
     const blockElement =
       previewBlockElementFromTarget(event.target) ?? previewBlockElementFromSelection();
     if (!blockElement) return;
@@ -3060,6 +3083,8 @@ export function MarkdownPreview({
   }
 
   function handlePreviewBlur(event: FocusEvent<HTMLDivElement>) {
+    if (readOnly) return;
+
     if (event.relatedTarget instanceof Node && event.currentTarget.contains(event.relatedTarget)) {
       return;
     }
@@ -3098,6 +3123,12 @@ export function MarkdownPreview({
   }
 
   function handlePreviewKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
+    if (readOnly) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+
     if (isUndoKeyboardShortcut(event)) {
       if (previewHasActiveUncommittedEdit()) return;
       if (!undoPreviewChange()) return;
@@ -3230,7 +3261,8 @@ export function MarkdownPreview({
   return (
     <div
       className="markdown-preview"
-      contentEditable="plaintext-only"
+      contentEditable={readOnly ? false : "plaintext-only"}
+      aria-readonly={readOnly || undefined}
       ref={previewRef}
       autoCapitalize="off"
       autoCorrect="off"
@@ -3409,6 +3441,7 @@ function App() {
   );
   const [editorMode, setEditorMode] = useState<EditorMode>("preview");
   const [noteModeEnabled, setNoteModeEnabled] = useState(false);
+  const [glossaryModeEnabled, setGlossaryModeEnabled] = useState(false);
   const [dirtyDocumentStates, setDirtyDocumentStates] = useState<
     Record<string, DirtyDocumentState>
   >({});
@@ -3424,10 +3457,14 @@ function App() {
   const notePanelCloseTimerRef = useRef(0);
   const floatingNotePanelPositionFrameRef = useRef(0);
   const floatingNoteAnchorRectRef = useRef<TextRangeRect | null>(null);
+  const lastPointerAnchorRectRef = useRef<TextRangeRect | null>(null);
   const noteTextareaShouldRefocusRef = useRef(false);
   const noteTextareaIsComposingRef = useRef(false);
   const noteTextareaEnterIgnoredDuringCompositionRef = useRef(false);
   const noteTextareaPostCompositionGuardUntilRef = useRef(0);
+  const noteEditModalActiveRef = useRef(false);
+  const noteDraftRef = useRef(noteDraft);
+  const glossaryDraftRef = useRef(glossaryDraft);
   const transientSelectionNoteIdRef = useRef("");
   const transientGlossaryBindingIdRef = useRef("");
   const transientGlossaryTermIdRef = useRef("");
@@ -3456,6 +3493,8 @@ function App() {
   dirtyDocumentStatesRef.current = dirtyDocumentStates;
   savedDocumentBodiesRef.current = savedDocumentBodies;
   selectedDocumentIdRef.current = selectedDocumentId;
+  noteDraftRef.current = noteDraft;
+  glossaryDraftRef.current = glossaryDraft;
   newMarkdownFileHandlerRef.current = () => {
     void newMarkdownFile();
   };
@@ -3471,6 +3510,7 @@ function App() {
     documents.find((document) => document.id === selectedDocumentId) ??
     documents[0] ??
     emptyDocument;
+  const glossaryModeActive = noteModeEnabled && glossaryModeEnabled;
 
   const documentNotes = notes.filter(
     (note) => note.documentId === selectedDocument.id && note.status !== "deleted",
@@ -3479,23 +3519,55 @@ function App() {
     (binding) => binding.documentId === selectedDocument.id && binding.status !== "deleted",
   );
   const nativeStorageAvailable = hasNativeStorageAccess();
-  const activeNotes = documentNotes.filter((note) => note.status === "active");
-  const activeNote = documentNotes.find((note) => note.id === activeNoteId);
-  const activeGlossaryBinding = documentGlossaryBindings.find(
-    (binding) => binding.id === activeGlossaryBindingId,
+  const activeNotes = documentNotes.filter(
+    (note) =>
+      note.status === "active" &&
+      (selectionNoteHasContent(note) ||
+        note.id === transientSelectionNoteIdRef.current ||
+        note.id === activeNoteId),
   );
-  const activeGlossaryTerm = glossaryTerms.find(
-    (term) => term.id === (activeGlossaryTermId || activeGlossaryBinding?.termId),
+  const activeNote = documentNotes.find((note) => note.id === activeNoteId);
+  const glossaryTermIdsWithContent = new Set(
+    glossaryTerms.filter(glossaryTermHasContent).map((term) => term.id),
+  );
+  const editableGlossaryBindingIds = new Set(
+    [activeGlossaryBindingId, transientGlossaryBindingIdRef.current].filter(Boolean),
+  );
+  const activeGlossaryBinding = glossaryModeActive
+    ? documentGlossaryBindings.find((binding) => binding.id === activeGlossaryBindingId)
+    : undefined;
+  const rawActiveGlossaryTerm = glossaryModeActive
+    ? glossaryTerms.find(
+        (term) => term.id === (activeGlossaryTermId || activeGlossaryBinding?.termId),
+      )
+    : undefined;
+  const activeGlossaryTerm =
+    rawActiveGlossaryTerm &&
+    (activeGlossaryMode === "edit" ||
+      rawActiveGlossaryTerm.id === transientGlossaryTermIdRef.current ||
+      glossaryTermHasContent(rawActiveGlossaryTerm))
+      ? rawActiveGlossaryTerm
+      : undefined;
+  const pendingAnchorIsGlossaryTerm = Boolean(
+    glossaryModeActive && pendingAnchor && isGlossarySelectionCandidate(pendingAnchor),
   );
 
-  const activeGlossaryAnnotations: TextRangeAnnotation[] = documentGlossaryBindings
-    .filter((binding) => binding.status === "active" && hasRenderableAnchor(binding.anchor))
-    .map((binding) => ({
-      id: `glossary:${binding.id}`,
-      kind: "glossary",
-      status: binding.status,
-      anchor: binding.anchor,
-    }));
+  const activeGlossaryAnnotations: TextRangeAnnotation[] = glossaryModeActive
+    ? documentGlossaryBindings
+        .filter(
+          (binding) =>
+            binding.status === "active" &&
+            (glossaryTermIdsWithContent.has(binding.termId) ||
+              editableGlossaryBindingIds.has(binding.id)) &&
+            hasRenderableAnchor(binding.anchor),
+        )
+        .map((binding) => ({
+          id: `glossary:${binding.id}`,
+          kind: "glossary",
+          status: binding.status,
+          anchor: binding.anchor,
+        }))
+    : [];
   const activeNoteAnnotations: TextRangeAnnotation[] = activeNotes
     .filter((note) => hasRenderableAnchor(note.anchor))
     .map((note) => ({
@@ -3505,11 +3577,25 @@ function App() {
       anchor: note.anchor,
       tone: note.tone,
     }));
+  const pendingAnchorAnnotation: TextRangeAnnotation | null =
+    noteModeEnabled && pendingAnchor && hasRenderableAnchor(pendingAnchor)
+      ? {
+          id: pendingAnchorAnnotationId,
+          kind: pendingAnchorIsGlossaryTerm ? "glossary" : "note",
+          status: "active",
+          anchor: pendingAnchor,
+        }
+      : null;
   const activeTextAnnotations = assignAnnotationTones([
     ...activeNoteAnnotations,
     ...activeGlossaryAnnotations,
   ]);
-  const visibleTextAnnotations = noteModeEnabled ? activeTextAnnotations : [];
+  const visibleTextAnnotations =
+    noteModeEnabled && pendingAnchorAnnotation
+      ? [...activeTextAnnotations, pendingAnchorAnnotation]
+      : noteModeEnabled
+        ? activeTextAnnotations
+        : [];
   const annotations: TextAnnotation[] = visibleTextAnnotations.map((annotation) => ({
     id: annotation.id,
     kind: annotation.kind,
@@ -3525,13 +3611,12 @@ function App() {
       pendingAnchor &&
       isSelectionCompleteMarkdownBlock(selectedDocument.body, pendingAnchor),
   );
-  const pendingAnchorIsGlossaryTerm = Boolean(
-    noteModeEnabled && pendingAnchor && isGlossarySelectionCandidate(pendingAnchor),
-  );
   const activeNoteIsEditing = Boolean(activeNote && activeNoteMode === "edit");
   const activeGlossaryIsEditing = Boolean(activeGlossaryTerm && activeGlossaryMode === "edit");
+  const noteEditModalActive = activeNoteIsEditing || activeGlossaryIsEditing;
+  noteEditModalActiveRef.current = noteEditModalActive;
   const shouldShowSelectionConfirmation = Boolean(
-    noteModeEnabled && pendingAnchor && isMobileViewport,
+    noteModeEnabled && pendingAnchor && (isMobileViewport || pendingAnchorIsGlossaryTerm),
   );
   const notePanelHasContent = Boolean(
     noteModeEnabled &&
@@ -3550,7 +3635,24 @@ function App() {
     if (noteModeEnabled) return;
 
     resetNoteModeInteractionState();
+    setGlossaryModeEnabled(false);
   }, [noteModeEnabled]);
+
+  useEffect(() => {
+    function recordPointerAnchorRect(event: PointerEvent | globalThis.MouseEvent) {
+      if (event.button !== 0) return;
+
+      lastPointerAnchorRectRef.current = textRangeRectFromPoint(event.clientX, event.clientY);
+    }
+
+    window.addEventListener("pointerup", recordPointerAnchorRect, true);
+    window.addEventListener("mouseup", recordPointerAnchorRect, true);
+
+    return () => {
+      window.removeEventListener("pointerup", recordPointerAnchorRect, true);
+      window.removeEventListener("mouseup", recordPointerAnchorRect, true);
+    };
+  }, []);
 
   useEffect(
     () => () => {
@@ -3577,12 +3679,7 @@ function App() {
   useLayoutEffect(() => {
     if (!noteTextareaShouldRefocusRef.current) return;
 
-    const textarea = noteTextareaRef.current;
-    if (!textarea) return;
-
-    noteTextareaShouldRefocusRef.current = false;
-    textarea.focus();
-    textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+    refocusNoteTextarea();
   }, [activeGlossaryMode, activeGlossaryTermId, activeNoteId, activeNoteMode, pendingAnchor]);
 
   useLayoutEffect(() => {
@@ -3593,24 +3690,69 @@ function App() {
       return;
     }
 
+    let anchorMeasureRetryCount = 0;
+
     function updateFloatingNotePanelPosition() {
       window.cancelAnimationFrame(floatingNotePanelPositionFrameRef.current);
       floatingNotePanelPositionFrameRef.current = window.requestAnimationFrame(() => {
         const card = floatingNoteCardRef.current;
         const measuredAnchorRect = activeNote
           ? activeNoteAnchorRect(activeNote.id)
-          : activeGlossaryBinding
-            ? activeGlossaryAnchorRect(activeGlossaryBinding.id)
-            : pendingAnchor
-              ? currentSelectionAnchorRect()
-              : null;
+          : activeNoteId
+            ? activeNoteAnchorRect(activeNoteId)
+            : activeGlossaryBinding
+              ? activeGlossaryAnchorRect(activeGlossaryBinding.id)
+              : activeGlossaryBindingId
+                ? activeGlossaryAnchorRect(activeGlossaryBindingId)
+                : pendingAnchor
+                  ? activeNoteAnchorRect(pendingAnchorAnnotationId) ?? currentSelectionAnchorRect()
+                  : null;
         if (measuredAnchorRect) {
+          anchorMeasureRetryCount = 0;
           floatingNoteAnchorRectRef.current = measuredAnchorRect;
         }
         const anchorRect = measuredAnchorRect ?? floatingNoteAnchorRectRef.current;
+        const expectsAnchor = Boolean(
+          activeNote ||
+            activeNoteId ||
+            activeGlossaryBinding ||
+            activeGlossaryBindingId ||
+            pendingAnchor,
+        );
 
         if (!card) {
           setFloatingNotePanelPosition(null);
+          return;
+        }
+
+        if (!anchorRect && expectsAnchor) {
+          if (anchorMeasureRetryCount < 24) {
+            setFloatingNotePanelPosition(null);
+            anchorMeasureRetryCount += 1;
+            updateFloatingNotePanelPosition();
+            return;
+          }
+
+          const fallbackAnchorRect = lastPointerAnchorRectRef.current;
+          if (fallbackAnchorRect) {
+            const nextPosition = calculateFloatingNotePosition(
+              fallbackAnchorRect,
+              card.getBoundingClientRect(),
+            );
+            setFloatingNotePanelPosition((currentPosition) =>
+              floatingNotePositionsAreEqual(currentPosition, nextPosition)
+                ? currentPosition
+                : nextPosition,
+            );
+            return;
+          }
+
+          const nextPosition = calculateDetachedFloatingNotePosition(card.getBoundingClientRect());
+          setFloatingNotePanelPosition((currentPosition) =>
+            floatingNotePositionsAreEqual(currentPosition, nextPosition)
+              ? currentPosition
+              : nextPosition,
+          );
           return;
         }
 
@@ -3636,9 +3778,11 @@ function App() {
     };
   }, [
     activeGlossaryBinding,
+    activeGlossaryBindingId,
     activeGlossaryMode,
     activeGlossaryTerm,
     activeNote,
+    activeNoteId,
     activeNoteMode,
     editorMode,
     glossaryDraft,
@@ -3701,6 +3845,17 @@ function App() {
     );
 
     return textRangeRectFromClientRects(bottomLineRects);
+  }
+
+  function textRangeRectFromPoint(clientX: number, clientY: number): TextRangeRect {
+    return {
+      bottom: clientY + 1,
+      height: 1,
+      left: clientX,
+      right: clientX + 1,
+      top: clientY,
+      width: 1,
+    };
   }
 
   function currentSelectionAnchorRect() {
@@ -3795,7 +3950,11 @@ function App() {
       Math.max(120, viewportHeight - viewportMargin * 2),
     );
     const positionedHeight = Math.min(cardHeight, maxHeight);
-    const targetY = placement === "below" ? anchorRect.bottom : anchorRect.top;
+    const connectorAnchorGap = 6;
+    const targetY =
+      placement === "below"
+        ? anchorRect.bottom + connectorAnchorGap
+        : anchorRect.top - connectorAnchorGap;
     const targetX = anchorRect.left + anchorRect.width / 2;
     const preferredLeft = clampNumber(
       targetX - cardWidth / 2,
@@ -3804,7 +3963,7 @@ function App() {
     );
     const left = preferredLeft;
     const right = left + cardWidth;
-    const verticalDistance = 14;
+    const verticalDistance = 12;
     const connectorTilt = verticalDistance * 0.65;
     const preferredSourceX =
       targetX + (targetX < viewportWidth / 2 ? connectorTilt : -connectorTilt);
@@ -3880,6 +4039,90 @@ function App() {
   function targetIsInsideNotePanel(target: EventTarget | null) {
     const panel = notePanelRef.current;
     return Boolean(panel && target instanceof Node && panel.contains(target));
+  }
+
+  function refocusNoteTextarea(remainingAttempts = 8) {
+    window.requestAnimationFrame(() => {
+      const textarea = noteTextareaRef.current;
+      if (!textarea || textarea.disabled) {
+        if (remainingAttempts > 0) {
+          refocusNoteTextarea(remainingAttempts - 1);
+        }
+        return;
+      }
+
+      noteTextareaShouldRefocusRef.current = false;
+      textarea.focus({ preventScroll: true });
+      textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+    });
+  }
+
+  function insertTextIntoActiveNoteEditor(text: string) {
+    if (!text) return false;
+
+    if (activeNoteIsEditing && activeNote) {
+      const nextDraft = `${noteDraftRef.current}${text}`;
+      setNoteDraft(nextDraft);
+      updateNoteBody(activeNote.id, nextDraft);
+      noteTextareaShouldRefocusRef.current = true;
+      refocusNoteTextarea();
+      return true;
+    }
+
+    if (activeGlossaryIsEditing && activeGlossaryTerm) {
+      const nextDraft = `${glossaryDraftRef.current}${text}`;
+      setGlossaryDraft(nextDraft);
+      updateGlossaryDefinition(activeGlossaryTerm.id, nextDraft);
+      noteTextareaShouldRefocusRef.current = true;
+      refocusNoteTextarea();
+      return true;
+    }
+
+    return false;
+  }
+
+  function redirectOutsideNoteEditKeyboardEvent(event: KeyboardEvent) {
+    if (targetIsInsideNotePanel(event.target)) return false;
+    if (event.metaKey || event.ctrlKey || event.altKey) return false;
+    if (event.key.length !== 1 || event.isComposing) return false;
+
+    if (!insertTextIntoActiveNoteEditor(event.key)) return false;
+
+    event.preventDefault();
+    event.stopPropagation();
+    return true;
+  }
+
+  function redirectOutsideNoteEditInputEvent(event: Event) {
+    if (targetIsInsideNotePanel(event.target)) return false;
+
+    if (event instanceof InputEvent && event.data) {
+      if (!insertTextIntoActiveNoteEditor(event.data)) return false;
+
+      event.preventDefault();
+      event.stopPropagation();
+      return true;
+    }
+
+    if (event instanceof ClipboardEvent) {
+      const text = event.clipboardData?.getData("text/plain") ?? "";
+      if (text && insertTextIntoActiveNoteEditor(text)) {
+        event.preventDefault();
+        event.stopPropagation();
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  function blockNoteEditBackdropInteraction(event: {
+    preventDefault(): void;
+    stopPropagation(): void;
+  }) {
+    event.preventDefault();
+    event.stopPropagation();
+    refocusNoteTextarea();
   }
 
   function targetIsActiveNoteRange(target: EventTarget | null) {
@@ -3964,6 +4207,12 @@ function App() {
 
     function handleDocumentPointerDown(event: PointerEvent) {
       if (event.button !== 0) return;
+      if (noteEditModalActive) {
+        if (targetIsInsideNotePanel(event.target)) return;
+
+        blockNoteEditBackdropInteraction(event);
+        return;
+      }
       if (notePanelKeepsFocus(event.target, event.clientX, event.clientY)) return;
 
       dismissNotePanelFromAppInteraction();
@@ -3971,12 +4220,24 @@ function App() {
 
     function handleDocumentMouseDown(event: globalThis.MouseEvent) {
       if (event.button !== 0) return;
+      if (noteEditModalActive) {
+        if (targetIsInsideNotePanel(event.target)) return;
+
+        blockNoteEditBackdropInteraction(event);
+        return;
+      }
       if (notePanelKeepsFocus(event.target, event.clientX, event.clientY)) return;
 
       dismissNotePanelFromAppInteraction();
     }
 
     function handleDocumentFocusIn(event: Event) {
+      if (noteEditModalActive) {
+        if (targetIsInsideNotePanel(event.target)) return;
+
+        blockNoteEditBackdropInteraction(event);
+        return;
+      }
       if (notePanelKeepsFocus(event.target)) return;
 
       dismissNotePanelFromAppInteraction();
@@ -3991,7 +4252,39 @@ function App() {
       document.removeEventListener("mousedown", handleDocumentMouseDown, true);
       document.removeEventListener("focusin", handleDocumentFocusIn, true);
     };
-  }, [activeGlossaryBindingId, activeNoteId, isNotePanelClosing, notePanelHasContent, pendingAnchor]);
+  }, [
+    activeGlossaryBindingId,
+    activeNoteId,
+    isNotePanelClosing,
+    noteEditModalActive,
+    notePanelHasContent,
+    pendingAnchor,
+  ]);
+
+  useEffect(() => {
+    if (!noteEditModalActive) return;
+
+    refocusNoteTextarea();
+
+    function blockOutsideEditableEvent(event: Event) {
+      if (targetIsInsideNotePanel(event.target)) return;
+      if (redirectOutsideNoteEditInputEvent(event)) return;
+
+      blockNoteEditBackdropInteraction(event);
+    }
+
+    document.addEventListener("beforeinput", blockOutsideEditableEvent, true);
+    document.addEventListener("compositionstart", blockOutsideEditableEvent, true);
+    document.addEventListener("drop", blockOutsideEditableEvent, true);
+    document.addEventListener("paste", blockOutsideEditableEvent, true);
+
+    return () => {
+      document.removeEventListener("beforeinput", blockOutsideEditableEvent, true);
+      document.removeEventListener("compositionstart", blockOutsideEditableEvent, true);
+      document.removeEventListener("drop", blockOutsideEditableEvent, true);
+      document.removeEventListener("paste", blockOutsideEditableEvent, true);
+    };
+  }, [noteEditModalActive]);
 
   useEffect(() => {
     if (!selectionWarningPosition) return;
@@ -4155,6 +4448,14 @@ function App() {
         return;
       }
 
+      if (noteEditModalActive) {
+        if (redirectOutsideNoteEditKeyboardEvent(event)) return;
+        if (!targetIsInsideNotePanel(event.target)) {
+          blockNoteEditBackdropInteraction(event);
+        }
+        return;
+      }
+
       const isPlainEnter =
         event.key === "Enter" &&
         !event.metaKey &&
@@ -4193,6 +4494,7 @@ function App() {
     };
   }, [
     closeNotePanel,
+    noteEditModalActive,
     pendingAnchor,
     pendingAnchorIsCompleteBlock,
     pendingAnchorIsGlossaryTerm,
@@ -4675,16 +4977,28 @@ function App() {
 
   function notesForDocument(documentId: string, sourceNotes = notesRef.current) {
     return sourceNotes.filter(
-      (note) => note.documentId === documentId && !isTransientEmptySelectionNote(note),
+      (note) =>
+        note.documentId === documentId &&
+        note.status !== "deleted" &&
+        selectionNoteHasContent(note) &&
+        !isTransientEmptySelectionNote(note),
     );
   }
 
   function glossaryBindingsForDocument(
     documentId: string,
     sourceBindings = glossaryBindingsRef.current,
+    sourceTerms = glossaryTermsRef.current,
   ) {
+    const termIdsWithContent = new Set(
+      sourceTerms.filter(glossaryTermHasContent).map((term) => term.id),
+    );
+
     return sourceBindings.filter(
-      (binding) => binding.documentId === documentId && binding.status !== "deleted",
+      (binding) =>
+        binding.documentId === documentId &&
+        binding.status !== "deleted" &&
+        termIdsWithContent.has(binding.termId),
     );
   }
 
@@ -4694,10 +5008,12 @@ function App() {
     sourceTerms = glossaryTermsRef.current,
   ) {
     const termIds = new Set(
-      glossaryBindingsForDocument(documentId, sourceBindings).map((binding) => binding.termId),
+      glossaryBindingsForDocument(documentId, sourceBindings, sourceTerms).map(
+        (binding) => binding.termId,
+      ),
     );
 
-    return sourceTerms.filter((term) => termIds.has(term.id));
+    return sourceTerms.filter((term) => termIds.has(term.id) && glossaryTermHasContent(term));
   }
 
   function sidecarFingerprint(
@@ -5032,6 +5348,7 @@ function App() {
     source: EditorChangeSource,
     anchorTransform?: BodyAnchorTransform,
   ) {
+    if (noteEditModalActiveRef.current) return;
     if (body === selectedDocument.body) return;
 
     const documentId = selectedDocument.id;
@@ -5120,6 +5437,7 @@ function App() {
     notesRef.current = notesRef.current.filter((candidate) => candidate.id !== noteId);
     setNotes((currentNotes) => currentNotes.filter((candidate) => candidate.id !== noteId));
     transientSelectionNoteIdRef.current = "";
+    markDocumentNotesDirty(note.documentId);
     return true;
   }
 
@@ -5127,6 +5445,7 @@ function App() {
     const bindingId = transientGlossaryBindingIdRef.current;
     const termId = transientGlossaryTermIdRef.current;
     if (!bindingId || !termId) return false;
+    const binding = glossaryBindingsRef.current.find((candidate) => candidate.id === bindingId);
 
     const term = glossaryTermsRef.current.find((candidate) => candidate.id === termId);
     if (!term) {
@@ -5160,6 +5479,7 @@ function App() {
 
     transientGlossaryBindingIdRef.current = "";
     transientGlossaryTermIdRef.current = "";
+    markDocumentNotesDirty(binding?.documentId ?? selectedDocument.id);
     return true;
   }
 
@@ -5188,12 +5508,41 @@ function App() {
     notePanelHasContentRef.current = false;
   }
 
+  function resetGlossaryModeInteractionState() {
+    const pendingAnchorIsNoteCandidate = Boolean(
+      pendingAnchor && isSelectionCompleteMarkdownBlock(selectedDocument.body, pendingAnchor),
+    );
+    const keepNotePanelOpen = Boolean(activeNoteId || pendingAnchorIsNoteCandidate);
+
+    discardTransientEmptyGlossary();
+    pendingGlossaryPromptLockUntilRef.current = 0;
+    setPendingGlossaryTerm(null);
+    setActiveGlossaryBindingId("");
+    setActiveGlossaryTermId("");
+    setActiveGlossaryMode("view");
+    setGlossaryDraft("");
+
+    if (!pendingAnchorIsNoteCandidate) {
+      setPendingAnchor(null);
+      window.getSelection()?.removeAllRanges();
+    }
+
+    if (!keepNotePanelOpen) {
+      clearNotePanelCloseTimer();
+      clearReturnToViewTimer();
+      setSelectionWarningPosition(null);
+      setFloatingNotePanelPosition(null);
+      setIsNotePanelClosing(false);
+      floatingNoteAnchorRectRef.current = null;
+      notePanelHasContentRef.current = false;
+    }
+  }
+
   function returnActiveNoteToViewMode() {
     if ((!activeNoteIsEditing && !activeGlossaryIsEditing) || isReturningToView) return;
 
     if (
       activeNote &&
-      activeNote.id === transientSelectionNoteIdRef.current &&
       !activeNote.body.trim() &&
       !noteDraft.trim()
     ) {
@@ -5312,6 +5661,11 @@ function App() {
     if (!isPlainEnter) return;
 
     event.preventDefault();
+    if (!event.currentTarget.value.trim()) {
+      closeNotePanel();
+      return;
+    }
+
     returnActiveNoteToViewMode();
   }
 
@@ -5348,16 +5702,33 @@ function App() {
       return;
     }
 
+    if (glossaryModeActive && isGlossarySelectionCandidate(anchor)) {
+      const existingGlossaryBinding = activeGlossaryBindingForSelection(anchor);
+      if (existingGlossaryBinding) {
+        showGlossaryViewer(existingGlossaryBinding.id);
+        return;
+      }
+
+      showPendingGlossaryPrompt(anchor);
+      return;
+    }
+
     if (selectionIsBlockedByExistingAnnotations(anchor)) {
       setSelectionWarningPosition(null);
-      if (pendingAnchor) {
+      if (
+        pendingAnchor ||
+        activeNoteId ||
+        activeGlossaryBindingId ||
+        activeGlossaryTermId ||
+        notePanelHasContentRef.current
+      ) {
         closeNotePanel();
       }
       return;
     }
 
     if (
-      !isGlossarySelectionCandidate(anchor) &&
+      !(glossaryModeActive && isGlossarySelectionCandidate(anchor)) &&
       !isSelectionCompleteMarkdownBlock(selectedDocument.body, anchor)
     ) {
       const anchorRect = currentSelectionAnchorRect();
@@ -5394,13 +5765,31 @@ function App() {
   }
 
   function selectionOverlapsActiveGlossary(anchor: TextSelectionAnchor) {
+    if (!glossaryModeActive) return false;
+
     return documentGlossaryBindings.some((binding) =>
+      (glossaryTermIdsWithContent.has(binding.termId) ||
+        editableGlossaryBindingIds.has(binding.id)) &&
       selectionOverlapsGlossaryBinding(anchor, binding),
     );
   }
 
+  function activeGlossaryBindingForSelection(anchor: TextSelectionAnchor) {
+    if (!glossaryModeActive) return null;
+
+    return (
+      documentGlossaryBindings.find(
+        (binding) =>
+          binding.status === "active" &&
+          (glossaryTermIdsWithContent.has(binding.termId) ||
+            editableGlossaryBindingIds.has(binding.id)) &&
+          selectionOverlapsGlossaryBinding(anchor, binding),
+      ) ?? null
+    );
+  }
+
   function selectionIsBlockedByExistingAnnotations(anchor: TextSelectionAnchor) {
-    if (isGlossarySelectionCandidate(anchor)) {
+    if (glossaryModeActive && isGlossarySelectionCandidate(anchor)) {
       return selectionOverlapsActiveGlossary(anchor);
     }
 
@@ -5415,7 +5804,7 @@ function App() {
       return true;
     }
 
-    if (isGlossarySelectionCandidate(anchor)) {
+    if (glossaryModeActive && isGlossarySelectionCandidate(anchor)) {
       startGlossaryFlowForAnchor(anchor);
       return true;
     }
@@ -5437,7 +5826,7 @@ function App() {
     if (!noteModeEnabled) return;
 
     const note = notes.find((candidate) => candidate.id === noteId && candidate.status !== "deleted");
-    if (!note) return;
+    if (!note || !selectionNoteHasContent(note)) return;
 
     setSelectionWarningPosition(null);
     clearNotePanelCloseTimer();
@@ -5455,7 +5844,7 @@ function App() {
     if (!noteModeEnabled) return;
 
     const note = notes.find((candidate) => candidate.id === noteId && candidate.status !== "deleted");
-    if (!note) return;
+    if (!note || !selectionNoteHasContent(note)) return;
 
     setSelectionWarningPosition(null);
     clearNotePanelCloseTimer();
@@ -5476,8 +5865,9 @@ function App() {
     return (
       glossaryTerms.find(
         (term) =>
-          term.normalizedTerm === normalizedTerm ||
-          normalizeGlossaryTerm(term.term) === normalizedTerm,
+          glossaryTermHasContent(term) &&
+          (term.normalizedTerm === normalizedTerm ||
+            normalizeGlossaryTerm(term.term) === normalizedTerm),
       ) ?? null
     );
   }
@@ -5505,18 +5895,61 @@ function App() {
   }
 
   function startPendingGlossaryFlow() {
-    if (!noteModeEnabled) return;
+    if (!glossaryModeActive) return;
     if (!pendingAnchor || !pendingAnchorIsGlossaryTerm) return;
 
     startGlossaryFlowForAnchor(pendingAnchor);
   }
 
-  function startGlossaryFlowForAnchor(anchor: TextSelectionAnchor) {
-    if (!noteModeEnabled) return;
+  function showPendingGlossaryPrompt(anchor: TextSelectionAnchor) {
+    if (!glossaryModeActive) return;
 
     discardTransientEmptySelectionNote();
     setSelectionWarningPosition(null);
-    const anchorRect = currentSelectionAnchorRect();
+    clearNotePanelCloseTimer();
+    clearReturnToViewTimer();
+    setIsNotePanelClosing(false);
+
+    const anchorRect =
+      currentSelectionAnchorRect() ??
+      activeNoteAnchorRect(pendingAnchorAnnotationId) ??
+      lastPointerAnchorRectRef.current;
+    if (anchorRect) {
+      floatingNoteAnchorRectRef.current = anchorRect;
+    }
+
+    const existingTerm = glossaryTermForAnchor(anchor);
+    if (existingTerm) {
+      pendingGlossaryPromptLockUntilRef.current = Date.now() + 350;
+      setPendingGlossaryTerm(existingTerm);
+      setActiveGlossaryTermId(existingTerm.id);
+      setGlossaryDraft(existingTerm.definition);
+    } else {
+      pendingGlossaryPromptLockUntilRef.current = 0;
+      setPendingGlossaryTerm(null);
+      setActiveGlossaryTermId("");
+      setGlossaryDraft("");
+    }
+
+    setPendingAnchor(anchor);
+    setActiveNoteId("");
+    setActiveGlossaryBindingId("");
+    setActiveNoteMode("view");
+    setActiveGlossaryMode("view");
+    setNoteDraft("");
+    notePanelHasContentRef.current = true;
+  }
+
+  function startGlossaryFlowForAnchor(anchor: TextSelectionAnchor) {
+    if (!glossaryModeActive) return;
+
+    discardTransientEmptySelectionNote();
+    setSelectionWarningPosition(null);
+    const anchorRect =
+      currentSelectionAnchorRect() ??
+      activeNoteAnchorRect(pendingAnchorAnnotationId) ??
+      floatingNoteAnchorRectRef.current ??
+      lastPointerAnchorRectRef.current;
     if (anchorRect) {
       floatingNoteAnchorRectRef.current = anchorRect;
     }
@@ -5566,8 +5999,12 @@ function App() {
   }
 
   function bindPendingGlossaryTerm() {
-    if (!noteModeEnabled) return;
+    if (!glossaryModeActive) return;
     if (!pendingAnchor || !pendingGlossaryTerm) return;
+    if (!glossaryTermHasContent(pendingGlossaryTerm)) {
+      closeNotePanel();
+      return;
+    }
 
     const binding = createGlossaryBinding(pendingGlossaryTerm, pendingAnchor);
     setPendingAnchor(null);
@@ -5585,7 +6022,7 @@ function App() {
   }
 
   function showGlossaryViewer(bindingId: string) {
-    if (!noteModeEnabled) return;
+    if (!glossaryModeActive) return;
 
     const binding = glossaryBindings.find(
       (candidate) => candidate.id === bindingId && candidate.status !== "deleted",
@@ -5593,7 +6030,7 @@ function App() {
     if (!binding) return;
 
     const term = glossaryTerms.find((candidate) => candidate.id === binding.termId);
-    if (!term) return;
+    if (!glossaryTermHasContent(term)) return;
 
     setSelectionWarningPosition(null);
     clearNotePanelCloseTimer();
@@ -5611,7 +6048,7 @@ function App() {
   }
 
   function openGlossaryEditor(termId: string) {
-    if (!noteModeEnabled) return;
+    if (!glossaryModeActive) return;
 
     const term = glossaryTerms.find((candidate) => candidate.id === termId);
     if (!term) return;
@@ -5634,6 +6071,8 @@ function App() {
     if (!noteModeEnabled) return;
 
     if (annotationId.startsWith("glossary:")) {
+      if (!glossaryModeActive) return;
+
       showGlossaryViewer(annotationId.slice("glossary:".length));
       return;
     }
@@ -5793,9 +6232,21 @@ function App() {
     const nextNoteModeEnabled = !noteModeEnabled;
     if (!nextNoteModeEnabled) {
       resetNoteModeInteractionState();
+      setGlossaryModeEnabled(false);
     }
 
     setNoteModeEnabled(nextNoteModeEnabled);
+  }
+
+  function toggleGlossaryMode() {
+    if (!noteModeEnabled) return;
+
+    const nextGlossaryModeEnabled = !glossaryModeEnabled;
+    if (!nextGlossaryModeEnabled) {
+      resetGlossaryModeInteractionState();
+    }
+
+    setGlossaryModeEnabled(nextGlossaryModeEnabled);
   }
 
   const floatingNotePanelStyle: CSSProperties = floatingNotePanelPosition
@@ -5870,6 +6321,9 @@ function App() {
       activeGlossaryIsEditing ||
       (pendingAnchor && pendingAnchorIsGlossaryTerm),
   );
+  const selectionWarningMessage = glossaryModeActive
+    ? "請選取 1-3 個單詞建立名詞解釋，或選取完整句子/段落新增筆記。"
+    : "請選取完整句子或段落新增筆記。";
 
   return (
     <main className="scholium-shell">
@@ -5963,6 +6417,23 @@ function App() {
         <div className="editor-grid">
           <div className="editor-surface">
             <div className="editor-toolbar" aria-label="Editor tools">
+              {noteModeEnabled ? (
+                <button
+                  aria-checked={glossaryModeActive}
+                  aria-label={glossaryModeActive ? "關閉名詞解釋模式" : "開啟名詞解釋模式"}
+                  className="note-mode-switch"
+                  onClick={toggleGlossaryMode}
+                  role="switch"
+                  type="button"
+                >
+                  <img
+                    alt=""
+                    aria-hidden="true"
+                    className="note-mode-switch__icon"
+                    src={glossaryModeActive ? dictionarySelectedIcon : dictionaryRestIcon}
+                  />
+                </button>
+              ) : null}
               <button
                 aria-checked={noteModeEnabled}
                 aria-label={noteModeEnabled ? "關閉筆記模式" : "開啟筆記模式"}
@@ -5989,6 +6460,7 @@ function App() {
                   annotations={annotations}
                   key={selectedDocument.id}
                   noteModeEnabled={noteModeEnabled}
+                  readOnly={noteEditModalActive}
                   value={selectedDocument.body}
                   onAnnotationClick={showAnnotationViewer}
                   onAnnotationDoubleClick={showAnnotationViewer}
@@ -6000,6 +6472,7 @@ function App() {
                 <MarkdownEditor
                   annotations={annotations}
                   noteModeEnabled={noteModeEnabled}
+                  readOnly={noteEditModalActive}
                   value={selectedDocument.body}
                   onAnnotationClick={showAnnotationViewer}
                   onAnnotationDoubleClick={showAnnotationViewer}
@@ -6014,12 +6487,22 @@ function App() {
 
       {noteModeEnabled && selectionWarningPosition ? (
         <div className="selection-warning-popover" role="status" style={selectionWarningStyle}>
-          請選取 1-3 個單詞建立名詞解釋，或選取完整句子/段落新增筆記。
+          {selectionWarningMessage}
         </div>
       ) : null}
 
       {floatingNotePanelShouldRender ? (
         <>
+          {noteEditModalActive ? (
+            <div
+              aria-hidden="true"
+              className="note-edit-backdrop"
+              onClick={blockNoteEditBackdropInteraction}
+              onMouseDown={blockNoteEditBackdropInteraction}
+              onPointerDown={blockNoteEditBackdropInteraction}
+              onWheel={blockNoteEditBackdropInteraction}
+            />
+          ) : null}
           {floatingNoteConnectorStyle ? (
             <span
               aria-hidden="true"
@@ -6150,6 +6633,7 @@ function App() {
                   aria-label="Edit note"
                   ref={noteTextareaRef}
                   value={noteDraft}
+                  autoFocus
                   onChange={(event) => updateActiveNoteDraft(event.currentTarget.value)}
                   onCompositionStart={handleNoteEditorCompositionStart}
                   onCompositionEnd={handleNoteEditorCompositionEnd}
@@ -6167,6 +6651,7 @@ function App() {
                   aria-label="Edit glossary term"
                   ref={noteTextareaRef}
                   value={glossaryDraft}
+                  autoFocus
                   onChange={(event) => updateActiveGlossaryDraft(event.currentTarget.value)}
                   onCompositionStart={handleNoteEditorCompositionStart}
                   onCompositionEnd={handleNoteEditorCompositionEnd}

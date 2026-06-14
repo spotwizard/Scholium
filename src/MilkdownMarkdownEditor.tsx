@@ -26,6 +26,7 @@ type MilkdownMarkdownEditorProps = {
   value: string;
   annotations: TextAnnotation[];
   noteModeEnabled: boolean;
+  readOnly?: boolean;
   onChange: (value: string, source: EditorChangeSource) => void;
   onSelectionChange: (anchor: TextSelectionAnchor | null) => void;
   onSelectionEnter: (anchor: TextSelectionAnchor) => boolean;
@@ -40,6 +41,7 @@ const milkdownAnnotationFramePadding = 4;
 const milkdownAnnotationLineJoinMaxGap = 20;
 const milkdownAnnotationClassPrefix = "scholium-milkdown-annotation-";
 const milkdownSelectionFallbackMs = 220;
+const annotationClickDelayMs = 500;
 let milkdownMermaidRenderIndex = 0;
 
 type MilkdownCodeBlockApplyPreview = (value: null | string | HTMLElement) => void;
@@ -536,7 +538,7 @@ function buildAnchor(
   const normalizedSelection = normalizeSelectedText(selectedText);
   if (!normalizedSelection) return null;
 
-  const exactIndex = markdown.indexOf(selectedText);
+  const exactIndex = closestTextIndex(textIndices(markdown, selectedText), approximateVisibleStart);
   if (exactIndex >= 0) {
     return makeAnchorFromSourceRange(markdown, exactIndex, exactIndex + selectedText.length);
   }
@@ -819,9 +821,8 @@ function createAnnotationPlugin({
           const noteId = noteIdFromAnnotationTarget(event.target, getAnnotations());
           if (!noteId) return false;
 
-          event.preventDefault();
           onAnnotationDoubleClick(noteId);
-          return true;
+          return false;
         },
       },
     },
@@ -843,6 +844,7 @@ export function MilkdownMarkdownEditor({
   value,
   annotations,
   noteModeEnabled,
+  readOnly = false,
   onChange,
   onSelectionChange,
   onSelectionEnter,
@@ -854,6 +856,7 @@ export function MilkdownMarkdownEditor({
   const crepeRef = useRef<Crepe | null>(null);
   const annotationsRef = useRef(annotations);
   const noteModeEnabledRef = useRef(noteModeEnabled);
+  const readOnlyRef = useRef(readOnly);
   const currentMarkdownRef = useRef(normalizeMarkdownForScholium(value));
   const onChangeRef = useRef(onChange);
   const onSelectionChangeRef = useRef(onSelectionChange);
@@ -863,6 +866,7 @@ export function MilkdownMarkdownEditor({
   const animationFrameRef = useRef(0);
   const selectionFrameRef = useRef(0);
   const selectionFallbackTimerRef = useRef(0);
+  const annotationClickTimerRef = useRef(0);
   const mouseSelectionStartedRef = useRef(false);
   const [editorRevision, setEditorRevision] = useState(0);
   const [annotationFrames, setAnnotationFrames] = useState<MilkdownAnnotationFrame[]>([]);
@@ -877,6 +881,13 @@ export function MilkdownMarkdownEditor({
         )
         .join("|"),
     [annotations],
+  );
+
+  useEffect(
+    () => () => {
+      window.clearTimeout(annotationClickTimerRef.current);
+    },
+    [],
   );
 
   function updateAnnotationFrames() {
@@ -899,6 +910,35 @@ export function MilkdownMarkdownEditor({
   function scheduleAnnotationFrameUpdate() {
     window.cancelAnimationFrame(animationFrameRef.current);
     animationFrameRef.current = window.requestAnimationFrame(updateAnnotationFrames);
+  }
+
+  function selectedMilkdownText() {
+    const root = rootRef.current;
+    const selection = window.getSelection();
+    if (root && selectionBelongsToRoot(root, selection)) {
+      return selection?.toString().trim() ?? "";
+    }
+
+    const view = currentEditorView();
+    if (!view || view.state.selection.empty) return "";
+
+    const { from, to } = view.state.selection;
+    return view.state.doc.textBetween(from, to, " ").trim();
+  }
+
+  function clearQueuedAnnotationClick() {
+    window.clearTimeout(annotationClickTimerRef.current);
+    annotationClickTimerRef.current = 0;
+  }
+
+  function queueAnnotationClick(noteId: string) {
+    clearQueuedAnnotationClick();
+    annotationClickTimerRef.current = window.setTimeout(() => {
+      annotationClickTimerRef.current = 0;
+      if (selectedMilkdownText()) return;
+
+      onAnnotationClickRef.current(noteId);
+    }, annotationClickDelayMs);
   }
 
   useEffect(() => {
@@ -930,6 +970,20 @@ export function MilkdownMarkdownEditor({
       scheduleAnnotationFrameUpdate();
     }
   }, [noteModeEnabled]);
+
+  useEffect(() => {
+    readOnlyRef.current = readOnly;
+    crepeRef.current?.setReadonly(readOnly);
+
+    if (!readOnly) return;
+
+    const root = rootRef.current;
+    if (root && document.activeElement instanceof Node && root.contains(document.activeElement)) {
+      (document.activeElement as HTMLElement).blur();
+    }
+    window.getSelection()?.removeAllRanges();
+    onSelectionChangeRef.current(null);
+  }, [readOnly]);
 
   useEffect(() => {
     annotationsRef.current = annotations;
@@ -1015,28 +1069,40 @@ export function MilkdownMarkdownEditor({
       return anchorFromEditorSelection();
     }
 
+    const view = currentEditorView();
+    let approximateVisibleStart = 0;
+    if (view) {
+      try {
+        const anchorPosition = view.posAtDOM(selection.anchorNode, selection.anchorOffset);
+        const focusPosition = view.posAtDOM(selection.focusNode, selection.focusOffset);
+        approximateVisibleStart = visibleTextIndexFromProsePosition(
+          view.state.doc,
+          Math.min(anchorPosition, focusPosition),
+        );
+      } catch {
+        approximateVisibleStart = 0;
+      }
+    }
+
     return (
-      buildAnchor(currentMarkdownRef.current, selection.toString()) ??
+      buildAnchor(currentMarkdownRef.current, selection.toString(), approximateVisibleStart) ??
       anchorFromEditorSelection()
     );
   }
 
   function publishSelectionAfterSelectionComplete() {
-    if (!noteModeEnabledRef.current) return;
+    if (readOnlyRef.current) return;
 
     window.clearTimeout(selectionFallbackTimerRef.current);
     window.cancelAnimationFrame(selectionFrameRef.current);
     selectionFrameRef.current = window.requestAnimationFrame(() => {
-      if (mouseSelectionStartedRef.current) return;
-
+      mouseSelectionStartedRef.current = false;
       onSelectionChangeRef.current(anchorFromCurrentSelection());
       selectionFrameRef.current = 0;
     });
   }
 
   function scheduleSelectionPublishFromDom() {
-    if (!noteModeEnabledRef.current) return;
-
     window.clearTimeout(selectionFallbackTimerRef.current);
     selectionFallbackTimerRef.current = window.setTimeout(() => {
       if (mouseSelectionStartedRef.current) return;
@@ -1127,11 +1193,16 @@ export function MilkdownMarkdownEditor({
 
       ctx.update(prosePluginsCtx, (plugins) => [
         ...plugins,
+        new Plugin({
+          filterTransaction(transaction) {
+            return !(readOnlyRef.current && transaction.docChanged);
+          },
+        }),
         createAnnotationPlugin({
           getAnnotations: () => annotationsRef.current,
           getMarkdown: () => currentMarkdownRef.current,
-          onAnnotationClick: (noteId) => onAnnotationClickRef.current(noteId),
-          onAnnotationDoubleClick: (noteId) => onAnnotationDoubleClickRef.current(noteId),
+          onAnnotationClick: queueAnnotationClick,
+          onAnnotationDoubleClick: clearQueuedAnnotationClick,
         }),
       ]);
     });
@@ -1140,6 +1211,7 @@ export function MilkdownMarkdownEditor({
       listener.markdownUpdated((_ctx, markdown) => {
         const normalizedMarkdown = normalizeMarkdownForScholium(markdown);
         if (disposed || normalizedMarkdown === currentMarkdownRef.current) return;
+        if (readOnlyRef.current) return;
 
         currentMarkdownRef.current = normalizedMarkdown;
         onChangeRef.current(normalizedMarkdown, "user");
@@ -1153,9 +1225,11 @@ export function MilkdownMarkdownEditor({
     });
 
     crepeRef.current = crepe;
+    crepe.setReadonly(readOnlyRef.current);
     void crepe
       .create()
       .then(() => {
+        crepe.setReadonly(readOnlyRef.current);
         scheduleAnnotationFrameUpdate();
       })
       .catch((error: unknown) => {
@@ -1174,6 +1248,7 @@ export function MilkdownMarkdownEditor({
   function handleSelectionEnterKeyDown(
     event: KeyboardEvent | ReactKeyboardEvent<HTMLDivElement>,
   ) {
+    if (readOnlyRef.current) return;
     if (!noteModeEnabledRef.current) return;
 
     const isPlainEnter =
@@ -1193,6 +1268,12 @@ export function MilkdownMarkdownEditor({
   }
 
   function handleKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
+    if (readOnlyRef.current) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+
     handleSelectionEnterKeyDown(event);
   }
 
@@ -1209,6 +1290,7 @@ export function MilkdownMarkdownEditor({
     }
 
     function handleDocumentKeyDown(event: KeyboardEvent) {
+      if (readOnlyRef.current) return;
       if (event.defaultPrevented) return;
       const isPlainEnter =
         event.key === "Enter" &&
