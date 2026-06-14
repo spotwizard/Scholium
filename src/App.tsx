@@ -4569,12 +4569,11 @@ function App() {
     setStorageError("Opening file...");
 
     try {
-      const loaded = await invoke<OpenMarkdownFileResult>("open_markdown_file", {
+      const context = await invoke<OpenMarkdownFileContextResult>("open_markdown_file_context", {
         path,
       });
 
-      applyLoadedFiles([loaded]);
-      setStorageError("");
+      applyOpenedDirectory(directoryWithSelectedFile(context), context.selectedFile.path);
     } catch (error) {
       setStorageError(error instanceof Error ? error.message : String(error));
     }

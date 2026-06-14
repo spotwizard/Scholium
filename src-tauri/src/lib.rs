@@ -3,7 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tauri::menu::{AboutMetadata, Menu, MenuItem, PredefinedMenuItem, Submenu};
-use tauri::{Emitter, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 const MENU_NEW_FILE: &str = "file:new-file";
 const MENU_OPEN_FILE: &str = "file:open-file";
@@ -16,6 +16,7 @@ const MENU_CLEAR_RECENT_LOCATIONS: &str = "file:clear-recent-locations";
 const MENU_FAVORITE_DIRECTORY_PREFIX: &str = "file:favorite-directory:";
 const MENU_RECENT_LOCATION_PREFIX: &str = "file:recent-location:";
 const MAX_RECENT_LOCATIONS: usize = 12;
+const NOTES_STORE_DIRECTORY: &str = "notes";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -174,13 +175,42 @@ fn validate_markdown_file_name(file_name: &str) -> Result<PathBuf, String> {
     Ok(file_name_path)
 }
 
-fn sidecar_path(markdown_path: &Path) -> Result<PathBuf, String> {
+fn legacy_sidecar_path(markdown_path: &Path) -> Result<PathBuf, String> {
     let file_name = markdown_path
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or_else(|| "invalid Markdown file path".to_string())?;
 
     Ok(markdown_path.with_file_name(format!("{file_name}.notes.json")))
+}
+
+fn normalized_markdown_path_string(markdown_path: &Path) -> String {
+    fs::canonicalize(markdown_path)
+        .unwrap_or_else(|_| markdown_path.to_path_buf())
+        .to_string_lossy()
+        .to_string()
+}
+
+fn stable_notes_hash(value: &str) -> u64 {
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in value.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
+fn notes_store_path(app: &AppHandle, markdown_path: &Path) -> Result<PathBuf, String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("failed to resolve app data directory: {error}"))?;
+    let normalized_path = normalized_markdown_path_string(markdown_path);
+    let notes_file_name = format!("{:016x}.notes.json", stable_notes_hash(&normalized_path));
+
+    Ok(app_data_dir
+        .join(NOTES_STORE_DIRECTORY)
+        .join(notes_file_name))
 }
 
 fn document_title(markdown_path: &Path) -> String {
@@ -401,7 +431,10 @@ fn entry_sort_key(entry: &OpenDirectoryEntry) -> (u8, String, String) {
     )
 }
 
-fn read_markdown_directory(directory: PathBuf) -> Result<OpenMarkdownDirectory, String> {
+fn read_markdown_directory(
+    app: &AppHandle,
+    directory: PathBuf,
+) -> Result<OpenMarkdownDirectory, String> {
     let mut entries = Vec::new();
 
     for entry in fs::read_dir(&directory)
@@ -426,7 +459,7 @@ fn read_markdown_directory(directory: PathBuf) -> Result<OpenMarkdownDirectory, 
                 kind: "file".to_string(),
                 title: document_title(&path),
                 path: path.to_string_lossy().to_string(),
-                file: Some(read_markdown_file(path)?),
+                file: Some(read_markdown_file(app, path)?),
             });
         }
     }
@@ -444,33 +477,93 @@ fn read_markdown_directory(directory: PathBuf) -> Result<OpenMarkdownDirectory, 
     })
 }
 
-fn read_markdown_file(markdown_path: PathBuf) -> Result<OpenMarkdownFile, String> {
+fn parse_notes_file(notes_path: &Path) -> Result<NotesFile, String> {
+    let raw_notes = fs::read_to_string(notes_path)
+        .map_err(|error| format!("failed to read notes: {error}"))?;
+
+    serde_json::from_str(&raw_notes).map_err(|error| format!("failed to parse notes: {error}"))
+}
+
+fn notes_file_is_empty(notes_file: &NotesFile) -> bool {
+    notes_file.notes.is_empty()
+        && notes_file.glossary_terms.is_empty()
+        && notes_file.glossary_bindings.is_empty()
+}
+
+fn read_notes_file(app: &AppHandle, markdown_path: &Path) -> Result<Option<NotesFile>, String> {
+    let notes_path = notes_store_path(app, markdown_path)?;
+    if notes_path.exists() {
+        return parse_notes_file(&notes_path).map(Some);
+    }
+
+    let legacy_notes_path = legacy_sidecar_path(markdown_path)?;
+    if legacy_notes_path.exists() {
+        return parse_notes_file(&legacy_notes_path).map(Some);
+    }
+
+    Ok(None)
+}
+
+fn write_notes_file(
+    app: &AppHandle,
+    markdown_path: &Path,
+    notes_file: NotesFile,
+) -> Result<PathBuf, String> {
+    let notes_path = notes_store_path(app, markdown_path)?;
+    let legacy_notes_path = legacy_sidecar_path(markdown_path)?;
+
+    if notes_file_is_empty(&notes_file) {
+        if notes_path.exists() {
+            fs::remove_file(&notes_path)
+                .map_err(|error| format!("failed to remove empty notes file: {error}"))?;
+        }
+        if legacy_notes_path.exists() {
+            fs::remove_file(&legacy_notes_path)
+                .map_err(|error| format!("failed to remove legacy sidecar notes: {error}"))?;
+        }
+        return Ok(notes_path);
+    }
+
+    if let Some(parent) = notes_path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("failed to create notes storage directory: {error}"))?;
+    }
+
+    let serialized = serde_json::to_string_pretty(&notes_file)
+        .map_err(|error| format!("failed to serialize notes: {error}"))?;
+    fs::write(&notes_path, serialized).map_err(|error| format!("failed to write notes: {error}"))?;
+
+    if legacy_notes_path.exists() {
+        fs::remove_file(&legacy_notes_path)
+            .map_err(|error| format!("failed to remove legacy sidecar notes: {error}"))?;
+    }
+
+    Ok(notes_path)
+}
+
+fn read_markdown_file(app: &AppHandle, markdown_path: PathBuf) -> Result<OpenMarkdownFile, String> {
     let body = fs::read_to_string(&markdown_path)
         .map_err(|error| format!("failed to read Markdown file: {error}"))?;
-    let notes_path = sidecar_path(&markdown_path)?;
+    let notes_path = notes_store_path(app, &markdown_path)?;
 
-    let (notes, glossary_terms, glossary_bindings) = if notes_path.exists() {
-        let raw_notes = fs::read_to_string(&notes_path)
-            .map_err(|error| format!("failed to read sidecar notes: {error}"))?;
-        let parsed: NotesFile = serde_json::from_str(&raw_notes)
-            .map_err(|error| format!("failed to parse sidecar notes: {error}"))?;
-
-        (
-            parsed
-                .notes
-                .into_iter()
-                .filter(|note| note.status != "deleted")
-                .collect(),
-            parsed.glossary_terms,
-            parsed
-                .glossary_bindings
-                .into_iter()
-                .filter(|binding| binding.status != "deleted")
-                .collect(),
-        )
-    } else {
-        (Vec::new(), Vec::new(), Vec::new())
-    };
+    let notes_file = read_notes_file(app, &markdown_path)?;
+    let (notes, glossary_terms, glossary_bindings) = notes_file
+        .map(|parsed| {
+            (
+                parsed
+                    .notes
+                    .into_iter()
+                    .filter(|note| note.status != "deleted")
+                    .collect(),
+                parsed.glossary_terms,
+                parsed
+                    .glossary_bindings
+                    .into_iter()
+                    .filter(|binding| binding.status != "deleted")
+                    .collect(),
+            )
+        })
+        .unwrap_or_else(|| (Vec::new(), Vec::new(), Vec::new()));
 
     Ok(OpenMarkdownFile {
         path: markdown_path.to_string_lossy().to_string(),
@@ -484,19 +577,22 @@ fn read_markdown_file(markdown_path: PathBuf) -> Result<OpenMarkdownFile, String
 }
 
 #[tauri::command]
-fn open_markdown_file(path: String) -> Result<OpenMarkdownFile, String> {
-    read_markdown_file(PathBuf::from(path))
+fn open_markdown_file(app: AppHandle, path: String) -> Result<OpenMarkdownFile, String> {
+    read_markdown_file(&app, PathBuf::from(path))
 }
 
 #[tauri::command]
-fn open_markdown_file_context(path: String) -> Result<OpenMarkdownFileContext, String> {
+fn open_markdown_file_context(
+    app: AppHandle,
+    path: String,
+) -> Result<OpenMarkdownFileContext, String> {
     let markdown_path = PathBuf::from(path);
     let directory = markdown_path
         .parent()
         .ok_or_else(|| "selected file has no parent directory".to_string())?
         .to_path_buf();
-    let selected_file = read_markdown_file(markdown_path)?;
-    let directory = read_markdown_directory(directory)?;
+    let selected_file = read_markdown_file(&app, markdown_path)?;
+    let directory = read_markdown_directory(&app, directory)?;
 
     Ok(OpenMarkdownFileContext {
         selected_file,
@@ -505,17 +601,18 @@ fn open_markdown_file_context(path: String) -> Result<OpenMarkdownFileContext, S
 }
 
 #[tauri::command]
-fn open_markdown_directory(path: String) -> Result<OpenMarkdownDirectory, String> {
+fn open_markdown_directory(app: AppHandle, path: String) -> Result<OpenMarkdownDirectory, String> {
     let directory = PathBuf::from(path);
     if !directory.is_dir() {
         return Err("selected path is not a directory".to_string());
     }
 
-    read_markdown_directory(directory)
+    read_markdown_directory(&app, directory)
 }
 
 #[tauri::command]
 fn save_markdown_file(
+    app: AppHandle,
     path: String,
     body: String,
     notes: Vec<SelectionNote>,
@@ -523,7 +620,6 @@ fn save_markdown_file(
     glossary_bindings: Vec<GlossaryBinding>,
 ) -> Result<SaveMarkdownFile, String> {
     let markdown_path = PathBuf::from(path);
-    let notes_path = sidecar_path(&markdown_path)?;
 
     fs::write(&markdown_path, body)
         .map_err(|error| format!("failed to write Markdown file: {error}"))?;
@@ -541,11 +637,7 @@ fn save_markdown_file(
             .filter(|binding| binding.status != "deleted")
             .collect(),
     };
-    let serialized = serde_json::to_string_pretty(&notes_file)
-        .map_err(|error| format!("failed to serialize sidecar notes: {error}"))?;
-
-    fs::write(&notes_path, serialized)
-        .map_err(|error| format!("failed to write sidecar notes: {error}"))?;
+    let notes_path = write_notes_file(&app, &markdown_path, notes_file)?;
 
     Ok(SaveMarkdownFile {
         path: markdown_path.to_string_lossy().to_string(),
@@ -554,7 +646,11 @@ fn save_markdown_file(
 }
 
 #[tauri::command]
-fn duplicate_markdown_file(path: String, file_name: String) -> Result<OpenMarkdownFile, String> {
+fn duplicate_markdown_file(
+    app: AppHandle,
+    path: String,
+    file_name: String,
+) -> Result<OpenMarkdownFile, String> {
     let source_path = PathBuf::from(path);
     if !source_path.is_file() {
         return Err("selected path is not a file".to_string());
@@ -575,13 +671,7 @@ fn duplicate_markdown_file(path: String, file_name: String) -> Result<OpenMarkdo
     fs::copy(&source_path, &target_path)
         .map_err(|error| format!("failed to duplicate Markdown file: {error}"))?;
 
-    let source_notes_path = sidecar_path(&source_path)?;
-    let target_notes_path = sidecar_path(&target_path)?;
-    if source_notes_path.exists() {
-        let raw_notes = fs::read_to_string(&source_notes_path)
-            .map_err(|error| format!("failed to read sidecar notes: {error}"))?;
-        let mut parsed: NotesFile = serde_json::from_str(&raw_notes)
-            .map_err(|error| format!("failed to parse sidecar notes: {error}"))?;
+    if let Some(mut parsed) = read_notes_file(&app, &source_path)? {
         let target_path_string = target_path.to_string_lossy().to_string();
 
         parsed.markdown_path = target_path_string.clone();
@@ -592,17 +682,14 @@ fn duplicate_markdown_file(path: String, file_name: String) -> Result<OpenMarkdo
             binding.document_id = target_path_string.clone();
         }
 
-        let serialized = serde_json::to_string_pretty(&parsed)
-            .map_err(|error| format!("failed to serialize sidecar notes: {error}"))?;
-        fs::write(&target_notes_path, serialized)
-            .map_err(|error| format!("failed to duplicate sidecar notes: {error}"))?;
+        write_notes_file(&app, &target_path, parsed)?;
     }
 
-    read_markdown_file(target_path)
+    read_markdown_file(&app, target_path)
 }
 
 #[tauri::command]
-fn delete_markdown_file(path: String) -> Result<DeleteMarkdownFile, String> {
+fn delete_markdown_file(app: AppHandle, path: String) -> Result<DeleteMarkdownFile, String> {
     let markdown_path = PathBuf::from(path);
     if !markdown_path.is_file() {
         return Err("selected path is not a file".to_string());
@@ -611,14 +698,20 @@ fn delete_markdown_file(path: String) -> Result<DeleteMarkdownFile, String> {
         return Err("selected file is not a Markdown file".to_string());
     }
 
-    let notes_path = sidecar_path(&markdown_path)?;
+    let notes_path = notes_store_path(&app, &markdown_path)?;
+    let legacy_notes_path = legacy_sidecar_path(&markdown_path)?;
 
     fs::remove_file(&markdown_path)
         .map_err(|error| format!("failed to delete Markdown file: {error}"))?;
 
     if notes_path.exists() {
         fs::remove_file(&notes_path)
-            .map_err(|error| format!("failed to delete sidecar notes: {error}"))?;
+            .map_err(|error| format!("failed to delete notes: {error}"))?;
+    }
+
+    if legacy_notes_path.exists() {
+        fs::remove_file(&legacy_notes_path)
+            .map_err(|error| format!("failed to delete legacy sidecar notes: {error}"))?;
     }
 
     Ok(DeleteMarkdownFile {
