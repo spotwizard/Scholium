@@ -3488,6 +3488,7 @@ function App() {
   const [glossaryModeEnabled, setGlossaryModeEnabled] = useState(false);
   const [noteLibraryOpen, setNoteLibraryOpen] = useState(false);
   const [focusedLibraryNoteId, setFocusedLibraryNoteId] = useState("");
+  const [editingLibraryNoteId, setEditingLibraryNoteId] = useState("");
   const [dirtyDocumentStates, setDirtyDocumentStates] = useState<
     Record<string, DirtyDocumentState>
   >({});
@@ -3499,6 +3500,7 @@ function App() {
   const notePanelRef = useRef<HTMLElement | null>(null);
   const floatingNoteCardRef = useRef<HTMLDivElement | null>(null);
   const noteTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const libraryNoteTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const returnToViewTimerRef = useRef(0);
   const notePanelCloseTimerRef = useRef(0);
   const floatingNotePanelPositionFrameRef = useRef(0);
@@ -3709,6 +3711,7 @@ function App() {
     setGlossaryModeEnabled(false);
     setNoteLibraryOpen(false);
     setFocusedLibraryNoteId("");
+    setEditingLibraryNoteId("");
   }, [noteModeEnabled]);
 
   useEffect(() => {
@@ -3718,7 +3721,32 @@ function App() {
     ) {
       setFocusedLibraryNoteId("");
     }
-  }, [focusedLibraryNoteId, noteLibrarySignature]);
+    if (
+      editingLibraryNoteId &&
+      !noteLibraryNotes.some((note) => note.id === editingLibraryNoteId)
+    ) {
+      setEditingLibraryNoteId("");
+    }
+  }, [editingLibraryNoteId, focusedLibraryNoteId, noteLibrarySignature]);
+
+  useEffect(() => {
+    if (!noteLibraryOpen) {
+      setFocusedLibraryNoteId("");
+      setEditingLibraryNoteId("");
+    }
+  }, [noteLibraryOpen]);
+
+  useEffect(() => {
+    if (!editingLibraryNoteId) return;
+
+    window.requestAnimationFrame(() => {
+      const textarea = libraryNoteTextareaRef.current;
+      if (!textarea) return;
+
+      textarea.focus({ preventScroll: true });
+      textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+    });
+  }, [editingLibraryNoteId]);
 
   useEffect(() => {
     function recordPointerAnchorRect(event: PointerEvent | globalThis.MouseEvent) {
@@ -5754,6 +5782,43 @@ function App() {
     returnActiveNoteToViewMode();
   }
 
+  function handleLibraryNoteEditorKeyDown(
+    noteId: string,
+    event: ReactKeyboardEvent<HTMLTextAreaElement>,
+  ) {
+    const isPlainEnter = event.key === "Enter" && !event.shiftKey;
+    const isDuringComposition =
+      event.nativeEvent.isComposing || noteTextareaIsComposingRef.current;
+
+    if (isDuringComposition) {
+      if (isPlainEnter) {
+        noteTextareaEnterIgnoredDuringCompositionRef.current = true;
+      }
+      return;
+    }
+
+    if (isPlainEnter && Date.now() <= noteTextareaPostCompositionGuardUntilRef.current) {
+      event.preventDefault();
+      noteTextareaPostCompositionGuardUntilRef.current = 0;
+      return;
+    }
+
+    if (event.key === "Escape") {
+      event.preventDefault();
+      setEditingLibraryNoteId((currentNoteId) =>
+        currentNoteId === noteId ? "" : currentNoteId,
+      );
+      return;
+    }
+
+    if (!isPlainEnter) return;
+
+    event.preventDefault();
+    setEditingLibraryNoteId((currentNoteId) =>
+      currentNoteId === noteId ? "" : currentNoteId,
+    );
+  }
+
   function handleSelectionChange(anchor: TextSelectionAnchor | null) {
     if (!noteModeEnabled || noteLibraryOpen) {
       return;
@@ -6312,6 +6377,12 @@ function App() {
       setIsNotePanelClosing(false);
       notePanelHasContentRef.current = false;
     }
+    if (focusedLibraryNoteId === noteId) {
+      setFocusedLibraryNoteId("");
+    }
+    if (editingLibraryNoteId === noteId) {
+      setEditingLibraryNoteId("");
+    }
     markDocumentNotesDirty();
   }
 
@@ -6348,6 +6419,9 @@ function App() {
     setFocusedLibraryNoteId((currentNoteId) =>
       currentNoteId === noteId ? "" : currentNoteId,
     );
+    setEditingLibraryNoteId((currentNoteId) =>
+      currentNoteId === noteId ? "" : currentNoteId,
+    );
   }
 
   function handleShellMouseDownCapture(event: MouseEvent<HTMLElement>) {
@@ -6359,6 +6433,44 @@ function App() {
     }
 
     setFocusedLibraryNoteId("");
+    setEditingLibraryNoteId("");
+  }
+
+  function startLibraryNoteEditor(noteId: string) {
+    const note = notes.find((candidate) => candidate.id === noteId && candidate.status !== "deleted");
+    if (!note || !selectionNoteHasContent(note)) return;
+
+    clearNotePanelCloseTimer();
+    clearReturnToViewTimer();
+    setSelectionWarningPosition(null);
+    setPendingAnchor(null);
+    setPendingGlossaryTerm(null);
+    setActiveNoteId("");
+    setActiveGlossaryBindingId("");
+    setActiveGlossaryTermId("");
+    setActiveNoteMode("view");
+    setActiveGlossaryMode("view");
+    setNoteDraft("");
+    setGlossaryDraft("");
+    setFloatingNotePanelPosition(null);
+    setIsNotePanelClosing(false);
+    notePanelHasContentRef.current = false;
+    floatingNoteAnchorRectRef.current = null;
+    setFocusedLibraryNoteId(noteId);
+    setEditingLibraryNoteId(noteId);
+  }
+
+  function toggleLibraryNoteEditor(noteId: string) {
+    if (editingLibraryNoteId === noteId) {
+      setEditingLibraryNoteId("");
+      return;
+    }
+
+    startLibraryNoteEditor(noteId);
+  }
+
+  function updateLibraryNoteDraft(noteId: string, body: string) {
+    updateNoteBody(noteId, body);
   }
 
   function toggleNoteLibrary() {
@@ -6366,6 +6478,7 @@ function App() {
 
     const nextNoteLibraryOpen = !noteLibraryOpen;
     setFocusedLibraryNoteId("");
+    setEditingLibraryNoteId("");
     if (nextNoteLibraryOpen) {
       resetNoteModeInteractionState();
     }
@@ -6643,54 +6756,75 @@ function App() {
           </div>
           <div className="note-library-list">
             {noteLibraryNotes.length > 0 ? (
-              noteLibraryNotes.map((note) => (
-                <article
-                  className={`note-library-card ${activeNoteId === note.id ? "is-active" : ""} ${
-                    focusedLibraryNoteId === note.id ? "is-focused" : ""
-                  }`}
-                  data-note-id={note.id}
-                  data-note-tone={activeNoteToneById.get(note.id) ?? note.tone ?? 0}
-                  key={note.id}
-                  tabIndex={0}
-                  onBlur={(event) => handleNoteLibraryCardBlur(note.id, event)}
-                  onClick={() => setFocusedLibraryNoteId(note.id)}
-                >
-                  <div className="note-library-card__header">
-                    <p className="eyebrow">Note</p>
-                    <div className="note-actions note-library-card__actions">
-                      <button
-                        type="button"
-                        aria-label="Edit note"
-                        title="Edit note"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          openNoteEditor(note.id);
-                        }}
-                      >
-                        <PencilIcon />
-                      </button>
-                      <button
-                        className="is-danger"
-                        type="button"
-                        aria-label="Delete note"
-                        title="Delete note"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          deleteNote(note.id);
-                        }}
-                      >
-                        <TrashIcon />
-                      </button>
+              noteLibraryNotes.map((note) => {
+                const isEditingLibraryNote = editingLibraryNoteId === note.id;
+
+                return (
+                  <article
+                    className={`note-library-card ${activeNoteId === note.id ? "is-active" : ""} ${
+                      focusedLibraryNoteId === note.id ? "is-focused" : ""
+                    } ${isEditingLibraryNote ? "is-editing" : ""}`}
+                    data-note-id={note.id}
+                    data-note-tone={activeNoteToneById.get(note.id) ?? note.tone ?? 0}
+                    key={note.id}
+                    tabIndex={0}
+                    onBlur={(event) => handleNoteLibraryCardBlur(note.id, event)}
+                    onClick={() => setFocusedLibraryNoteId(note.id)}
+                  >
+                    <div className="note-library-card__header">
+                      <p className="eyebrow">Note</p>
+                      <div className="note-actions note-library-card__actions">
+                        <button
+                          type="button"
+                          aria-label={isEditingLibraryNote ? "完成編輯筆記" : "編輯筆記"}
+                          aria-pressed={isEditingLibraryNote}
+                          title={isEditingLibraryNote ? "完成編輯筆記" : "編輯筆記"}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            toggleLibraryNoteEditor(note.id);
+                          }}
+                        >
+                          <PencilIcon />
+                        </button>
+                        <button
+                          className="is-danger"
+                          type="button"
+                          aria-label="刪除筆記"
+                          title="刪除筆記"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            deleteNote(note.id);
+                          }}
+                        >
+                          <TrashIcon />
+                        </button>
+                      </div>
                     </div>
-                  </div>
-                  <MarkdownPreviewContent
-                    className="bottom-note-body note-library-card__body"
-                    emptyLabel="無內容"
-                    onDoubleClick={() => openNoteEditor(note.id)}
-                    value={note.body}
-                  />
-                </article>
-              ))
+                    {isEditingLibraryNote ? (
+                      <textarea
+                        className="note-library-card__editor"
+                        ref={libraryNoteTextareaRef}
+                        value={note.body}
+                        onChange={(event) => updateLibraryNoteDraft(note.id, event.currentTarget.value)}
+                        onCompositionStart={handleNoteEditorCompositionStart}
+                        onCompositionEnd={handleNoteEditorCompositionEnd}
+                        onKeyDown={(event) => handleLibraryNoteEditorKeyDown(note.id, event)}
+                        onClick={(event) => event.stopPropagation()}
+                        spellCheck={false}
+                        autoCorrect="off"
+                        autoCapitalize="off"
+                      />
+                    ) : (
+                      <MarkdownPreviewContent
+                        className="bottom-note-body note-library-card__body"
+                        emptyLabel="無內容"
+                        onDoubleClick={() => startLibraryNoteEditor(note.id)}
+                        value={note.body}
+                      />
+                    )}
+                  </article>
+                );
+              })
             ) : (
               <p className="note-library-empty">尚無筆記</p>
             )}

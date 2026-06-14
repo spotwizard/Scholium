@@ -1081,6 +1081,26 @@ button:disabled {
   overflow: auto;
 }
 
+.note-library-card__editor {
+  width: 100%;
+  min-height: 180px;
+  max-height: 320px;
+  resize: vertical;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  outline: none;
+  padding: 10px 12px;
+  color: var(--color-text);
+  background: rgba(255, 255, 255, 0.7);
+  font: inherit;
+  line-height: 1.5;
+}
+
+.note-library-card__editor:focus {
+  border-color: rgba(32, 35, 41, 0.24);
+  box-shadow: inset 0 0 0 1px rgba(32, 35, 41, 0.08);
+}
+
 .note-library-empty {
   margin: 0;
   border: 1px dashed var(--color-border);
