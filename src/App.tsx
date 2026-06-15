@@ -5786,6 +5786,11 @@ function App() {
     noteId: string,
     event: ReactKeyboardEvent<HTMLTextAreaElement>,
   ) {
+    if (event.key === "Tab" && !event.shiftKey) {
+      focusNextLibraryNote(noteId, event);
+      return;
+    }
+
     const isPlainEnter = event.key === "Enter" && !event.shiftKey;
     const isDuringComposition =
       event.nativeEvent.isComposing || noteTextareaIsComposingRef.current;
@@ -6473,6 +6478,43 @@ function App() {
     updateNoteBody(noteId, body);
   }
 
+  function focusLibraryNoteCard(noteId: string) {
+    window.requestAnimationFrame(() => {
+      const safeNoteId = noteId.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+      const noteCard = document.querySelector<HTMLElement>(
+        `.note-library-card[data-note-id="${safeNoteId}"]`,
+      );
+      if (!noteCard) return;
+
+      noteCard.focus({ preventScroll: true });
+      noteCard.scrollIntoView({ block: "nearest" });
+    });
+  }
+
+  function focusNextLibraryNote(noteId: string, event: ReactKeyboardEvent<HTMLElement>) {
+    if (event.key !== "Tab" || event.shiftKey || noteLibraryNotes.length === 0) return;
+
+    event.preventDefault();
+    const currentIndex = noteLibraryNotes.findIndex((note) => note.id === noteId);
+    const nextIndex =
+      currentIndex >= 0 ? (currentIndex + 1) % noteLibraryNotes.length : 0;
+    const nextNoteId = noteLibraryNotes[nextIndex]?.id;
+    if (!nextNoteId) return;
+
+    setEditingLibraryNoteId("");
+    setFocusedLibraryNoteId(nextNoteId);
+    focusLibraryNoteCard(nextNoteId);
+  }
+
+  function handleNoteLibraryCardKeyDown(
+    noteId: string,
+    event: ReactKeyboardEvent<HTMLElement>,
+  ) {
+    if (event.target !== event.currentTarget) return;
+
+    focusNextLibraryNote(noteId, event);
+  }
+
   function toggleNoteLibrary() {
     if (!noteModeEnabled) return;
 
@@ -6770,6 +6812,7 @@ function App() {
                     tabIndex={0}
                     onBlur={(event) => handleNoteLibraryCardBlur(note.id, event)}
                     onClick={() => setFocusedLibraryNoteId(note.id)}
+                    onKeyDown={(event) => handleNoteLibraryCardKeyDown(note.id, event)}
                   >
                     <div className="note-library-card__header">
                       <p className="eyebrow">Note</p>

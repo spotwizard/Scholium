@@ -118,7 +118,7 @@ button:disabled {
   position: fixed;
   inset: 0;
   z-index: 60;
-  background: rgba(33, 37, 43, 0.18);
+  background: rgba(33, 37, 43, 0.32);
   pointer-events: auto;
 }
 
@@ -913,6 +913,15 @@ button:disabled {
   filter: none;
 }
 
+.scholium-shell.is-note-library-focus-active
+  .cm-annotation-frame[data-annotation-kind="glossary"],
+.scholium-shell.is-note-library-focus-active
+  .preview-annotation-frame[data-annotation-kind="glossary"],
+.scholium-shell.is-note-library-focus-active
+  .milkdown-annotation-frame[data-annotation-kind="glossary"] {
+  opacity: 1;
+}
+
 .scholium-shell.is-note-library-focus-active .cm-note-annotation.is-focus-target,
 .scholium-shell.is-note-library-focus-active .preview-note-annotation.is-focus-target,
 .scholium-shell.is-note-library-focus-active .milkdown-note-annotation.is-focus-target {
@@ -971,7 +980,7 @@ button:disabled {
   position: absolute;
   inset: 0;
   z-index: 1;
-  background: rgba(33, 37, 43, 0.18);
+  background: rgba(33, 37, 43, 0.32);
   pointer-events: none;
 }
 
@@ -1124,7 +1133,7 @@ button:disabled {
   position: fixed;
   inset: 0;
   z-index: 85;
-  background: rgba(33, 37, 43, 0.18);
+  background: rgba(33, 37, 43, 0.32);
   pointer-events: auto;
 }
 
