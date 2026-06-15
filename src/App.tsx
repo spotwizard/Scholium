@@ -28,6 +28,8 @@ import dictionaryRestIcon from "./assets/dictionary-rest.svg";
 import dictionarySelectedIcon from "./assets/dictionary-selected.svg";
 import fileGlyphSvg from "./assets/file-glyph.svg?raw";
 import folderGlyphSvg from "./assets/folder-glyph.svg?raw";
+import noteLibraryRestIcon from "./assets/note-library-rest.svg";
+import noteLibrarySelectedIcon from "./assets/note-library-selected.svg";
 import notebookRestIcon from "./assets/notebook-rest.svg";
 import notebookSelectedIcon from "./assets/notebook-selected.svg";
 import { loadScholiumMermaid } from "./mermaid";
@@ -203,6 +205,10 @@ type TextRangeRect = {
   height: number;
   left: number;
   right: number;
+  targetBottom: number;
+  targetTop: number;
+  targetX: number;
+  targetY: number;
   top: number;
   width: number;
 };
@@ -283,23 +289,6 @@ function PencilIcon() {
     >
       <path d="M4 20h4l10.5-10.5a2.1 2.1 0 0 0 0-3L17.5 5.5a2.1 2.1 0 0 0-3 0L4 16z" />
       <path d="m13.5 6.5 4 4" />
-    </svg>
-  );
-}
-
-function NoteLibraryIcon() {
-  return (
-    <svg
-      aria-hidden="true"
-      className="note-action-icon"
-      fill="none"
-      viewBox="0 0 24 24"
-    >
-      <path d="M5 4h12c1.1 0 2 .9 2 2v14H7c-1.1 0-2-.9-2-2z" />
-      <path d="M7 4v14" />
-      <path d="M10 8h5" />
-      <path d="M10 12h6" />
-      <path d="M10 16h4" />
     </svg>
   );
 }
@@ -545,6 +534,8 @@ function hasRenderableAnchor(anchor: TextSelectionAnchor) {
 }
 
 function assignAnnotationTones(annotations: TextRangeAnnotation[]): TextRangeAnnotation[] {
+  let noteToneIndex = 0;
+
   return [...annotations]
     .sort(
       (left, right) =>
@@ -553,10 +544,22 @@ function assignAnnotationTones(annotations: TextRangeAnnotation[]): TextRangeAnn
         left.kind.localeCompare(right.kind) ||
         left.id.localeCompare(right.id),
     )
-    .map((annotation, index) => ({
-      ...annotation,
-      tone: (index % 2) as AnnotationTone,
-    }));
+    .map((annotation) => {
+      if (annotation.kind !== "note") {
+        return {
+          ...annotation,
+          tone: 0 as AnnotationTone,
+        };
+      }
+
+      const tone = (noteToneIndex % 2) as AnnotationTone;
+      noteToneIndex += 1;
+
+      return {
+        ...annotation,
+        tone,
+      };
+    });
 }
 
 const glossaryTokenNormalizationOverrides: Record<string, string> = {
@@ -3613,6 +3616,7 @@ function App() {
         )
         .map((binding) => ({
           id: `glossary:${binding.id}`,
+          isFocusTarget: binding.id === activeGlossaryBindingId,
           kind: "glossary",
           status: binding.status,
           anchor: binding.anchor,
@@ -3622,7 +3626,8 @@ function App() {
     .filter((note) => hasRenderableAnchor(note.anchor))
     .map((note) => ({
       id: note.id,
-      isFocusTarget: note.id === noteLibraryFocusedNoteCandidateId,
+      isFocusTarget:
+        note.id === noteLibraryFocusedNoteCandidateId || note.id === activeNoteId,
       kind: "note",
       status: note.status,
       anchor: note.anchor,
@@ -3632,6 +3637,7 @@ function App() {
     noteModeEnabled && pendingAnchor && hasRenderableAnchor(pendingAnchor)
       ? {
           id: pendingAnchorAnnotationId,
+          isFocusTarget: true,
           kind: pendingAnchorIsGlossaryTerm ? "glossary" : "note",
           status: "active",
           anchor: pendingAnchor,
@@ -3655,8 +3661,27 @@ function App() {
 
       return leftNote.createdAt.localeCompare(rightNote.createdAt);
     });
+  const glossaryNavigationBindings = glossaryModeActive
+    ? documentGlossaryBindings
+        .filter(
+          (binding) =>
+            binding.status === "active" &&
+            glossaryTermIdsWithContent.has(binding.termId) &&
+            hasRenderableAnchor(binding.anchor),
+        )
+        .slice()
+        .sort((leftBinding, rightBinding) => {
+          const positionDifference = leftBinding.anchor.from - rightBinding.anchor.from;
+          if (positionDifference !== 0) return positionDifference;
+
+          return leftBinding.createdAt.localeCompare(rightBinding.createdAt);
+        })
+    : [];
   const noteLibrarySignature = noteLibraryNotes
     .map((note) => `${note.id}:${note.anchor.from}:${note.anchor.to}:${note.body}`)
+    .join("|");
+  const glossaryNavigationSignature = glossaryNavigationBindings
+    .map((binding) => `${binding.id}:${binding.anchor.from}:${binding.anchor.to}`)
     .join("|");
   const noteLibraryFocusActive = Boolean(
     noteLibraryFocusedNoteCandidateId &&
@@ -3687,7 +3712,6 @@ function App() {
   const activeNoteIsEditing = Boolean(activeNote && activeNoteMode === "edit");
   const activeGlossaryIsEditing = Boolean(activeGlossaryTerm && activeGlossaryMode === "edit");
   const noteEditModalActive = activeNoteIsEditing || activeGlossaryIsEditing;
-  noteEditModalActiveRef.current = noteEditModalActive;
   const shouldShowSelectionConfirmation = Boolean(
     noteModeEnabled && pendingAnchor && (isMobileViewport || pendingAnchorIsGlossaryTerm),
   );
@@ -3699,6 +3723,8 @@ function App() {
         pendingGlossaryTerm),
   );
   const floatingNotePanelShouldRender = noteModeEnabled && notePanelHasContent;
+  const notePanelModalActive = floatingNotePanelShouldRender && !isNotePanelClosing;
+  noteEditModalActiveRef.current = notePanelModalActive;
 
   useEffect(() => {
     notePanelHasContentRef.current = notePanelHasContent;
@@ -3938,23 +3964,83 @@ function App() {
       height: bottom - top,
       left,
       right,
+      targetBottom: bottom,
+      targetTop: top,
+      targetX: left + (right - left) / 2,
+      targetY: top + (bottom - top) / 2,
       top,
       width: right - left,
     };
   }
 
-  function textAnchorRectFromClientRects(rects: DOMRect[]): TextRangeRect | null {
+  function lineRectsFromClientRects(rects: DOMRect[]) {
     const visibleRects = rects
       .filter((rect) => rect.width > 0 && rect.height > 0)
       .sort((left, right) => left.top - right.top || left.left - right.left);
-    if (visibleRects.length === 0) return null;
+    const lineRects: TextRangeRect[] = [];
 
-    const bottomLineTop = visibleRects[visibleRects.length - 1].top;
-    const bottomLineRects = visibleRects.filter(
-      (rect) => Math.abs(rect.top - bottomLineTop) < 2,
+    visibleRects.forEach((rect) => {
+      const rectCenterY = rect.top + rect.height / 2;
+      const currentLine = lineRects[lineRects.length - 1];
+      const currentLineCenterY = currentLine
+        ? currentLine.top + currentLine.height / 2
+        : 0;
+      const lineTolerance = currentLine
+        ? Math.max(2, Math.min(rect.height, currentLine.height) * 0.5)
+        : 0;
+
+      if (!currentLine || Math.abs(rectCenterY - currentLineCenterY) > lineTolerance) {
+        lineRects.push({
+          bottom: rect.bottom,
+          height: rect.height,
+          left: rect.left,
+          right: rect.right,
+          targetBottom: rect.bottom,
+          targetTop: rect.top,
+          targetX: rect.left + rect.width / 2,
+          targetY: rect.top + rect.height / 2,
+          top: rect.top,
+          width: rect.width,
+        });
+        return;
+      }
+
+      currentLine.left = Math.min(currentLine.left, rect.left);
+      currentLine.right = Math.max(currentLine.right, rect.right);
+      currentLine.top = Math.min(currentLine.top, rect.top);
+      currentLine.bottom = Math.max(currentLine.bottom, rect.bottom);
+      currentLine.width = currentLine.right - currentLine.left;
+      currentLine.height = currentLine.bottom - currentLine.top;
+      currentLine.targetBottom = currentLine.bottom;
+      currentLine.targetTop = currentLine.top;
+      currentLine.targetX = currentLine.left + currentLine.width / 2;
+      currentLine.targetY = currentLine.top + currentLine.height / 2;
+    });
+
+    return lineRects;
+  }
+
+  function textAnchorRectFromClientRects(rects: DOMRect[]): TextRangeRect | null {
+    const fullRect = textRangeRectFromClientRects(rects);
+    if (!fullRect) return null;
+
+    const lineRects = lineRectsFromClientRects(rects);
+    if (lineRects.length === 0) return fullRect;
+
+    const referenceMiddleX = fullRect.left + fullRect.width / 2;
+    const linesCoveringMiddle = lineRects.filter(
+      (lineRect) => lineRect.left <= referenceMiddleX && lineRect.right >= referenceMiddleX,
     );
+    const targetLine =
+      linesCoveringMiddle[linesCoveringMiddle.length - 1] ?? lineRects[lineRects.length - 1];
 
-    return textRangeRectFromClientRects(bottomLineRects);
+    return {
+      ...fullRect,
+      targetBottom: targetLine.targetBottom,
+      targetTop: targetLine.targetTop,
+      targetX: targetLine.targetX,
+      targetY: targetLine.targetY,
+    };
   }
 
   function textRangeRectFromPoint(clientX: number, clientY: number): TextRangeRect {
@@ -3963,6 +4049,10 @@ function App() {
       height: 1,
       left: clientX,
       right: clientX + 1,
+      targetBottom: clientY + 1,
+      targetTop: clientY,
+      targetX: clientX,
+      targetY: clientY,
       top: clientY,
       width: 1,
     };
@@ -4064,11 +4154,12 @@ function App() {
     );
     const positionedHeight = Math.min(cardHeight, maxHeight);
     const connectorAnchorGap = 6;
-    const targetY =
+    const panelAnchorY =
       placement === "below"
         ? anchorRect.bottom + connectorAnchorGap
         : anchorRect.top - connectorAnchorGap;
-    const targetX = anchorRect.left + anchorRect.width / 2;
+    const targetX = anchorRect.targetX;
+    const targetY = placement === "below" ? anchorRect.targetBottom : anchorRect.targetTop;
     const preferredLeft = clampNumber(
       targetX - cardWidth / 2,
       viewportMargin,
@@ -4088,8 +4179,8 @@ function App() {
         : clampNumber(targetX, left, right);
     const top =
       placement === "below"
-        ? targetY + verticalDistance
-        : targetY - positionedHeight - verticalDistance;
+        ? panelAnchorY + verticalDistance
+        : panelAnchorY - positionedHeight - verticalDistance;
     const sourceY = placement === "below" ? top : top + positionedHeight;
     const connectorDeltaX = sourceX - targetX;
     const connectorDeltaY = sourceY - targetY;
@@ -4235,7 +4326,27 @@ function App() {
   }) {
     event.preventDefault();
     event.stopPropagation();
-    refocusNoteTextarea();
+  }
+
+  function handleNotePanelOutsideModalInteraction(event: {
+    preventDefault(): void;
+    stopPropagation(): void;
+  }) {
+    event.preventDefault();
+    event.stopPropagation();
+
+    dismissNotePanelFromAppInteraction();
+  }
+
+  function handleFloatingNotePanelBlur(event: FocusEvent<HTMLElement>) {
+    if (!notePanelHasContentRef.current || isNotePanelClosing) return;
+
+    const nextFocusedElement = event.relatedTarget;
+    if (nextFocusedElement instanceof Node && event.currentTarget.contains(nextFocusedElement)) {
+      return;
+    }
+
+    closeNotePanel();
   }
 
   function targetIsActiveNoteRange(target: EventTarget | null) {
@@ -4320,10 +4431,10 @@ function App() {
 
     function handleDocumentPointerDown(event: PointerEvent) {
       if (event.button !== 0) return;
-      if (noteEditModalActive) {
+      if (notePanelModalActive) {
         if (targetIsInsideNotePanel(event.target)) return;
 
-        blockNoteEditBackdropInteraction(event);
+        handleNotePanelOutsideModalInteraction(event);
         return;
       }
       if (notePanelKeepsFocus(event.target, event.clientX, event.clientY)) return;
@@ -4333,10 +4444,10 @@ function App() {
 
     function handleDocumentMouseDown(event: globalThis.MouseEvent) {
       if (event.button !== 0) return;
-      if (noteEditModalActive) {
+      if (notePanelModalActive) {
         if (targetIsInsideNotePanel(event.target)) return;
 
-        blockNoteEditBackdropInteraction(event);
+        handleNotePanelOutsideModalInteraction(event);
         return;
       }
       if (notePanelKeepsFocus(event.target, event.clientX, event.clientY)) return;
@@ -4345,10 +4456,10 @@ function App() {
     }
 
     function handleDocumentFocusIn(event: Event) {
-      if (noteEditModalActive) {
+      if (notePanelModalActive) {
         if (targetIsInsideNotePanel(event.target)) return;
 
-        blockNoteEditBackdropInteraction(event);
+        handleNotePanelOutsideModalInteraction(event);
         return;
       }
       if (notePanelKeepsFocus(event.target)) return;
@@ -4370,9 +4481,24 @@ function App() {
     activeNoteId,
     isNotePanelClosing,
     noteEditModalActive,
+    notePanelModalActive,
     notePanelHasContent,
     pendingAnchor,
   ]);
+
+  useEffect(() => {
+    if (!notePanelHasContent || isNotePanelClosing) return;
+
+    function handleWindowBlur() {
+      closeNotePanel();
+    }
+
+    window.addEventListener("blur", handleWindowBlur);
+
+    return () => {
+      window.removeEventListener("blur", handleWindowBlur);
+    };
+  }, [closeNotePanel, isNotePanelClosing, notePanelHasContent]);
 
   useEffect(() => {
     if (!noteEditModalActive) return;
@@ -4555,6 +4681,18 @@ function App() {
 
   useEffect(() => {
     function handleModeShortcut(event: KeyboardEvent) {
+      const isAnnotationNavigationTab =
+        event.key === "Tab" &&
+        !event.metaKey &&
+        !event.ctrlKey &&
+        !event.altKey;
+      const isPlainEnter =
+        event.key === "Enter" &&
+        !event.metaKey &&
+        !event.ctrlKey &&
+        !event.altKey &&
+        !event.shiftKey;
+
       if (event.key === "Escape" && (notePanelHasContentRef.current || pendingAnchor)) {
         event.preventDefault();
         closeNotePanel();
@@ -4562,6 +4700,15 @@ function App() {
       }
 
       if (noteEditModalActive) {
+        if (
+          isAnnotationNavigationTab &&
+          focusAdjacentFloatingAnnotation(event.shiftKey ? -1 : 1)
+        ) {
+          event.preventDefault();
+          event.stopPropagation();
+          return;
+        }
+
         if (redirectOutsideNoteEditKeyboardEvent(event)) return;
         if (!targetIsInsideNotePanel(event.target)) {
           blockNoteEditBackdropInteraction(event);
@@ -4569,12 +4716,21 @@ function App() {
         return;
       }
 
-      const isPlainEnter =
-        event.key === "Enter" &&
-        !event.metaKey &&
-        !event.ctrlKey &&
-        !event.altKey &&
-        !event.shiftKey;
+      if (notePanelModalActive) {
+        if (
+          isAnnotationNavigationTab &&
+          focusAdjacentFloatingAnnotation(event.shiftKey ? -1 : 1)
+        ) {
+          event.preventDefault();
+          event.stopPropagation();
+          return;
+        }
+
+        if (targetIsInsideNotePanel(event.target)) return;
+
+        blockNoteEditBackdropInteraction(event);
+        return;
+      }
 
       if (isPlainEnter && pendingAnchor && pendingAnchorIsGlossaryTerm) {
         if (targetIsFormControl(event.target)) return;
@@ -4606,8 +4762,13 @@ function App() {
       window.removeEventListener("keydown", handleModeShortcut, true);
     };
   }, [
+    activeGlossaryBindingId,
+    activeNoteId,
     closeNotePanel,
+    glossaryNavigationSignature,
+    noteLibrarySignature,
     noteEditModalActive,
+    notePanelModalActive,
     pendingAnchor,
     pendingAnchorIsCompleteBlock,
     pendingAnchorIsGlossaryTerm,
@@ -5737,14 +5898,12 @@ function App() {
   }
 
   function handleNoteEditorCompositionEnd() {
-    noteTextareaIsComposingRef.current = false;
-    if (noteTextareaEnterIgnoredDuringCompositionRef.current) {
-      noteTextareaEnterIgnoredDuringCompositionRef.current = false;
-      noteTextareaPostCompositionGuardUntilRef.current = 0;
-      return;
-    }
+    const hadEnterDuringComposition = noteTextareaEnterIgnoredDuringCompositionRef.current;
 
-    noteTextareaPostCompositionGuardUntilRef.current = Date.now() + 180;
+    noteTextareaIsComposingRef.current = false;
+    noteTextareaEnterIgnoredDuringCompositionRef.current = false;
+    noteTextareaPostCompositionGuardUntilRef.current =
+      Date.now() + (hadEnterDuringComposition ? 500 : 180);
   }
 
   function handleNoteEditorKeyDown(event: ReactKeyboardEvent<HTMLTextAreaElement>) {
@@ -5786,8 +5945,7 @@ function App() {
     noteId: string,
     event: ReactKeyboardEvent<HTMLTextAreaElement>,
   ) {
-    if (event.key === "Tab" && !event.shiftKey) {
-      focusNextLibraryNote(noteId, event);
+    if (focusAdjacentLibraryNote(noteId, event)) {
       return;
     }
 
@@ -5994,6 +6152,70 @@ function App() {
     setActiveNoteMode("view");
     setNoteDraft(note.body);
     notePanelHasContentRef.current = true;
+  }
+
+  function wrappedNavigationIndex(
+    currentIndex: number,
+    itemCount: number,
+    direction: -1 | 1,
+  ) {
+    if (itemCount === 0) return -1;
+    if (currentIndex < 0) return direction > 0 ? 0 : itemCount - 1;
+
+    return (currentIndex + direction + itemCount) % itemCount;
+  }
+
+  function scrollTextAnnotationIntoView(annotationId: string) {
+    const annotationElement = Array.from(
+      document.querySelectorAll<HTMLElement>(
+        ".cm-note-annotation[data-note-id], .cm-annotation-frame[data-note-id], .preview-note-annotation[data-note-id], .preview-annotation-frame[data-note-id], .milkdown-note-annotation[data-note-id], .milkdown-annotation-frame[data-note-id]",
+      ),
+    ).find(
+      (element) =>
+        element.dataset.noteId === annotationId &&
+        Array.from(element.getClientRects()).some(
+          (rect) => rect.width > 0 && rect.height > 0,
+        ),
+    );
+
+    annotationElement?.scrollIntoView({ block: "center", inline: "nearest" });
+  }
+
+  function focusAdjacentFloatingAnnotation(direction: -1 | 1) {
+    if (activeNoteId) {
+      const currentIndex = noteLibraryNotes.findIndex((note) => note.id === activeNoteId);
+      const nextIndex = wrappedNavigationIndex(
+        currentIndex,
+        noteLibraryNotes.length,
+        direction,
+      );
+      const nextNoteId = nextIndex >= 0 ? noteLibraryNotes[nextIndex]?.id : "";
+      if (!nextNoteId) return false;
+
+      scrollTextAnnotationIntoView(nextNoteId);
+      showNoteViewer(nextNoteId);
+      return true;
+    }
+
+    if (activeGlossaryBindingId) {
+      const currentIndex = glossaryNavigationBindings.findIndex(
+        (binding) => binding.id === activeGlossaryBindingId,
+      );
+      const nextIndex = wrappedNavigationIndex(
+        currentIndex,
+        glossaryNavigationBindings.length,
+        direction,
+      );
+      const nextBindingId =
+        nextIndex >= 0 ? glossaryNavigationBindings[nextIndex]?.id : "";
+      if (!nextBindingId) return false;
+
+      scrollTextAnnotationIntoView(`glossary:${nextBindingId}`);
+      showGlossaryViewer(nextBindingId);
+      return true;
+    }
+
+    return false;
   }
 
   function openNoteEditor(noteId: string) {
@@ -6225,7 +6447,10 @@ function App() {
 
   function showAnnotationViewer(annotationId: string) {
     if (!noteModeEnabled) return;
-    if (noteLibraryOpen) return;
+    if (noteLibraryOpen) {
+      focusLibraryNoteFromAnnotation(annotationId);
+      return;
+    }
 
     if (annotationId.startsWith("glossary:")) {
       if (!glossaryModeActive) return;
@@ -6235,6 +6460,18 @@ function App() {
     }
 
     showNoteViewer(annotationId);
+  }
+
+  function focusLibraryNoteFromAnnotation(annotationId: string) {
+    if (annotationId.startsWith("glossary:")) return false;
+
+    const note = noteLibraryNotes.find((candidate) => candidate.id === annotationId);
+    if (!note) return false;
+
+    setEditingLibraryNoteId("");
+    setFocusedLibraryNoteId(note.id);
+    focusLibraryNoteCard(note.id);
+    return true;
   }
 
   function updateGlossaryDefinition(termId: string, definition: string) {
@@ -6491,28 +6728,37 @@ function App() {
     });
   }
 
-  function focusNextLibraryNote(noteId: string, event: ReactKeyboardEvent<HTMLElement>) {
-    if (event.key !== "Tab" || event.shiftKey || noteLibraryNotes.length === 0) return;
+  function focusAdjacentLibraryNote(
+    noteId: string,
+    event: ReactKeyboardEvent<HTMLElement>,
+  ) {
+    if (event.key !== "Tab" || event.metaKey || event.ctrlKey || event.altKey) {
+      return false;
+    }
+    if (noteLibraryNotes.length === 0) return false;
 
     event.preventDefault();
+    event.stopPropagation();
     const currentIndex = noteLibraryNotes.findIndex((note) => note.id === noteId);
-    const nextIndex =
-      currentIndex >= 0 ? (currentIndex + 1) % noteLibraryNotes.length : 0;
-    const nextNoteId = noteLibraryNotes[nextIndex]?.id;
-    if (!nextNoteId) return;
+    const nextIndex = wrappedNavigationIndex(
+      currentIndex,
+      noteLibraryNotes.length,
+      event.shiftKey ? -1 : 1,
+    );
+    const nextNoteId = nextIndex >= 0 ? noteLibraryNotes[nextIndex]?.id : "";
+    if (!nextNoteId) return false;
 
     setEditingLibraryNoteId("");
     setFocusedLibraryNoteId(nextNoteId);
     focusLibraryNoteCard(nextNoteId);
+    return true;
   }
 
   function handleNoteLibraryCardKeyDown(
     noteId: string,
     event: ReactKeyboardEvent<HTMLElement>,
   ) {
-    if (event.target !== event.currentTarget) return;
-
-    focusNextLibraryNote(noteId, event);
+    focusAdjacentLibraryNote(noteId, event);
   }
 
   function toggleNoteLibrary() {
@@ -6565,6 +6811,7 @@ function App() {
         width: floatingNotePanelPosition.connector.width,
       }
     : null;
+  const editorReadOnly = notePanelModalActive || noteLibraryOpen;
   const fileContextMenuActions = fileContextMenu
     ? [
         {
@@ -6608,6 +6855,7 @@ function App() {
     "scholium-shell",
     noteModeEnabled && noteLibraryOpen ? "is-note-library-open" : "",
     noteLibraryFocusActive ? "is-note-library-focus-active" : "",
+    notePanelModalActive ? "is-note-panel-modal-active" : "",
   ]
     .filter(Boolean)
     .join(" ");
@@ -6703,36 +6951,11 @@ function App() {
       <section className="editor-pane" aria-label="Markdown editor">
         <div className="editor-grid">
           <div className="editor-surface">
-            <div className="editor-toolbar" aria-label="Editor tools">
-              {noteModeEnabled ? (
-                <button
-                  aria-checked={noteLibraryOpen}
-                  aria-label={noteLibraryOpen ? "收起筆記庫" : "展開筆記庫"}
-                  className="note-mode-switch note-library-toggle"
-                  onClick={toggleNoteLibrary}
-                  role="switch"
-                  type="button"
-                >
-                  <NoteLibraryIcon />
-                </button>
-              ) : null}
-              {noteModeEnabled ? (
-                <button
-                  aria-checked={glossaryModeActive}
-                  aria-label={glossaryModeActive ? "關閉名詞解釋模式" : "開啟名詞解釋模式"}
-                  className="note-mode-switch"
-                  onClick={toggleGlossaryMode}
-                  role="switch"
-                  type="button"
-                >
-                  <img
-                    alt=""
-                    aria-hidden="true"
-                    className="note-mode-switch__icon"
-                    src={glossaryModeActive ? dictionarySelectedIcon : dictionaryRestIcon}
-                  />
-                </button>
-              ) : null}
+            <div
+              aria-label="Editor tools"
+              className="editor-toolbar"
+              data-expanded={noteModeEnabled ? "true" : "false"}
+            >
               <button
                 aria-checked={noteModeEnabled}
                 aria-label={noteModeEnabled ? "關閉筆記模式" : "開啟筆記模式"}
@@ -6748,6 +6971,40 @@ function App() {
                   src={noteModeEnabled ? notebookSelectedIcon : notebookRestIcon}
                 />
               </button>
+              <button
+                aria-checked={glossaryModeActive}
+                aria-hidden={!noteModeEnabled}
+                aria-label={glossaryModeActive ? "關閉名詞解釋模式" : "開啟名詞解釋模式"}
+                className="note-mode-switch note-mode-switch--dependent"
+                disabled={!noteModeEnabled}
+                onClick={toggleGlossaryMode}
+                role="switch"
+                type="button"
+              >
+                <img
+                  alt=""
+                  aria-hidden="true"
+                  className="note-mode-switch__icon"
+                  src={glossaryModeActive ? dictionarySelectedIcon : dictionaryRestIcon}
+                />
+              </button>
+              <button
+                aria-checked={noteLibraryOpen}
+                aria-hidden={!noteModeEnabled}
+                aria-label={noteLibraryOpen ? "收起筆記庫" : "展開筆記庫"}
+                className="note-mode-switch note-mode-switch--dependent note-library-toggle"
+                disabled={!noteModeEnabled}
+                onClick={toggleNoteLibrary}
+                role="switch"
+                type="button"
+              >
+                <img
+                  alt=""
+                  aria-hidden="true"
+                  className="note-mode-switch__icon"
+                  src={noteLibraryOpen ? noteLibrarySelectedIcon : noteLibraryRestIcon}
+                />
+              </button>
             </div>
             {!hasOpenDocument ? (
               <div className="empty-editor-state">
@@ -6759,7 +7016,7 @@ function App() {
                   annotations={annotations}
                   key={selectedDocument.id}
                   noteModeEnabled={noteModeEnabled}
-                  readOnly={noteEditModalActive}
+                  readOnly={editorReadOnly}
                   value={selectedDocument.body}
                   onAnnotationClick={showAnnotationViewer}
                   onAnnotationDoubleClick={showAnnotationViewer}
@@ -6771,7 +7028,7 @@ function App() {
                 <MarkdownEditor
                   annotations={annotations}
                   noteModeEnabled={noteModeEnabled}
-                  readOnly={noteEditModalActive}
+                  readOnly={editorReadOnly}
                   value={selectedDocument.body}
                   onAnnotationClick={showAnnotationViewer}
                   onAnnotationDoubleClick={showAnnotationViewer}
@@ -6883,13 +7140,13 @@ function App() {
 
       {floatingNotePanelShouldRender ? (
         <>
-          {noteEditModalActive ? (
+          {notePanelModalActive ? (
             <div
               aria-hidden="true"
               className="note-edit-backdrop"
-              onClick={blockNoteEditBackdropInteraction}
-              onMouseDown={blockNoteEditBackdropInteraction}
-              onPointerDown={blockNoteEditBackdropInteraction}
+              onClick={handleNotePanelOutsideModalInteraction}
+              onMouseDown={handleNotePanelOutsideModalInteraction}
+              onPointerDown={handleNotePanelOutsideModalInteraction}
               onWheel={blockNoteEditBackdropInteraction}
             />
           ) : null}
@@ -6910,6 +7167,7 @@ function App() {
                   ? "is-detached"
                   : "is-below"
             } ${floatingPanelIsGlossary ? "is-glossary" : "is-note"}`}
+            onBlur={handleFloatingNotePanelBlur}
             ref={notePanelRef}
             style={floatingNotePanelStyle}
             aria-label={

@@ -98,10 +98,6 @@ button:disabled {
   --editor-content-inline-end-gutter: calc(var(--note-library-width) + 48px);
 }
 
-.scholium-shell.is-note-library-open .editor-surface {
-  pointer-events: none;
-}
-
 .scholium-shell.is-note-library-open .editor-toolbar {
   pointer-events: auto;
 }
@@ -395,48 +391,104 @@ button:disabled {
 .editor-toolbar {
   position: absolute;
   top: 20px;
-  right: var(--editor-content-inline-end-gutter);
+  left: var(--editor-content-inline-start-gutter);
   z-index: 4;
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 8px;
-  justify-content: flex-end;
-  max-width: calc(100% - var(--editor-content-inline-start-gutter) - var(--editor-content-inline-end-gutter));
+  gap: 4px;
+  justify-content: flex-start;
+  width: 50px;
+  max-width: calc(
+    100% - var(--editor-content-inline-start-gutter) - var(--editor-content-inline-end-gutter)
+  );
+  border: 1px solid rgba(31, 41, 55, 0.1);
+  border-radius: 999px;
+  padding: 4px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.82);
+  box-shadow: var(--shadow-low);
+  backdrop-filter: blur(12px);
+  transition: width 170ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.editor-toolbar[data-expanded="true"] {
+  width: 138px;
 }
 
 .note-mode-switch {
   display: grid;
-  width: 44px;
-  height: 44px;
+  flex: 0 0 auto;
+  width: 40px;
+  height: 40px;
   place-items: center;
-  border: 1px solid var(--color-border);
+  border: 1px solid transparent;
   border-radius: 999px;
   padding: 0;
   color: var(--color-accent-ink);
-  background: rgba(255, 255, 255, 0.92);
-  box-shadow: var(--shadow-low);
+  background: transparent;
+  box-shadow: none;
+  transition:
+    border-color 120ms ease,
+    background 120ms ease,
+    box-shadow 120ms ease;
+}
+
+.note-mode-switch:disabled {
+  cursor: default;
+}
+
+.note-mode-switch:disabled:hover {
+  border-color: transparent;
+  background: transparent;
 }
 
 .note-mode-switch:hover {
-  border-color: var(--color-selected-border);
-  background: var(--color-surface-raised);
+  border-color: rgba(31, 41, 55, 0.12);
+  background: rgba(31, 41, 55, 0.06);
 }
 
 .note-mode-switch[aria-checked="true"] {
-  border-color: var(--color-accent);
-  color: var(--color-accent-strong);
-  background: var(--color-selected-surface);
+  border-color: rgba(31, 41, 55, 0.32);
+  color: var(--color-text);
+  background: rgba(31, 41, 55, 0.1);
+  box-shadow: inset 0 0 0 1px rgba(31, 41, 55, 0.08);
+}
+
+.note-mode-switch--dependent {
+  pointer-events: none;
+  visibility: hidden;
+  opacity: 0;
+  transform: translateX(-6px) scale(0.96);
+  transition:
+    opacity 140ms ease,
+    transform 170ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    visibility 0s linear 170ms,
+    border-color 120ms ease,
+    background 120ms ease,
+    box-shadow 120ms ease;
+}
+
+.editor-toolbar[data-expanded="true"] .note-mode-switch--dependent {
+  pointer-events: auto;
+  visibility: visible;
+  opacity: 1;
+  transform: translateX(0) scale(1);
+  transition-delay: 30ms, 30ms, 0s, 0s, 0s, 0s;
 }
 
 .note-mode-switch__icon {
   display: block;
-  width: 32px;
-  height: 32px;
+  width: 27px;
+  height: 27px;
+  object-fit: contain;
 }
 
-.note-library-toggle .note-action-icon {
-  width: 24px;
-  height: 24px;
+@media (prefers-reduced-motion: reduce) {
+  .editor-toolbar,
+  .note-mode-switch,
+  .note-mode-switch--dependent {
+    transition: none;
+  }
 }
 
 .empty-editor-state {
@@ -514,6 +566,7 @@ button:disabled {
   text-decoration-color: var(--color-glossary-border);
   text-decoration-thickness: 2px;
   text-underline-offset: 0.18em;
+  text-decoration-skip-ink: none;
 }
 
 .cm-annotation-layer {
@@ -768,6 +821,7 @@ button:disabled {
   text-decoration-color: var(--color-glossary-border);
   text-decoration-thickness: 2px;
   text-underline-offset: 0.18em;
+  text-decoration-skip-ink: none;
 }
 
 .preview-annotation-frame[data-annotation-kind="glossary"] {
@@ -886,6 +940,7 @@ button:disabled {
   text-decoration-color: var(--color-glossary-border);
   text-decoration-thickness: 2px;
   text-underline-offset: 0.18em;
+  text-decoration-skip-ink: none;
 }
 
 .scholium-shell.is-note-library-focus-active .cm-note-annotation,
@@ -913,15 +968,6 @@ button:disabled {
   filter: none;
 }
 
-.scholium-shell.is-note-library-focus-active
-  .cm-annotation-frame[data-annotation-kind="glossary"],
-.scholium-shell.is-note-library-focus-active
-  .preview-annotation-frame[data-annotation-kind="glossary"],
-.scholium-shell.is-note-library-focus-active
-  .milkdown-annotation-frame[data-annotation-kind="glossary"] {
-  opacity: 1;
-}
-
 .scholium-shell.is-note-library-focus-active .cm-note-annotation.is-focus-target,
 .scholium-shell.is-note-library-focus-active .preview-note-annotation.is-focus-target,
 .scholium-shell.is-note-library-focus-active .milkdown-note-annotation.is-focus-target {
@@ -939,6 +985,95 @@ button:disabled {
   opacity: 1;
   filter: none;
   box-shadow: none;
+}
+
+.scholium-shell.is-note-library-focus-active
+  .cm-note-annotation.is-focus-target
+  .cm-glossary-annotation,
+.scholium-shell.is-note-library-focus-active
+  .cm-note-annotation.is-focus-target.cm-glossary-annotation,
+.scholium-shell.is-note-library-focus-active
+  .preview-note-annotation.is-focus-target
+  .preview-note-annotation[data-annotation-kind="glossary"],
+.scholium-shell.is-note-library-focus-active
+  .preview-note-annotation.is-focus-target[data-annotation-kind="glossary"],
+.scholium-shell.is-note-library-focus-active
+  .milkdown-note-annotation.is-focus-target
+  .milkdown-glossary-annotation,
+.scholium-shell.is-note-library-focus-active
+  .milkdown-note-annotation.is-focus-target.milkdown-glossary-annotation {
+  position: relative;
+  z-index: 65;
+  border-radius: 2px;
+  color: var(--color-text) !important;
+  background: var(--color-glossary-surface);
+  opacity: 1;
+  filter: none;
+}
+
+.scholium-shell.is-note-panel-modal-active .cm-annotation-layer,
+.scholium-shell.is-note-panel-modal-active .preview-annotation-layer,
+.scholium-shell.is-note-panel-modal-active .milkdown-annotation-layer {
+  z-index: 86;
+}
+
+.scholium-shell.is-note-panel-modal-active .cm-editor,
+.scholium-shell.is-note-panel-modal-active .markdown-preview > :not(.preview-annotation-layer),
+.scholium-shell.is-note-panel-modal-active .milkdown-markdown-editor {
+  z-index: auto;
+}
+
+.scholium-shell.is-note-panel-modal-active
+  .cm-annotation-frame:not([data-focus-target="true"]),
+.scholium-shell.is-note-panel-modal-active
+  .preview-annotation-frame:not([data-focus-target="true"]),
+.scholium-shell.is-note-panel-modal-active
+  .milkdown-annotation-frame:not([data-focus-target="true"]) {
+  opacity: 0;
+  filter: none;
+}
+
+.scholium-shell.is-note-panel-modal-active .cm-annotation-frame.is-focus-target,
+.scholium-shell.is-note-panel-modal-active .cm-annotation-frame[data-focus-target="true"],
+.scholium-shell.is-note-panel-modal-active .preview-annotation-frame.is-focus-target,
+.scholium-shell.is-note-panel-modal-active .preview-annotation-frame[data-focus-target="true"],
+.scholium-shell.is-note-panel-modal-active .milkdown-annotation-frame.is-focus-target,
+.scholium-shell.is-note-panel-modal-active .milkdown-annotation-frame[data-focus-target="true"] {
+  z-index: 86;
+  opacity: 1;
+  filter: none;
+}
+
+.scholium-shell.is-note-panel-modal-active .cm-note-annotation.is-focus-target,
+.scholium-shell.is-note-panel-modal-active .preview-note-annotation.is-focus-target,
+.scholium-shell.is-note-panel-modal-active .milkdown-note-annotation.is-focus-target {
+  position: relative;
+  z-index: 87;
+  color: var(--color-text) !important;
+  border-radius: 2px;
+  background: var(--color-annotation-surface);
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+  opacity: 1;
+  filter: none;
+}
+
+.scholium-shell.is-note-panel-modal-active
+  .cm-note-annotation.is-focus-target[data-note-tone="1"],
+.scholium-shell.is-note-panel-modal-active
+  .preview-note-annotation.is-focus-target[data-note-tone="1"],
+.scholium-shell.is-note-panel-modal-active
+  .milkdown-note-annotation.is-focus-target[data-note-tone="1"] {
+  background: var(--color-annotation-surface-alt);
+}
+
+.scholium-shell.is-note-panel-modal-active
+  .cm-note-annotation.is-focus-target[data-annotation-kind="glossary"],
+.scholium-shell.is-note-panel-modal-active
+  .preview-note-annotation.is-focus-target[data-annotation-kind="glossary"],
+.scholium-shell.is-note-panel-modal-active
+  .milkdown-note-annotation.is-focus-target[data-annotation-kind="glossary"] {
+  background: var(--color-glossary-surface);
 }
 
 .note-library-pane {
@@ -1584,7 +1719,6 @@ button:disabled {
   }
 
   .editor-toolbar {
-    right: var(--editor-content-inline-end-gutter);
     left: var(--editor-content-inline-start-gutter);
     max-width: none;
   }
