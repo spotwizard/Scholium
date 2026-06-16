@@ -11,8 +11,11 @@ Scholium 是 local-first desktop app。Markdown 內容會存回原始 `.md` 檔�
 - 在 Preview mode 閱讀 Markdown
 - 在 Edit mode 編輯 Markdown 原始內容
 - 在 preview 中直接編輯單一 Markdown block
-- 選取完整句子或段落後建立 note
-- 點選標記文字查看、編輯或刪除 note
+- 在筆記模式中選取完整句子、段落或名詞後建立 note
+- 點選標記文字查看、聚焦、編輯或刪除 note
+- 筆記庫集中瀏覽所有 notes，卡片未聚焦時顯示前兩行，聚焦後滑順展開全文
+- 筆記庫卡片以圖釘 badge 標示，編輯與刪除操作會在卡片展開後出現在右下角
+- 清單項目的圈選底色會覆蓋 bullet 與縮排範圍
 - 自動儲存 Markdown 內容與 notes
 - 重新啟動 app 時還原上次開啟的 Markdown 檔案
 - 從 macOS File menu 開啟常用目錄與最近開啟項目
@@ -42,6 +45,9 @@ macOS File menu 提供：
 
 - `Cmd+/`：切換 Preview mode 與 Edit mode
 - `Escape`：關閉目前的 note panel
+- 點擊筆記庫卡片或對應的圈選文字：進入同一筆 note 的聚焦模式
+- 內文筆記、名詞解釋與筆記庫聚焦模式中按 `Tab`：前往下一筆，最後一筆會回到第一筆
+- 內文筆記、名詞解釋與筆記庫聚焦模式中按 `Shift+Tab`：前往上一筆，第一筆會跳到最後一筆
 - Note editor 內按 `Enter`：回到閱覽狀態
 - Note editor 內按 `Shift+Enter`：換行
 

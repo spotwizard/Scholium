@@ -24,14 +24,8 @@ import {
   type TextAnnotation,
   type TextSelectionAnchor,
 } from "./MarkdownEditor";
-import dictionaryRestIcon from "./assets/dictionary-rest.svg";
-import dictionarySelectedIcon from "./assets/dictionary-selected.svg";
 import fileGlyphSvg from "./assets/file-glyph.svg?raw";
 import folderGlyphSvg from "./assets/folder-glyph.svg?raw";
-import noteLibraryRestIcon from "./assets/note-library-rest.svg";
-import noteLibrarySelectedIcon from "./assets/note-library-selected.svg";
-import notebookRestIcon from "./assets/notebook-rest.svg";
-import notebookSelectedIcon from "./assets/notebook-selected.svg";
 import { loadScholiumMermaid } from "./mermaid";
 
 const unorderedListMarkerPattern = /^ {0,3}[-*+]\s+/;
@@ -290,6 +284,25 @@ function PencilIcon() {
       <path d="M4 20h4l10.5-10.5a2.1 2.1 0 0 0 0-3L17.5 5.5a2.1 2.1 0 0 0-3 0L4 16z" />
       <path d="m13.5 6.5 4 4" />
     </svg>
+  );
+}
+
+function PinBadge() {
+  return (
+    <div className="pin-badge" aria-label="Note">
+      <svg aria-hidden="true" width="13.5" height="13.5" viewBox="0 0 24 24" fill="none">
+        <path
+          d="M14.5 3.5 9 9 5.5 9.8 4 11.3l3.8 3.8-3.3 4.6 4.6-3.3 3.8 3.8 1.5-1.5.8-3.5 5.5-5.5z"
+          fill="#F7E0C8"
+        />
+        <path
+          d="m9.6 14.4-5 5"
+          stroke="#F7E0C8"
+          strokeLinecap="round"
+          strokeWidth="1.6"
+        />
+      </svg>
+    </div>
   );
 }
 
@@ -1661,6 +1674,32 @@ function measurePreviewAnnotationFrames(container: HTMLDivElement): PreviewAnnot
   const containerRect = container.getBoundingClientRect();
   const frames: PreviewAnnotationFrame[] = [];
 
+  function annotationListAdjustedRect(annotation: HTMLElement, rect: DOMRect) {
+    const baseRect = {
+      bottom: rect.bottom,
+      left: rect.left,
+      right: rect.right,
+      top: rect.top,
+    };
+    const listItem = annotation.closest<HTMLLIElement>("li");
+    const list = listItem?.closest<HTMLOListElement | HTMLUListElement>("ol, ul") ?? null;
+    if (!listItem || !list || !container.contains(list)) {
+      return baseRect;
+    }
+
+    const listRect = list.getBoundingClientRect();
+    const listItemRect = listItem.getBoundingClientRect();
+    const left = Math.max(
+      containerRect.left,
+      Math.min(listRect.left, listItemRect.left, rect.left),
+    );
+
+    return {
+      ...baseRect,
+      left,
+    };
+  }
+
   function frameFromBounds(
     noteId: string,
     frameKey: string,
@@ -1705,9 +1744,9 @@ function measurePreviewAnnotationFrames(container: HTMLDivElement): PreviewAnnot
       const kind: AnnotationKind =
         annotation.dataset.annotationKind === "glossary" ? "glossary" : "note";
 
-      const annotationRects = Array.from(annotation.getClientRects()).filter(
-        (rect) => rect.width > 0 && rect.height > 0,
-      );
+      const annotationRects = Array.from(annotation.getClientRects())
+        .filter((rect) => rect.width > 0 && rect.height > 0)
+        .map((rect) => annotationListAdjustedRect(annotation, rect));
       if (annotationRects.length === 0) return;
 
       const sortedRects = annotationRects.sort(
@@ -6930,6 +6969,9 @@ function App() {
       activeGlossaryIsEditing ||
       (pendingAnchor && pendingAnchorIsGlossaryTerm),
   );
+  const floatingNoteTone = activeNote
+    ? (activeNoteToneById.get(activeNote.id) ?? activeNote.tone ?? 0)
+    : 0;
   const selectionWarningMessage = glossaryModeActive
     ? "請選取 1-3 個單詞建立名詞解釋，或選取完整句子/段落新增筆記。"
     : "請選取完整句子或段落新增筆記。";
@@ -7047,12 +7089,6 @@ function App() {
                 role="switch"
                 type="button"
               >
-                <img
-                  alt=""
-                  aria-hidden="true"
-                  className="note-mode-switch__icon"
-                  src={noteModeEnabled ? notebookSelectedIcon : notebookRestIcon}
-                />
                 <span className="note-mode-switch__label">筆記模式</span>
               </button>
               <span
@@ -7069,12 +7105,6 @@ function App() {
                 role="switch"
                 type="button"
               >
-                <img
-                  alt=""
-                  aria-hidden="true"
-                  className="note-mode-switch__icon"
-                  src={glossaryModeActive ? dictionarySelectedIcon : dictionaryRestIcon}
-                />
                 <span className="note-mode-switch__label">名詞</span>
               </button>
               <button
@@ -7086,12 +7116,6 @@ function App() {
                 onClick={toggleNoteLibrary}
                 type="button"
               >
-                <img
-                  alt=""
-                  aria-hidden="true"
-                  className="note-mode-switch__icon"
-                  src={noteLibraryOpen ? noteLibrarySelectedIcon : noteLibraryRestIcon}
-                />
                 <span className="note-mode-switch__label">筆記庫</span>
               </button>
             </div>
@@ -7146,11 +7170,12 @@ function App() {
             {noteLibraryNotes.length > 0 ? (
               noteLibraryNotes.map((note) => {
                 const isEditingLibraryNote = editingLibraryNoteId === note.id;
+                const isFocusedLibraryNote = focusedLibraryNoteId === note.id;
 
                 return (
                   <article
                     className={`note-library-card ${activeNoteId === note.id ? "is-active" : ""} ${
-                      focusedLibraryNoteId === note.id ? "is-focused" : ""
+                      isFocusedLibraryNote ? "is-focused" : ""
                     } ${isEditingLibraryNote ? "is-editing" : ""}`}
                     data-note-id={note.id}
                     data-note-tone={activeNoteToneById.get(note.id) ?? note.tone ?? 0}
@@ -7162,33 +7187,7 @@ function App() {
                     onKeyDown={(event) => handleNoteLibraryCardKeyDown(note.id, event)}
                   >
                     <div className="note-library-card__header">
-                      <p className="eyebrow">Note</p>
-                      <div className="note-actions note-library-card__actions">
-                        <button
-                          type="button"
-                          aria-label={isEditingLibraryNote ? "完成編輯筆記" : "編輯筆記"}
-                          aria-pressed={isEditingLibraryNote}
-                          title={isEditingLibraryNote ? "完成編輯筆記" : "編輯筆記"}
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            toggleLibraryNoteEditor(note.id);
-                          }}
-                        >
-                          <PencilIcon />
-                        </button>
-                        <button
-                          className="is-danger"
-                          type="button"
-                          aria-label="刪除筆記"
-                          title="刪除筆記"
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            deleteNote(note.id);
-                          }}
-                        >
-                          <TrashIcon />
-                        </button>
-                      </div>
+                      <PinBadge />
                     </div>
                     {isEditingLibraryNote ? (
                       <textarea
@@ -7208,11 +7207,42 @@ function App() {
                       <NoteLibraryPreviewContent
                         className="bottom-note-body note-library-card__body"
                         emptyLabel="無內容"
-                        expanded={focusedLibraryNoteId === note.id}
+                        expanded={isFocusedLibraryNote}
                         onDoubleClick={() => startLibraryNoteEditor(note.id)}
                         value={note.body}
                       />
                     )}
+                    <div
+                      className="note-actions note-library-card__actions"
+                      aria-hidden={!isFocusedLibraryNote && !isEditingLibraryNote}
+                    >
+                      <button
+                        type="button"
+                        aria-label={isEditingLibraryNote ? "完成編輯筆記" : "編輯筆記"}
+                        aria-pressed={isEditingLibraryNote}
+                        title={isEditingLibraryNote ? "完成編輯筆記" : "編輯筆記"}
+                        tabIndex={isFocusedLibraryNote || isEditingLibraryNote ? 0 : -1}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          toggleLibraryNoteEditor(note.id);
+                        }}
+                      >
+                        <PencilIcon />
+                      </button>
+                      <button
+                        className="is-danger"
+                        type="button"
+                        aria-label="刪除筆記"
+                        title="刪除筆記"
+                        tabIndex={isFocusedLibraryNote || isEditingLibraryNote ? 0 : -1}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          deleteNote(note.id);
+                        }}
+                      >
+                        <TrashIcon />
+                      </button>
+                    </div>
                   </article>
                 );
               })
@@ -7275,35 +7305,31 @@ function App() {
                       : "View selection note"
             }
           >
-            <div className="floating-note-card" ref={floatingNoteCardRef}>
-              <button
-                className="floating-note-close-button"
-                type="button"
-                aria-label="Close note"
-                onClick={closeNotePanel}
-              >
-                ×
-              </button>
-              <div className="bottom-note-context">
-                <p className="eyebrow">
-                  {pendingGlossaryTerm
-                    ? "Glossary"
-                    : pendingAnchor
-                      ? pendingAnchorIsGlossaryTerm
-                        ? "Glossary"
-                        : "Selection note"
-                      : activeGlossaryTerm
-                        ? "Glossary"
-                        : activeNoteIsEditing
-                          ? "Edit note"
-                          : "Note"}
-                </p>
-                {activeGlossaryTerm ? (
-                  <h2 className="glossary-panel-title">{activeGlossaryTerm.term}</h2>
-                ) : pendingGlossaryTerm ? (
-                  <h2 className="glossary-panel-title">{pendingGlossaryTerm.term}</h2>
-                ) : null}
+            <div
+              className="floating-note-card"
+              data-note-tone={floatingNoteTone}
+              ref={floatingNoteCardRef}
+            >
+              <div className="floating-note-card__header">
+                <PinBadge />
+                <button
+                  className="floating-note-close-button"
+                  type="button"
+                  aria-label="Close note"
+                  onClick={closeNotePanel}
+                >
+                  ×
+                </button>
               </div>
+              {activeGlossaryTerm || pendingGlossaryTerm ? (
+                <div className="bottom-note-context floating-note-card__context">
+                  {activeGlossaryTerm ? (
+                    <h2 className="glossary-panel-title">{activeGlossaryTerm.term}</h2>
+                  ) : pendingGlossaryTerm ? (
+                    <h2 className="glossary-panel-title">{pendingGlossaryTerm.term}</h2>
+                  ) : null}
+                </div>
+              ) : null}
 
               {pendingAnchor && pendingGlossaryTerm ? (
                 <div className="selection-confirmation">
@@ -7421,6 +7447,14 @@ function App() {
 
               {!pendingAnchor && activeGlossaryTerm && !activeGlossaryIsEditing ? (
                 <div className="note-actions bottom-note-actions">
+                  <button
+                    type="button"
+                    aria-label="Edit glossary term"
+                    title="Edit"
+                    onClick={() => openGlossaryEditor(activeGlossaryTerm.id)}
+                  >
+                    <PencilIcon />
+                  </button>
                   {activeGlossaryBinding ? (
                     <button
                       className="is-glossary-action"
@@ -7446,6 +7480,14 @@ function App() {
 
               {!pendingAnchor && activeNote && !activeNoteIsEditing ? (
                 <div className="note-actions bottom-note-actions">
+                  <button
+                    type="button"
+                    aria-label="Edit note"
+                    title="Edit"
+                    onClick={() => openNoteEditor(activeNote.id)}
+                  >
+                    <PencilIcon />
+                  </button>
                   <button
                     className="is-danger"
                     type="button"

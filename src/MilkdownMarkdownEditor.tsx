@@ -422,6 +422,22 @@ function measureMilkdownAnnotationFrames(
   const kindsByNoteId = new Map<string, "note" | "glossary">();
   const focusByNoteId = new Map<string, boolean>();
 
+  function annotationListAdjustedRect(annotation: HTMLElement, rect: MilkdownAnnotationRect) {
+    const listItem = annotation.closest<HTMLLIElement>("li");
+    const list = listItem?.closest<HTMLOListElement | HTMLUListElement>("ol, ul") ?? null;
+    if (!listItem || !list || !container.contains(list)) {
+      return rect;
+    }
+
+    const listRect = list.getBoundingClientRect();
+    const listItemRect = listItem.getBoundingClientRect();
+
+    return {
+      ...rect,
+      left: Math.max(containerRect.left, Math.min(listRect.left, listItemRect.left, rect.left)),
+    };
+  }
+
   container
     .querySelectorAll<HTMLElement>(".milkdown-note-annotation")
     .forEach((annotation) => {
@@ -437,7 +453,8 @@ function measureMilkdownAnnotationFrames(
 
           return { left, top, right, bottom };
         })
-        .filter((rect) => rect.right > rect.left && rect.bottom > rect.top);
+        .filter((rect) => rect.right > rect.left && rect.bottom > rect.top)
+        .map((rect) => annotationListAdjustedRect(annotation, rect));
       if (annotationRects.length === 0) return;
 
       sources.forEach((source) => {
