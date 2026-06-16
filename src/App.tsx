@@ -7086,10 +7086,12 @@ function App() {
     setNoteLibraryOpen(true);
   }
 
-  function closeNoteLibrary() {
+  function closeNoteLibrary(options: { restoreDirectoryPane?: boolean } = {}) {
+    const { restoreDirectoryPane = true } = options;
+
     setFocusedLibraryNoteId("");
     setEditingLibraryNoteId("");
-    if (directoryPaneOpenBeforeNoteLibraryRef.current === true) {
+    if (restoreDirectoryPane && directoryPaneOpenBeforeNoteLibraryRef.current === true) {
       setDirectoryPaneOpen(true);
     }
     directoryPaneOpenBeforeNoteLibraryRef.current = null;
@@ -7108,6 +7110,12 @@ function App() {
   }
 
   function toggleDirectoryPane() {
+    if (!directoryPaneOpen && noteLibraryOpen) {
+      closeNoteLibrary({ restoreDirectoryPane: false });
+      setDirectoryPaneOpen(true);
+      return;
+    }
+
     setDirectoryPaneOpen((currentValue) => !currentValue);
   }
 
