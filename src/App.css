@@ -239,10 +239,6 @@ button:disabled {
   color: var(--color-text);
 }
 
-.document-row:first-child {
-  border-top: 1px solid var(--color-border-soft);
-}
-
 .document-icon {
   display: inline-flex;
   width: 24px;
