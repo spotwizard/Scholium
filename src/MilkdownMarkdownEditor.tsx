@@ -27,6 +27,7 @@ type MilkdownMarkdownEditorProps = {
   annotations: TextAnnotation[];
   noteModeEnabled: boolean;
   readOnly?: boolean;
+  toolbarEnabled?: boolean;
   onChange: (value: string, source: EditorChangeSource) => void;
   onSelectionChange: (anchor: TextSelectionAnchor | null) => void;
   onSelectionEnter: (anchor: TextSelectionAnchor) => boolean;
@@ -878,6 +879,7 @@ export function MilkdownMarkdownEditor({
   annotations,
   noteModeEnabled,
   readOnly = false,
+  toolbarEnabled = true,
   onChange,
   onSelectionChange,
   onSelectionEnter,
@@ -1208,6 +1210,7 @@ export function MilkdownMarkdownEditor({
         [CrepeFeature.CodeMirror]: true,
         [CrepeFeature.ImageBlock]: false,
         [CrepeFeature.Latex]: false,
+        [CrepeFeature.Toolbar]: toolbarEnabled,
         [CrepeFeature.TopBar]: false,
       },
     });
@@ -1276,7 +1279,7 @@ export function MilkdownMarkdownEditor({
       void crepe.destroy();
       root.innerHTML = "";
     };
-  }, [editorRevision]);
+  }, [editorRevision, toolbarEnabled]);
 
   function handleSelectionEnterKeyDown(
     event: KeyboardEvent | ReactKeyboardEvent<HTMLDivElement>,

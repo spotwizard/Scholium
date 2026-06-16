@@ -3580,6 +3580,65 @@ function NoteLibraryPreviewContent({
   );
 }
 
+function NoteMarkdownEditor({
+  ariaLabel,
+  className = "",
+  editorRootRef,
+  onChange,
+  onClick,
+  onCompositionEnd,
+  onCompositionStart,
+  onKeyDown,
+  readOnly = false,
+  value,
+}: {
+  ariaLabel: string;
+  className?: string;
+  editorRootRef?: (element: HTMLDivElement | null) => void;
+  onChange: (value: string) => void;
+  onClick?: (event: MouseEvent<HTMLElement>) => void;
+  onCompositionEnd?: () => void;
+  onCompositionStart?: () => void;
+  onKeyDown?: (event: ReactKeyboardEvent<HTMLElement>) => void;
+  readOnly?: boolean;
+  value: string;
+}) {
+  const editorClassName = [
+    "note-markdown-editor",
+    "note-markdown-editor--milkdown",
+    readOnly ? "is-readonly" : "",
+    className,
+  ]
+    .filter(Boolean)
+    .join(" ");
+  const noopSelectionHandler = () => undefined;
+
+  return (
+    <div
+      aria-label={ariaLabel}
+      className={editorClassName}
+      onClick={onClick}
+      onCompositionEnd={onCompositionEnd}
+      onCompositionStart={onCompositionStart}
+      onKeyDownCapture={onKeyDown}
+      ref={editorRootRef}
+    >
+      <MilkdownMarkdownEditor
+        annotations={[]}
+        noteModeEnabled={false}
+        readOnly={readOnly}
+        toolbarEnabled={false}
+        value={value}
+        onAnnotationClick={noopSelectionHandler}
+        onAnnotationDoubleClick={noopSelectionHandler}
+        onChange={onChange}
+        onSelectionChange={noopSelectionHandler}
+        onSelectionEnter={() => false}
+      />
+    </div>
+  );
+}
+
 function App() {
   const [documents, setDocuments] = useState(documentsSeed);
   const [workspaceTitle, setWorkspaceTitle] = useState("Scholium");
@@ -3624,17 +3683,17 @@ function App() {
   const [fileContextMenu, setFileContextMenu] = useState<FileContextMenuState | null>(null);
   const notePanelRef = useRef<HTMLElement | null>(null);
   const floatingNoteCardRef = useRef<HTMLDivElement | null>(null);
-  const noteTextareaRef = useRef<HTMLTextAreaElement | null>(null);
-  const libraryNoteTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const noteEditorRootRef = useRef<HTMLDivElement | null>(null);
+  const libraryNoteEditorRootRef = useRef<HTMLDivElement | null>(null);
   const returnToViewTimerRef = useRef(0);
   const notePanelCloseTimerRef = useRef(0);
   const floatingNotePanelPositionFrameRef = useRef(0);
   const floatingNoteAnchorRectRef = useRef<TextRangeRect | null>(null);
   const lastPointerAnchorRectRef = useRef<TextRangeRect | null>(null);
-  const noteTextareaShouldRefocusRef = useRef(false);
-  const noteTextareaIsComposingRef = useRef(false);
-  const noteTextareaEnterIgnoredDuringCompositionRef = useRef(false);
-  const noteTextareaPostCompositionGuardUntilRef = useRef(0);
+  const noteEditorShouldRefocusRef = useRef(false);
+  const noteEditorIsComposingRef = useRef(false);
+  const noteEditorEnterIgnoredDuringCompositionRef = useRef(false);
+  const noteEditorPostCompositionGuardUntilRef = useRef(0);
   const noteEditModalActiveRef = useRef(false);
   const noteDraftRef = useRef(noteDraft);
   const glossaryDraftRef = useRef(glossaryDraft);
@@ -3887,14 +3946,8 @@ function App() {
   useEffect(() => {
     if (!editingLibraryNoteId) return;
 
-    window.requestAnimationFrame(() => {
-      const textarea = libraryNoteTextareaRef.current;
-      if (!textarea) return;
-
-      textarea.focus({ preventScroll: true });
-      textarea.setSelectionRange(textarea.value.length, textarea.value.length);
-    });
-  }, [editingLibraryNoteId]);
+    focusMarkdownEditor(libraryNoteEditorRootRef.current);
+  }, [editingLibraryNoteId, editorMode]);
 
   useEffect(() => {
     function recordPointerAnchorRect(event: PointerEvent | globalThis.MouseEvent) {
@@ -3935,10 +3988,17 @@ function App() {
   }, []);
 
   useLayoutEffect(() => {
-    if (!noteTextareaShouldRefocusRef.current) return;
+    if (!noteEditorShouldRefocusRef.current) return;
 
-    refocusNoteTextarea();
-  }, [activeGlossaryMode, activeGlossaryTermId, activeNoteId, activeNoteMode, pendingAnchor]);
+    refocusNoteMarkdownEditor();
+  }, [
+    activeGlossaryMode,
+    activeGlossaryTermId,
+    activeNoteId,
+    activeNoteMode,
+    editorMode,
+    pendingAnchor,
+  ]);
 
   useLayoutEffect(() => {
     if (!notePanelHasContent) {
@@ -4057,6 +4117,48 @@ function App() {
       : target instanceof Node
         ? target.parentElement
         : null;
+  }
+
+  function elementFromNode(node: Node | null) {
+    return node instanceof HTMLElement ? node : node?.parentElement ?? null;
+  }
+
+  function noteEditorShouldKeepPlainEnter(event: ReactKeyboardEvent<HTMLElement>) {
+    if (
+      event.key !== "Enter" ||
+      event.metaKey ||
+      event.ctrlKey ||
+      event.altKey ||
+      event.shiftKey
+    ) {
+      return false;
+    }
+
+    const targetElement = elementFromEventTarget(event.target);
+    if (!targetElement) return false;
+
+    const noteEditorRoot = targetElement?.closest<HTMLElement>(".note-markdown-editor");
+    if (!noteEditorRoot) return false;
+
+    if (targetElement.closest("li")) return true;
+
+    const selection = window.getSelection();
+    const anchorElement =
+      selection && noteEditorRoot.contains(selection.anchorNode)
+        ? elementFromNode(selection.anchorNode)
+        : null;
+    if (anchorElement?.closest("li")) return true;
+
+    const currentSourceLine = anchorElement?.closest<HTMLElement>(".cm-line");
+    const currentSourceLineText = currentSourceLine?.textContent ?? "";
+    return (
+      unorderedListMarkerPattern.test(currentSourceLineText) ||
+      orderedListMarkerPattern.test(currentSourceLineText)
+    );
+  }
+
+  function targetIsInsideNoteMarkdownEditor(target: EventTarget | null) {
+    return Boolean(elementFromEventTarget(target)?.closest(".note-markdown-editor"));
   }
 
   function pointHitsRect(clientX: number, clientY: number, rect: DOMRect) {
@@ -4367,20 +4469,37 @@ function App() {
     return Boolean(panel && target instanceof Node && panel.contains(target));
   }
 
-  function refocusNoteTextarea(remainingAttempts = 8) {
+  function moveEditableCaretToEnd(element: HTMLElement) {
+    const selection = window.getSelection();
+    if (!selection) return;
+
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    range.collapse(false);
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }
+
+  function focusMarkdownEditor(root: HTMLElement | null, remainingAttempts = 8) {
     window.requestAnimationFrame(() => {
-      const textarea = noteTextareaRef.current;
-      if (!textarea || textarea.disabled) {
+      const editableElement = root?.querySelector<HTMLElement>(
+        ".cm-content[contenteditable='true'], .ProseMirror[contenteditable='true']",
+      );
+      if (!editableElement) {
         if (remainingAttempts > 0) {
-          refocusNoteTextarea(remainingAttempts - 1);
+          focusMarkdownEditor(root, remainingAttempts - 1);
         }
         return;
       }
 
-      noteTextareaShouldRefocusRef.current = false;
-      textarea.focus({ preventScroll: true });
-      textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+      noteEditorShouldRefocusRef.current = false;
+      editableElement.focus({ preventScroll: true });
+      moveEditableCaretToEnd(editableElement);
     });
+  }
+
+  function refocusNoteMarkdownEditor() {
+    focusMarkdownEditor(noteEditorRootRef.current);
   }
 
   function insertTextIntoActiveNoteEditor(text: string) {
@@ -4390,8 +4509,8 @@ function App() {
       const nextDraft = `${noteDraftRef.current}${text}`;
       setNoteDraft(nextDraft);
       updateNoteBody(activeNote.id, nextDraft);
-      noteTextareaShouldRefocusRef.current = true;
-      refocusNoteTextarea();
+      noteEditorShouldRefocusRef.current = true;
+      refocusNoteMarkdownEditor();
       return true;
     }
 
@@ -4399,8 +4518,8 @@ function App() {
       const nextDraft = `${glossaryDraftRef.current}${text}`;
       setGlossaryDraft(nextDraft);
       updateGlossaryDefinition(activeGlossaryTerm.id, nextDraft);
-      noteTextareaShouldRefocusRef.current = true;
-      refocusNoteTextarea();
+      noteEditorShouldRefocusRef.current = true;
+      refocusNoteMarkdownEditor();
       return true;
     }
 
@@ -4545,7 +4664,9 @@ function App() {
   function targetIsFormControl(target: EventTarget | null) {
     const targetElement = elementFromEventTarget(target);
 
-    return Boolean(targetElement?.closest("input, textarea, select"));
+    return Boolean(
+      targetElement?.closest("input, textarea, select, [contenteditable='true']"),
+    );
   }
 
   useEffect(() => {
@@ -4625,7 +4746,7 @@ function App() {
   useEffect(() => {
     if (!noteEditModalActive) return;
 
-    refocusNoteTextarea();
+    refocusNoteMarkdownEditor();
 
     function blockOutsideEditableEvent(event: Event) {
       if (targetIsInsideNotePanel(event.target)) return;
@@ -4814,6 +4935,44 @@ function App() {
         !event.ctrlKey &&
         !event.altKey &&
         !event.shiftKey;
+      const isAppModeShortcut =
+        event.metaKey && event.shiftKey && !event.ctrlKey && !event.altKey;
+
+      if (isAppModeShortcut) {
+        const shortcutKey = event.key.toLowerCase();
+        if (shortcutKey === "n") {
+          event.preventDefault();
+          event.stopPropagation();
+          toggleNoteMode();
+          return;
+        }
+
+        if (shortcutKey === "g") {
+          event.preventDefault();
+          event.stopPropagation();
+          if (noteModeEnabled) {
+            toggleGlossaryMode();
+          } else {
+            setNoteModeEnabled(true);
+            setGlossaryModeEnabled(true);
+            setNoteLibraryOpen(false);
+          }
+          return;
+        }
+
+        if (shortcutKey === "l") {
+          event.preventDefault();
+          event.stopPropagation();
+          if (noteModeEnabled) {
+            toggleNoteLibrary();
+          } else {
+            resetNoteModeInteractionState();
+            setNoteModeEnabled(true);
+            setNoteLibraryOpen(true);
+          }
+          return;
+        }
+      }
 
       if (event.key === "Escape" && (notePanelHasContentRef.current || pendingAnchor)) {
         event.preventDefault();
@@ -4873,6 +5032,12 @@ function App() {
       if (!event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
       if (event.key !== "/" && event.code !== "Slash") return;
 
+      if (targetIsInsideNoteMarkdownEditor(event.target)) {
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
+
       event.preventDefault();
       closeNotePanel();
       setEditorMode((currentMode) => (currentMode === "preview" ? "edit" : "preview"));
@@ -4887,9 +5052,12 @@ function App() {
     activeGlossaryBindingId,
     activeNoteId,
     closeNotePanel,
+    glossaryModeEnabled,
     glossaryNavigationSignature,
+    noteLibraryOpen,
     noteLibrarySignature,
     noteEditModalActive,
+    noteModeEnabled,
     notePanelModalActive,
     pendingAnchor,
     pendingAnchorIsCompleteBlock,
@@ -5967,9 +6135,9 @@ function App() {
   }
 
   function resetNoteTextareaCompositionState() {
-    noteTextareaIsComposingRef.current = false;
-    noteTextareaEnterIgnoredDuringCompositionRef.current = false;
-    noteTextareaPostCompositionGuardUntilRef.current = 0;
+    noteEditorIsComposingRef.current = false;
+    noteEditorEnterIgnoredDuringCompositionRef.current = false;
+    noteEditorPostCompositionGuardUntilRef.current = 0;
   }
 
   function closeNotePanel() {
@@ -6014,48 +6182,58 @@ function App() {
   }
 
   function handleNoteEditorCompositionStart() {
-    noteTextareaIsComposingRef.current = true;
-    noteTextareaEnterIgnoredDuringCompositionRef.current = false;
-    noteTextareaPostCompositionGuardUntilRef.current = 0;
+    noteEditorIsComposingRef.current = true;
+    noteEditorEnterIgnoredDuringCompositionRef.current = false;
+    noteEditorPostCompositionGuardUntilRef.current = 0;
   }
 
   function handleNoteEditorCompositionEnd() {
-    const hadEnterDuringComposition = noteTextareaEnterIgnoredDuringCompositionRef.current;
+    const hadEnterDuringComposition = noteEditorEnterIgnoredDuringCompositionRef.current;
 
-    noteTextareaIsComposingRef.current = false;
-    noteTextareaEnterIgnoredDuringCompositionRef.current = false;
-    noteTextareaPostCompositionGuardUntilRef.current =
+    noteEditorIsComposingRef.current = false;
+    noteEditorEnterIgnoredDuringCompositionRef.current = false;
+    noteEditorPostCompositionGuardUntilRef.current =
       Date.now() + (hadEnterDuringComposition ? 500 : 180);
   }
 
-  function handleNoteEditorKeyDown(event: ReactKeyboardEvent<HTMLTextAreaElement>) {
-    const isPlainEnter = event.key === "Enter" && !event.shiftKey;
+  function handleNoteEditorKeyDown(event: ReactKeyboardEvent<HTMLElement>) {
+    const isPlainEnter =
+      event.key === "Enter" &&
+      !event.metaKey &&
+      !event.ctrlKey &&
+      !event.altKey &&
+      !event.shiftKey;
     const isDuringComposition =
-      event.nativeEvent.isComposing || noteTextareaIsComposingRef.current;
+      event.nativeEvent.isComposing || noteEditorIsComposingRef.current;
 
     if (isDuringComposition) {
       if (isPlainEnter) {
-        noteTextareaEnterIgnoredDuringCompositionRef.current = true;
+        noteEditorEnterIgnoredDuringCompositionRef.current = true;
       }
       return;
     }
 
-    if (isPlainEnter && Date.now() <= noteTextareaPostCompositionGuardUntilRef.current) {
+    if (isPlainEnter && Date.now() <= noteEditorPostCompositionGuardUntilRef.current) {
       event.preventDefault();
-      noteTextareaPostCompositionGuardUntilRef.current = 0;
+      event.stopPropagation();
+      noteEditorPostCompositionGuardUntilRef.current = 0;
       return;
     }
 
     if (event.key === "Escape") {
       event.preventDefault();
+      event.stopPropagation();
       closeNotePanel();
       return;
     }
 
     if (!isPlainEnter) return;
+    if (noteEditorShouldKeepPlainEnter(event)) return;
 
     event.preventDefault();
-    if (!event.currentTarget.value.trim()) {
+    event.stopPropagation();
+    const activeDraft = activeGlossaryIsEditing ? glossaryDraftRef.current : noteDraftRef.current;
+    if (!activeDraft.trim()) {
       closeNotePanel();
       return;
     }
@@ -6065,31 +6243,38 @@ function App() {
 
   function handleLibraryNoteEditorKeyDown(
     noteId: string,
-    event: ReactKeyboardEvent<HTMLTextAreaElement>,
+    event: ReactKeyboardEvent<HTMLElement>,
   ) {
     if (focusAdjacentLibraryNote(noteId, event)) {
       return;
     }
 
-    const isPlainEnter = event.key === "Enter" && !event.shiftKey;
+    const isPlainEnter =
+      event.key === "Enter" &&
+      !event.metaKey &&
+      !event.ctrlKey &&
+      !event.altKey &&
+      !event.shiftKey;
     const isDuringComposition =
-      event.nativeEvent.isComposing || noteTextareaIsComposingRef.current;
+      event.nativeEvent.isComposing || noteEditorIsComposingRef.current;
 
     if (isDuringComposition) {
       if (isPlainEnter) {
-        noteTextareaEnterIgnoredDuringCompositionRef.current = true;
+        noteEditorEnterIgnoredDuringCompositionRef.current = true;
       }
       return;
     }
 
-    if (isPlainEnter && Date.now() <= noteTextareaPostCompositionGuardUntilRef.current) {
+    if (isPlainEnter && Date.now() <= noteEditorPostCompositionGuardUntilRef.current) {
       event.preventDefault();
-      noteTextareaPostCompositionGuardUntilRef.current = 0;
+      event.stopPropagation();
+      noteEditorPostCompositionGuardUntilRef.current = 0;
       return;
     }
 
     if (event.key === "Escape") {
       event.preventDefault();
+      event.stopPropagation();
       setEditingLibraryNoteId((currentNoteId) =>
         currentNoteId === noteId ? "" : currentNoteId,
       );
@@ -6097,8 +6282,10 @@ function App() {
     }
 
     if (!isPlainEnter) return;
+    if (noteEditorShouldKeepPlainEnter(event)) return;
 
     event.preventDefault();
+    event.stopPropagation();
     setEditingLibraryNoteId((currentNoteId) =>
       currentNoteId === noteId ? "" : currentNoteId,
     );
@@ -6353,7 +6540,7 @@ function App() {
     floatingNoteAnchorRectRef.current = activeNoteAnchorRect(noteId);
     setPendingAnchor(null);
     setActiveNoteId(noteId);
-    noteTextareaShouldRefocusRef.current = true;
+    noteEditorShouldRefocusRef.current = true;
     setActiveNoteMode("edit");
     setNoteDraft(note.body);
     notePanelHasContentRef.current = true;
@@ -6493,7 +6680,7 @@ function App() {
     setActiveGlossaryTermId(term.id);
     setActiveGlossaryMode("edit");
     setGlossaryDraft("");
-    noteTextareaShouldRefocusRef.current = true;
+    noteEditorShouldRefocusRef.current = true;
     setIsNotePanelClosing(false);
     notePanelHasContentRef.current = true;
   }
@@ -6561,7 +6748,7 @@ function App() {
     setPendingGlossaryTerm(null);
     setActiveNoteId("");
     setActiveGlossaryTermId(term.id);
-    noteTextareaShouldRefocusRef.current = true;
+    noteEditorShouldRefocusRef.current = true;
     setActiveGlossaryMode("edit");
     setGlossaryDraft(term.definition);
     notePanelHasContentRef.current = true;
@@ -6683,7 +6870,7 @@ function App() {
 
     setNotes((currentNotes) => [note, ...currentNotes]);
     transientSelectionNoteIdRef.current = note.id;
-    noteTextareaShouldRefocusRef.current = true;
+    noteEditorShouldRefocusRef.current = true;
     clearReturnToViewTimer();
     setPendingAnchor(null);
     setActiveNoteId(note.id);
@@ -7107,17 +7294,6 @@ function App() {
               >
                 <span className="note-mode-switch__label">名詞</span>
               </button>
-              <button
-                aria-expanded={noteLibraryOpen}
-                aria-hidden={!noteModeEnabled}
-                aria-label={noteLibraryOpen ? "收起筆記庫" : "展開筆記庫"}
-                className="note-mode-switch note-mode-switch--secondary note-mode-switch--dependent note-library-toggle"
-                disabled={!noteModeEnabled}
-                onClick={toggleNoteLibrary}
-                type="button"
-              >
-                <span className="note-mode-switch__label">筆記庫</span>
-              </button>
             </div>
             {!hasOpenDocument ? (
               <div className="empty-editor-state">
@@ -7155,53 +7331,66 @@ function App() {
       </section>
 
       {noteModeEnabled ? (
-        <aside
-          aria-hidden={!noteLibraryOpen}
-          aria-label="筆記庫"
-          className={`note-library-pane ${noteLibraryOpen ? "is-open" : ""} ${
-            noteLibraryFocusActive ? "is-focus-active" : ""
-          }`}
-        >
-          <div className="note-library-header">
-            <h2>筆記庫</h2>
-            <span>{noteLibraryNotes.length}</span>
-          </div>
-          <div className="note-library-list">
-            {noteLibraryNotes.length > 0 ? (
-              noteLibraryNotes.map((note) => {
-                const isEditingLibraryNote = editingLibraryNoteId === note.id;
-                const isFocusedLibraryNote = focusedLibraryNoteId === note.id;
+        <>
+          <button
+            aria-expanded={noteLibraryOpen}
+            aria-label={noteLibraryOpen ? "收起筆記庫" : "展開筆記庫"}
+            className={`note-library-bookmark ${noteLibraryOpen ? "is-attached" : ""}`}
+            onClick={toggleNoteLibrary}
+            type="button"
+          >
+            <span aria-hidden="true" className="note-library-bookmark__label">
+              <span>筆</span>
+              <span>記</span>
+              <span>庫</span>
+            </span>
+          </button>
+          <aside
+            aria-hidden={!noteLibraryOpen}
+            aria-label="筆記庫"
+            className={`note-library-pane ${noteLibraryOpen ? "is-open" : ""} ${
+              noteLibraryFocusActive ? "is-focus-active" : ""
+            }`}
+          >
+            <div className="note-library-header">
+              <span>{noteLibraryNotes.length}</span>
+            </div>
+            <div className="note-library-list">
+              {noteLibraryNotes.length > 0 ? (
+                noteLibraryNotes.map((note) => {
+                  const isEditingLibraryNote = editingLibraryNoteId === note.id;
+                  const isFocusedLibraryNote = focusedLibraryNoteId === note.id;
 
-                return (
-                  <article
-                    className={`note-library-card ${activeNoteId === note.id ? "is-active" : ""} ${
-                      isFocusedLibraryNote ? "is-focused" : ""
-                    } ${isEditingLibraryNote ? "is-editing" : ""}`}
-                    data-note-id={note.id}
-                    data-note-tone={activeNoteToneById.get(note.id) ?? note.tone ?? 0}
-                    key={note.id}
-                    tabIndex={0}
-                    onBlur={(event) => handleNoteLibraryCardBlur(note.id, event)}
-                    onClick={() => setFocusedLibraryNoteId(note.id)}
-                    onFocus={() => setFocusedLibraryNoteId(note.id)}
-                    onKeyDown={(event) => handleNoteLibraryCardKeyDown(note.id, event)}
-                  >
+                  return (
+                    <article
+                      className={`note-library-card ${activeNoteId === note.id ? "is-active" : ""} ${
+                        isFocusedLibraryNote ? "is-focused" : ""
+                      } ${isEditingLibraryNote ? "is-editing" : ""}`}
+                      data-note-id={note.id}
+                      data-note-tone={activeNoteToneById.get(note.id) ?? note.tone ?? 0}
+                      key={note.id}
+                      tabIndex={0}
+                      onBlur={(event) => handleNoteLibraryCardBlur(note.id, event)}
+                      onClick={() => setFocusedLibraryNoteId(note.id)}
+                      onFocus={() => setFocusedLibraryNoteId(note.id)}
+                      onKeyDown={(event) => handleNoteLibraryCardKeyDown(note.id, event)}
+                    >
                     <div className="note-library-card__header">
                       <PinBadge />
                     </div>
                     {isEditingLibraryNote ? (
-                      <textarea
+                      <NoteMarkdownEditor
+                        ariaLabel="編輯筆記"
                         className="note-library-card__editor"
-                        ref={libraryNoteTextareaRef}
+                        editorRootRef={(element) => {
+                          libraryNoteEditorRootRef.current = element;
+                        }}
                         value={note.body}
-                        onChange={(event) => updateLibraryNoteDraft(note.id, event.currentTarget.value)}
+                        onChange={(value) => updateLibraryNoteDraft(note.id, value)}
+                        onClick={(event) => event.stopPropagation()}
                         onCompositionStart={handleNoteEditorCompositionStart}
                         onCompositionEnd={handleNoteEditorCompositionEnd}
                         onKeyDown={(event) => handleLibraryNoteEditorKeyDown(note.id, event)}
-                        onClick={(event) => event.stopPropagation()}
-                        spellCheck={false}
-                        autoCorrect="off"
-                        autoCapitalize="off"
                       />
                     ) : (
                       <NoteLibraryPreviewContent
@@ -7251,6 +7440,7 @@ function App() {
             )}
           </div>
         </aside>
+        </>
       ) : null}
 
       {noteModeEnabled && selectionWarningPosition ? (
@@ -7394,38 +7584,34 @@ function App() {
               ) : null}
 
               {!pendingAnchor && activeNoteIsEditing ? (
-                <textarea
-                  aria-label="Edit note"
-                  ref={noteTextareaRef}
+                <NoteMarkdownEditor
+                  ariaLabel="Edit note"
+                  className="floating-note-card__editor"
+                  editorRootRef={(element) => {
+                    noteEditorRootRef.current = element;
+                  }}
                   value={noteDraft}
-                  autoFocus
-                  onChange={(event) => updateActiveNoteDraft(event.currentTarget.value)}
+                  onChange={updateActiveNoteDraft}
                   onCompositionStart={handleNoteEditorCompositionStart}
                   onCompositionEnd={handleNoteEditorCompositionEnd}
                   onKeyDown={handleNoteEditorKeyDown}
-                  disabled={isReturningToView}
-                  spellCheck={false}
-                  autoCorrect="off"
-                  autoCapitalize="off"
-                  placeholder="Add a note..."
+                  readOnly={isReturningToView}
                 />
               ) : null}
 
               {!pendingAnchor && activeGlossaryIsEditing ? (
-                <textarea
-                  aria-label="Edit glossary term"
-                  ref={noteTextareaRef}
+                <NoteMarkdownEditor
+                  ariaLabel="Edit glossary term"
+                  className="floating-note-card__editor"
+                  editorRootRef={(element) => {
+                    noteEditorRootRef.current = element;
+                  }}
                   value={glossaryDraft}
-                  autoFocus
-                  onChange={(event) => updateActiveGlossaryDraft(event.currentTarget.value)}
+                  onChange={updateActiveGlossaryDraft}
                   onCompositionStart={handleNoteEditorCompositionStart}
                   onCompositionEnd={handleNoteEditorCompositionEnd}
                   onKeyDown={handleNoteEditorKeyDown}
-                  disabled={isReturningToView}
-                  spellCheck={false}
-                  autoCorrect="off"
-                  autoCapitalize="off"
-                  placeholder="輸入名詞解釋..."
+                  readOnly={isReturningToView}
                 />
               ) : null}
 
