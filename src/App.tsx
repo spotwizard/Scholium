@@ -3458,6 +3458,71 @@ function MarkdownPreviewContent({
   );
 }
 
+function NoteLibraryPreviewContent({
+  className,
+  emptyLabel,
+  expanded,
+  onDoubleClick,
+  value,
+}: {
+  className: string;
+  emptyLabel: string;
+  expanded: boolean;
+  onDoubleClick?: () => void;
+  value: string;
+}) {
+  const contentRef = useRef<HTMLDivElement | null>(null);
+  const [expandedHeight, setExpandedHeight] = useState(0);
+
+  useLayoutEffect(() => {
+    const contentElement = contentRef.current;
+    if (!contentElement) return;
+
+    const measuredElement = contentElement;
+    let measureFrame = 0;
+
+    function measureExpandedHeight() {
+      window.cancelAnimationFrame(measureFrame);
+      measureFrame = window.requestAnimationFrame(() => {
+        const nextHeight = Math.ceil(measuredElement.scrollHeight);
+        setExpandedHeight((currentHeight) =>
+          currentHeight === nextHeight ? currentHeight : nextHeight,
+        );
+      });
+    }
+
+    measureExpandedHeight();
+
+    const resizeObserver = new ResizeObserver(measureExpandedHeight);
+    resizeObserver.observe(measuredElement);
+
+    return () => {
+      window.cancelAnimationFrame(measureFrame);
+      resizeObserver.disconnect();
+    };
+  }, [value]);
+
+  const bodyShellStyle = {
+    "--note-library-card-body-expanded-height": `${expandedHeight}px`,
+  } as CSSProperties;
+
+  return (
+    <div
+      className={`note-library-card__body-shell ${expanded ? "is-expanded" : ""}`}
+      style={bodyShellStyle}
+    >
+      <div className="note-library-card__body-measure" ref={contentRef}>
+        <MarkdownPreviewContent
+          className={className}
+          emptyLabel={emptyLabel}
+          onDoubleClick={onDoubleClick}
+          value={value}
+        />
+      </div>
+    </div>
+  );
+}
+
 function App() {
   const [documents, setDocuments] = useState(documentsSeed);
   const [workspaceTitle, setWorkspaceTitle] = useState("Scholium");
@@ -6959,7 +7024,7 @@ function App() {
               <button
                 aria-checked={noteModeEnabled}
                 aria-label={noteModeEnabled ? "關閉筆記模式" : "開啟筆記模式"}
-                className="note-mode-switch"
+                className="note-mode-switch note-mode-switch--primary"
                 onClick={toggleNoteMode}
                 role="switch"
                 type="button"
@@ -6970,12 +7035,17 @@ function App() {
                   className="note-mode-switch__icon"
                   src={noteModeEnabled ? notebookSelectedIcon : notebookRestIcon}
                 />
+                <span className="note-mode-switch__label">筆記模式</span>
               </button>
+              <span
+                aria-hidden="true"
+                className="editor-toolbar__divider note-mode-switch--dependent"
+              />
               <button
                 aria-checked={glossaryModeActive}
                 aria-hidden={!noteModeEnabled}
                 aria-label={glossaryModeActive ? "關閉名詞解釋模式" : "開啟名詞解釋模式"}
-                className="note-mode-switch note-mode-switch--dependent"
+                className="note-mode-switch note-mode-switch--secondary note-mode-switch--dependent"
                 disabled={!noteModeEnabled}
                 onClick={toggleGlossaryMode}
                 role="switch"
@@ -6987,15 +7057,15 @@ function App() {
                   className="note-mode-switch__icon"
                   src={glossaryModeActive ? dictionarySelectedIcon : dictionaryRestIcon}
                 />
+                <span className="note-mode-switch__label">名詞</span>
               </button>
               <button
-                aria-checked={noteLibraryOpen}
+                aria-expanded={noteLibraryOpen}
                 aria-hidden={!noteModeEnabled}
                 aria-label={noteLibraryOpen ? "收起筆記庫" : "展開筆記庫"}
-                className="note-mode-switch note-mode-switch--dependent note-library-toggle"
+                className="note-mode-switch note-mode-switch--secondary note-mode-switch--dependent note-library-toggle"
                 disabled={!noteModeEnabled}
                 onClick={toggleNoteLibrary}
-                role="switch"
                 type="button"
               >
                 <img
@@ -7004,6 +7074,7 @@ function App() {
                   className="note-mode-switch__icon"
                   src={noteLibraryOpen ? noteLibrarySelectedIcon : noteLibraryRestIcon}
                 />
+                <span className="note-mode-switch__label">筆記庫</span>
               </button>
             </div>
             {!hasOpenDocument ? (
@@ -7069,6 +7140,7 @@ function App() {
                     tabIndex={0}
                     onBlur={(event) => handleNoteLibraryCardBlur(note.id, event)}
                     onClick={() => setFocusedLibraryNoteId(note.id)}
+                    onFocus={() => setFocusedLibraryNoteId(note.id)}
                     onKeyDown={(event) => handleNoteLibraryCardKeyDown(note.id, event)}
                   >
                     <div className="note-library-card__header">
@@ -7115,9 +7187,10 @@ function App() {
                         autoCapitalize="off"
                       />
                     ) : (
-                      <MarkdownPreviewContent
+                      <NoteLibraryPreviewContent
                         className="bottom-note-body note-library-card__body"
                         emptyLabel="無內容"
+                        expanded={focusedLibraryNoteId === note.id}
                         onDoubleClick={() => startLibraryNoteEditor(note.id)}
                         value={note.body}
                       />

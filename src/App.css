@@ -397,7 +397,7 @@ button:disabled {
   align-items: center;
   gap: 4px;
   justify-content: flex-start;
-  width: 50px;
+  width: 146px;
   max-width: calc(
     100% - var(--editor-content-inline-start-gutter) - var(--editor-content-inline-end-gutter)
   );
@@ -412,25 +412,47 @@ button:disabled {
 }
 
 .editor-toolbar[data-expanded="true"] {
-  width: 138px;
+  width: 364px;
+}
+
+.editor-toolbar__divider {
+  flex: 0 0 auto;
+  width: 1px;
+  height: 24px;
+  margin: 0 2px;
+  background: rgba(31, 41, 55, 0.12);
+  border-radius: 999px;
 }
 
 .note-mode-switch {
-  display: grid;
+  display: inline-flex;
   flex: 0 0 auto;
-  width: 40px;
+  width: auto;
   height: 40px;
-  place-items: center;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
   border: 1px solid transparent;
   border-radius: 999px;
-  padding: 0;
+  padding: 0 11px;
   color: var(--color-accent-ink);
   background: transparent;
   box-shadow: none;
   transition:
     border-color 120ms ease,
     background 120ms ease,
-    box-shadow 120ms ease;
+    box-shadow 120ms ease,
+    color 120ms ease;
+}
+
+.note-mode-switch--primary {
+  width: 136px;
+  justify-content: flex-start;
+  padding-left: 10px;
+}
+
+.note-mode-switch--secondary {
+  width: 100px;
 }
 
 .note-mode-switch:disabled {
@@ -443,22 +465,30 @@ button:disabled {
 }
 
 .note-mode-switch:hover {
-  border-color: rgba(31, 41, 55, 0.12);
+  border-color: transparent;
   background: rgba(31, 41, 55, 0.06);
 }
 
-.note-mode-switch[aria-checked="true"] {
-  border-color: rgba(31, 41, 55, 0.32);
-  color: var(--color-text);
-  background: rgba(31, 41, 55, 0.1);
-  box-shadow: inset 0 0 0 1px rgba(31, 41, 55, 0.08);
+.note-mode-switch[aria-checked="true"],
+.note-mode-switch[aria-expanded="true"] {
+  border-color: transparent;
+  color: #fff7e3;
+  background: linear-gradient(180deg, #795925 0%, #5f3f1b 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    0 7px 16px rgba(72, 47, 20, 0.18);
+}
+
+.note-mode-switch[aria-checked="true"]:hover,
+.note-mode-switch[aria-expanded="true"]:hover {
+  background: linear-gradient(180deg, #84622b 0%, #69471f 100%);
 }
 
 .note-mode-switch--dependent {
   pointer-events: none;
   visibility: hidden;
   opacity: 0;
-  transform: translateX(-6px) scale(0.96);
+  transform: translateX(-8px) scale(0.98);
   transition:
     opacity 140ms ease,
     transform 170ms cubic-bezier(0.2, 0.8, 0.2, 1),
@@ -478,9 +508,46 @@ button:disabled {
 
 .note-mode-switch__icon {
   display: block;
-  width: 27px;
-  height: 27px;
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  filter: none;
   object-fit: contain;
+  transition: filter 120ms ease;
+}
+
+.note-mode-switch[aria-checked="true"] .note-mode-switch__icon,
+.note-mode-switch[aria-expanded="true"] .note-mode-switch__icon {
+  filter: brightness(0) saturate(100%) invert(96%) sepia(16%) saturate(595%)
+    hue-rotate(326deg) brightness(107%) contrast(97%);
+}
+
+.note-mode-switch--primary .note-mode-switch__icon {
+  width: 26px;
+  height: 26px;
+}
+
+.note-mode-switch__label {
+  display: block;
+  overflow: hidden;
+  color: inherit;
+  font-size: 0.82rem;
+  font-weight: 760;
+  letter-spacing: 0;
+  line-height: 1;
+  text-shadow: none;
+  white-space: nowrap;
+  transition: color 120ms ease, text-shadow 120ms ease;
+}
+
+.note-mode-switch[aria-checked="true"] .note-mode-switch__label,
+.note-mode-switch[aria-expanded="true"] .note-mode-switch__label {
+  text-shadow: 0 1px 1px rgba(46, 29, 10, 0.28);
+}
+
+.note-mode-switch--secondary .note-mode-switch__label {
+  font-size: 0.78rem;
+  font-weight: 720;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1220,9 +1287,31 @@ button:disabled {
   padding: 0;
 }
 
+.note-library-card__body-shell {
+  --note-library-card-body-preview-height: calc(2 * 1.5em);
+  max-height: var(--note-library-card-body-preview-height);
+  overflow: hidden;
+  transition: max-height 150ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  will-change: max-height;
+}
+
+.note-library-card.is-focused .note-library-card__body-shell,
+.note-library-card:focus-within .note-library-card__body-shell {
+  max-height: max(
+    var(--note-library-card-body-preview-height),
+    var(
+      --note-library-card-body-expanded-height,
+      var(--note-library-card-body-preview-height)
+    )
+  );
+}
+
+.note-library-card__body-measure {
+  min-height: 0;
+}
+
 .note-library-card__body {
-  max-height: 240px;
-  overflow: auto;
+  overflow: visible;
 }
 
 .note-library-card__editor {
