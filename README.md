@@ -44,6 +44,9 @@ macOS File menu 提供：
 鍵盤操作：
 
 - `Cmd+/`：切換 Preview mode 與 Edit mode
+- `Cmd+Shift+N`：切換筆記模式
+- `Cmd+Shift+G`：切換名詞解釋模式
+- `Cmd+Shift+L`：開關筆記庫
 - `Escape`：關閉目前的 note panel
 - 點擊筆記庫卡片或對應的圈選文字：進入同一筆 note 的聚焦模式
 - 內文筆記、名詞解釋與筆記庫聚焦模式中按 `Tab`：前往下一筆，最後一筆會回到第一筆
