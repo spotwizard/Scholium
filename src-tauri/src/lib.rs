@@ -8,6 +8,7 @@ use tauri::{AppHandle, Emitter, Manager};
 const MENU_NEW_FILE: &str = "file:new-file";
 const MENU_OPEN_FILE: &str = "file:open-file";
 const MENU_OPEN_FOLDER: &str = "file:open-folder";
+const MENU_OPEN_SETTINGS: &str = "app:open-settings";
 const MENU_FAVORITE_DIRECTORIES: &str = "file:favorite-directories";
 const MENU_RECENT_LOCATIONS: &str = "file:recent-locations";
 const MENU_ADD_CURRENT_DIRECTORY_TO_FAVORITES: &str = "file:add-current-directory-to-favorites";
@@ -878,6 +879,13 @@ fn build_app_menu(app_handle: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wr
         true,
         Some("CmdOrCtrl+Shift+O"),
     )?;
+    let open_settings = MenuItem::with_id(
+        app_handle,
+        MENU_OPEN_SETTINGS,
+        "設定...",
+        true,
+        Some("CmdOrCtrl+,"),
+    )?;
     let favorite_directories = build_favorite_directories_submenu(app_handle, &location_store)?;
     let recent_locations = build_recent_locations_submenu(app_handle, &location_store)?;
 
@@ -890,6 +898,7 @@ fn build_app_menu(app_handle: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wr
                 true,
                 &[
                     &PredefinedMenuItem::about(app_handle, None, Some(about_metadata))?,
+                    &open_settings,
                     &PredefinedMenuItem::separator(app_handle)?,
                     &PredefinedMenuItem::services(app_handle, None)?,
                     &PredefinedMenuItem::separator(app_handle)?,
@@ -1010,6 +1019,9 @@ pub fn run() {
             if event_id == MENU_NEW_FILE {
                 let _ = app.emit("menu:new-file", ());
                 let _ = app.emit("scholium-new-file", ());
+            } else if event_id == MENU_OPEN_SETTINGS {
+                let _ = app.emit("menu:open-settings", ());
+                let _ = app.emit("scholium-open-settings", ());
             } else if event_id == MENU_OPEN_FILE {
                 let _ = app.emit("menu:open-file", ());
                 let _ = app.emit("scholium-open-file", ());

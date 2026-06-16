@@ -24,9 +24,19 @@ import {
   type TextAnnotation,
   type TextSelectionAnchor,
 } from "./MarkdownEditor";
+import { SettingsView } from "./SettingsView";
 import fileGlyphSvg from "./assets/file-glyph.svg?raw";
 import folderGlyphSvg from "./assets/folder-glyph.svg?raw";
 import { loadScholiumMermaid } from "./mermaid";
+import {
+  readSettingsSnapshot,
+  resetSetting,
+  resetSettings,
+  writeSetting,
+  type SettingKey,
+  type SettingValue,
+  type SettingsSnapshot,
+} from "./settings";
 
 const unorderedListMarkerPattern = /^ {0,3}[-*+]\s+/;
 const typedUnorderedListMarkerPattern = /^[-*+]\s+(.*)$/;
@@ -216,6 +226,12 @@ type FileContextMenuState = {
   documentId: string;
   left: number;
   top: number;
+};
+
+type DuplicateFileDialogState = {
+  documentId: string;
+  fileName: string;
+  isSubmitting: boolean;
 };
 
 function DocumentGlyphIcon({ kind }: { kind: "file" | "folder" }) {
@@ -682,6 +698,33 @@ function workspaceEntryFromDocument(document: MarkdownDocument): WorkspaceEntry 
     path: document.path,
     documentId: document.id,
   };
+}
+
+function workspaceEntrySortRank(entry: WorkspaceEntry) {
+  if (entry.kind === "parent-directory") return 0;
+  if (entry.kind === "directory") return 1;
+  return 2;
+}
+
+function compareWorkspaceEntries(left: WorkspaceEntry, right: WorkspaceEntry) {
+  const rankDifference = workspaceEntrySortRank(left) - workspaceEntrySortRank(right);
+  if (rankDifference !== 0) return rankDifference;
+
+  const leftTitle = left.title.toLowerCase();
+  const rightTitle = right.title.toLowerCase();
+  if (leftTitle < rightTitle) return -1;
+  if (leftTitle > rightTitle) return 1;
+
+  const leftPath = left.path.toLowerCase();
+  const rightPath = right.path.toLowerCase();
+  if (leftPath < rightPath) return -1;
+  if (leftPath > rightPath) return 1;
+
+  return 0;
+}
+
+function sortWorkspaceEntriesForDirectory(entries: WorkspaceEntry[]) {
+  return [...entries].sort(compareWorkspaceEntries);
 }
 
 function savedBodiesFromDocuments(documents: MarkdownDocument[]) {
@@ -3667,10 +3710,14 @@ function App() {
   const [isMobileViewport, setIsMobileViewport] = useState(() =>
     window.matchMedia(mobileViewportQuery).matches,
   );
+  const [settingsSnapshot, setSettingsSnapshot] =
+    useState<SettingsSnapshot>(readSettingsSnapshot);
   const [editorMode, setEditorMode] = useState<EditorMode>("preview");
   const [noteModeEnabled, setNoteModeEnabled] = useState(false);
   const [glossaryModeEnabled, setGlossaryModeEnabled] = useState(false);
-  const [directoryPaneOpen, setDirectoryPaneOpen] = useState(true);
+  const [directoryPaneOpen, setDirectoryPaneOpen] = useState(
+    settingsSnapshot["app.directoryPaneOpen"],
+  );
   const [noteLibraryOpen, setNoteLibraryOpen] = useState(false);
   const [focusedLibraryNoteId, setFocusedLibraryNoteId] = useState("");
   const [editingLibraryNoteId, setEditingLibraryNoteId] = useState("");
@@ -3681,9 +3728,14 @@ function App() {
     savedBodiesFromDocuments(documentsSeed),
   );
   const [storageError, setStorageError] = useState("");
+  const [settingsViewOpen, setSettingsViewOpen] = useState(false);
   const [fileContextMenu, setFileContextMenu] = useState<FileContextMenuState | null>(null);
+  const [duplicateFileDialog, setDuplicateFileDialog] =
+    useState<DuplicateFileDialogState | null>(null);
   const notePanelRef = useRef<HTMLElement | null>(null);
   const floatingNoteCardRef = useRef<HTMLDivElement | null>(null);
+  const settingsCloseButtonRef = useRef<HTMLButtonElement | null>(null);
+  const duplicateFileInputRef = useRef<HTMLInputElement | null>(null);
   const noteEditorRootRef = useRef<HTMLDivElement | null>(null);
   const libraryNoteEditorRootRef = useRef<HTMLDivElement | null>(null);
   const returnToViewTimerRef = useRef(0);
@@ -3716,6 +3768,7 @@ function App() {
   const notePanelHasContentRef = useRef(false);
   const selectionDismissedUntilRef = useRef(0);
   const lastOpenedFileRestoreAttemptedRef = useRef(false);
+  const openSettingsHandlerRef = useRef<() => void>(() => undefined);
   const newMarkdownFileHandlerRef = useRef<() => void>(() => undefined);
   const openMarkdownFileHandlerRef = useRef<() => void>(() => undefined);
   const openMarkdownFolderHandlerRef = useRef<() => void>(() => undefined);
@@ -3729,6 +3782,7 @@ function App() {
   selectedDocumentIdRef.current = selectedDocumentId;
   noteDraftRef.current = noteDraft;
   glossaryDraftRef.current = glossaryDraft;
+  openSettingsHandlerRef.current = openSettingsView;
   newMarkdownFileHandlerRef.current = () => {
     void newMarkdownFile();
   };
@@ -4814,6 +4868,57 @@ function App() {
   }, [fileContextMenu]);
 
   useEffect(() => {
+    if (!duplicateFileDialog) return;
+
+    window.setTimeout(() => {
+      duplicateFileInputRef.current?.focus();
+      duplicateFileInputRef.current?.select();
+    });
+  }, [duplicateFileDialog?.documentId]);
+
+  useEffect(() => {
+    if (!settingsViewOpen) return;
+
+    window.setTimeout(() => {
+      settingsCloseButtonRef.current?.focus();
+    });
+  }, [settingsViewOpen]);
+
+  useEffect(() => {
+    const interfaceFontSize = settingsSnapshot["app.interfaceFontSize"];
+    document.documentElement.style.fontSize = `${interfaceFontSize}px`;
+
+    return () => {
+      document.documentElement.style.removeProperty("font-size");
+    };
+  }, [settingsSnapshot]);
+
+  useEffect(() => {
+    const theme = settingsSnapshot["app.theme"];
+    const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
+
+    function applyTheme() {
+      const effectiveTheme = theme === "system" ? (mediaQuery.matches ? "dark" : "light") : theme;
+      document.documentElement.dataset.theme = effectiveTheme;
+    }
+
+    applyTheme();
+
+    if (theme !== "system") {
+      return () => {
+        document.documentElement.removeAttribute("data-theme");
+      };
+    }
+
+    mediaQuery.addEventListener("change", applyTheme);
+
+    return () => {
+      mediaQuery.removeEventListener("change", applyTheme);
+      document.documentElement.removeAttribute("data-theme");
+    };
+  }, [settingsSnapshot]);
+
+  useEffect(() => {
     return () => {
       window.clearTimeout(notePanelCloseTimerRef.current);
       window.clearTimeout(autosaveTimerRef.current);
@@ -4861,8 +4966,9 @@ function App() {
 
   useEffect(() => {
     if (!nativeStorageAvailable || lastOpenedFileRestoreAttemptedRef.current) return;
-
     lastOpenedFileRestoreAttemptedRef.current = true;
+    if (!settingsSnapshot["app.restoreLastOpenedFile"]) return;
+
     const lastOpenedPath = readLastOpenedMarkdownPath();
     if (!lastOpenedPath) return;
 
@@ -4883,12 +4989,13 @@ function App() {
           `Could not reopen last file: ${error instanceof Error ? error.message : String(error)}`,
         );
       });
-  }, [nativeStorageAvailable]);
+  }, [nativeStorageAvailable, settingsSnapshot]);
 
   useEffect(() => {
     if (!nativeStorageAvailable) return;
 
     let unlistenNewFile: (() => void) | null = null;
+    let unlistenOpenSettings: (() => void) | null = null;
     let unlistenOpenFile: (() => void) | null = null;
     let unlistenOpenFolder: (() => void) | null = null;
     let unlistenOpenLocation: (() => void) | null = null;
@@ -4896,6 +5003,9 @@ function App() {
     void Promise.all([
       listen("scholium-new-file", () => {
         newMarkdownFileHandlerRef.current();
+      }),
+      listen("scholium-open-settings", () => {
+        openSettingsHandlerRef.current();
       }),
       listen("scholium-open-file", () => {
         openMarkdownFileHandlerRef.current();
@@ -4909,11 +5019,13 @@ function App() {
     ]).then(
       ([
         newFileListener,
+        openSettingsListener,
         openFileListener,
         openFolderListener,
         openLocationListener,
       ]) => {
         unlistenNewFile = newFileListener;
+        unlistenOpenSettings = openSettingsListener;
         unlistenOpenFile = openFileListener;
         unlistenOpenFolder = openFolderListener;
         unlistenOpenLocation = openLocationListener;
@@ -4922,6 +5034,7 @@ function App() {
 
     return () => {
       unlistenNewFile?.();
+      unlistenOpenSettings?.();
       unlistenOpenFile?.();
       unlistenOpenFolder?.();
       unlistenOpenLocation?.();
@@ -4977,6 +5090,22 @@ function App() {
           }
           return;
         }
+      }
+
+      if (settingsViewOpen) {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          closeSettingsView();
+        }
+        return;
+      }
+
+      if (duplicateFileDialog) {
+        if (event.key === "Escape" && !duplicateFileDialog.isSubmitting) {
+          event.preventDefault();
+          setDuplicateFileDialog(null);
+        }
+        return;
       }
 
       if (event.key === "Escape" && (notePanelHasContentRef.current || pendingAnchor)) {
@@ -5057,6 +5186,7 @@ function App() {
     activeGlossaryBindingId,
     activeNoteId,
     closeNotePanel,
+    duplicateFileDialog,
     glossaryModeEnabled,
     glossaryNavigationSignature,
     noteLibraryOpen,
@@ -5067,6 +5197,7 @@ function App() {
     pendingAnchor,
     pendingAnchorIsCompleteBlock,
     pendingAnchorIsGlossaryTerm,
+    settingsViewOpen,
   ]);
 
   function updateDocumentDirtyState(documentId: string, patch: Partial<DirtyDocumentState>) {
@@ -5185,7 +5316,7 @@ function App() {
 
   function applyLoadedFiles(
     loadedFiles: OpenMarkdownFileResult[],
-    options: { rememberRecent?: boolean } = {},
+    options: { rememberRecent?: boolean; sortEntries?: boolean } = {},
   ) {
     if (loadedFiles.length === 0) {
       setStorageError("No Markdown files found in the selected folder.");
@@ -5226,7 +5357,13 @@ function App() {
           (entry.kind !== "file" || !loadedDocumentIds.has(entry.documentId)),
       );
 
-      return [...parentEntries, ...loadedDocuments.map(workspaceEntryFromDocument), ...otherEntries];
+      const nextEntries = [
+        ...parentEntries,
+        ...loadedDocuments.map(workspaceEntryFromDocument),
+        ...otherEntries,
+      ];
+
+      return options.sortEntries ? sortWorkspaceEntriesForDirectory(nextEntries) : nextEntries;
     });
     setNotes((currentNotes) => [
       ...loadedNotes,
@@ -5817,33 +5954,121 @@ function App() {
     }
   }
 
-  async function duplicateDocumentFile(documentId: string) {
+  function openSettingsView() {
+    setFileContextMenu(null);
+    if (!duplicateFileDialog?.isSubmitting) {
+      setDuplicateFileDialog(null);
+    }
+    setStorageError("");
+    setSettingsViewOpen(true);
+  }
+
+  function closeSettingsView() {
+    setSettingsViewOpen(false);
+  }
+
+  function applySettingRuntimeValue(key: SettingKey, value: SettingValue) {
+    if (key === "app.directoryPaneOpen" && typeof value === "boolean") {
+      setDirectoryPaneOpen(value);
+      return;
+    }
+
+  }
+
+  function updateSettingValue(key: SettingKey, value: SettingValue) {
+    const nextValue = writeSetting(key, value);
+
+    setSettingsSnapshot(
+      (currentSettings) =>
+        ({
+          ...currentSettings,
+          [key]: nextValue,
+        }) as SettingsSnapshot,
+    );
+    applySettingRuntimeValue(key, nextValue);
+  }
+
+  function resetSettingValue(key: SettingKey) {
+    const nextValue = resetSetting(key);
+
+    setSettingsSnapshot(
+      (currentSettings) =>
+        ({
+          ...currentSettings,
+          [key]: nextValue,
+        }) as SettingsSnapshot,
+    );
+    applySettingRuntimeValue(key, nextValue);
+  }
+
+  function resetAllSettingValues() {
+    const nextSettings = resetSettings();
+
+    setSettingsSnapshot(nextSettings);
+    setDirectoryPaneOpen(nextSettings["app.directoryPaneOpen"]);
+  }
+
+  const editorSurfaceStyle = {
+    "--settings-editor-font-size": `${settingsSnapshot["editor.fontSize"]}px`,
+    "--settings-editor-line-height": settingsSnapshot["editor.lineHeight"],
+    "--settings-editor-line-height-px": `${
+      settingsSnapshot["editor.fontSize"] * settingsSnapshot["editor.lineHeight"]
+    }px`,
+  } as CSSProperties;
+
+  function openDuplicateDocumentDialog(documentId: string) {
+    setFileContextMenu(null);
+
     if (!nativeStorageAvailable) {
       setStorageError("Open/save requires the Scholium macOS app runtime.");
-      return;
+      return false;
     }
 
     if (autosaveInFlightRef.current) {
       setStorageError("請稍候目前儲存完成後再建立副本。");
-      return;
+      return false;
     }
 
     const documentToDuplicate = documentsRef.current.find((document) => document.id === documentId);
     if (!documentToDuplicate?.filePath) {
       setStorageError("This document is not backed by a local Markdown file.");
-      return;
+      return false;
     }
 
-    setFileContextMenu(null);
+    setStorageError("");
+    setDuplicateFileDialog({
+      documentId,
+      fileName: defaultDuplicateFileName(documentToDuplicate),
+      isSubmitting: false,
+    });
 
-    const requestedFileName = window.prompt(
-      "請輸入副本檔名",
-      defaultDuplicateFileName(documentToDuplicate),
-    );
-    const fileName = requestedFileName?.trim();
-    if (!fileName) return;
+    return true;
+  }
 
-    setStorageError("Creating duplicate...");
+  async function duplicateDocumentFile(documentId: string, fileName: string) {
+    if (!nativeStorageAvailable) {
+      setStorageError("Open/save requires the Scholium macOS app runtime.");
+      return false;
+    }
+
+    if (autosaveInFlightRef.current) {
+      setStorageError("請稍候目前儲存完成後再建立副本。");
+      return false;
+    }
+
+    const documentToDuplicate = documentsRef.current.find((document) => document.id === documentId);
+    if (!documentToDuplicate?.filePath) {
+      setStorageError("This document is not backed by a local Markdown file.");
+      return false;
+    }
+
+    const trimmedFileName = fileName.trim();
+    if (!trimmedFileName) {
+      setStorageError("請輸入副本檔名。");
+      return false;
+    }
+
+    setStorageError("");
 
     try {
       if (hasDirtyState(dirtyDocumentStatesRef.current[documentId])) {
@@ -5852,13 +6077,53 @@ function App() {
 
       const loaded = await invoke<OpenMarkdownFileResult>("duplicate_markdown_file", {
         path: documentToDuplicate.filePath,
-        fileName,
+        fileName: trimmedFileName,
       });
-      applyLoadedFiles([loaded]);
+      applyLoadedFiles([loaded], { sortEntries: true });
       setStorageError("");
+      return true;
     } catch (error) {
-      setStorageError(error instanceof Error ? error.message : String(error));
+      const message = error instanceof Error ? error.message : String(error);
+      if (message === "duplicate file already exists") {
+        setStorageError("副本檔案已存在，請換一個檔名。");
+      } else if (message === "duplicate file name must not include folders") {
+        setStorageError("副本檔名不能包含資料夾路徑。");
+      } else if (message === "duplicate file name is empty") {
+        setStorageError("請輸入副本檔名。");
+      } else {
+        setStorageError(message);
+      }
+      return false;
     }
+  }
+
+  async function submitDuplicateDocumentFile(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!duplicateFileDialog || duplicateFileDialog.isSubmitting) return;
+
+    setDuplicateFileDialog((currentDialog) =>
+      currentDialog ? { ...currentDialog, isSubmitting: true } : currentDialog,
+    );
+
+    const duplicated = await duplicateDocumentFile(
+      duplicateFileDialog.documentId,
+      duplicateFileDialog.fileName,
+    );
+    if (duplicated) {
+      setDuplicateFileDialog(null);
+      return;
+    }
+
+    setDuplicateFileDialog((currentDialog) =>
+      currentDialog ? { ...currentDialog, isSubmitting: false } : currentDialog,
+    );
+  }
+
+  function closeDuplicateFileDialog() {
+    if (duplicateFileDialog?.isSubmitting) return;
+
+    setDuplicateFileDialog(null);
+    setStorageError("");
   }
 
   async function copyDocumentContent(documentId: string) {
@@ -7164,7 +7429,7 @@ function App() {
           label: "建立副本",
           icon: <DuplicateIcon />,
           onSelect: () => {
-            void duplicateDocumentFile(fileContextMenu.documentId);
+            openDuplicateDocumentDialog(fileContextMenu.documentId);
           },
         },
         {
@@ -7202,9 +7467,9 @@ function App() {
   const shellClassName = [
     "scholium-shell",
     directoryPaneOpen ? "" : "is-directory-pane-closed",
-    noteModeEnabled && noteLibraryOpen ? "is-note-library-open" : "",
-    noteLibraryFocusActive ? "is-note-library-focus-active" : "",
-    notePanelModalActive ? "is-note-panel-modal-active" : "",
+    !settingsViewOpen && noteModeEnabled && noteLibraryOpen ? "is-note-library-open" : "",
+    !settingsViewOpen && noteLibraryFocusActive ? "is-note-library-focus-active" : "",
+    !settingsViewOpen && notePanelModalActive ? "is-note-panel-modal-active" : "",
   ]
     .filter(Boolean)
     .join(" ");
@@ -7274,18 +7539,20 @@ function App() {
         {storageError ? <p className="storage-error">{storageError}</p> : null}
       </aside>
 
-      <button
-        aria-expanded={directoryPaneOpen}
-        aria-label={directoryPaneOpen ? "收起目錄" : "展開目錄"}
-        className={`directory-bookmark ${directoryPaneOpen ? "is-attached" : ""}`}
-        onClick={toggleDirectoryPane}
-        type="button"
-      >
-        <span aria-hidden="true" className="directory-bookmark__label">
-          <span>目</span>
-          <span>錄</span>
-        </span>
-      </button>
+      {!settingsViewOpen ? (
+        <button
+          aria-expanded={directoryPaneOpen}
+          aria-label={directoryPaneOpen ? "收起目錄" : "展開目錄"}
+          className={`directory-bookmark ${directoryPaneOpen ? "is-attached" : ""}`}
+          onClick={toggleDirectoryPane}
+          type="button"
+        >
+          <span aria-hidden="true" className="directory-bookmark__label">
+            <span>目</span>
+            <span>錄</span>
+          </span>
+        </button>
+      ) : null}
 
       {fileContextMenu ? (
         <div
@@ -7310,9 +7577,86 @@ function App() {
         </div>
       ) : null}
 
+      {duplicateFileDialog ? (
+        <div
+          className="duplicate-file-dialog-backdrop"
+          onMouseDown={closeDuplicateFileDialog}
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          <form
+            aria-labelledby="duplicate-file-dialog-title"
+            aria-modal="true"
+            className="duplicate-file-dialog"
+            onMouseDown={(event) => event.stopPropagation()}
+            onSubmit={submitDuplicateDocumentFile}
+            role="dialog"
+          >
+            <div className="duplicate-file-dialog__header">
+              <h2 id="duplicate-file-dialog-title">建立副本</h2>
+              <button
+                aria-label="關閉"
+                className="duplicate-file-dialog__close"
+                disabled={duplicateFileDialog.isSubmitting}
+                onClick={closeDuplicateFileDialog}
+                type="button"
+              >
+                ×
+              </button>
+            </div>
+            <label className="duplicate-file-dialog__field">
+              <span>副本檔名</span>
+              <input
+                disabled={duplicateFileDialog.isSubmitting}
+                ref={duplicateFileInputRef}
+                type="text"
+                value={duplicateFileDialog.fileName}
+                onChange={(event) => {
+                  const nextFileName = event.target.value;
+                  setDuplicateFileDialog((currentDialog) =>
+                    currentDialog ? { ...currentDialog, fileName: nextFileName } : currentDialog,
+                  );
+                }}
+              />
+            </label>
+            {storageError ? (
+              <p className="duplicate-file-dialog__message" role="status">
+                {storageError}
+              </p>
+            ) : null}
+            <div className="note-actions duplicate-file-dialog__actions">
+              <button
+                disabled={duplicateFileDialog.isSubmitting}
+                onClick={closeDuplicateFileDialog}
+                type="button"
+              >
+                取消
+              </button>
+              <button
+                className="is-primary"
+                disabled={duplicateFileDialog.isSubmitting}
+                type="submit"
+              >
+                {duplicateFileDialog.isSubmitting ? "建立中..." : "建立"}
+              </button>
+            </div>
+          </form>
+        </div>
+      ) : null}
+
+      {settingsViewOpen ? (
+        <SettingsView
+          closeButtonRef={settingsCloseButtonRef}
+          values={settingsSnapshot}
+          onChange={updateSettingValue}
+          onClose={closeSettingsView}
+          onResetAllSettings={resetAllSettingValues}
+          onResetSetting={resetSettingValue}
+        />
+      ) : null}
+
       <section className="editor-pane" aria-label="Markdown editor">
         <div className="editor-grid">
-          <div className="editor-surface">
+          <div className="editor-surface" style={editorSurfaceStyle}>
             <div
               aria-label="Editor tools"
               className="editor-toolbar"
@@ -7380,7 +7724,7 @@ function App() {
         </div>
       </section>
 
-      {noteModeEnabled ? (
+      {!settingsViewOpen && noteModeEnabled ? (
         <>
           <button
             aria-expanded={noteLibraryOpen}
@@ -7493,13 +7837,13 @@ function App() {
         </>
       ) : null}
 
-      {noteModeEnabled && selectionWarningPosition ? (
+      {!settingsViewOpen && noteModeEnabled && selectionWarningPosition ? (
         <div className="selection-warning-popover" role="status" style={selectionWarningStyle}>
           {selectionWarningMessage}
         </div>
       ) : null}
 
-      {floatingNotePanelShouldRender ? (
+      {!settingsViewOpen && floatingNotePanelShouldRender ? (
         <>
           {notePanelModalActive ? (
             <div
