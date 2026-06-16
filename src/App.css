@@ -78,20 +78,30 @@ button:disabled {
 
 .scholium-shell {
   --document-pane-width: 272px;
+  --document-pane-active-width: var(--document-pane-width);
   --editor-content-gutter: 72px;
   --editor-content-inline-start-gutter: clamp(96px, 7vw, 120px);
   --editor-content-inline-end-gutter: var(--editor-content-gutter);
   --note-library-width: clamp(300px, 32vw, 420px);
+  --side-panel-transition-duration: 660ms;
+  --side-panel-opacity-duration: 620ms;
+  --side-panel-transition-easing: cubic-bezier(0.2, 0.8, 0.2, 1);
   position: relative;
   isolation: isolate;
   display: grid;
-  grid-template-columns: minmax(220px, var(--document-pane-width)) minmax(0, 1fr);
+  grid-template-columns: minmax(0, var(--document-pane-active-width)) minmax(0, 1fr);
   min-height: 100vh;
   overflow-x: hidden;
   color: var(--color-text);
   background:
     linear-gradient(90deg, var(--color-accent-softer), transparent 34%),
     var(--color-app-bg);
+  transition: grid-template-columns var(--side-panel-transition-duration)
+    var(--side-panel-transition-easing);
+}
+
+.scholium-shell.is-directory-pane-closed {
+  --document-pane-active-width: 0px;
 }
 
 .scholium-shell.is-note-library-open {
@@ -103,6 +113,7 @@ button:disabled {
 }
 
 .scholium-shell.is-note-library-focus-active .document-pane,
+.scholium-shell.is-note-library-focus-active .directory-bookmark,
 .scholium-shell.is-note-library-focus-active .editor-toolbar,
 .scholium-shell.is-note-library-focus-active .note-library-header,
 .scholium-shell.is-note-library-focus-active .note-library-bookmark,
@@ -127,7 +138,21 @@ button:disabled {
 }
 
 .document-pane {
+  width: var(--document-pane-width);
   border-right: 1px solid var(--color-border);
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateX(0);
+  transition:
+    transform var(--side-panel-transition-duration) var(--side-panel-transition-easing),
+    opacity var(--side-panel-opacity-duration) ease-out;
+  will-change: transform, opacity;
+}
+
+.scholium-shell.is-directory-pane-closed .document-pane {
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(calc(-1 * var(--document-pane-width)));
 }
 
 .pane-header {
@@ -212,10 +237,6 @@ button:disabled {
   border-radius: 0;
   padding: 0 16px 0 20px;
   color: var(--color-text);
-}
-
-.document-row:first-child {
-  border-top: 1px solid var(--color-border-soft);
 }
 
 .document-icon {
@@ -386,7 +407,8 @@ button:disabled {
   padding: var(--editor-content-gutter) var(--editor-content-inline-end-gutter)
     var(--editor-content-gutter) var(--editor-content-inline-start-gutter);
   background: var(--color-surface);
-  transition: padding-right 160ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  transition: padding-right var(--side-panel-transition-duration)
+    var(--side-panel-transition-easing);
 }
 
 .editor-toolbar {
@@ -528,7 +550,13 @@ button:disabled {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .scholium-shell,
+  .document-pane,
+  .editor-surface,
   .editor-toolbar,
+  .directory-bookmark,
+  .note-library-bookmark,
+  .note-library-pane,
   .note-mode-switch,
   .note-mode-switch--dependent {
     transition: none;
@@ -1138,9 +1166,9 @@ button:disabled {
   pointer-events: none;
   transform: translateX(calc(100% + 16px));
   transition:
-    transform 160ms cubic-bezier(0.2, 0.8, 0.2, 1),
-    opacity 120ms ease-out,
-    visibility 0s linear 160ms;
+    transform var(--side-panel-transition-duration) var(--side-panel-transition-easing),
+    opacity var(--side-panel-opacity-duration) ease-out,
+    visibility 0s linear var(--side-panel-transition-duration);
   visibility: hidden;
 }
 
@@ -1149,8 +1177,8 @@ button:disabled {
   pointer-events: auto;
   transform: translateX(0);
   transition:
-    transform 160ms cubic-bezier(0.2, 0.8, 0.2, 1),
-    opacity 120ms ease-out;
+    transform var(--side-panel-transition-duration) var(--side-panel-transition-easing),
+    opacity var(--side-panel-opacity-duration) ease-out;
   visibility: visible;
 }
 
@@ -1169,13 +1197,13 @@ button:disabled {
   right: 0;
   z-index: 72;
   display: grid;
-  width: 52px;
+  width: 47px;
   height: 128px;
   place-items: center;
   border: 1px solid rgba(247, 224, 200, 0.5);
   border-right: 0;
   border-radius: 12px 0 0 12px;
-  padding: 12px 9px;
+  padding: 12px 8px;
   color: #f7e0c8;
   background: #6e1b2b;
   box-shadow:
@@ -1183,10 +1211,43 @@ button:disabled {
     inset 0 1px 0 rgba(255, 255, 255, 0.16);
   transform: translateX(0);
   transition:
-    right 160ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    right var(--side-panel-transition-duration) var(--side-panel-transition-easing),
     border-color 120ms ease,
     background 120ms ease,
     box-shadow 120ms ease;
+}
+
+.directory-bookmark {
+  position: absolute;
+  top: 88px;
+  left: var(--document-pane-active-width);
+  z-index: 72;
+  display: grid;
+  width: 47px;
+  height: 128px;
+  place-items: center;
+  border: 1px solid rgba(247, 224, 200, 0.5);
+  border-left: 0;
+  border-radius: 0 12px 12px 0;
+  padding: 12px 8px;
+  color: #f7e0c8;
+  background: #6e1b2b;
+  box-shadow:
+    8px 8px 18px rgba(70, 20, 35, 0.18),
+    inset 0 1px 0 rgba(255, 255, 255, 0.16);
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateX(0);
+  transition:
+    left var(--side-panel-transition-duration) var(--side-panel-transition-easing),
+    opacity var(--side-panel-opacity-duration) ease-out,
+    border-color 120ms ease,
+    background 120ms ease,
+    box-shadow 120ms ease;
+}
+
+.scholium-shell.is-note-library-focus-active .directory-bookmark {
+  pointer-events: none;
 }
 
 .note-library-bookmark__label {
@@ -1200,14 +1261,42 @@ button:disabled {
   line-height: 1;
 }
 
+.directory-bookmark__label {
+  display: grid;
+  gap: 4px;
+  justify-items: center;
+  color: inherit;
+  font-size: 0.86rem;
+  font-weight: 780;
+  letter-spacing: 0;
+  line-height: 1;
+}
+
 .note-library-bookmark:hover,
-.note-library-bookmark:focus-visible {
+.note-library-bookmark:focus-visible,
+.directory-bookmark:hover,
+.directory-bookmark:focus-visible {
   border-color: rgba(255, 241, 222, 0.68);
   background: #7a2334;
   color: #fff1de;
   box-shadow:
     -10px 10px 22px rgba(70, 20, 35, 0.22),
     inset 0 1px 0 rgba(255, 255, 255, 0.2);
+}
+
+.directory-bookmark:hover,
+.directory-bookmark:focus-visible {
+  box-shadow:
+    10px 10px 22px rgba(70, 20, 35, 0.22),
+    inset 0 1px 0 rgba(255, 255, 255, 0.2);
+}
+
+.directory-bookmark.is-attached {
+  border-color: rgba(247, 224, 200, 0.56);
+  background: #6e1b2b;
+  box-shadow:
+    10px 10px 22px rgba(70, 20, 35, 0.2),
+    inset 0 1px 0 rgba(255, 255, 255, 0.16);
 }
 
 .note-library-bookmark.is-attached {
@@ -1945,7 +2034,7 @@ button:disabled {
 @media (max-width: 1180px) {
   .scholium-shell {
     --document-pane-width: 248px;
-    grid-template-columns: minmax(200px, var(--document-pane-width)) minmax(420px, 1fr);
+    grid-template-columns: minmax(0, var(--document-pane-active-width)) minmax(420px, 1fr);
   }
 }
 
@@ -1962,6 +2051,14 @@ button:disabled {
   .editor-pane {
     min-height: auto;
     border-right: 0;
+  }
+
+  .document-pane {
+    width: auto;
+  }
+
+  .scholium-shell.is-directory-pane-closed .document-pane {
+    transform: translateX(-100%);
   }
 
   .document-list {
