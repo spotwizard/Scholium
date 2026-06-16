@@ -3670,6 +3670,7 @@ function App() {
   const [editorMode, setEditorMode] = useState<EditorMode>("preview");
   const [noteModeEnabled, setNoteModeEnabled] = useState(false);
   const [glossaryModeEnabled, setGlossaryModeEnabled] = useState(false);
+  const [directoryPaneOpen, setDirectoryPaneOpen] = useState(true);
   const [noteLibraryOpen, setNoteLibraryOpen] = useState(false);
   const [focusedLibraryNoteId, setFocusedLibraryNoteId] = useState("");
   const [editingLibraryNoteId, setEditingLibraryNoteId] = useState("");
@@ -3690,6 +3691,7 @@ function App() {
   const floatingNotePanelPositionFrameRef = useRef(0);
   const floatingNoteAnchorRectRef = useRef<TextRangeRect | null>(null);
   const lastPointerAnchorRectRef = useRef<TextRangeRect | null>(null);
+  const directoryPaneOpenBeforeNoteLibraryRef = useRef<boolean | null>(null);
   const noteEditorShouldRefocusRef = useRef(false);
   const noteEditorIsComposingRef = useRef(false);
   const noteEditorEnterIgnoredDuringCompositionRef = useRef(false);
@@ -3916,6 +3918,10 @@ function App() {
 
     resetNoteModeInteractionState();
     setGlossaryModeEnabled(false);
+    if (directoryPaneOpenBeforeNoteLibraryRef.current === true) {
+      setDirectoryPaneOpen(true);
+    }
+    directoryPaneOpenBeforeNoteLibraryRef.current = null;
     setNoteLibraryOpen(false);
     setFocusedLibraryNoteId("");
     setEditingLibraryNoteId("");
@@ -4966,9 +4972,8 @@ function App() {
           if (noteModeEnabled) {
             toggleNoteLibrary();
           } else {
-            resetNoteModeInteractionState();
             setNoteModeEnabled(true);
-            setNoteLibraryOpen(true);
+            openNoteLibrary();
           }
           return;
         }
@@ -7070,17 +7075,40 @@ function App() {
     focusAdjacentLibraryNote(noteId, event);
   }
 
+  function openNoteLibrary() {
+    setFocusedLibraryNoteId("");
+    setEditingLibraryNoteId("");
+    resetNoteModeInteractionState();
+    setDirectoryPaneOpen((currentValue) => {
+      directoryPaneOpenBeforeNoteLibraryRef.current = currentValue;
+      return false;
+    });
+    setNoteLibraryOpen(true);
+  }
+
+  function closeNoteLibrary() {
+    setFocusedLibraryNoteId("");
+    setEditingLibraryNoteId("");
+    if (directoryPaneOpenBeforeNoteLibraryRef.current === true) {
+      setDirectoryPaneOpen(true);
+    }
+    directoryPaneOpenBeforeNoteLibraryRef.current = null;
+    setNoteLibraryOpen(false);
+  }
+
   function toggleNoteLibrary() {
     if (!noteModeEnabled) return;
 
-    const nextNoteLibraryOpen = !noteLibraryOpen;
-    setFocusedLibraryNoteId("");
-    setEditingLibraryNoteId("");
-    if (nextNoteLibraryOpen) {
-      resetNoteModeInteractionState();
+    if (noteLibraryOpen) {
+      closeNoteLibrary();
+      return;
     }
 
-    setNoteLibraryOpen(nextNoteLibraryOpen);
+    openNoteLibrary();
+  }
+
+  function toggleDirectoryPane() {
+    setDirectoryPaneOpen((currentValue) => !currentValue);
   }
 
   const floatingNotePanelStyle: CSSProperties = floatingNotePanelPosition
@@ -7165,6 +7193,7 @@ function App() {
 
   const shellClassName = [
     "scholium-shell",
+    directoryPaneOpen ? "" : "is-directory-pane-closed",
     noteModeEnabled && noteLibraryOpen ? "is-note-library-open" : "",
     noteLibraryFocusActive ? "is-note-library-focus-active" : "",
     notePanelModalActive ? "is-note-panel-modal-active" : "",
@@ -7236,6 +7265,19 @@ function App() {
 
         {storageError ? <p className="storage-error">{storageError}</p> : null}
       </aside>
+
+      <button
+        aria-expanded={directoryPaneOpen}
+        aria-label={directoryPaneOpen ? "收起目錄" : "展開目錄"}
+        className={`directory-bookmark ${directoryPaneOpen ? "is-attached" : ""}`}
+        onClick={toggleDirectoryPane}
+        type="button"
+      >
+        <span aria-hidden="true" className="directory-bookmark__label">
+          <span>目</span>
+          <span>錄</span>
+        </span>
+      </button>
 
       {fileContextMenu ? (
         <div
