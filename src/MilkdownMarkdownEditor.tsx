@@ -25,6 +25,8 @@ import { loadScholiumMermaid } from "./mermaid";
 type MilkdownMarkdownEditorProps = {
   value: string;
   annotations: TextAnnotation[];
+  noteModeEnabled: boolean;
+  readOnly?: boolean;
   onChange: (value: string, source: EditorChangeSource) => void;
   onSelectionChange: (anchor: TextSelectionAnchor | null) => void;
   onSelectionEnter: (anchor: TextSelectionAnchor) => boolean;
@@ -38,12 +40,15 @@ const milkdownAnnotationPluginKey = new PluginKey<DecorationSet>(
 const milkdownAnnotationFramePadding = 4;
 const milkdownAnnotationLineJoinMaxGap = 20;
 const milkdownAnnotationClassPrefix = "scholium-milkdown-annotation-";
+const milkdownSelectionFallbackMs = 220;
+const annotationClickDelayMs = 500;
 let milkdownMermaidRenderIndex = 0;
 
 type MilkdownCodeBlockApplyPreview = (value: null | string | HTMLElement) => void;
 
 type MilkdownAnnotationFrame = {
   frameKey: string;
+  isFocusTarget?: boolean;
   noteId: string;
   kind: "note" | "glossary";
   tone: AnnotationTone;
@@ -62,6 +67,7 @@ type MilkdownAnnotationRect = {
 
 type MilkdownAnnotationSource = {
   noteId: string;
+  isFocusTarget?: boolean;
   kind: "note" | "glossary";
   tone: AnnotationTone;
 };
@@ -366,6 +372,7 @@ function milkdownAnnotationIndexFromClassName(className: string) {
 function milkdownAnnotationSource(annotation: TextAnnotation): MilkdownAnnotationSource {
   return {
     noteId: annotation.id,
+    isFocusTarget: annotation.isFocusTarget,
     kind: annotation.kind === "glossary" ? "glossary" : "note",
     tone: annotation.tone ?? 0,
   };
@@ -393,10 +400,12 @@ function annotationSourcesFromElement(
   const kind: "note" | "glossary" =
     element.dataset.annotationKind === "glossary" ? "glossary" : "note";
   const tone: AnnotationTone = element.dataset.noteTone === "1" ? 1 : 0;
+  const isFocusTarget = element.dataset.focusTarget === "true";
 
   return [
     {
       noteId,
+      isFocusTarget,
       kind,
       tone,
     },
@@ -411,6 +420,23 @@ function measureMilkdownAnnotationFrames(
   const rectsByNoteId = new Map<string, MilkdownAnnotationRect[]>();
   const tonesByNoteId = new Map<string, AnnotationTone>();
   const kindsByNoteId = new Map<string, "note" | "glossary">();
+  const focusByNoteId = new Map<string, boolean>();
+
+  function annotationListAdjustedRect(annotation: HTMLElement, rect: MilkdownAnnotationRect) {
+    const listItem = annotation.closest<HTMLLIElement>("li");
+    const list = listItem?.closest<HTMLOListElement | HTMLUListElement>("ol, ul") ?? null;
+    if (!listItem || !list || !container.contains(list)) {
+      return rect;
+    }
+
+    const listRect = list.getBoundingClientRect();
+    const listItemRect = listItem.getBoundingClientRect();
+
+    return {
+      ...rect,
+      left: Math.max(containerRect.left, Math.min(listRect.left, listItemRect.left, rect.left)),
+    };
+  }
 
   container
     .querySelectorAll<HTMLElement>(".milkdown-note-annotation")
@@ -427,12 +453,14 @@ function measureMilkdownAnnotationFrames(
 
           return { left, top, right, bottom };
         })
-        .filter((rect) => rect.right > rect.left && rect.bottom > rect.top);
+        .filter((rect) => rect.right > rect.left && rect.bottom > rect.top)
+        .map((rect) => annotationListAdjustedRect(annotation, rect));
       if (annotationRects.length === 0) return;
 
       sources.forEach((source) => {
         tonesByNoteId.set(source.noteId, source.tone);
         kindsByNoteId.set(source.noteId, source.kind);
+        focusByNoteId.set(source.noteId, Boolean(source.isFocusTarget));
 
         rectsByNoteId.set(source.noteId, [
           ...(rectsByNoteId.get(source.noteId) ?? []),
@@ -445,6 +473,7 @@ function measureMilkdownAnnotationFrames(
     .flatMap(([noteId, rects]) => {
       const kind = kindsByNoteId.get(noteId) ?? "note";
       const tone = tonesByNoteId.get(noteId) ?? 0;
+      const isFocusTarget = focusByNoteId.get(noteId) ?? false;
       const sortedRects = rects.sort(
         (left, right) => left.top - right.top || left.left - right.left,
       );
@@ -471,6 +500,7 @@ function measureMilkdownAnnotationFrames(
 
         return {
           frameKey: `${kind}:${noteId}:milkdown:${rectIndex}`,
+          isFocusTarget,
           noteId,
           kind,
           tone,
@@ -505,6 +535,7 @@ function milkdownAnnotationFramesAreEqual(
 
     return (
       leftFrame.frameKey === rightFrame.frameKey &&
+      leftFrame.isFocusTarget === rightFrame.isFocusTarget &&
       leftFrame.noteId === rightFrame.noteId &&
       leftFrame.kind === rightFrame.kind &&
       leftFrame.tone === rightFrame.tone &&
@@ -534,7 +565,7 @@ function buildAnchor(
   const normalizedSelection = normalizeSelectedText(selectedText);
   if (!normalizedSelection) return null;
 
-  const exactIndex = markdown.indexOf(selectedText);
+  const exactIndex = closestTextIndex(textIndices(markdown, selectedText), approximateVisibleStart);
   if (exactIndex >= 0) {
     return makeAnchorFromSourceRange(markdown, exactIndex, exactIndex + selectedText.length);
   }
@@ -723,10 +754,16 @@ function buildAnnotationDecorations(
   const { positions, text } = buildNormalizedVisibleTextIndex(doc);
   const decorations = annotations.flatMap((annotation, annotationIndex) => {
     const decorationAttributes = {
-      class: `milkdown-note-annotation ${
-        annotation.kind === "glossary" ? "milkdown-glossary-annotation" : ""
-      } ${milkdownAnnotationClassName(annotationIndex)}`,
+      class: [
+        "milkdown-note-annotation",
+        annotation.kind === "glossary" ? "milkdown-glossary-annotation" : "",
+        annotation.isFocusTarget ? "is-focus-target" : "",
+        milkdownAnnotationClassName(annotationIndex),
+      ]
+        .filter(Boolean)
+        .join(" "),
       "data-annotation-kind": annotation.kind ?? "note",
+      "data-focus-target": annotation.isFocusTarget ? "true" : "false",
       "data-note-id": annotation.id,
       "data-note-tone": String(annotation.tone ?? 0),
     };
@@ -817,9 +854,8 @@ function createAnnotationPlugin({
           const noteId = noteIdFromAnnotationTarget(event.target, getAnnotations());
           if (!noteId) return false;
 
-          event.preventDefault();
           onAnnotationDoubleClick(noteId);
-          return true;
+          return false;
         },
       },
     },
@@ -840,6 +876,8 @@ function createAnnotationPlugin({
 export function MilkdownMarkdownEditor({
   value,
   annotations,
+  noteModeEnabled,
+  readOnly = false,
   onChange,
   onSelectionChange,
   onSelectionEnter,
@@ -850,6 +888,8 @@ export function MilkdownMarkdownEditor({
   const rootRef = useRef<HTMLDivElement | null>(null);
   const crepeRef = useRef<Crepe | null>(null);
   const annotationsRef = useRef(annotations);
+  const noteModeEnabledRef = useRef(noteModeEnabled);
+  const readOnlyRef = useRef(readOnly);
   const currentMarkdownRef = useRef(normalizeMarkdownForScholium(value));
   const onChangeRef = useRef(onChange);
   const onSelectionChangeRef = useRef(onSelectionChange);
@@ -857,6 +897,10 @@ export function MilkdownMarkdownEditor({
   const onAnnotationClickRef = useRef(onAnnotationClick);
   const onAnnotationDoubleClickRef = useRef(onAnnotationDoubleClick);
   const animationFrameRef = useRef(0);
+  const selectionFrameRef = useRef(0);
+  const selectionFallbackTimerRef = useRef(0);
+  const annotationClickTimerRef = useRef(0);
+  const mouseSelectionStartedRef = useRef(false);
   const [editorRevision, setEditorRevision] = useState(0);
   const [annotationFrames, setAnnotationFrames] = useState<MilkdownAnnotationFrame[]>([]);
   const annotationSignature = useMemo(
@@ -866,15 +910,27 @@ export function MilkdownMarkdownEditor({
           (annotation) =>
             `${annotation.id}:${annotation.from}:${annotation.to}:${annotation.selectedText ?? ""}:${
               annotation.tone ?? 0
-            }:${annotation.kind ?? "note"}`,
+            }:${annotation.kind ?? "note"}:${annotation.isFocusTarget ? 1 : 0}`,
         )
         .join("|"),
     [annotations],
   );
 
+  useEffect(
+    () => () => {
+      window.clearTimeout(annotationClickTimerRef.current);
+    },
+    [],
+  );
+
   function updateAnnotationFrames() {
     const container = containerRef.current;
     if (!container) return;
+
+    if (!noteModeEnabledRef.current) {
+      setAnnotationFrames((currentFrames) => (currentFrames.length === 0 ? currentFrames : []));
+      return;
+    }
 
     const nextFrames = measureMilkdownAnnotationFrames(container, annotationsRef.current);
     setAnnotationFrames((currentFrames) =>
@@ -887,6 +943,35 @@ export function MilkdownMarkdownEditor({
   function scheduleAnnotationFrameUpdate() {
     window.cancelAnimationFrame(animationFrameRef.current);
     animationFrameRef.current = window.requestAnimationFrame(updateAnnotationFrames);
+  }
+
+  function selectedMilkdownText() {
+    const root = rootRef.current;
+    const selection = window.getSelection();
+    if (root && selectionBelongsToRoot(root, selection)) {
+      return selection?.toString().trim() ?? "";
+    }
+
+    const view = currentEditorView();
+    if (!view || view.state.selection.empty) return "";
+
+    const { from, to } = view.state.selection;
+    return view.state.doc.textBetween(from, to, " ").trim();
+  }
+
+  function clearQueuedAnnotationClick() {
+    window.clearTimeout(annotationClickTimerRef.current);
+    annotationClickTimerRef.current = 0;
+  }
+
+  function queueAnnotationClick(noteId: string) {
+    clearQueuedAnnotationClick();
+    annotationClickTimerRef.current = window.setTimeout(() => {
+      annotationClickTimerRef.current = 0;
+      if (selectedMilkdownText()) return;
+
+      onAnnotationClickRef.current(noteId);
+    }, annotationClickDelayMs);
   }
 
   useEffect(() => {
@@ -908,6 +993,30 @@ export function MilkdownMarkdownEditor({
   useEffect(() => {
     onAnnotationDoubleClickRef.current = onAnnotationDoubleClick;
   }, [onAnnotationDoubleClick]);
+
+  useEffect(() => {
+    noteModeEnabledRef.current = noteModeEnabled;
+    if (!noteModeEnabled) {
+      onSelectionChangeRef.current(null);
+      setAnnotationFrames([]);
+    } else {
+      scheduleAnnotationFrameUpdate();
+    }
+  }, [noteModeEnabled]);
+
+  useEffect(() => {
+    readOnlyRef.current = readOnly;
+    crepeRef.current?.setReadonly(readOnly);
+
+    if (!readOnly) return;
+
+    const root = rootRef.current;
+    if (root && document.activeElement instanceof Node && root.contains(document.activeElement)) {
+      (document.activeElement as HTMLElement).blur();
+    }
+    window.getSelection()?.removeAllRanges();
+    onSelectionChangeRef.current(null);
+  }, [readOnly]);
 
   useEffect(() => {
     annotationsRef.current = annotations;
@@ -993,15 +1102,96 @@ export function MilkdownMarkdownEditor({
       return anchorFromEditorSelection();
     }
 
+    const view = currentEditorView();
+    let approximateVisibleStart = 0;
+    if (view) {
+      try {
+        const anchorPosition = view.posAtDOM(selection.anchorNode, selection.anchorOffset);
+        const focusPosition = view.posAtDOM(selection.focusNode, selection.focusOffset);
+        approximateVisibleStart = visibleTextIndexFromProsePosition(
+          view.state.doc,
+          Math.min(anchorPosition, focusPosition),
+        );
+      } catch {
+        approximateVisibleStart = 0;
+      }
+    }
+
     return (
-      buildAnchor(currentMarkdownRef.current, selection.toString()) ??
+      buildAnchor(currentMarkdownRef.current, selection.toString(), approximateVisibleStart) ??
       anchorFromEditorSelection()
     );
   }
 
-  function updateSelectionFromDom() {
-    onSelectionChangeRef.current(anchorFromCurrentSelection());
+  function publishSelectionAfterSelectionComplete() {
+    if (readOnlyRef.current) return;
+
+    window.clearTimeout(selectionFallbackTimerRef.current);
+    window.cancelAnimationFrame(selectionFrameRef.current);
+    selectionFrameRef.current = window.requestAnimationFrame(() => {
+      mouseSelectionStartedRef.current = false;
+      onSelectionChangeRef.current(anchorFromCurrentSelection());
+      selectionFrameRef.current = 0;
+    });
   }
+
+  function scheduleSelectionPublishFromDom() {
+    window.clearTimeout(selectionFallbackTimerRef.current);
+    selectionFallbackTimerRef.current = window.setTimeout(() => {
+      if (mouseSelectionStartedRef.current) return;
+
+      publishSelectionAfterSelectionComplete();
+    }, milkdownSelectionFallbackMs);
+  }
+
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root) return;
+
+    function handleSelectionPointerDown(event: MouseEvent | PointerEvent) {
+      if (event.button !== 0) return;
+
+      mouseSelectionStartedRef.current = true;
+    }
+
+    function handleSelectionPointerUp(event: MouseEvent | PointerEvent) {
+      if (event.button !== 0) return;
+
+      const currentRoot = rootRef.current;
+      if (!currentRoot) return;
+
+      const targetIsInEditor = event.target instanceof Node && currentRoot.contains(event.target);
+      const selectionIsInEditor = selectionBelongsToRoot(currentRoot, window.getSelection());
+      const activeElement = document.activeElement;
+      const editorHasFocus = activeElement instanceof Node && currentRoot.contains(activeElement);
+
+      if (
+        !mouseSelectionStartedRef.current &&
+        !targetIsInEditor &&
+        !selectionIsInEditor &&
+        !editorHasFocus
+      ) {
+        return;
+      }
+
+      mouseSelectionStartedRef.current = false;
+      publishSelectionAfterSelectionComplete();
+    }
+
+    root.addEventListener("mousedown", handleSelectionPointerDown, true);
+    root.addEventListener("pointerdown", handleSelectionPointerDown, true);
+    window.addEventListener("mouseup", handleSelectionPointerUp, true);
+    window.addEventListener("pointerup", handleSelectionPointerUp, true);
+
+    return () => {
+      window.cancelAnimationFrame(selectionFrameRef.current);
+      window.clearTimeout(selectionFallbackTimerRef.current);
+      root.removeEventListener("mousedown", handleSelectionPointerDown, true);
+      root.removeEventListener("pointerdown", handleSelectionPointerDown, true);
+      window.removeEventListener("mouseup", handleSelectionPointerUp, true);
+      window.removeEventListener("pointerup", handleSelectionPointerUp, true);
+    };
+  }, [editorRevision]);
 
   useEffect(() => {
     const root = rootRef.current;
@@ -1036,11 +1226,16 @@ export function MilkdownMarkdownEditor({
 
       ctx.update(prosePluginsCtx, (plugins) => [
         ...plugins,
+        new Plugin({
+          filterTransaction(transaction) {
+            return !(readOnlyRef.current && transaction.docChanged);
+          },
+        }),
         createAnnotationPlugin({
           getAnnotations: () => annotationsRef.current,
           getMarkdown: () => currentMarkdownRef.current,
-          onAnnotationClick: (noteId) => onAnnotationClickRef.current(noteId),
-          onAnnotationDoubleClick: (noteId) => onAnnotationDoubleClickRef.current(noteId),
+          onAnnotationClick: queueAnnotationClick,
+          onAnnotationDoubleClick: clearQueuedAnnotationClick,
         }),
       ]);
     });
@@ -1049,6 +1244,7 @@ export function MilkdownMarkdownEditor({
       listener.markdownUpdated((_ctx, markdown) => {
         const normalizedMarkdown = normalizeMarkdownForScholium(markdown);
         if (disposed || normalizedMarkdown === currentMarkdownRef.current) return;
+        if (readOnlyRef.current) return;
 
         currentMarkdownRef.current = normalizedMarkdown;
         onChangeRef.current(normalizedMarkdown, "user");
@@ -1056,15 +1252,17 @@ export function MilkdownMarkdownEditor({
       });
 
       listener.selectionUpdated(() => {
-        window.requestAnimationFrame(updateSelectionFromDom);
+        scheduleSelectionPublishFromDom();
         scheduleAnnotationFrameUpdate();
       });
     });
 
     crepeRef.current = crepe;
+    crepe.setReadonly(readOnlyRef.current);
     void crepe
       .create()
       .then(() => {
+        crepe.setReadonly(readOnlyRef.current);
         scheduleAnnotationFrameUpdate();
       })
       .catch((error: unknown) => {
@@ -1083,6 +1281,9 @@ export function MilkdownMarkdownEditor({
   function handleSelectionEnterKeyDown(
     event: KeyboardEvent | ReactKeyboardEvent<HTMLDivElement>,
   ) {
+    if (readOnlyRef.current) return;
+    if (!noteModeEnabledRef.current) return;
+
     const isPlainEnter =
       event.key === "Enter" &&
       !event.metaKey &&
@@ -1100,6 +1301,12 @@ export function MilkdownMarkdownEditor({
   }
 
   function handleKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
+    if (readOnlyRef.current) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+
     handleSelectionEnterKeyDown(event);
   }
 
@@ -1116,6 +1323,7 @@ export function MilkdownMarkdownEditor({
     }
 
     function handleDocumentKeyDown(event: KeyboardEvent) {
+      if (readOnlyRef.current) return;
       if (event.defaultPrevented) return;
       const isPlainEnter =
         event.key === "Enter" &&
@@ -1148,8 +1356,11 @@ export function MilkdownMarkdownEditor({
       <div aria-hidden="true" className="milkdown-annotation-layer">
         {annotationFrames.map((frame) => (
           <div
-            className="milkdown-annotation-frame"
+            className={`milkdown-annotation-frame ${
+              frame.isFocusTarget ? "is-focus-target" : ""
+            }`}
             data-annotation-kind={frame.kind}
+            data-focus-target={frame.isFocusTarget ? "true" : "false"}
             data-note-id={frame.noteId}
             data-note-tone={frame.tone}
             key={frame.frameKey}
@@ -1165,8 +1376,8 @@ export function MilkdownMarkdownEditor({
       <div
         className="milkdown-markdown-editor"
         onKeyDownCapture={handleKeyDown}
-        onKeyUp={updateSelectionFromDom}
-        onMouseUp={updateSelectionFromDom}
+        onKeyUp={publishSelectionAfterSelectionComplete}
+        onMouseUp={publishSelectionAfterSelectionComplete}
         ref={rootRef}
       />
     </div>

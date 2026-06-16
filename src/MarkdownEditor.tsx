@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { markdown } from "@codemirror/lang-markdown";
-import { EditorState, Range, StateEffect, StateField } from "@codemirror/state";
+import { Compartment, EditorState, Range, StateEffect, StateField } from "@codemirror/state";
 import {
   Decoration,
   DecorationSet,
@@ -22,6 +22,7 @@ export type AnnotationTone = 0 | 1;
 
 export type TextAnnotation = {
   id: string;
+  isFocusTarget?: boolean;
   kind?: "note" | "glossary";
   from: number;
   prefix?: string;
@@ -36,6 +37,8 @@ export type EditorChangeSource = "user" | "undo";
 type MarkdownEditorProps = {
   value: string;
   annotations: TextAnnotation[];
+  noteModeEnabled: boolean;
+  readOnly?: boolean;
   onChange: (value: string, source: EditorChangeSource) => void;
   onSelectionChange: (anchor: TextSelectionAnchor | null) => void;
   onSelectionEnter: (anchor: TextSelectionAnchor) => boolean;
@@ -45,6 +48,7 @@ type MarkdownEditorProps = {
 
 type EditorAnnotationFrame = {
   frameKey: string;
+  isFocusTarget?: boolean;
   noteId: string;
   kind: "note" | "glossary";
   tone: AnnotationTone;
@@ -70,6 +74,17 @@ const setAnnotationsEffect = StateEffect.define<TextAnnotation[]>();
 const editorAnnotationFramePadding = 4;
 const editorAnnotationLineJoinMaxGap = 20;
 const annotationSelectionSuppressionMs = 1200;
+const annotationClickDelayMs = 500;
+
+function editorReadOnlyExtensions(readOnly: boolean) {
+  return [
+    EditorState.readOnly.of(readOnly),
+    EditorView.editable.of(!readOnly),
+    EditorState.transactionFilter.of((transaction) =>
+      readOnly && transaction.docChanged ? [] : transaction,
+    ),
+  ];
+}
 
 function buildAnchor(value: string, from: number, to: number): TextSelectionAnchor | null {
   if (from === to) return null;
@@ -84,6 +99,29 @@ function buildAnchor(value: string, from: number, to: number): TextSelectionAnch
     prefix: value.slice(Math.max(0, from - 48), from),
     suffix: value.slice(to, Math.min(value.length, to + 48)),
   };
+}
+
+function textIndices(text: string, query: string) {
+  const indices: number[] = [];
+  if (!query) return indices;
+
+  let index = text.indexOf(query);
+  while (index >= 0) {
+    indices.push(index);
+    index = text.indexOf(query, index + query.length);
+  }
+
+  return indices;
+}
+
+function closestTextIndex(indices: number[], approximateIndex: number) {
+  if (indices.length === 0) return -1;
+
+  return indices.reduce((closestIndex, index) =>
+    Math.abs(index - approximateIndex) < Math.abs(closestIndex - approximateIndex)
+      ? index
+      : closestIndex,
+  );
 }
 
 function browserSelectionBelongsToView(
@@ -125,7 +163,10 @@ function buildAnchorFromSelection(view: EditorView): TextSelectionAnchor | null 
     }
 
     const selectedText = browserSelection.toString();
-    const selectedTextIndex = doc.indexOf(selectedText);
+    const selectedTextIndex = closestTextIndex(
+      textIndices(doc, selectedText),
+      view.state.selection.main.from,
+    );
     if (selectedTextIndex >= 0) {
       return buildAnchor(doc, selectedTextIndex, selectedTextIndex + selectedText.length);
     }
@@ -210,12 +251,17 @@ function buildDecorations(annotations: TextAnnotation[]) {
       Decoration.mark({
         attributes: {
           "data-annotation-kind": annotation.kind ?? "note",
+          "data-focus-target": annotation.isFocusTarget ? "true" : "false",
           "data-note-id": annotation.id,
           "data-note-tone": String(annotation.tone ?? 0),
         },
-        class: `cm-note-annotation ${
-          annotation.kind === "glossary" ? "cm-glossary-annotation" : ""
-        }`,
+        class: [
+          "cm-note-annotation",
+          annotation.kind === "glossary" ? "cm-glossary-annotation" : "",
+          annotation.isFocusTarget ? "is-focus-target" : "",
+        ]
+          .filter(Boolean)
+          .join(" "),
       }).range(annotation.from, annotation.to),
     );
 
@@ -231,6 +277,7 @@ function measureEditorAnnotationFrames(container: HTMLDivElement): EditorAnnotat
   const rectsByNoteId = new Map<string, EditorAnnotationRect[]>();
   const tonesByNoteId = new Map<string, AnnotationTone>();
   const kindsByNoteId = new Map<string, "note" | "glossary">();
+  const focusByNoteId = new Map<string, boolean>();
 
   container
     .querySelectorAll<HTMLElement>(".cm-note-annotation[data-note-id]")
@@ -238,6 +285,7 @@ function measureEditorAnnotationFrames(container: HTMLDivElement): EditorAnnotat
       const noteId = annotation.dataset.noteId;
       if (!noteId) return;
       tonesByNoteId.set(noteId, annotation.dataset.noteTone === "1" ? 1 : 0);
+      focusByNoteId.set(noteId, annotation.dataset.focusTarget === "true");
       kindsByNoteId.set(
         noteId,
         annotation.dataset.annotationKind === "glossary" ? "glossary" : "note",
@@ -262,6 +310,7 @@ function measureEditorAnnotationFrames(container: HTMLDivElement): EditorAnnotat
     .flatMap(([noteId, rects]) => {
       const kind = kindsByNoteId.get(noteId) ?? "note";
       const tone = tonesByNoteId.get(noteId) ?? 0;
+      const isFocusTarget = focusByNoteId.get(noteId) ?? false;
       const sortedRects = rects.sort(
         (left, right) => left.top - right.top || left.left - right.left,
       );
@@ -288,6 +337,7 @@ function measureEditorAnnotationFrames(container: HTMLDivElement): EditorAnnotat
 
         return {
           frameKey: `${kind}:${noteId}:source:${rectIndex}`,
+          isFocusTarget,
           noteId,
           kind,
           tone,
@@ -321,6 +371,7 @@ function areEditorAnnotationFramesEqual(
 
     return (
       leftFrame.frameKey === rightFrame.frameKey &&
+      leftFrame.isFocusTarget === rightFrame.isFocusTarget &&
       leftFrame.noteId === rightFrame.noteId &&
       leftFrame.kind === rightFrame.kind &&
       leftFrame.tone === rightFrame.tone &&
@@ -353,6 +404,8 @@ const annotationField = StateField.define<DecorationSet>({
 export function MarkdownEditor({
   value,
   annotations,
+  noteModeEnabled,
+  readOnly = false,
   onChange,
   onSelectionChange,
   onSelectionEnter,
@@ -366,9 +419,13 @@ export function MarkdownEditor({
   const onSelectionEnterRef = useRef(onSelectionEnter);
   const onAnnotationClickRef = useRef(onAnnotationClick);
   const onAnnotationDoubleClickRef = useRef(onAnnotationDoubleClick);
+  const noteModeEnabledRef = useRef(noteModeEnabled);
+  const readOnlyRef = useRef(readOnly);
+  const readOnlyCompartment = useMemo(() => new Compartment(), []);
   const animationFrameRef = useRef(0);
   const selectionFrameRef = useRef(0);
   const selectionFallbackTimerRef = useRef(0);
+  const annotationClickTimerRef = useRef(0);
   const mouseSelectionStartedRef = useRef(false);
   const annotationInteractionUntilRef = useRef(0);
   const suppressNextChangeRef = useRef(false);
@@ -379,10 +436,19 @@ export function MarkdownEditor({
       annotations
         .map(
           (annotation) =>
-            `${annotation.id}:${annotation.from}:${annotation.to}:${annotation.tone ?? 0}`,
+            `${annotation.id}:${annotation.from}:${annotation.to}:${annotation.tone ?? 0}:${
+              annotation.isFocusTarget ? 1 : 0
+            }`,
         )
         .join("|"),
     [annotations],
+  );
+
+  useEffect(
+    () => () => {
+      window.clearTimeout(annotationClickTimerRef.current);
+    },
+    [],
   );
 
   useEffect(() => {
@@ -405,9 +471,41 @@ export function MarkdownEditor({
     onAnnotationDoubleClickRef.current = onAnnotationDoubleClick;
   }, [onAnnotationDoubleClick]);
 
+  useEffect(() => {
+    noteModeEnabledRef.current = noteModeEnabled;
+    if (!noteModeEnabled) {
+      onSelectionChangeRef.current(null);
+      setAnnotationFrames([]);
+    } else {
+      scheduleAnnotationFrameUpdate();
+    }
+  }, [noteModeEnabled]);
+
+  useEffect(() => {
+    readOnlyRef.current = readOnly;
+
+    const view = viewRef.current;
+    if (!view) return;
+
+    view.dispatch({
+      effects: readOnlyCompartment.reconfigure(editorReadOnlyExtensions(readOnly)),
+    });
+
+    if (readOnly && document.activeElement instanceof Node && view.dom.contains(document.activeElement)) {
+      view.contentDOM.blur();
+      window.getSelection()?.removeAllRanges();
+      onSelectionChangeRef.current(null);
+    }
+  }, [readOnly, readOnlyCompartment]);
+
   function updateAnnotationFrames() {
     const container = containerRef.current;
     if (!container) return;
+
+    if (!noteModeEnabledRef.current) {
+      setAnnotationFrames((currentFrames) => (currentFrames.length === 0 ? currentFrames : []));
+      return;
+    }
 
     const nextFrames = measureEditorAnnotationFrames(container);
     setAnnotationFrames((currentFrames) =>
@@ -512,6 +610,33 @@ export function MarkdownEditor({
     mouseSelectionStartedRef.current = false;
   }
 
+  function clearQueuedAnnotationClick() {
+    window.clearTimeout(annotationClickTimerRef.current);
+    annotationClickTimerRef.current = 0;
+  }
+
+  function selectedEditorText(view: EditorView | null = viewRef.current) {
+    const selection = window.getSelection();
+    if (view && browserSelectionBelongsToView(view, selection)) {
+      return selection.toString().trim();
+    }
+
+    if (!view || view.state.selection.main.empty) return "";
+
+    const range = view.state.selection.main;
+    return view.state.doc.sliceString(range.from, range.to).trim();
+  }
+
+  function queueAnnotationClick(noteId: string) {
+    clearQueuedAnnotationClick();
+    annotationClickTimerRef.current = window.setTimeout(() => {
+      annotationClickTimerRef.current = 0;
+      if (selectedEditorText()) return;
+
+      onAnnotationClickRef.current(noteId);
+    }, annotationClickDelayMs);
+  }
+
   function editorHasTextSelection(view: EditorView) {
     const browserSelection = window.getSelection();
     return (
@@ -550,6 +675,8 @@ export function MarkdownEditor({
       if (update.docChanged) {
         if (suppressNextChangeRef.current) {
           suppressNextChangeRef.current = false;
+        } else if (readOnlyRef.current) {
+          onSelectionChangeRef.current(null);
         } else {
           const source = update.transactions.some((transaction) =>
             transaction.isUserEvent("undo"),
@@ -584,22 +711,19 @@ export function MarkdownEditor({
       mouseup(event, view) {
         if (event.button !== 0) return false;
 
-        const noteId = noteIdFromAnnotationPointerEvent(event);
+        const noteId = noteModeEnabledRef.current
+          ? noteIdFromAnnotationPointerEvent(event)
+          : null;
         if (noteId) {
           if (editorHasTextSelection(view)) {
             mouseSelectionStartedRef.current = false;
+            clearQueuedAnnotationClick();
             publishSelectionAfterMouseUp(view);
             return false;
           }
 
-          event.preventDefault();
-          suppressSelectionForAnnotationInteraction(view, event);
-          if (event.detail >= 2) {
-            onAnnotationDoubleClickRef.current(noteId);
-          } else {
-            onAnnotationClickRef.current(noteId);
-          }
-          return true;
+          mouseSelectionStartedRef.current = false;
+          return false;
         }
 
         mouseSelectionStartedRef.current = false;
@@ -609,18 +733,19 @@ export function MarkdownEditor({
       pointerup(event, view) {
         if (event.button !== 0) return false;
 
-        const noteId = noteIdFromAnnotationPointerEvent(event);
+        const noteId = noteModeEnabledRef.current
+          ? noteIdFromAnnotationPointerEvent(event)
+          : null;
         if (noteId) {
           if (editorHasTextSelection(view)) {
             mouseSelectionStartedRef.current = false;
+            clearQueuedAnnotationClick();
             publishSelectionAfterMouseUp(view);
             return false;
           }
 
-          event.preventDefault();
-          suppressSelectionForAnnotationInteraction(view, event);
-          onAnnotationClickRef.current(noteId);
-          return true;
+          mouseSelectionStartedRef.current = false;
+          return false;
         }
 
         mouseSelectionStartedRef.current = false;
@@ -628,34 +753,35 @@ export function MarkdownEditor({
         return false;
       },
       click(event) {
+        if (!noteModeEnabledRef.current) return false;
         const noteId = noteIdFromAnnotationPointerEvent(event);
         if (!noteId) return false;
         const view = viewRef.current;
         if (view && editorHasTextSelection(view)) {
+          clearQueuedAnnotationClick();
           return false;
         }
 
         event.preventDefault();
-        suppressSelectionForAnnotationInteraction(view ?? undefined, event);
         if (event.detail >= 2) {
-          onAnnotationDoubleClickRef.current(noteId);
+          clearQueuedAnnotationClick();
         } else {
-          onAnnotationClickRef.current(noteId);
+          queueAnnotationClick(noteId);
         }
         return true;
       },
       dblclick(event) {
+        if (!noteModeEnabledRef.current) return false;
         const noteId = noteIdFromAnnotationPointerEvent(event);
         if (!noteId) return false;
         const view = viewRef.current;
         if (view && editorHasTextSelection(view)) {
+          clearQueuedAnnotationClick();
           return false;
         }
 
-        event.preventDefault();
-        suppressSelectionForAnnotationInteraction(view ?? undefined, event);
-        onAnnotationDoubleClickRef.current(noteId);
-        return true;
+        clearQueuedAnnotationClick();
+        return false;
       },
     });
 
@@ -667,6 +793,7 @@ export function MarkdownEditor({
         annotationField,
         updateListener,
         annotationClickHandler,
+        readOnlyCompartment.of(editorReadOnlyExtensions(readOnly)),
         EditorView.lineWrapping,
         keymap.of([
           {
@@ -684,6 +811,7 @@ export function MarkdownEditor({
           {
             key: "Enter",
             run(view) {
+              if (!noteModeEnabledRef.current) return false;
               const anchor = buildAnchorFromSelection(view);
               if (!anchor) return false;
 
@@ -713,6 +841,8 @@ export function MarkdownEditor({
     }
 
     function handleWindowSelectionPointerEnd(event: MouseEvent | PointerEvent) {
+      if (!noteModeEnabledRef.current) return;
+
       const browserSelection = window.getSelection();
       const activeElement = document.activeElement;
       if (noteIdFromAnnotationPointerEvent(event)) {
@@ -812,8 +942,11 @@ export function MarkdownEditor({
       <div aria-hidden="true" className="cm-annotation-layer">
         {annotationFrames.map((frame) => (
           <span
-            className="cm-annotation-frame"
+            className={`cm-annotation-frame ${
+              frame.isFocusTarget ? "is-focus-target" : ""
+            }`}
             data-annotation-kind={frame.kind}
+            data-focus-target={frame.isFocusTarget ? "true" : "false"}
             data-note-id={frame.noteId}
             data-note-tone={frame.tone}
             key={frame.frameKey}
