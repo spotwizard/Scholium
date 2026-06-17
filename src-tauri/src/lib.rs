@@ -15,6 +15,7 @@ use url::Url;
 const MENU_NEW_FILE: &str = "file:new-file";
 const MENU_OPEN_FILE: &str = "file:open-file";
 const MENU_OPEN_FOLDER: &str = "file:open-folder";
+const MENU_CLOUD_DROPBOX: &str = "file:cloud:dropbox";
 const MENU_OPEN_SETTINGS: &str = "app:open-settings";
 const MENU_FAVORITE_DIRECTORIES: &str = "file:favorite-directories";
 const MENU_RECENT_LOCATIONS: &str = "file:recent-locations";
@@ -35,6 +36,9 @@ const DROPBOX_LIST_FOLDER_URL: &str = "https://api.dropboxapi.com/2/files/list_f
 const DROPBOX_LIST_FOLDER_CONTINUE_URL: &str =
     "https://api.dropboxapi.com/2/files/list_folder/continue";
 const DROPBOX_DOWNLOAD_URL: &str = "https://content.dropboxapi.com/2/files/download";
+const DROPBOX_UPLOAD_URL: &str = "https://content.dropboxapi.com/2/files/upload";
+const DROPBOX_COPY_URL: &str = "https://api.dropboxapi.com/2/files/copy_v2";
+const DROPBOX_DELETE_URL: &str = "https://api.dropboxapi.com/2/files/delete_v2";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -299,6 +303,19 @@ enum DropboxMetadata {
 
 #[derive(Debug, Deserialize)]
 struct DropboxDownloadMetadata {
+    name: String,
+    #[serde(default)]
+    path_display: Option<String>,
+    #[serde(default)]
+    path_lower: Option<String>,
+    #[serde(default)]
+    rev: Option<String>,
+    #[serde(default)]
+    server_modified: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DropboxWriteMetadata {
     name: String,
     #[serde(default)]
     path_display: Option<String>,
@@ -799,6 +816,101 @@ fn is_markdown_dropbox_path(path: &str) -> bool {
         .unwrap_or(false)
 }
 
+fn normalized_markdown_file_name(file_name: &str) -> Result<String, String> {
+    let mut target_file_name = validate_markdown_file_name(file_name)?;
+    if !is_markdown_path(&target_file_name) {
+        target_file_name.set_extension("md");
+    }
+
+    target_file_name
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| name.to_string())
+        .ok_or_else(|| "duplicate file name is empty".to_string())
+}
+
+fn dropbox_child_path(parent_path: &str, file_name: &str) -> String {
+    let normalized_parent_path = normalize_dropbox_path(parent_path);
+    if normalized_parent_path.is_empty() {
+        format!("/{file_name}")
+    } else {
+        format!("{}/{}", normalized_parent_path.trim_end_matches('/'), file_name)
+    }
+}
+
+fn dropbox_file_from_write_metadata(
+    metadata: DropboxWriteMetadata,
+    fallback_body: String,
+    fallback_path: String,
+) -> DropboxMarkdownFile {
+    let path = dropbox_metadata_path(metadata.path_display, metadata.path_lower, &metadata.name);
+    let normalized_path = normalize_dropbox_path(&path);
+    let path = if normalized_path.is_empty() {
+        fallback_path
+    } else {
+        normalized_path
+    };
+
+    DropboxMarkdownFile {
+        title: document_title(Path::new(&metadata.name)),
+        path,
+        body: fallback_body,
+        rev: metadata.rev,
+        server_modified: metadata.server_modified,
+    }
+}
+
+async fn upload_dropbox_markdown_file(
+    app: &tauri::AppHandle,
+    path: String,
+    body: String,
+    mode: serde_json::Value,
+) -> Result<DropboxMarkdownFile, String> {
+    let normalized_path = normalize_dropbox_path(&path);
+    if !is_markdown_dropbox_path(&normalized_path) {
+        return Err("selected Dropbox file is not a Markdown file".to_string());
+    }
+
+    let access_token = dropbox_access_token(app).await?;
+    let response = reqwest::Client::new()
+        .post(DROPBOX_UPLOAD_URL)
+        .bearer_auth(access_token)
+        .header("Content-Type", "application/octet-stream")
+        .header(
+            "Dropbox-API-Arg",
+            serde_json::json!({
+                "path": normalized_path,
+                "mode": mode,
+                "autorename": false,
+                "mute": false,
+                "strict_conflict": true
+            })
+            .to_string(),
+        )
+        .body(body.clone())
+        .send()
+        .await
+        .map_err(|error| format!("failed to upload Dropbox Markdown file: {error}"))?;
+
+    if response.status() == StatusCode::UNAUTHORIZED {
+        return Err("Dropbox authorization failed; reconnect Dropbox.".to_string());
+    }
+    if !response.status().is_success() {
+        return Err(dropbox_response_error(response, "failed to upload Dropbox Markdown file").await);
+    }
+
+    let metadata = response
+        .json::<DropboxWriteMetadata>()
+        .await
+        .map_err(|error| format!("failed to parse Dropbox upload response: {error}"))?;
+
+    Ok(dropbox_file_from_write_metadata(
+        metadata,
+        body,
+        normalized_path,
+    ))
+}
+
 async fn read_dropbox_list_page(
     client: &reqwest::Client,
     access_token: &str,
@@ -878,6 +990,8 @@ fn menu_text(language: &str, key: &str) -> &'static str {
         ("en", "newFile") => "New File",
         ("en", "openFile") => "Open File",
         ("en", "openFolder") => "Open Folder",
+        ("en", "cloud") => "Cloud",
+        ("en", "dropbox") => "Dropbox",
         ("en", "settings") => "Settings...",
         ("en", "fileMenu") => "File",
         ("en", "editMenu") => "Edit",
@@ -896,6 +1010,8 @@ fn menu_text(language: &str, key: &str) -> &'static str {
         ("zh-Hans", "newFile") => "新增文件",
         ("zh-Hans", "openFile") => "打开文件",
         ("zh-Hans", "openFolder") => "打开目录",
+        ("zh-Hans", "cloud") => "云端",
+        ("zh-Hans", "dropbox") => "Dropbox",
         ("zh-Hans", "settings") => "设置...",
         ("zh-Hans", "fileMenu") => "文件",
         ("zh-Hans", "editMenu") => "编辑",
@@ -914,6 +1030,8 @@ fn menu_text(language: &str, key: &str) -> &'static str {
         (_, "newFile") => "新增檔案",
         (_, "openFile") => "開啟檔案",
         (_, "openFolder") => "開啟目錄",
+        (_, "cloud") => "雲端",
+        (_, "dropbox") => "Dropbox",
         (_, "settings") => "設定...",
         (_, "fileMenu") => "檔案",
         (_, "editMenu") => "編輯",
@@ -1854,6 +1972,109 @@ async fn open_dropbox_markdown_file(
     })
 }
 
+#[tauri::command]
+async fn save_dropbox_markdown_file(
+    app: tauri::AppHandle,
+    path: String,
+    body: String,
+    rev: Option<String>,
+) -> Result<DropboxMarkdownFile, String> {
+    let mode = rev
+        .as_ref()
+        .map(|rev| {
+            serde_json::json!({
+                ".tag": "update",
+                "update": rev
+            })
+        })
+        .unwrap_or_else(|| serde_json::json!("overwrite"));
+
+    upload_dropbox_markdown_file(&app, path, body, mode).await
+}
+
+#[tauri::command]
+async fn create_dropbox_markdown_file(
+    app: tauri::AppHandle,
+    parent_path: String,
+    file_name: String,
+) -> Result<DropboxMarkdownFile, String> {
+    let target_file_name = normalized_markdown_file_name(&file_name)?;
+    let target_path = dropbox_child_path(&parent_path, &target_file_name);
+
+    upload_dropbox_markdown_file(&app, target_path, String::new(), serde_json::json!("add")).await
+}
+
+#[tauri::command]
+async fn duplicate_dropbox_markdown_file(
+    app: tauri::AppHandle,
+    path: String,
+    file_name: String,
+) -> Result<DropboxMarkdownFile, String> {
+    let source_path = normalize_dropbox_path(&path);
+    if !is_markdown_dropbox_path(&source_path) {
+        return Err("selected Dropbox file is not a Markdown file".to_string());
+    }
+
+    let target_file_name = normalized_markdown_file_name(&file_name)?;
+    let parent_path = dropbox_parent_path(&source_path).unwrap_or_default();
+    let target_path = dropbox_child_path(&parent_path, &target_file_name);
+    let access_token = dropbox_access_token(&app).await?;
+    let response = reqwest::Client::new()
+        .post(DROPBOX_COPY_URL)
+        .bearer_auth(access_token)
+        .json(&serde_json::json!({
+            "from_path": source_path,
+            "to_path": target_path,
+            "autorename": false,
+            "allow_shared_folder": false,
+            "allow_ownership_transfer": false
+        }))
+        .send()
+        .await
+        .map_err(|error| format!("failed to duplicate Dropbox Markdown file: {error}"))?;
+
+    if response.status() == StatusCode::UNAUTHORIZED {
+        return Err("Dropbox authorization failed; reconnect Dropbox.".to_string());
+    }
+    if !response.status().is_success() {
+        return Err(
+            dropbox_response_error(response, "failed to duplicate Dropbox Markdown file").await,
+        );
+    }
+
+    open_dropbox_markdown_file(app, target_path).await
+}
+
+#[tauri::command]
+async fn delete_dropbox_markdown_file(
+    app: tauri::AppHandle,
+    path: String,
+) -> Result<DropboxMarkdownFile, String> {
+    let normalized_path = normalize_dropbox_path(&path);
+    if !is_markdown_dropbox_path(&normalized_path) {
+        return Err("selected Dropbox file is not a Markdown file".to_string());
+    }
+
+    let deleted_file = open_dropbox_markdown_file(app.clone(), normalized_path.clone()).await?;
+    let access_token = dropbox_access_token(&app).await?;
+    let response = reqwest::Client::new()
+        .post(DROPBOX_DELETE_URL)
+        .bearer_auth(access_token)
+        .json(&serde_json::json!({ "path": normalized_path }))
+        .send()
+        .await
+        .map_err(|error| format!("failed to delete Dropbox Markdown file: {error}"))?;
+
+    if response.status() == StatusCode::UNAUTHORIZED {
+        return Err("Dropbox authorization failed; reconnect Dropbox.".to_string());
+    }
+    if !response.status().is_success() {
+        return Err(dropbox_response_error(response, "failed to delete Dropbox Markdown file").await);
+    }
+
+    Ok(deleted_file)
+}
+
 fn build_favorite_directories_submenu(
     app_handle: &tauri::AppHandle,
     store: &LocationStore,
@@ -2000,6 +2221,19 @@ fn build_app_menu(app_handle: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wr
         true,
         Some("CmdOrCtrl+,"),
     )?;
+    let cloud_dropbox = MenuItem::with_id(
+        app_handle,
+        MENU_CLOUD_DROPBOX,
+        menu_text(&language, "dropbox"),
+        true,
+        None::<&str>,
+    )?;
+    let cloud = Submenu::with_items(
+        app_handle,
+        menu_text(&language, "cloud"),
+        true,
+        &[&cloud_dropbox],
+    )?;
     let favorite_directories =
         build_favorite_directories_submenu(app_handle, &location_store, &language)?;
     let recent_locations = build_recent_locations_submenu(app_handle, &location_store, &language)?;
@@ -2031,6 +2265,7 @@ fn build_app_menu(app_handle: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wr
                     &new_file,
                     &open_file,
                     &open_folder,
+                    &cloud,
                     &favorite_directories,
                     &recent_locations,
                     &PredefinedMenuItem::separator(app_handle)?,
@@ -2149,6 +2384,9 @@ pub fn run() {
             } else if event_id == MENU_OPEN_FOLDER {
                 let _ = app.emit("menu:open-folder", ());
                 let _ = app.emit("scholium-open-folder", ());
+            } else if event_id == MENU_CLOUD_DROPBOX {
+                let _ = app.emit("menu:open-dropbox", ());
+                let _ = app.emit("scholium-open-dropbox", ());
             } else if event_id == MENU_ADD_CURRENT_DIRECTORY_TO_FAVORITES {
                 let current_directory = app
                     .state::<LocationMenuState>()
@@ -2204,7 +2442,11 @@ pub fn run() {
             complete_dropbox_oauth,
             disconnect_dropbox,
             list_dropbox_markdown_directory,
-            open_dropbox_markdown_file
+            open_dropbox_markdown_file,
+            save_dropbox_markdown_file,
+            create_dropbox_markdown_file,
+            duplicate_dropbox_markdown_file,
+            delete_dropbox_markdown_file
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
