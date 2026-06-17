@@ -1,4 +1,4 @@
-import { useMemo, useState, type RefObject } from "react";
+import { useEffect, useMemo, useState, type ReactNode, type RefObject } from "react";
 import type { TranslationKey } from "./i18n";
 import {
   settingCategoryLabelKeys,
@@ -13,6 +13,11 @@ import {
 
 type SettingsViewProps = {
   closeButtonRef: RefObject<HTMLButtonElement | null>;
+  customSections?: Array<{
+    category: SettingCategory;
+    content: ReactNode;
+  }>;
+  initialCategory?: SettingCategory;
   t: (key: TranslationKey, replacements?: Record<string, string | number>) => string;
   values: SettingsSnapshot;
   onChange: (key: SettingKey, value: SettingValue) => void;
@@ -23,6 +28,8 @@ type SettingsViewProps = {
 
 export function SettingsView({
   closeButtonRef,
+  customSections = [],
+  initialCategory = "app",
   t,
   values,
   onChange,
@@ -30,6 +37,13 @@ export function SettingsView({
   onResetAllSettings,
   onResetSetting,
 }: SettingsViewProps) {
+  const customSectionsByCategory = useMemo(
+    () =>
+      new Map<SettingCategory, ReactNode>(
+        customSections.map((section) => [section.category, section.content]),
+      ),
+    [customSections],
+  );
   const activeCategories = useMemo(
     () =>
       settingCategoryOrder
@@ -37,15 +51,26 @@ export function SettingsView({
           category,
           definitions: settingsDefinitions.filter((definition) => definition.category === category),
         }))
-        .filter((section) => section.definitions.length > 0),
-    [],
+        .filter(
+          (section) =>
+            section.definitions.length > 0 || customSectionsByCategory.has(section.category),
+        ),
+    [customSectionsByCategory],
   );
   const [selectedCategory, setSelectedCategory] = useState<SettingCategory>(
-    activeCategories[0]?.category ?? "app",
+    initialCategory,
   );
+
+  useEffect(() => {
+    setSelectedCategory(initialCategory);
+  }, [initialCategory]);
+
   const selectedSection =
     activeCategories.find((section) => section.category === selectedCategory) ??
     activeCategories[0];
+  const customSectionContent = selectedSection
+    ? customSectionsByCategory.get(selectedSection.category)
+    : null;
 
   function renderSettingControl(definition: SettingDefinition) {
     const value = values[definition.key];
@@ -171,43 +196,46 @@ export function SettingsView({
                 key={selectedSection.category}
               >
                 <h3>{t(settingCategoryLabelKeys[selectedSection.category])}</h3>
-                <div className="settings-view__setting-list">
-                  {selectedSection.definitions.map((definition) => {
-                    return (
-                      <div className="settings-view__setting-row" key={definition.key}>
-                        <div className="settings-view__setting-copy">
-                          <span className="settings-view__setting-label">
-                            {t(definition.labelKey)}
-                          </span>
-                          {definition.descriptionKey ? (
-                            <span className="settings-view__setting-description">
-                              {t(definition.descriptionKey)}
+                {selectedSection.definitions.length > 0 ? (
+                  <div className="settings-view__setting-list">
+                    {selectedSection.definitions.map((definition) => {
+                      return (
+                        <div className="settings-view__setting-row" key={definition.key}>
+                          <div className="settings-view__setting-copy">
+                            <span className="settings-view__setting-label">
+                              {t(definition.labelKey)}
                             </span>
-                          ) : null}
+                            {definition.descriptionKey ? (
+                              <span className="settings-view__setting-description">
+                                {t(definition.descriptionKey)}
+                              </span>
+                            ) : null}
+                          </div>
+                          <div className="settings-view__setting-control">
+                            {renderSettingControl(definition)}
+                          </div>
+                          <div className="settings-view__setting-actions">
+                            {definition.requiresRestart ? (
+                              <span className="settings-view__restart-badge">
+                                {t("settings.restartRequired")}
+                              </span>
+                            ) : null}
+                            {settingIsModified(definition) ? (
+                              <button
+                                className="settings-view__reset"
+                                onClick={() => onResetSetting(definition.key)}
+                                type="button"
+                              >
+                                {t("settings.reset")}
+                              </button>
+                            ) : null}
+                          </div>
                         </div>
-                        <div className="settings-view__setting-control">
-                          {renderSettingControl(definition)}
-                        </div>
-                        <div className="settings-view__setting-actions">
-                          {definition.requiresRestart ? (
-                            <span className="settings-view__restart-badge">
-                              {t("settings.restartRequired")}
-                            </span>
-                          ) : null}
-                          {settingIsModified(definition) ? (
-                            <button
-                              className="settings-view__reset"
-                              onClick={() => onResetSetting(definition.key)}
-                              type="button"
-                            >
-                              {t("settings.reset")}
-                            </button>
-                          ) : null}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
+                      );
+                    })}
+                  </div>
+                ) : null}
+                {customSectionContent}
               </section>
             ) : null}
             <div className="settings-view__footer">

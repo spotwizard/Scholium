@@ -11,9 +11,11 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent,
   type ReactNode,
+  type WheelEvent,
   useEffect,
   useId,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -38,6 +40,7 @@ import {
   resetSetting,
   resetSettings,
   writeSetting,
+  type SettingCategory,
   type SettingKey,
   type SettingValue,
   type SettingsSnapshot,
@@ -235,6 +238,9 @@ type OpenDropboxMarkdownFileResult = {
 };
 
 type DropboxDirectoryPickerState = {
+  currentPath: string;
+  currentTitle: string;
+  parentPath: string | null;
   directories: DropboxDirectoryEntryResult[];
   selectedPath: string;
   isLoading: boolean;
@@ -883,6 +889,13 @@ function workspaceEntriesFromOpenedDropboxDirectory(
       source: "dropbox",
     };
   });
+}
+
+function dropboxPickerDirectories(openedDirectory: OpenDropboxMarkdownDirectoryResult) {
+  return openedDirectory.entries.filter(
+    (entry): entry is DropboxDirectoryEntryResult & { kind: "directory" } =>
+      entry.kind === "directory",
+  );
 }
 
 function documentFromLoadedFileResult(loaded: OpenMarkdownFileResult): MarkdownDocument {
@@ -4200,6 +4213,8 @@ function App() {
   );
   const [storageError, setStorageError] = useState("");
   const [settingsViewOpen, setSettingsViewOpen] = useState(false);
+  const [settingsInitialCategory, setSettingsInitialCategory] =
+    useState<SettingCategory>("app");
   const [fileContextMenu, setFileContextMenu] = useState<FileContextMenuState | null>(null);
   const [duplicateFileDialog, setDuplicateFileDialog] =
     useState<DuplicateFileDialogState | null>(null);
@@ -5791,6 +5806,20 @@ function App() {
   }, [nativeStorageAvailable]);
 
   useEffect(() => {
+    if (!dropboxDirectoryPicker) return undefined;
+
+    const previousBodyOverflow = document.body.style.overflow;
+    const previousDocumentOverflow = document.documentElement.style.overflow;
+    document.body.style.overflow = "hidden";
+    document.documentElement.style.overflow = "hidden";
+
+    return () => {
+      document.body.style.overflow = previousBodyOverflow;
+      document.documentElement.style.overflow = previousDocumentOverflow;
+    };
+  }, [Boolean(dropboxDirectoryPicker)]);
+
+  useEffect(() => {
     function handleModeShortcut(event: KeyboardEvent) {
       const isAnnotationNavigationTab =
         event.key === "Tab" &&
@@ -6219,6 +6248,10 @@ function App() {
     };
   }
 
+  function dropboxWorkspaceTitle(openedDirectory: OpenDropboxMarkdownDirectoryResult) {
+    return openedDirectory.path ? `Dropbox / ${openedDirectory.title}` : "Dropbox";
+  }
+
   function applyOpenedDropboxDirectory(openedDirectory: OpenDropboxMarkdownDirectoryResult) {
     discardTransientEmptySelectionNote();
     discardTransientEmptyGlossary();
@@ -6229,7 +6262,7 @@ function App() {
     setNotes([]);
     setGlossaryBindings([]);
     setGlossaryTerms([]);
-    setWorkspaceTitle(openedDirectory.title);
+    setWorkspaceTitle(dropboxWorkspaceTitle(openedDirectory));
     setWorkspaceEntries(nextEntries);
     setWorkspaceRootPath(openedDirectory.path);
     setWorkspaceSource("dropbox");
@@ -6562,6 +6595,14 @@ function App() {
     }
   }
 
+  function dropboxErrorNeedsAuthorization(message: string) {
+    return (
+      message.includes("Dropbox authorization failed") ||
+      message.includes("Dropbox session expired") ||
+      message.includes("Dropbox permission is missing")
+    );
+  }
+
   async function openDropboxCloudSource(options: { allowPendingConnection?: boolean } = {}) {
     if (!nativeStorageAvailable) {
       setStorageError(t("error.nativeRuntimeRequired"));
@@ -6574,6 +6615,9 @@ function App() {
       setDuplicateFileDialog(null);
     }
     setDropboxDirectoryPicker({
+      currentPath: "",
+      currentTitle: "Dropbox",
+      parentPath: null,
       directories: [],
       selectedPath: "",
       isLoading: true,
@@ -6588,34 +6632,34 @@ function App() {
 
       if (!status.connected && !options.allowPendingConnection) {
         setDropboxDirectoryPicker(null);
-        dropboxOpenAfterAuthRef.current = true;
-        await connectDropbox({ openDirectoryPickerAfterAuth: true });
+        dropboxOpenAfterAuthRef.current = false;
+        openSettingsView("cloud");
+        setStorageError(
+          configuredDropboxAppKey
+            ? t("dropbox.error.connectInSettings")
+            : t("dropbox.error.notConfigured"),
+        );
         return;
       }
       if (!status.connected && options.allowPendingConnection) {
         throw new Error(t("dropbox.error.notConnected"));
       }
 
-      const rootDirectory = await invoke<OpenDropboxMarkdownDirectoryResult>(
-        "list_dropbox_markdown_directory",
-        { path: "" },
-      );
-      const directories = rootDirectory.entries.filter(
-        (entry): entry is DropboxDirectoryEntryResult & { kind: "directory" } =>
-          entry.kind === "directory",
-      );
-
-      setDropboxDirectoryPicker({
-        directories,
-        selectedPath: directories[0]?.path ?? "",
-        isLoading: false,
-        isOpening: false,
-        error: directories.length > 0 ? "" : t("dropbox.picker.empty"),
-      });
-      setStorageError("");
+      await loadDropboxDirectoryPickerPath("");
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      if (dropboxErrorNeedsAuthorization(message)) {
+        setDropboxDirectoryPicker(null);
+        setDropboxConnected(false);
+        openSettingsView("cloud");
+        setStorageError(message);
+        return;
+      }
+
       setDropboxDirectoryPicker({
+        currentPath: "",
+        currentTitle: "Dropbox",
+        parentPath: null,
         directories: [],
         selectedPath: "",
         isLoading: false,
@@ -6626,11 +6670,99 @@ function App() {
     }
   }
 
+  async function loadDropboxDirectoryPickerPath(path: string) {
+    setDropboxDirectoryPicker((currentPicker) =>
+      currentPicker
+        ? {
+            ...currentPicker,
+            currentPath: path,
+            selectedPath: path,
+            isLoading: true,
+            isOpening: false,
+            error: "",
+          }
+        : currentPicker,
+    );
+    setStorageError(t("dropbox.status.loadingRoot"));
+
+    try {
+      const openedDirectory = await invoke<OpenDropboxMarkdownDirectoryResult>(
+        "list_dropbox_markdown_directory",
+        { path },
+      );
+      const directories = dropboxPickerDirectories(openedDirectory);
+      const selectedPath = openedDirectory.path || directories[0]?.path || "";
+
+      setDropboxDirectoryPicker({
+        currentPath: openedDirectory.path,
+        currentTitle: openedDirectory.title,
+        parentPath: openedDirectory.parentPath,
+        directories,
+        selectedPath,
+        isLoading: false,
+        isOpening: false,
+        error:
+          directories.length > 0
+            ? ""
+            : openedDirectory.path
+              ? t("dropbox.picker.emptyNested")
+              : t("dropbox.picker.empty"),
+      });
+      setStorageError("");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (dropboxErrorNeedsAuthorization(message)) {
+        setDropboxDirectoryPicker(null);
+        setDropboxConnected(false);
+        openSettingsView("cloud");
+        setStorageError(message);
+        return;
+      }
+
+      setDropboxDirectoryPicker((currentPicker) =>
+        currentPicker
+          ? {
+              ...currentPicker,
+              isLoading: false,
+              isOpening: false,
+              error: message,
+            }
+          : currentPicker,
+      );
+      setStorageError(message);
+    }
+  }
+
   function closeDropboxDirectoryPicker() {
     if (dropboxDirectoryPicker?.isOpening) return;
 
     setDropboxDirectoryPicker(null);
     setStorageError("");
+  }
+
+  function handleDropboxDirectoryBackdropWheel(event: WheelEvent<HTMLDivElement>) {
+    event.preventDefault();
+    event.stopPropagation();
+  }
+
+  function handleDropboxDirectoryListWheel(event: WheelEvent<HTMLDivElement>) {
+    event.stopPropagation();
+  }
+
+  function enterDropboxPickerDirectory(path: string) {
+    const picker = dropboxDirectoryPicker;
+    if (!picker || picker.isLoading || picker.isOpening) return;
+
+    void loadDropboxDirectoryPickerPath(path);
+  }
+
+  function enterDropboxPickerParentDirectory() {
+    const picker = dropboxDirectoryPicker;
+    if (!picker || picker.isLoading || picker.isOpening || picker.parentPath === null) {
+      return;
+    }
+
+    void loadDropboxDirectoryPickerPath(picker.parentPath);
   }
 
   async function openSelectedDropboxDirectory(pathOverride?: string) {
@@ -7264,11 +7396,12 @@ function App() {
     }
   }
 
-  function openSettingsView() {
+  function openSettingsView(category: SettingCategory = "app") {
     setFileContextMenu(null);
     if (!duplicateFileDialog?.isSubmitting) {
       setDuplicateFileDialog(null);
     }
+    setSettingsInitialCategory(category);
     setStorageError("");
     setSettingsViewOpen(true);
   }
@@ -7338,6 +7471,37 @@ function App() {
     }
   }
 
+  function resetDropboxWorkspaceAfterAuthorizationRemoval() {
+    if (workspaceSource !== "dropbox") return;
+
+    setDocuments(documentsSeed);
+    setNotes(notesSeed);
+    setGlossaryTerms(glossaryTermsSeed);
+    setGlossaryBindings(glossaryBindingsSeed);
+    setWorkspaceTitle("Scholium");
+    setWorkspaceEntries(documentsSeed.map(workspaceEntryFromDocument));
+    setWorkspaceRootPath(null);
+    setWorkspaceSource(null);
+    resetFileSearch();
+    setExpandedDirectoryKeys(new Set());
+    setLoadingDirectoryKeys(new Set());
+    setSelectedDocumentId(documentsSeed[0]?.id ?? "");
+    setSelectionWarningPosition(null);
+    setPendingAnchor(null);
+    setPendingGlossaryTerm(null);
+    setNoteDraft("");
+    setGlossaryDraft("");
+    setActiveNoteId("");
+    setActiveGlossaryBindingId("");
+    setActiveGlossaryTermId("");
+    setActiveNoteMode("view");
+    setActiveGlossaryMode("view");
+    setDirtyDocumentStates({});
+    setSavedDocumentBodies(savedBodiesFromDocuments(documentsSeed));
+    forgetLastOpenedMarkdownPath();
+    forgetLastOpenedMarkdownRootDirectoryPath();
+  }
+
   async function connectDropbox(
     options: { openDirectoryPickerAfterAuth?: boolean } = {},
   ) {
@@ -7388,14 +7552,53 @@ function App() {
       });
       setDropboxConnected(status.connected);
       setDropboxConnecting(false);
-      if (dropboxOpenAfterAuthRef.current) {
-        dropboxOpenAfterAuthRef.current = false;
+      const shouldOpenDirectoryPicker = dropboxOpenAfterAuthRef.current;
+      dropboxOpenAfterAuthRef.current = false;
+      if (shouldOpenDirectoryPicker) {
         await openDropboxCloudSource({ allowPendingConnection: status.connected });
+      } else {
+        setStorageError("");
       }
     } catch (error) {
       setDropboxConnecting(false);
       setDropboxConnected(false);
       dropboxOpenAfterAuthRef.current = false;
+      setStorageError(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function removeDropboxAuthorization() {
+    if (!nativeStorageAvailable) {
+      setStorageError(t("error.nativeRuntimeRequired"));
+      return;
+    }
+
+    if (autosaveInFlightRef.current) {
+      setStorageError(t("dropbox.error.waitForAutosaveBeforeDisconnect"));
+      return;
+    }
+
+    const hasDirtyDropboxDocument = documentsRef.current.some(
+      (document) =>
+        documentIsFromDropbox(document) &&
+        hasDirtyState(dirtyDocumentStatesRef.current[document.id]),
+    );
+    if (hasDirtyDropboxDocument) {
+      setStorageError(t("dropbox.error.saveBeforeDisconnect"));
+      return;
+    }
+
+    const confirmed = window.confirm(t("dropbox.confirm.removeAuthorization"));
+    if (!confirmed) return;
+
+    try {
+      const status = await invoke<DropboxOAuthStatusResult>("disconnect_dropbox");
+      setDropboxConnected(status.connected);
+      setDropboxDirectoryPicker(null);
+      dropboxOpenAfterAuthRef.current = false;
+      resetDropboxWorkspaceAfterAuthorizationRemoval();
+      setStorageError(t("dropbox.status.authorizationRemoved"));
+    } catch (error) {
       setStorageError(error instanceof Error ? error.message : String(error));
     }
   }
@@ -8931,6 +9134,68 @@ function App() {
   const shellStyle = {
     "--document-pane-measured-width": `${documentPaneWidth}px`,
   } as CSSProperties;
+  const settingsCustomSections = useMemo(
+    () => [
+      {
+        category: "cloud" as SettingCategory,
+        content: (
+          <div className="settings-view__custom-list">
+            <section className="settings-view__cloud-card" aria-label={t("dropbox.settings.title")}>
+              <div className="settings-view__cloud-copy">
+                <span className="settings-view__setting-label">
+                  {t("dropbox.settings.title")}
+                </span>
+                <span className="settings-view__setting-description">
+                  {t("dropbox.settings.description")}
+                </span>
+              </div>
+              <div className="settings-view__cloud-status-row">
+                <span
+                  className={`settings-view__cloud-status ${
+                    dropboxConnected ? "is-connected" : ""
+                  } ${!configuredDropboxAppKey ? "is-not-configured" : ""}`}
+                >
+                  {dropboxConnected
+                    ? t("dropbox.connected")
+                    : configuredDropboxAppKey
+                      ? t("dropbox.disconnected")
+                      : t("dropbox.notConfigured")}
+                </span>
+              </div>
+              <div className="settings-view__cloud-actions">
+                <button
+                  className="is-primary"
+                  disabled={dropboxConnecting || !configuredDropboxAppKey || !nativeStorageAvailable}
+                  onClick={() => void connectDropbox()}
+                  type="button"
+                >
+                  {dropboxConnecting
+                    ? t("dropbox.connecting")
+                    : dropboxConnected
+                      ? t("dropbox.settings.reauthorize")
+                      : t("dropbox.settings.connect")}
+                </button>
+                {dropboxConnected ? (
+                  <button
+                    className="is-danger"
+                    disabled={dropboxConnecting || !nativeStorageAvailable}
+                    onClick={() => void removeDropboxAuthorization()}
+                    type="button"
+                  >
+                    {t("dropbox.settings.removeAuthorization")}
+                  </button>
+                ) : null}
+              </div>
+              <p className="settings-view__cloud-note">
+                {t("dropbox.settings.openFromFileMenu")}
+              </p>
+            </section>
+          </div>
+        ),
+      },
+    ],
+    [dropboxConnected, dropboxConnecting, nativeStorageAvailable, t],
+  );
 
   return (
     <main
@@ -9197,6 +9462,7 @@ function App() {
           className="dropbox-directory-dialog-backdrop"
           onMouseDown={closeDropboxDirectoryPicker}
           onPointerDown={(event) => event.stopPropagation()}
+          onWheel={handleDropboxDirectoryBackdropWheel}
         >
           <section
             aria-labelledby="dropbox-directory-dialog-title"
@@ -9218,6 +9484,22 @@ function App() {
               </button>
             </div>
             <div className="dropbox-directory-dialog__body">
+              <div className="dropbox-directory-dialog__navigation">
+                <button
+                  disabled={
+                    dropboxDirectoryPicker.isLoading ||
+                    dropboxDirectoryPicker.isOpening ||
+                    dropboxDirectoryPicker.parentPath === null
+                  }
+                  onClick={enterDropboxPickerParentDirectory}
+                  type="button"
+                >
+                  ← {t("dropbox.picker.parent")}
+                </button>
+                <span title={dropboxDirectoryPicker.currentPath || "Dropbox"}>
+                  {dropboxDirectoryPicker.currentTitle}
+                </span>
+              </div>
               {dropboxDirectoryPicker.isLoading ? (
                 <p className="dropbox-directory-dialog__status" role="status">
                   {t("dropbox.picker.loading")}
@@ -9228,41 +9510,50 @@ function App() {
                 <div
                   aria-label={t("dropbox.picker.directoryList")}
                   className="dropbox-directory-dialog__list"
+                  onWheel={handleDropboxDirectoryListWheel}
                   role="listbox"
                 >
                   {dropboxDirectoryPicker.directories.map((directory) => {
                     const isSelected = directory.path === dropboxDirectoryPicker.selectedPath;
 
                     return (
-                      <button
+                      <div
                         aria-selected={isSelected}
                         className={`dropbox-directory-dialog__row ${
                           isSelected ? "is-selected" : ""
                         }`}
-                        disabled={dropboxDirectoryPicker.isOpening}
                         key={directory.path}
-                        onClick={() => {
-                          setDropboxDirectoryPicker((currentPicker) =>
-                            currentPicker
-                              ? { ...currentPicker, selectedPath: directory.path }
-                              : currentPicker,
-                          );
-                        }}
-                        onDoubleClick={() => {
-                          setDropboxDirectoryPicker((currentPicker) =>
-                            currentPicker
-                              ? { ...currentPicker, selectedPath: directory.path }
-                              : currentPicker,
-                          );
-                          void openSelectedDropboxDirectory(directory.path);
-                        }}
                         role="option"
                         title={directory.path}
-                        type="button"
                       >
-                        <DocumentGlyphIcon kind="folder" selected={isSelected} />
-                        <span>{directory.title}</span>
-                      </button>
+                        <button
+                          className="dropbox-directory-dialog__row-main"
+                          disabled={dropboxDirectoryPicker.isOpening}
+                          onClick={() => {
+                            setDropboxDirectoryPicker((currentPicker) =>
+                              currentPicker
+                                ? { ...currentPicker, selectedPath: directory.path }
+                                : currentPicker,
+                            );
+                          }}
+                          onDoubleClick={() => enterDropboxPickerDirectory(directory.path)}
+                          type="button"
+                        >
+                          <DocumentGlyphIcon kind="folder" selected={isSelected} />
+                          <span>{directory.title}</span>
+                        </button>
+                        <button
+                          aria-label={t("dropbox.picker.enterFolder", {
+                            name: directory.title,
+                          })}
+                          className="dropbox-directory-dialog__row-enter"
+                          disabled={dropboxDirectoryPicker.isLoading || dropboxDirectoryPicker.isOpening}
+                          onClick={() => enterDropboxPickerDirectory(directory.path)}
+                          type="button"
+                        >
+                          ›
+                        </button>
+                      </div>
                     );
                   })}
                 </div>
@@ -9303,6 +9594,8 @@ function App() {
       {settingsViewOpen ? (
         <SettingsView
           closeButtonRef={settingsCloseButtonRef}
+          customSections={settingsCustomSections}
+          initialCategory={settingsInitialCategory}
           values={settingsSnapshot}
           t={t}
           onChange={updateSettingValue}

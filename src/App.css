@@ -694,6 +694,7 @@ button:disabled {
   place-items: center;
   padding: 20px;
   background: rgba(32, 35, 41, 0.28);
+  overscroll-behavior: none;
 }
 
 .dropbox-directory-dialog {
@@ -708,6 +709,7 @@ button:disabled {
   color: var(--color-text);
   background: var(--color-surface-raised);
   box-shadow: var(--shadow-high);
+  overscroll-behavior: contain;
 }
 
 .dropbox-directory-dialog__header {
@@ -755,12 +757,47 @@ button:disabled {
   overflow: hidden;
 }
 
+.dropbox-directory-dialog__navigation {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  min-width: 0;
+}
+
+.dropbox-directory-dialog__navigation button {
+  min-height: 30px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 0 10px;
+  color: var(--color-text);
+  background: var(--color-surface);
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.dropbox-directory-dialog__navigation button:hover:not(:disabled) {
+  color: var(--color-heading);
+  background: var(--color-surface-soft);
+}
+
+.dropbox-directory-dialog__navigation span {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-muted);
+  font-size: 0.84rem;
+  font-weight: 680;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .dropbox-directory-dialog__list {
   display: grid;
   gap: 2px;
   min-width: 0;
   max-height: 360px;
   overflow: auto;
+  overscroll-behavior: contain;
   border: 1px solid var(--color-border-soft);
   border-radius: 8px;
   padding: 4px;
@@ -768,6 +805,15 @@ button:disabled {
 }
 
 .dropbox-directory-dialog__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 30px;
+  gap: 4px;
+  width: 100%;
+  min-height: 34px;
+  align-items: center;
+}
+
+.dropbox-directory-dialog__row-main {
   display: grid;
   grid-template-columns: 18px minmax(0, 1fr);
   gap: 8px;
@@ -785,17 +831,37 @@ button:disabled {
   text-align: left;
 }
 
-.dropbox-directory-dialog__row:hover:not(:disabled),
-.dropbox-directory-dialog__row.is-selected {
+.dropbox-directory-dialog__row:hover .dropbox-directory-dialog__row-main:not(:disabled),
+.dropbox-directory-dialog__row.is-selected .dropbox-directory-dialog__row-main {
   color: var(--color-heading);
   background: var(--color-surface-soft);
 }
 
-.dropbox-directory-dialog__row span:last-child {
+.dropbox-directory-dialog__row-main span:last-child {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.dropbox-directory-dialog__row-enter {
+  display: inline-flex;
+  width: 30px;
+  height: 30px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 6px;
+  color: var(--color-muted);
+  background: transparent;
+  font-size: 1.1rem;
+  font-weight: 760;
+  line-height: 1;
+}
+
+.dropbox-directory-dialog__row-enter:hover:not(:disabled) {
+  color: var(--color-heading);
+  background: var(--color-surface-soft);
 }
 
 .dropbox-directory-dialog__status {
@@ -1004,6 +1070,104 @@ button:disabled {
   display: grid;
   min-width: 0;
   border-top: 1px solid var(--color-border-soft);
+}
+
+.settings-view__custom-list {
+  display: grid;
+  min-width: 0;
+  border-top: 1px solid var(--color-border-soft);
+}
+
+.settings-view__cloud-card {
+  display: grid;
+  grid-template-columns: minmax(320px, 1fr) minmax(160px, auto);
+  gap: 12px 20px;
+  align-items: center;
+  min-width: 0;
+  border-bottom: 1px solid var(--color-border-soft);
+  padding: 16px 0;
+}
+
+.settings-view__cloud-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.settings-view__cloud-status-row {
+  display: flex;
+  min-width: 0;
+  justify-content: flex-end;
+}
+
+.settings-view__cloud-status {
+  display: inline-flex;
+  min-height: 28px;
+  align-items: center;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  padding: 0 10px;
+  color: var(--color-muted);
+  background: var(--color-surface-soft);
+  font-size: 0.78rem;
+  font-weight: 720;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.settings-view__cloud-status.is-connected {
+  border-color: color-mix(in srgb, var(--color-success, #1f8f4d) 42%, var(--color-border));
+  color: var(--color-success, #1f7a45);
+  background: color-mix(in srgb, var(--color-success, #1f8f4d) 10%, var(--color-surface-raised));
+}
+
+.settings-view__cloud-status.is-not-configured {
+  border-color: color-mix(in srgb, var(--color-danger-text) 34%, var(--color-border));
+  color: var(--color-danger-text);
+  background: color-mix(in srgb, var(--color-danger-text) 8%, var(--color-surface-raised));
+}
+
+.settings-view__cloud-actions {
+  display: flex;
+  flex-wrap: wrap;
+  grid-column: 1 / -1;
+  gap: 8px;
+}
+
+.settings-view__cloud-actions button {
+  min-height: 34px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 0 12px;
+  color: var(--color-heading);
+  background: var(--color-surface-raised);
+  font-size: 0.82rem;
+  font-weight: 720;
+}
+
+.settings-view__cloud-actions button.is-primary {
+  border-color: var(--color-accent);
+  color: var(--color-accent-ink);
+  background: color-mix(in srgb, var(--color-accent) 12%, var(--color-surface-raised));
+}
+
+.settings-view__cloud-actions button.is-danger {
+  border-color: color-mix(in srgb, var(--color-danger-text) 35%, var(--color-border));
+  color: var(--color-danger-text);
+}
+
+.settings-view__cloud-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.settings-view__cloud-note {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--color-muted);
+  font-size: 0.78rem;
+  font-weight: 580;
+  line-height: 1.4;
 }
 
 .settings-view__setting-row {

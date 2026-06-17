@@ -39,6 +39,8 @@ const DROPBOX_DOWNLOAD_URL: &str = "https://content.dropboxapi.com/2/files/downl
 const DROPBOX_UPLOAD_URL: &str = "https://content.dropboxapi.com/2/files/upload";
 const DROPBOX_COPY_URL: &str = "https://api.dropboxapi.com/2/files/copy_v2";
 const DROPBOX_DELETE_URL: &str = "https://api.dropboxapi.com/2/files/delete_v2";
+const DROPBOX_REQUIRED_SCOPES: &str =
+    "files.metadata.read files.content.read files.metadata.write files.content.write";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -248,7 +250,6 @@ struct DropboxOAuthCallbackPayload {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
 struct DropboxTokenResponse {
     access_token: String,
     #[serde(default)]
@@ -259,6 +260,8 @@ struct DropboxTokenResponse {
 
 #[derive(Debug, Deserialize)]
 struct DropboxErrorResponse {
+    #[serde(default)]
+    error: Option<serde_json::Value>,
     #[serde(default)]
     error_summary: Option<String>,
     #[serde(default)]
@@ -659,6 +662,15 @@ fn wait_for_dropbox_oauth_callback(listener: TcpListener) -> DropboxOAuthCallbac
 async fn dropbox_response_error(response: reqwest::Response, context: &str) -> String {
     let status = response.status();
     let raw_body = response.text().await.unwrap_or_default();
+    dropbox_error_message(status, &raw_body, context)
+}
+
+fn dropbox_error_message(status: reqwest::StatusCode, raw_body: &str, context: &str) -> String {
+    if raw_body.contains("missing_scope") || raw_body.contains("insufficient_scope") {
+        return format!(
+            "{context}: Dropbox permission is missing. Reauthorize Dropbox in Settings."
+        );
+    }
 
     if let Ok(parsed) = serde_json::from_str::<DropboxErrorResponse>(&raw_body) {
         if let Some(description) = parsed.error_description {
@@ -667,6 +679,9 @@ async fn dropbox_response_error(response: reqwest::Response, context: &str) -> S
         if let Some(summary) = parsed.error_summary {
             return format!("{context}: {summary}");
         }
+        if let Some(error) = parsed.error {
+            return format!("{context}: {error}");
+        }
     }
 
     if raw_body.trim().is_empty() {
@@ -674,6 +689,36 @@ async fn dropbox_response_error(response: reqwest::Response, context: &str) -> S
     } else {
         format!("{context}: Dropbox returned HTTP {status}: {raw_body}")
     }
+}
+
+async fn parse_dropbox_token_response(
+    response: reqwest::Response,
+    context: &str,
+) -> Result<DropboxTokenResponse, String> {
+    let status = response.status();
+    let raw_body = response
+        .text()
+        .await
+        .map_err(|error| format!("{context}: failed to read Dropbox token response: {error}"))?;
+    if !status.is_success() {
+        return Err(dropbox_error_message(status, &raw_body, context));
+    }
+
+    serde_json::from_str::<DropboxTokenResponse>(&raw_body).map_err(|error| {
+        if let Ok(parsed) = serde_json::from_str::<DropboxErrorResponse>(&raw_body) {
+            if let Some(description) = parsed.error_description {
+                return format!("{context}: {description}");
+            }
+            if let Some(summary) = parsed.error_summary {
+                return format!("{context}: {summary}");
+            }
+            if let Some(error_value) = parsed.error {
+                return format!("{context}: {error_value}");
+            }
+        }
+
+        format!("{context}: failed to parse Dropbox token response: {error}")
+    })
 }
 
 fn tokens_expire_soon(tokens: &DropboxTokenStore) -> bool {
@@ -706,14 +751,8 @@ async fn refresh_dropbox_access_token(
         .await
         .map_err(|error| format!("failed to refresh Dropbox token: {error}"))?;
 
-    if !response.status().is_success() {
-        return Err(dropbox_response_error(response, "failed to refresh Dropbox token").await);
-    }
-
-    let token_response = response
-        .json::<DropboxTokenResponse>()
-        .await
-        .map_err(|error| format!("failed to parse Dropbox token response: {error}"))?;
+    let token_response = parse_dropbox_token_response(response, "failed to refresh Dropbox token")
+        .await?;
     let refreshed_tokens = DropboxTokenStore {
         app_key: tokens.app_key,
         access_token: token_response.access_token,
@@ -1739,6 +1778,7 @@ fn start_dropbox_oauth(
     authorize_url
         .query_pairs_mut()
         .append_pair("client_id", &app_key)
+        .append_pair("scope", DROPBOX_REQUIRED_SCOPES)
         .append_pair("response_type", "code")
         .append_pair("token_access_type", "offline")
         .append_pair("code_challenge", &code_challenge)
@@ -1803,18 +1843,9 @@ async fn complete_dropbox_oauth(
         .await
         .map_err(|error| format!("failed to exchange Dropbox authorization code: {error}"))?;
 
-    if !response.status().is_success() {
-        return Err(dropbox_response_error(
-            response,
-            "failed to exchange Dropbox authorization code",
-        )
-        .await);
-    }
-
-    let token_response = response
-        .json::<DropboxTokenResponse>()
-        .await
-        .map_err(|error| format!("failed to parse Dropbox token response: {error}"))?;
+    let token_response =
+        parse_dropbox_token_response(response, "failed to exchange Dropbox authorization code")
+            .await?;
     let tokens = DropboxTokenStore {
         app_key: session.app_key,
         access_token: token_response.access_token,
