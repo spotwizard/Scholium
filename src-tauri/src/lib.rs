@@ -8,6 +8,7 @@ use tauri::{AppHandle, Emitter, Manager};
 const MENU_NEW_FILE: &str = "file:new-file";
 const MENU_OPEN_FILE: &str = "file:open-file";
 const MENU_OPEN_FOLDER: &str = "file:open-folder";
+const MENU_OPEN_SETTINGS: &str = "app:open-settings";
 const MENU_FAVORITE_DIRECTORIES: &str = "file:favorite-directories";
 const MENU_RECENT_LOCATIONS: &str = "file:recent-locations";
 const MENU_ADD_CURRENT_DIRECTORY_TO_FAVORITES: &str = "file:add-current-directory-to-favorites";
@@ -17,6 +18,7 @@ const MENU_FAVORITE_DIRECTORY_PREFIX: &str = "file:favorite-directory:";
 const MENU_RECENT_LOCATION_PREFIX: &str = "file:recent-location:";
 const MAX_RECENT_LOCATIONS: usize = 12;
 const NOTES_STORE_DIRECTORY: &str = "notes";
+const DEFAULT_APP_LANGUAGE: &str = "zh-Hant";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -35,10 +37,20 @@ struct LocationStore {
     favorite_directories: Vec<LocationEntry>,
 }
 
-#[derive(Default)]
 struct LocationMenuState {
     current_directory: Mutex<Option<LocationEntry>>,
+    language: Mutex<String>,
     store: Mutex<LocationStore>,
+}
+
+impl Default for LocationMenuState {
+    fn default() -> Self {
+        Self {
+            current_directory: Mutex::new(None),
+            language: Mutex::new(DEFAULT_APP_LANGUAGE.to_string()),
+            store: Mutex::new(LocationStore::default()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -238,10 +250,88 @@ fn location_title(path: &Path, fallback: &str) -> String {
         .to_string()
 }
 
+fn normalize_app_language(language: &str) -> &'static str {
+    match language {
+        "en" => "en",
+        "zh-Hans" => "zh-Hans",
+        _ => DEFAULT_APP_LANGUAGE,
+    }
+}
+
+fn current_app_language(app_handle: &tauri::AppHandle) -> String {
+    app_handle
+        .state::<LocationMenuState>()
+        .language
+        .lock()
+        .map(|language| normalize_app_language(language.as_str()).to_string())
+        .unwrap_or_else(|_| DEFAULT_APP_LANGUAGE.to_string())
+}
+
+fn menu_text(language: &str, key: &str) -> &'static str {
+    match (normalize_app_language(language), key) {
+        ("en", "directoryFallback") => "Directory",
+        ("en", "markdownFileFallback") => "Markdown file",
+        ("en", "favoriteDirectories") => "Favorite Directories",
+        ("en", "addCurrentDirectory") => "Add Current Directory",
+        ("en", "noFavoriteDirectories") => "No favorite directories",
+        ("en", "clearFavoriteDirectories") => "Clear Favorite Directories",
+        ("en", "recentLocations") => "Recent",
+        ("en", "noRecentLocations") => "No recent items",
+        ("en", "clearItems") => "Clear Items",
+        ("en", "newFile") => "New File",
+        ("en", "openFile") => "Open File",
+        ("en", "openFolder") => "Open Folder",
+        ("en", "settings") => "Settings...",
+        ("en", "fileMenu") => "File",
+        ("en", "editMenu") => "Edit",
+        ("en", "viewMenu") => "View",
+        ("en", "windowMenu") => "Window",
+        ("en", "helpMenu") => "Help",
+        ("zh-Hans", "directoryFallback") => "目录",
+        ("zh-Hans", "markdownFileFallback") => "Markdown 文件",
+        ("zh-Hans", "favoriteDirectories") => "常用目录",
+        ("zh-Hans", "addCurrentDirectory") => "加入目前目录",
+        ("zh-Hans", "noFavoriteDirectories") => "尚未加入常用目录",
+        ("zh-Hans", "clearFavoriteDirectories") => "清除常用目录",
+        ("zh-Hans", "recentLocations") => "最近打开",
+        ("zh-Hans", "noRecentLocations") => "尚无最近打开项目",
+        ("zh-Hans", "clearItems") => "清除项目",
+        ("zh-Hans", "newFile") => "新增文件",
+        ("zh-Hans", "openFile") => "打开文件",
+        ("zh-Hans", "openFolder") => "打开目录",
+        ("zh-Hans", "settings") => "设置...",
+        ("zh-Hans", "fileMenu") => "文件",
+        ("zh-Hans", "editMenu") => "编辑",
+        ("zh-Hans", "viewMenu") => "视图",
+        ("zh-Hans", "windowMenu") => "窗口",
+        ("zh-Hans", "helpMenu") => "帮助",
+        (_, "directoryFallback") => "目錄",
+        (_, "markdownFileFallback") => "Markdown 檔案",
+        (_, "favoriteDirectories") => "常用目錄",
+        (_, "addCurrentDirectory") => "加入目前目錄",
+        (_, "noFavoriteDirectories") => "尚未加入常用目錄",
+        (_, "clearFavoriteDirectories") => "清除常用目錄",
+        (_, "recentLocations") => "最近開啟",
+        (_, "noRecentLocations") => "尚無最近開啟項目",
+        (_, "clearItems") => "清除項目",
+        (_, "newFile") => "新增檔案",
+        (_, "openFile") => "開啟檔案",
+        (_, "openFolder") => "開啟目錄",
+        (_, "settings") => "設定...",
+        (_, "fileMenu") => "檔案",
+        (_, "editMenu") => "編輯",
+        (_, "viewMenu") => "檢視",
+        (_, "windowMenu") => "視窗",
+        (_, "helpMenu") => "說明",
+        _ => "",
+    }
+}
+
 fn sanitize_location_entry(
     kind: &str,
     path: String,
     title: String,
+    language: &str,
 ) -> Result<LocationEntry, String> {
     if kind != "directory" && kind != "file" {
         return Err("unsupported location kind".to_string());
@@ -253,9 +343,9 @@ fn sanitize_location_entry(
     }
 
     let fallback_title = if kind == "directory" {
-        location_title(Path::new(trimmed_path), "目錄")
+        location_title(Path::new(trimmed_path), menu_text(language, "directoryFallback"))
     } else {
-        location_title(Path::new(trimmed_path), "Markdown 檔案")
+        location_title(Path::new(trimmed_path), menu_text(language, "markdownFileFallback"))
     };
     let trimmed_title = title.trim();
 
@@ -727,7 +817,8 @@ fn remember_recent_location(
     path: String,
     title: String,
 ) -> Result<(), String> {
-    let entry = sanitize_location_entry(&kind, path, title)?;
+    let language = current_app_language(&app);
+    let entry = sanitize_location_entry(&kind, path, title, &language)?;
 
     remember_recent_location_entry(&app, entry)
 }
@@ -738,7 +829,8 @@ fn set_current_directory_location(
     path: String,
     title: String,
 ) -> Result<(), String> {
-    let entry = sanitize_location_entry("directory", path, title)?;
+    let language = current_app_language(&app);
+    let entry = sanitize_location_entry("directory", path, title, &language)?;
     let state = app.state::<LocationMenuState>();
 
     {
@@ -752,9 +844,31 @@ fn set_current_directory_location(
     refresh_app_menu(&app)
 }
 
+#[tauri::command]
+fn set_app_language(app: tauri::AppHandle, language: String) -> Result<(), String> {
+    let normalized_language = normalize_app_language(&language).to_string();
+    let state = app.state::<LocationMenuState>();
+
+    {
+        let mut current_language = state
+            .language
+            .lock()
+            .map_err(|_| "failed to lock app language state".to_string())?;
+
+        if *current_language == normalized_language {
+            return Ok(());
+        }
+
+        *current_language = normalized_language;
+    }
+
+    refresh_app_menu(&app)
+}
+
 fn build_favorite_directories_submenu(
     app_handle: &tauri::AppHandle,
     store: &LocationStore,
+    language: &str,
 ) -> tauri::Result<Submenu<tauri::Wry>> {
     let state = app_handle.state::<LocationMenuState>();
     let has_current_directory = state
@@ -762,11 +876,16 @@ fn build_favorite_directories_submenu(
         .lock()
         .map(|current_directory| current_directory.is_some())
         .unwrap_or(false);
-    let submenu = Submenu::with_id(app_handle, MENU_FAVORITE_DIRECTORIES, "常用目錄", true)?;
+    let submenu = Submenu::with_id(
+        app_handle,
+        MENU_FAVORITE_DIRECTORIES,
+        menu_text(language, "favoriteDirectories"),
+        true,
+    )?;
     let add_current_directory = MenuItem::with_id(
         app_handle,
         MENU_ADD_CURRENT_DIRECTORY_TO_FAVORITES,
-        "加入目前目錄",
+        menu_text(language, "addCurrentDirectory"),
         has_current_directory,
         None::<&str>,
     )?;
@@ -778,7 +897,7 @@ fn build_favorite_directories_submenu(
         let empty_item = MenuItem::with_id(
             app_handle,
             "file:favorite-directories-empty",
-            "尚未加入常用目錄",
+            menu_text(language, "noFavoriteDirectories"),
             false,
             None::<&str>,
         )?;
@@ -800,7 +919,7 @@ fn build_favorite_directories_submenu(
     let clear_item = MenuItem::with_id(
         app_handle,
         MENU_CLEAR_FAVORITE_DIRECTORIES,
-        "清除常用目錄",
+        menu_text(language, "clearFavoriteDirectories"),
         !store.favorite_directories.is_empty(),
         None::<&str>,
     )?;
@@ -812,14 +931,20 @@ fn build_favorite_directories_submenu(
 fn build_recent_locations_submenu(
     app_handle: &tauri::AppHandle,
     store: &LocationStore,
+    language: &str,
 ) -> tauri::Result<Submenu<tauri::Wry>> {
-    let submenu = Submenu::with_id(app_handle, MENU_RECENT_LOCATIONS, "最近開啟", true)?;
+    let submenu = Submenu::with_id(
+        app_handle,
+        MENU_RECENT_LOCATIONS,
+        menu_text(language, "recentLocations"),
+        true,
+    )?;
 
     if store.recent.is_empty() {
         let empty_item = MenuItem::with_id(
             app_handle,
             "file:recent-locations-empty",
-            "尚無最近開啟項目",
+            menu_text(language, "noRecentLocations"),
             false,
             None::<&str>,
         )?;
@@ -841,7 +966,7 @@ fn build_recent_locations_submenu(
     let clear_item = MenuItem::with_id(
         app_handle,
         MENU_CLEAR_RECENT_LOCATIONS,
-        "清除項目",
+        menu_text(language, "clearItems"),
         !store.recent.is_empty(),
         None::<&str>,
     )?;
@@ -851,6 +976,7 @@ fn build_recent_locations_submenu(
 }
 
 fn build_app_menu(app_handle: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
+    let language = current_app_language(app_handle);
     let location_store = current_location_store(app_handle);
     let about_metadata = AboutMetadata {
         name: Some("Scholium".to_string()),
@@ -860,26 +986,35 @@ fn build_app_menu(app_handle: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wr
     let new_file = MenuItem::with_id(
         app_handle,
         MENU_NEW_FILE,
-        "新增檔案",
+        menu_text(&language, "newFile"),
         true,
         Some("CmdOrCtrl+N"),
     )?;
     let open_file = MenuItem::with_id(
         app_handle,
         MENU_OPEN_FILE,
-        "開啟檔案",
+        menu_text(&language, "openFile"),
         true,
         Some("CmdOrCtrl+O"),
     )?;
     let open_folder = MenuItem::with_id(
         app_handle,
         MENU_OPEN_FOLDER,
-        "開啟目錄",
+        menu_text(&language, "openFolder"),
         true,
         Some("CmdOrCtrl+Shift+O"),
     )?;
-    let favorite_directories = build_favorite_directories_submenu(app_handle, &location_store)?;
-    let recent_locations = build_recent_locations_submenu(app_handle, &location_store)?;
+    let open_settings = MenuItem::with_id(
+        app_handle,
+        MENU_OPEN_SETTINGS,
+        menu_text(&language, "settings"),
+        true,
+        Some("CmdOrCtrl+,"),
+    )?;
+    let favorite_directories =
+        build_favorite_directories_submenu(app_handle, &location_store, &language)?;
+    let recent_locations =
+        build_recent_locations_submenu(app_handle, &location_store, &language)?;
 
     Menu::with_items(
         app_handle,
@@ -890,6 +1025,7 @@ fn build_app_menu(app_handle: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wr
                 true,
                 &[
                     &PredefinedMenuItem::about(app_handle, None, Some(about_metadata))?,
+                    &open_settings,
                     &PredefinedMenuItem::separator(app_handle)?,
                     &PredefinedMenuItem::services(app_handle, None)?,
                     &PredefinedMenuItem::separator(app_handle)?,
@@ -901,7 +1037,7 @@ fn build_app_menu(app_handle: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wr
             )?,
             &Submenu::with_items(
                 app_handle,
-                "File",
+                menu_text(&language, "fileMenu"),
                 true,
                 &[
                     &new_file,
@@ -915,7 +1051,7 @@ fn build_app_menu(app_handle: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wr
             )?,
             &Submenu::with_items(
                 app_handle,
-                "Edit",
+                menu_text(&language, "editMenu"),
                 true,
                 &[
                     &PredefinedMenuItem::undo(app_handle, None)?,
@@ -929,13 +1065,13 @@ fn build_app_menu(app_handle: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wr
             )?,
             &Submenu::with_items(
                 app_handle,
-                "View",
+                menu_text(&language, "viewMenu"),
                 true,
                 &[&PredefinedMenuItem::fullscreen(app_handle, None)?],
             )?,
             &Submenu::with_items(
                 app_handle,
-                "Window",
+                menu_text(&language, "windowMenu"),
                 true,
                 &[
                     &PredefinedMenuItem::minimize(app_handle, None)?,
@@ -944,7 +1080,7 @@ fn build_app_menu(app_handle: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wr
                     &PredefinedMenuItem::close_window(app_handle, None)?,
                 ],
             )?,
-            &Submenu::with_items(app_handle, "Help", true, &[])?,
+            &Submenu::with_items(app_handle, menu_text(&language, "helpMenu"), true, &[])?,
         ],
     )
 }
@@ -1010,6 +1146,9 @@ pub fn run() {
             if event_id == MENU_NEW_FILE {
                 let _ = app.emit("menu:new-file", ());
                 let _ = app.emit("scholium-new-file", ());
+            } else if event_id == MENU_OPEN_SETTINGS {
+                let _ = app.emit("menu:open-settings", ());
+                let _ = app.emit("scholium-open-settings", ());
             } else if event_id == MENU_OPEN_FILE {
                 let _ = app.emit("menu:open-file", ());
                 let _ = app.emit("scholium-open-file", ());
@@ -1063,7 +1202,8 @@ pub fn run() {
             delete_markdown_file,
             save_markdown_file,
             remember_recent_location,
-            set_current_directory_location
+            set_current_directory_location,
+            set_app_language
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

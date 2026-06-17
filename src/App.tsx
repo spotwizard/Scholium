@@ -24,14 +24,26 @@ import {
   type TextAnnotation,
   type TextSelectionAnchor,
 } from "./MarkdownEditor";
+import { SettingsView } from "./SettingsView";
 import fileGlyphSvg from "./assets/file-glyph.svg?raw";
 import folderGlyphSvg from "./assets/folder-glyph.svg?raw";
+import { appLanguageHtmlLang, createTranslator } from "./i18n";
 import { loadScholiumMermaid } from "./mermaid";
+import {
+  readSettingsSnapshot,
+  resetSetting,
+  resetSettings,
+  writeSetting,
+  type SettingKey,
+  type SettingValue,
+  type SettingsSnapshot,
+} from "./settings";
 
 const unorderedListMarkerPattern = /^ {0,3}[-*+]\s+/;
 const typedUnorderedListMarkerPattern = /^[-*+]\s+(.*)$/;
 const orderedListMarkerPattern = /^ {0,3}\d+[.)]\s+/;
 const typedOrderedListMarkerPattern = /^\d+[.)]\s+(.*)$/;
+const inlineBreakPattern = /<br\s*\/?>/gi;
 const emptyPreviewListItemText = "\u200b";
 const annotationClickDelayMs = 500;
 const pendingAnchorAnnotationId = "__scholium_pending_anchor__";
@@ -218,6 +230,12 @@ type FileContextMenuState = {
   top: number;
 };
 
+type DuplicateFileDialogState = {
+  documentId: string;
+  fileName: string;
+  isSubmitting: boolean;
+};
+
 function DocumentGlyphIcon({ kind }: { kind: "file" | "folder" }) {
   return (
     <span
@@ -287,9 +305,9 @@ function PencilIcon() {
   );
 }
 
-function PinBadge() {
+function PinBadge({ ariaLabel }: { ariaLabel: string }) {
   return (
-    <div className="pin-badge" aria-label="Note">
+    <div className="pin-badge" aria-label={ariaLabel}>
       <svg aria-hidden="true" width="13.5" height="13.5" viewBox="0 0 24 24" fill="none">
         <path
           d="M14.5 3.5 9 9 5.5 9.8 4 11.3l3.8 3.8-3.3 4.6 4.6-3.3 3.8 3.8 1.5-1.5.8-3.5 5.5-5.5z"
@@ -684,6 +702,33 @@ function workspaceEntryFromDocument(document: MarkdownDocument): WorkspaceEntry 
   };
 }
 
+function workspaceEntrySortRank(entry: WorkspaceEntry) {
+  if (entry.kind === "parent-directory") return 0;
+  if (entry.kind === "directory") return 1;
+  return 2;
+}
+
+function compareWorkspaceEntries(left: WorkspaceEntry, right: WorkspaceEntry) {
+  const rankDifference = workspaceEntrySortRank(left) - workspaceEntrySortRank(right);
+  if (rankDifference !== 0) return rankDifference;
+
+  const leftTitle = left.title.toLowerCase();
+  const rightTitle = right.title.toLowerCase();
+  if (leftTitle < rightTitle) return -1;
+  if (leftTitle > rightTitle) return 1;
+
+  const leftPath = left.path.toLowerCase();
+  const rightPath = right.path.toLowerCase();
+  if (leftPath < rightPath) return -1;
+  if (leftPath > rightPath) return 1;
+
+  return 0;
+}
+
+function sortWorkspaceEntriesForDirectory(entries: WorkspaceEntry[]) {
+  return [...entries].sort(compareWorkspaceEntries);
+}
+
 function savedBodiesFromDocuments(documents: MarkdownDocument[]) {
   return Object.fromEntries(documents.map((document) => [document.id, document.body]));
 }
@@ -739,9 +784,13 @@ function isSafeLink(href: string) {
   return /^(https?:|mailto:)/i.test(href);
 }
 
+function isInlineBreakToken(token: string) {
+  return token === "\n" || /^<br\s*\/?>$/i.test(token);
+}
+
 function renderInlineMarkdown(text: string, keyPrefix: string): ReactNode[] {
   const nodes: ReactNode[] = [];
-  const tokenPattern = /(`[^`]+`|\*\*[^*]+\*\*|\*[^*]+\*|\[[^\]]+\]\([^)]+\))/g;
+  const tokenPattern = /(\n|`[^`]+`|\*\*[^*]+\*\*|\*[^*]+\*|\[[^\]]+\]\([^)]+\)|<br\s*\/?>)/gi;
   let lastIndex = 0;
   let tokenIndex = 0;
 
@@ -755,7 +804,9 @@ function renderInlineMarkdown(text: string, keyPrefix: string): ReactNode[] {
 
     const key = `${keyPrefix}-inline-${tokenIndex}`;
 
-    if (token.startsWith("`")) {
+    if (isInlineBreakToken(token)) {
+      nodes.push(<br key={key} />);
+    } else if (token.startsWith("`")) {
       nodes.push(<code key={key}>{token.slice(1, -1)}</code>);
     } else if (token.startsWith("**")) {
       nodes.push(<strong key={key}>{token.slice(2, -2)}</strong>);
@@ -932,6 +983,45 @@ function appendTextMapSeparator(target: PreviewTextMap, separator: string) {
   appendTextMap(target, separator, null);
 }
 
+function appendPreviewTextMap(target: PreviewTextMap, source: PreviewTextMap) {
+  target.text += source.text;
+  target.sourceOffsets.push(...source.sourceOffsets);
+}
+
+function appendInlineTextMap(target: PreviewTextMap, text: string, sourceStart: number | null) {
+  let lastIndex = 0;
+
+  for (const match of text.matchAll(inlineBreakPattern)) {
+    const token = match[0];
+    const index = match.index ?? 0;
+
+    if (index > lastIndex) {
+      appendTextMap(
+        target,
+        text.slice(lastIndex, index),
+        sourceStart === null ? null : sourceStart + lastIndex,
+      );
+    }
+
+    appendTextMap(target, "\n", sourceStart === null ? null : sourceStart + index);
+    lastIndex = index + token.length;
+  }
+
+  if (lastIndex < text.length) {
+    appendTextMap(
+      target,
+      text.slice(lastIndex),
+      sourceStart === null ? null : sourceStart + lastIndex,
+    );
+  }
+}
+
+function previewTextMapFromInlineText(text: string, sourceStart: number | null): PreviewTextMap {
+  const textMap: PreviewTextMap = { text: "", sourceOffsets: [] };
+  appendInlineTextMap(textMap, text, sourceStart);
+  return textMap;
+}
+
 function getHeadingTextMap(markdown: string, block: Extract<MarkdownPreviewBlock, { kind: "heading" }>) {
   const lines = markdown.replace(/\r\n/g, "\n").split("\n");
   const lineStartOffsets = getLineStartOffsets(markdown);
@@ -940,10 +1030,7 @@ function getHeadingTextMap(markdown: string, block: Extract<MarkdownPreviewBlock
   const markerLength = match ? match[1].length + (line[match[1].length] === " " ? 1 : 0) : 0;
   const sourceStart = (lineStartOffsets[block.startLine] ?? 0) + markerLength;
 
-  return {
-    text: block.text,
-    sourceOffsets: Array.from({ length: block.text.length }, (_, index) => sourceStart + index),
-  };
+  return previewTextMapFromInlineText(block.text, sourceStart);
 }
 
 function getParagraphTextMap(
@@ -961,7 +1048,7 @@ function getParagraphTextMap(
       appendTextMapSeparator(textMap, " ");
     }
 
-    appendTextMap(
+    appendInlineTextMap(
       textMap,
       trimmed,
       (lineStartOffsets[lineIndex] ?? 0) + getLineContentStart(line),
@@ -983,13 +1070,10 @@ function getQuoteLineTextMap(
   const marker = line.match(/^>\s?/)?.[0] ?? "";
   const text = line.slice(marker.length);
 
-  return {
+  return previewTextMapFromInlineText(
     text,
-    sourceOffsets: Array.from(
-      { length: text.length },
-      (_, index) => (lineStartOffsets[lineIndex] ?? 0) + marker.length + index,
-    ),
-  };
+    (lineStartOffsets[lineIndex] ?? 0) + marker.length,
+  );
 }
 
 function getListItemTextMap(
@@ -1007,13 +1091,10 @@ function getListItemTextMap(
       : line.match(orderedListMarkerPattern)?.[0] ?? "";
   const text = line.slice(marker.length);
 
-  return {
+  return previewTextMapFromInlineText(
     text,
-    sourceOffsets: Array.from(
-      { length: text.length },
-      (_, index) => (lineStartOffsets[lineIndex] ?? 0) + marker.length + index,
-    ),
-  };
+    (lineStartOffsets[lineIndex] ?? 0) + marker.length,
+  );
 }
 
 function getCodeTextMap(markdown: string, block: Extract<MarkdownPreviewBlock, { kind: "code" }>) {
@@ -1041,7 +1122,7 @@ function getPreviewBlockTextMap(markdown: string, block: MarkdownPreviewBlock): 
       (textMap, _quoteLine, quoteIndex) => {
         if (quoteIndex > 0) appendTextMapSeparator(textMap, "\n");
         const quoteLineTextMap = getQuoteLineTextMap(markdown, block, quoteIndex);
-        appendTextMap(textMap, quoteLineTextMap.text, quoteLineTextMap.sourceOffsets[0] ?? null);
+        appendPreviewTextMap(textMap, quoteLineTextMap);
         return textMap;
       },
       { text: "", sourceOffsets: [] },
@@ -1052,7 +1133,7 @@ function getPreviewBlockTextMap(markdown: string, block: MarkdownPreviewBlock): 
       (textMap, _item, itemIndex) => {
         if (itemIndex > 0) appendTextMapSeparator(textMap, "\n");
         const itemTextMap = getListItemTextMap(markdown, block, itemIndex);
-        appendTextMap(textMap, itemTextMap.text, itemTextMap.sourceOffsets[0] ?? null);
+        appendPreviewTextMap(textMap, itemTextMap);
         return textMap;
       },
       { text: "", sourceOffsets: [] },
@@ -1596,7 +1677,15 @@ function isMermaidLanguage(language: string) {
   return language.toLowerCase() === "mermaid";
 }
 
-function MermaidDiagram({ definition }: { definition: string }) {
+function MermaidDiagram({
+  definition,
+  emptyDefinitionLabel,
+  loadingLabel,
+}: {
+  definition: string;
+  emptyDefinitionLabel: string;
+  loadingLabel: string;
+}) {
   const reactId = useId();
   const diagramId = `scholium-mermaid-${reactId.replace(/[^A-Za-z0-9_-]/g, "")}`;
   const [renderState, setRenderState] = useState<
@@ -1613,7 +1702,7 @@ function MermaidDiagram({ definition }: { definition: string }) {
       setRenderState({
         status: "error",
         svg: "",
-        error: "Mermaid diagram is empty.",
+        error: emptyDefinitionLabel,
       });
       return;
     }
@@ -1644,7 +1733,7 @@ function MermaidDiagram({ definition }: { definition: string }) {
     return () => {
       cancelled = true;
     };
-  }, [definition, diagramId]);
+  }, [definition, diagramId, emptyDefinitionLabel]);
 
   return (
     <figure className="mermaid-diagram">
@@ -1656,7 +1745,7 @@ function MermaidDiagram({ definition }: { definition: string }) {
       ) : renderState.status === "error" ? (
         <pre className="mermaid-diagram__error">{renderState.error}</pre>
       ) : (
-        <div className="mermaid-diagram__loading">Rendering diagram...</div>
+        <div className="mermaid-diagram__loading">{loadingLabel}</div>
       )}
     </figure>
   );
@@ -2418,12 +2507,16 @@ function MarkdownPreviewBlockView({
   block,
   markdown,
   annotations,
+  mermaidEmptyDefinitionLabel,
+  mermaidLoadingLabel,
   onAnnotationClick,
   onAnnotationDoubleClick,
 }: {
   block: MarkdownPreviewBlock;
   markdown: string;
   annotations: TextRangeAnnotation[];
+  mermaidEmptyDefinitionLabel: string;
+  mermaidLoadingLabel: string;
   onAnnotationClick: (annotationId: string) => void;
   onAnnotationDoubleClick: (annotationId: string) => void;
 }) {
@@ -2503,7 +2596,14 @@ function MarkdownPreviewBlockView({
 
   if (block.kind === "code") {
     if (isMermaidLanguage(block.language)) {
-      return <MermaidDiagram definition={block.text} key={block.key} />;
+      return (
+        <MermaidDiagram
+          definition={block.text}
+          emptyDefinitionLabel={mermaidEmptyDefinitionLabel}
+          key={block.key}
+          loadingLabel={mermaidLoadingLabel}
+        />
+      );
     }
 
     return (
@@ -2545,6 +2645,8 @@ function MarkdownPreviewBlockView({
 export function MarkdownPreview({
   value,
   annotations,
+  mermaidEmptyDefinitionLabel,
+  mermaidLoadingLabel,
   readOnly,
   onChange,
   onSelectionChange,
@@ -2553,6 +2655,8 @@ export function MarkdownPreview({
 }: {
   value: string;
   annotations: TextRangeAnnotation[];
+  mermaidEmptyDefinitionLabel: string;
+  mermaidLoadingLabel: string;
   readOnly?: boolean;
   onChange: (
     value: string,
@@ -3367,6 +3471,8 @@ export function MarkdownPreview({
             key={block.key}
             markdown={value}
             annotations={annotations}
+            mermaidEmptyDefinitionLabel={mermaidEmptyDefinitionLabel}
+            mermaidLoadingLabel={mermaidLoadingLabel}
             onAnnotationClick={queueAnnotationClick}
             onAnnotationDoubleClick={handleAnnotationDoubleClick}
           />
@@ -3398,9 +3504,13 @@ export function MarkdownPreview({
 function MarkdownPreviewContentBlock({
   block,
   keyPrefix,
+  mermaidEmptyDefinitionLabel,
+  mermaidLoadingLabel,
 }: {
   block: MarkdownPreviewBlock;
   keyPrefix: string;
+  mermaidEmptyDefinitionLabel: string;
+  mermaidLoadingLabel: string;
 }) {
   if (block.kind === "heading") {
     const tagName = `h${block.level}` as "h1" | "h2" | "h3" | "h4" | "h5" | "h6";
@@ -3440,7 +3550,14 @@ function MarkdownPreviewContentBlock({
 
   if (block.kind === "code") {
     if (isMermaidLanguage(block.language)) {
-      return <MermaidDiagram definition={block.text} key={block.key} />;
+      return (
+        <MermaidDiagram
+          definition={block.text}
+          emptyDefinitionLabel={mermaidEmptyDefinitionLabel}
+          key={block.key}
+          loadingLabel={mermaidLoadingLabel}
+        />
+      );
     }
 
     return (
@@ -3468,11 +3585,15 @@ function MarkdownPreviewContentBlock({
 function MarkdownPreviewContent({
   className,
   emptyLabel,
+  mermaidEmptyDefinitionLabel,
+  mermaidLoadingLabel,
   onDoubleClick,
   value,
 }: {
   className: string;
   emptyLabel: string;
+  mermaidEmptyDefinitionLabel: string;
+  mermaidLoadingLabel: string;
   onDoubleClick?: () => void;
   value: string;
 }) {
@@ -3491,6 +3612,8 @@ function MarkdownPreviewContent({
               block={block}
               key={block.key}
               keyPrefix={`markdown-content-${blockIndex}`}
+              mermaidEmptyDefinitionLabel={mermaidEmptyDefinitionLabel}
+              mermaidLoadingLabel={mermaidLoadingLabel}
             />
           ))}
     </div>
@@ -3501,12 +3624,16 @@ function NoteLibraryPreviewContent({
   className,
   emptyLabel,
   expanded,
+  mermaidEmptyDefinitionLabel,
+  mermaidLoadingLabel,
   onDoubleClick,
   value,
 }: {
   className: string;
   emptyLabel: string;
   expanded: boolean;
+  mermaidEmptyDefinitionLabel: string;
+  mermaidLoadingLabel: string;
   onDoubleClick?: () => void;
   value: string;
 }) {
@@ -3572,6 +3699,8 @@ function NoteLibraryPreviewContent({
         <MarkdownPreviewContent
           className={className}
           emptyLabel={emptyLabel}
+          mermaidEmptyDefinitionLabel={mermaidEmptyDefinitionLabel}
+          mermaidLoadingLabel={mermaidLoadingLabel}
           onDoubleClick={onDoubleClick}
           value={value}
         />
@@ -3667,10 +3796,16 @@ function App() {
   const [isMobileViewport, setIsMobileViewport] = useState(() =>
     window.matchMedia(mobileViewportQuery).matches,
   );
+  const [settingsSnapshot, setSettingsSnapshot] =
+    useState<SettingsSnapshot>(readSettingsSnapshot);
+  const appLanguage = settingsSnapshot["app.language"];
+  const t = createTranslator(appLanguage);
   const [editorMode, setEditorMode] = useState<EditorMode>("preview");
   const [noteModeEnabled, setNoteModeEnabled] = useState(false);
   const [glossaryModeEnabled, setGlossaryModeEnabled] = useState(false);
-  const [directoryPaneOpen, setDirectoryPaneOpen] = useState(true);
+  const [directoryPaneOpen, setDirectoryPaneOpen] = useState(
+    settingsSnapshot["app.directoryPaneOpen"],
+  );
   const [noteLibraryOpen, setNoteLibraryOpen] = useState(false);
   const [focusedLibraryNoteId, setFocusedLibraryNoteId] = useState("");
   const [editingLibraryNoteId, setEditingLibraryNoteId] = useState("");
@@ -3681,9 +3816,14 @@ function App() {
     savedBodiesFromDocuments(documentsSeed),
   );
   const [storageError, setStorageError] = useState("");
+  const [settingsViewOpen, setSettingsViewOpen] = useState(false);
   const [fileContextMenu, setFileContextMenu] = useState<FileContextMenuState | null>(null);
+  const [duplicateFileDialog, setDuplicateFileDialog] =
+    useState<DuplicateFileDialogState | null>(null);
   const notePanelRef = useRef<HTMLElement | null>(null);
   const floatingNoteCardRef = useRef<HTMLDivElement | null>(null);
+  const settingsCloseButtonRef = useRef<HTMLButtonElement | null>(null);
+  const duplicateFileInputRef = useRef<HTMLInputElement | null>(null);
   const noteEditorRootRef = useRef<HTMLDivElement | null>(null);
   const libraryNoteEditorRootRef = useRef<HTMLDivElement | null>(null);
   const returnToViewTimerRef = useRef(0);
@@ -3716,6 +3856,7 @@ function App() {
   const notePanelHasContentRef = useRef(false);
   const selectionDismissedUntilRef = useRef(0);
   const lastOpenedFileRestoreAttemptedRef = useRef(false);
+  const openSettingsHandlerRef = useRef<() => void>(() => undefined);
   const newMarkdownFileHandlerRef = useRef<() => void>(() => undefined);
   const openMarkdownFileHandlerRef = useRef<() => void>(() => undefined);
   const openMarkdownFolderHandlerRef = useRef<() => void>(() => undefined);
@@ -3729,6 +3870,7 @@ function App() {
   selectedDocumentIdRef.current = selectedDocumentId;
   noteDraftRef.current = noteDraft;
   glossaryDraftRef.current = glossaryDraft;
+  openSettingsHandlerRef.current = openSettingsView;
   newMarkdownFileHandlerRef.current = () => {
     void newMarkdownFile();
   };
@@ -4814,6 +4956,73 @@ function App() {
   }, [fileContextMenu]);
 
   useEffect(() => {
+    if (!duplicateFileDialog) return;
+
+    window.setTimeout(() => {
+      duplicateFileInputRef.current?.focus();
+      duplicateFileInputRef.current?.select();
+    });
+  }, [duplicateFileDialog?.documentId]);
+
+  useEffect(() => {
+    if (!settingsViewOpen) return;
+
+    window.setTimeout(() => {
+      settingsCloseButtonRef.current?.focus();
+    });
+  }, [settingsViewOpen]);
+
+  useEffect(() => {
+    document.documentElement.lang = appLanguageHtmlLang[appLanguage];
+
+    return () => {
+      document.documentElement.removeAttribute("lang");
+    };
+  }, [appLanguage]);
+
+  useEffect(() => {
+    if (!nativeStorageAvailable) return;
+
+    void invoke("set_app_language", { language: appLanguage }).catch((error) => {
+      console.error(error);
+    });
+  }, [appLanguage, nativeStorageAvailable]);
+
+  useEffect(() => {
+    const interfaceFontSize = settingsSnapshot["app.interfaceFontSize"];
+    document.documentElement.style.fontSize = `${interfaceFontSize}px`;
+
+    return () => {
+      document.documentElement.style.removeProperty("font-size");
+    };
+  }, [settingsSnapshot]);
+
+  useEffect(() => {
+    const theme = settingsSnapshot["app.theme"];
+    const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
+
+    function applyTheme() {
+      const effectiveTheme = theme === "system" ? (mediaQuery.matches ? "dark" : "light") : theme;
+      document.documentElement.dataset.theme = effectiveTheme;
+    }
+
+    applyTheme();
+
+    if (theme !== "system") {
+      return () => {
+        document.documentElement.removeAttribute("data-theme");
+      };
+    }
+
+    mediaQuery.addEventListener("change", applyTheme);
+
+    return () => {
+      mediaQuery.removeEventListener("change", applyTheme);
+      document.documentElement.removeAttribute("data-theme");
+    };
+  }, [settingsSnapshot]);
+
+  useEffect(() => {
     return () => {
       window.clearTimeout(notePanelCloseTimerRef.current);
       window.clearTimeout(autosaveTimerRef.current);
@@ -4861,12 +5070,13 @@ function App() {
 
   useEffect(() => {
     if (!nativeStorageAvailable || lastOpenedFileRestoreAttemptedRef.current) return;
-
     lastOpenedFileRestoreAttemptedRef.current = true;
+    if (!settingsSnapshot["app.restoreLastOpenedFile"]) return;
+
     const lastOpenedPath = readLastOpenedMarkdownPath();
     if (!lastOpenedPath) return;
 
-    setStorageError("Opening last file...");
+    setStorageError(t("status.openingLastFile"));
 
     void invoke<OpenMarkdownFileContextResult>("open_markdown_file_context", {
       path: lastOpenedPath,
@@ -4880,15 +5090,18 @@ function App() {
       .catch((error) => {
         forgetLastOpenedMarkdownPath();
         setStorageError(
-          `Could not reopen last file: ${error instanceof Error ? error.message : String(error)}`,
+          t("error.couldNotReopenLastFile", {
+            message: error instanceof Error ? error.message : String(error),
+          }),
         );
       });
-  }, [nativeStorageAvailable]);
+  }, [nativeStorageAvailable, settingsSnapshot]);
 
   useEffect(() => {
     if (!nativeStorageAvailable) return;
 
     let unlistenNewFile: (() => void) | null = null;
+    let unlistenOpenSettings: (() => void) | null = null;
     let unlistenOpenFile: (() => void) | null = null;
     let unlistenOpenFolder: (() => void) | null = null;
     let unlistenOpenLocation: (() => void) | null = null;
@@ -4896,6 +5109,9 @@ function App() {
     void Promise.all([
       listen("scholium-new-file", () => {
         newMarkdownFileHandlerRef.current();
+      }),
+      listen("scholium-open-settings", () => {
+        openSettingsHandlerRef.current();
       }),
       listen("scholium-open-file", () => {
         openMarkdownFileHandlerRef.current();
@@ -4909,11 +5125,13 @@ function App() {
     ]).then(
       ([
         newFileListener,
+        openSettingsListener,
         openFileListener,
         openFolderListener,
         openLocationListener,
       ]) => {
         unlistenNewFile = newFileListener;
+        unlistenOpenSettings = openSettingsListener;
         unlistenOpenFile = openFileListener;
         unlistenOpenFolder = openFolderListener;
         unlistenOpenLocation = openLocationListener;
@@ -4922,6 +5140,7 @@ function App() {
 
     return () => {
       unlistenNewFile?.();
+      unlistenOpenSettings?.();
       unlistenOpenFile?.();
       unlistenOpenFolder?.();
       unlistenOpenLocation?.();
@@ -4977,6 +5196,22 @@ function App() {
           }
           return;
         }
+      }
+
+      if (settingsViewOpen) {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          closeSettingsView();
+        }
+        return;
+      }
+
+      if (duplicateFileDialog) {
+        if (event.key === "Escape" && !duplicateFileDialog.isSubmitting) {
+          event.preventDefault();
+          setDuplicateFileDialog(null);
+        }
+        return;
       }
 
       if (event.key === "Escape" && (notePanelHasContentRef.current || pendingAnchor)) {
@@ -5057,6 +5292,7 @@ function App() {
     activeGlossaryBindingId,
     activeNoteId,
     closeNotePanel,
+    duplicateFileDialog,
     glossaryModeEnabled,
     glossaryNavigationSignature,
     noteLibraryOpen,
@@ -5067,6 +5303,7 @@ function App() {
     pendingAnchor,
     pendingAnchorIsCompleteBlock,
     pendingAnchorIsGlossaryTerm,
+    settingsViewOpen,
   ]);
 
   function updateDocumentDirtyState(documentId: string, patch: Partial<DirtyDocumentState>) {
@@ -5185,7 +5422,7 @@ function App() {
 
   function applyLoadedFiles(
     loadedFiles: OpenMarkdownFileResult[],
-    options: { rememberRecent?: boolean } = {},
+    options: { rememberRecent?: boolean; sortEntries?: boolean } = {},
   ) {
     if (loadedFiles.length === 0) {
       setStorageError("No Markdown files found in the selected folder.");
@@ -5226,7 +5463,13 @@ function App() {
           (entry.kind !== "file" || !loadedDocumentIds.has(entry.documentId)),
       );
 
-      return [...parentEntries, ...loadedDocuments.map(workspaceEntryFromDocument), ...otherEntries];
+      const nextEntries = [
+        ...parentEntries,
+        ...loadedDocuments.map(workspaceEntryFromDocument),
+        ...otherEntries,
+      ];
+
+      return options.sortEntries ? sortWorkspaceEntriesForDirectory(nextEntries) : nextEntries;
     });
     setNotes((currentNotes) => [
       ...loadedNotes,
@@ -5359,7 +5602,7 @@ function App() {
           {
             kind: "parent-directory",
             id: `parent-directory:${openedDirectory.parentPath}`,
-            title: "上一層",
+            title: t("app.parentDirectory"),
             path: openedDirectory.parentPath,
           },
           ...childEntries,
@@ -5398,7 +5641,7 @@ function App() {
     setActiveGlossaryMode("view");
 
     if (nextEntries.length === 0) {
-      setStorageError("No folders or Markdown files found in the selected folder.");
+      setStorageError(t("status.noFoldersOrMarkdown"));
     } else {
       setStorageError("");
     }
@@ -5415,11 +5658,11 @@ function App() {
 
   async function openDirectoryPath(path: string) {
     if (!nativeStorageAvailable) {
-      setStorageError("Open/save requires the Scholium macOS app runtime.");
+      setStorageError(t("error.nativeRuntimeRequired"));
       return;
     }
 
-    setStorageError("Opening folder...");
+    setStorageError(t("status.openingFolder"));
 
     try {
       const openedDirectory = await invoke<OpenMarkdownDirectoryResult>("open_markdown_directory", {
@@ -5433,11 +5676,11 @@ function App() {
 
   async function openMarkdownFilePath(path: string) {
     if (!nativeStorageAvailable) {
-      setStorageError("Open/save requires the Scholium macOS app runtime.");
+      setStorageError(t("error.nativeRuntimeRequired"));
       return;
     }
 
-    setStorageError("Opening file...");
+    setStorageError(t("status.openingFile"));
 
     try {
       const context = await invoke<OpenMarkdownFileContextResult>("open_markdown_file_context", {
@@ -5461,7 +5704,7 @@ function App() {
 
   async function openMarkdownFolder() {
     if (!nativeStorageAvailable) {
-      setStorageError("Open/save requires the Scholium macOS app runtime.");
+      setStorageError(t("error.nativeRuntimeRequired"));
       return;
     }
 
@@ -5482,11 +5725,11 @@ function App() {
 
   async function openMarkdownFileFromPicker() {
     if (!nativeStorageAvailable) {
-      setStorageError("Open/save requires the Scholium macOS app runtime.");
+      setStorageError(t("error.nativeRuntimeRequired"));
       return;
     }
 
-    setStorageError("Opening file...");
+    setStorageError(t("status.openingFile"));
 
     try {
       const selectedPath = await open({
@@ -5507,7 +5750,7 @@ function App() {
 
   async function newMarkdownFile() {
     if (!nativeStorageAvailable) {
-      setStorageError("Open/save requires the Scholium macOS app runtime.");
+      setStorageError(t("error.nativeRuntimeRequired"));
       return;
     }
 
@@ -5515,7 +5758,7 @@ function App() {
 
     try {
       const selectedPath = await save({
-        defaultPath: "Untitled.md",
+        defaultPath: t("app.untitledFile"),
         filters: markdownFilters,
       });
       if (!selectedPath) return;
@@ -5640,7 +5883,7 @@ function App() {
     });
     if (currentDiskFile.body !== savedBodySnapshot && currentDiskFile.body !== bodyToSave) {
       throw new Error(
-        "檔案已在 Scholium 外更新，已停止自動儲存以避免覆蓋磁碟內容。請重新開啟檔案後再編輯。",
+        t("error.externalFileChanged"),
       );
     }
 
@@ -5721,13 +5964,14 @@ function App() {
 
   function defaultDuplicateFileName(documentToDuplicate: MarkdownDocument) {
     const fileName = fileNameFromPath(documentToDuplicate.filePath ?? documentToDuplicate.path);
-    const fallbackName = `${documentToDuplicate.title || "Untitled"} 副本.md`;
+    const duplicateSuffix = t("duplicate.suffix");
+    const fallbackName = `${documentToDuplicate.title || t("app.untitled")} ${duplicateSuffix}.md`;
     if (!fileName) return fallbackName;
 
     const extensionStart = fileName.lastIndexOf(".");
-    if (extensionStart <= 0) return `${fileName} 副本.md`;
+    if (extensionStart <= 0) return `${fileName} ${duplicateSuffix}.md`;
 
-    return `${fileName.slice(0, extensionStart)} 副本${fileName.slice(extensionStart)}`;
+    return `${fileName.slice(0, extensionStart)} ${duplicateSuffix}${fileName.slice(extensionStart)}`;
   }
 
   async function writeTextToClipboard(text: string) {
@@ -5817,33 +6061,121 @@ function App() {
     }
   }
 
-  async function duplicateDocumentFile(documentId: string) {
-    if (!nativeStorageAvailable) {
-      setStorageError("Open/save requires the Scholium macOS app runtime.");
+  function openSettingsView() {
+    setFileContextMenu(null);
+    if (!duplicateFileDialog?.isSubmitting) {
+      setDuplicateFileDialog(null);
+    }
+    setStorageError("");
+    setSettingsViewOpen(true);
+  }
+
+  function closeSettingsView() {
+    setSettingsViewOpen(false);
+  }
+
+  function applySettingRuntimeValue(key: SettingKey, value: SettingValue) {
+    if (key === "app.directoryPaneOpen" && typeof value === "boolean") {
+      setDirectoryPaneOpen(value);
       return;
     }
 
+  }
+
+  function updateSettingValue(key: SettingKey, value: SettingValue) {
+    const nextValue = writeSetting(key, value);
+
+    setSettingsSnapshot(
+      (currentSettings) =>
+        ({
+          ...currentSettings,
+          [key]: nextValue,
+        }) as SettingsSnapshot,
+    );
+    applySettingRuntimeValue(key, nextValue);
+  }
+
+  function resetSettingValue(key: SettingKey) {
+    const nextValue = resetSetting(key);
+
+    setSettingsSnapshot(
+      (currentSettings) =>
+        ({
+          ...currentSettings,
+          [key]: nextValue,
+        }) as SettingsSnapshot,
+    );
+    applySettingRuntimeValue(key, nextValue);
+  }
+
+  function resetAllSettingValues() {
+    const nextSettings = resetSettings();
+
+    setSettingsSnapshot(nextSettings);
+    setDirectoryPaneOpen(nextSettings["app.directoryPaneOpen"]);
+  }
+
+  const editorSurfaceStyle = {
+    "--settings-editor-font-size": `${settingsSnapshot["editor.fontSize"]}px`,
+    "--settings-editor-line-height": settingsSnapshot["editor.lineHeight"],
+    "--settings-editor-line-height-px": `${
+      settingsSnapshot["editor.fontSize"] * settingsSnapshot["editor.lineHeight"]
+    }px`,
+  } as CSSProperties;
+
+  function openDuplicateDocumentDialog(documentId: string) {
+    setFileContextMenu(null);
+
+    if (!nativeStorageAvailable) {
+      setStorageError(t("error.nativeRuntimeRequired"));
+      return false;
+    }
+
     if (autosaveInFlightRef.current) {
-      setStorageError("請稍候目前儲存完成後再建立副本。");
-      return;
+      setStorageError(t("error.waitForAutosaveBeforeDuplicate"));
+      return false;
     }
 
     const documentToDuplicate = documentsRef.current.find((document) => document.id === documentId);
     if (!documentToDuplicate?.filePath) {
-      setStorageError("This document is not backed by a local Markdown file.");
-      return;
+      setStorageError(t("error.notBackedByMarkdownFile"));
+      return false;
     }
 
-    setFileContextMenu(null);
+    setStorageError("");
+    setDuplicateFileDialog({
+      documentId,
+      fileName: defaultDuplicateFileName(documentToDuplicate),
+      isSubmitting: false,
+    });
 
-    const requestedFileName = window.prompt(
-      "請輸入副本檔名",
-      defaultDuplicateFileName(documentToDuplicate),
-    );
-    const fileName = requestedFileName?.trim();
-    if (!fileName) return;
+    return true;
+  }
 
-    setStorageError("Creating duplicate...");
+  async function duplicateDocumentFile(documentId: string, fileName: string) {
+    if (!nativeStorageAvailable) {
+      setStorageError(t("error.nativeRuntimeRequired"));
+      return false;
+    }
+
+    if (autosaveInFlightRef.current) {
+      setStorageError(t("error.waitForAutosaveBeforeDuplicate"));
+      return false;
+    }
+
+    const documentToDuplicate = documentsRef.current.find((document) => document.id === documentId);
+    if (!documentToDuplicate?.filePath) {
+      setStorageError(t("error.notBackedByMarkdownFile"));
+      return false;
+    }
+
+    const trimmedFileName = fileName.trim();
+    if (!trimmedFileName) {
+      setStorageError(t("error.duplicateFileNameRequired"));
+      return false;
+    }
+
+    setStorageError("");
 
     try {
       if (hasDirtyState(dirtyDocumentStatesRef.current[documentId])) {
@@ -5852,13 +6184,53 @@ function App() {
 
       const loaded = await invoke<OpenMarkdownFileResult>("duplicate_markdown_file", {
         path: documentToDuplicate.filePath,
-        fileName,
+        fileName: trimmedFileName,
       });
-      applyLoadedFiles([loaded]);
+      applyLoadedFiles([loaded], { sortEntries: true });
       setStorageError("");
+      return true;
     } catch (error) {
-      setStorageError(error instanceof Error ? error.message : String(error));
+      const message = error instanceof Error ? error.message : String(error);
+      if (message === "duplicate file already exists") {
+        setStorageError(t("error.duplicateExists"));
+      } else if (message === "duplicate file name must not include folders") {
+        setStorageError(t("error.duplicateNameNoFolders"));
+      } else if (message === "duplicate file name is empty") {
+        setStorageError(t("error.duplicateFileNameRequired"));
+      } else {
+        setStorageError(message);
+      }
+      return false;
     }
+  }
+
+  async function submitDuplicateDocumentFile(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!duplicateFileDialog || duplicateFileDialog.isSubmitting) return;
+
+    setDuplicateFileDialog((currentDialog) =>
+      currentDialog ? { ...currentDialog, isSubmitting: true } : currentDialog,
+    );
+
+    const duplicated = await duplicateDocumentFile(
+      duplicateFileDialog.documentId,
+      duplicateFileDialog.fileName,
+    );
+    if (duplicated) {
+      setDuplicateFileDialog(null);
+      return;
+    }
+
+    setDuplicateFileDialog((currentDialog) =>
+      currentDialog ? { ...currentDialog, isSubmitting: false } : currentDialog,
+    );
+  }
+
+  function closeDuplicateFileDialog() {
+    if (duplicateFileDialog?.isSubmitting) return;
+
+    setDuplicateFileDialog(null);
+    setStorageError("");
   }
 
   async function copyDocumentContent(documentId: string) {
@@ -5877,29 +6249,29 @@ function App() {
 
   async function deleteDocumentFile(documentId: string) {
     if (!nativeStorageAvailable) {
-      setStorageError("Open/save requires the Scholium macOS app runtime.");
+      setStorageError(t("error.nativeRuntimeRequired"));
       return;
     }
 
     if (autosaveInFlightRef.current) {
-      setStorageError("請稍候目前儲存完成後再刪除檔案。");
+      setStorageError(t("error.waitForAutosaveBeforeDelete"));
       return;
     }
 
     const documentToDelete = documentsRef.current.find((document) => document.id === documentId);
     if (!documentToDelete?.filePath) {
-      setStorageError("This document is not backed by a local Markdown file.");
+      setStorageError(t("error.notBackedByMarkdownFile"));
       return;
     }
 
     setFileContextMenu(null);
 
     const confirmed = window.confirm(
-      `確定要刪除「${documentToDelete.title}」嗎？\n\n這會刪除 Markdown 檔案與對應的 notes sidecar。`,
+      t("confirm.deleteFile", { title: documentToDelete.title }),
     );
     if (!confirmed) return;
 
-    setStorageError("Deleting file...");
+    setStorageError(t("status.deletingFile"));
 
     try {
       await invoke<DeleteMarkdownFileResult>("delete_markdown_file", {
@@ -7161,15 +7533,15 @@ function App() {
     ? [
         {
           id: "duplicate",
-          label: "建立副本",
+          label: t("duplicate.action"),
           icon: <DuplicateIcon />,
           onSelect: () => {
-            void duplicateDocumentFile(fileContextMenu.documentId);
+            openDuplicateDocumentDialog(fileContextMenu.documentId);
           },
         },
         {
           id: "copy-content",
-          label: "複製內容",
+          label: t("file.copyContent"),
           icon: <CopyIcon />,
           onSelect: () => {
             void copyDocumentContent(fileContextMenu.documentId);
@@ -7177,7 +7549,7 @@ function App() {
         },
         {
           id: "delete",
-          label: "刪除檔案",
+          label: t("file.delete"),
           icon: <TrashIcon />,
           tone: "danger",
           onSelect: () => {
@@ -7196,22 +7568,22 @@ function App() {
     ? (activeNoteToneById.get(activeNote.id) ?? activeNote.tone ?? 0)
     : 0;
   const selectionWarningMessage = glossaryModeActive
-    ? "請選取 1-3 個單詞建立名詞解釋，或選取完整句子/段落新增筆記。"
-    : "請選取完整句子或段落新增筆記。";
+    ? t("selection.warning.glossary")
+    : t("selection.warning.note");
 
   const shellClassName = [
     "scholium-shell",
     directoryPaneOpen ? "" : "is-directory-pane-closed",
-    noteModeEnabled && noteLibraryOpen ? "is-note-library-open" : "",
-    noteLibraryFocusActive ? "is-note-library-focus-active" : "",
-    notePanelModalActive ? "is-note-panel-modal-active" : "",
+    !settingsViewOpen && noteModeEnabled && noteLibraryOpen ? "is-note-library-open" : "",
+    !settingsViewOpen && noteLibraryFocusActive ? "is-note-library-focus-active" : "",
+    !settingsViewOpen && notePanelModalActive ? "is-note-panel-modal-active" : "",
   ]
     .filter(Boolean)
     .join(" ");
 
   return (
     <main className={shellClassName} onMouseDownCapture={handleShellMouseDownCapture}>
-      <aside className="document-pane" aria-label="Documents">
+      <aside className="document-pane" aria-label={t("app.documents")}>
         <div className="pane-header">
           <div>
             <h1>{workspaceTitle}</h1>
@@ -7252,8 +7624,8 @@ function App() {
                     top: event.clientY,
                   });
                 }}
-                aria-label={entry.kind === "parent-directory" ? "回到上一層目錄" : undefined}
-                title={entry.kind === "parent-directory" ? "回到上一層目錄" : undefined}
+                aria-label={entry.kind === "parent-directory" ? t("app.parentDirectory.aria") : undefined}
+                title={entry.kind === "parent-directory" ? t("app.parentDirectory.aria") : undefined}
                 type="button"
               >
                 {entry.kind === "parent-directory" ? (
@@ -7274,18 +7646,25 @@ function App() {
         {storageError ? <p className="storage-error">{storageError}</p> : null}
       </aside>
 
-      <button
-        aria-expanded={directoryPaneOpen}
-        aria-label={directoryPaneOpen ? "收起目錄" : "展開目錄"}
-        className={`directory-bookmark ${directoryPaneOpen ? "is-attached" : ""}`}
-        onClick={toggleDirectoryPane}
-        type="button"
-      >
-        <span aria-hidden="true" className="directory-bookmark__label">
-          <span>目</span>
-          <span>錄</span>
-        </span>
-      </button>
+      {!settingsViewOpen ? (
+        <button
+          aria-expanded={directoryPaneOpen}
+          aria-label={
+            directoryPaneOpen ? t("directory.bookmark.close") : t("directory.bookmark.open")
+          }
+          className={`directory-bookmark ${directoryPaneOpen ? "is-attached" : ""}`}
+          onClick={toggleDirectoryPane}
+          type="button"
+        >
+          <span aria-hidden="true" className="directory-bookmark__label">
+            {t("directory.bookmark.label")
+              .split("")
+              .map((character, index) => (
+                <span key={`${character}-${index}`}>{character}</span>
+              ))}
+          </span>
+        </button>
+      ) : null}
 
       {fileContextMenu ? (
         <div
@@ -7310,23 +7689,105 @@ function App() {
         </div>
       ) : null}
 
-      <section className="editor-pane" aria-label="Markdown editor">
+      {duplicateFileDialog ? (
+        <div
+          className="duplicate-file-dialog-backdrop"
+          onMouseDown={closeDuplicateFileDialog}
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          <form
+            aria-labelledby="duplicate-file-dialog-title"
+            aria-modal="true"
+            className="duplicate-file-dialog"
+            onMouseDown={(event) => event.stopPropagation()}
+            onSubmit={submitDuplicateDocumentFile}
+            role="dialog"
+          >
+            <div className="duplicate-file-dialog__header">
+              <h2 id="duplicate-file-dialog-title">{t("duplicate.title")}</h2>
+              <button
+                aria-label={t("dialog.close")}
+                className="duplicate-file-dialog__close"
+                disabled={duplicateFileDialog.isSubmitting}
+                onClick={closeDuplicateFileDialog}
+                type="button"
+              >
+                ×
+              </button>
+            </div>
+            <label className="duplicate-file-dialog__field">
+              <span>{t("duplicate.fileName")}</span>
+              <input
+                disabled={duplicateFileDialog.isSubmitting}
+                ref={duplicateFileInputRef}
+                type="text"
+                value={duplicateFileDialog.fileName}
+                onChange={(event) => {
+                  const nextFileName = event.target.value;
+                  setDuplicateFileDialog((currentDialog) =>
+                    currentDialog ? { ...currentDialog, fileName: nextFileName } : currentDialog,
+                  );
+                }}
+              />
+            </label>
+            {storageError ? (
+              <p className="duplicate-file-dialog__message" role="status">
+                {storageError}
+              </p>
+            ) : null}
+            <div className="note-actions duplicate-file-dialog__actions">
+              <button
+                disabled={duplicateFileDialog.isSubmitting}
+                onClick={closeDuplicateFileDialog}
+                type="button"
+              >
+                {t("duplicate.cancel")}
+              </button>
+              <button
+                className="is-primary"
+                disabled={duplicateFileDialog.isSubmitting}
+                type="submit"
+              >
+                {duplicateFileDialog.isSubmitting
+                  ? t("duplicate.submitting")
+                  : t("duplicate.submit")}
+              </button>
+            </div>
+          </form>
+        </div>
+      ) : null}
+
+      {settingsViewOpen ? (
+        <SettingsView
+          closeButtonRef={settingsCloseButtonRef}
+          values={settingsSnapshot}
+          t={t}
+          onChange={updateSettingValue}
+          onClose={closeSettingsView}
+          onResetAllSettings={resetAllSettingValues}
+          onResetSetting={resetSettingValue}
+        />
+      ) : null}
+
+      <section className="editor-pane" aria-label={t("app.markdownEditor")}>
         <div className="editor-grid">
-          <div className="editor-surface">
+          <div className="editor-surface" style={editorSurfaceStyle}>
             <div
-              aria-label="Editor tools"
+              aria-label={t("app.editorTools")}
               className="editor-toolbar"
               data-expanded={noteModeEnabled ? "true" : "false"}
             >
               <button
                 aria-checked={noteModeEnabled}
-                aria-label={noteModeEnabled ? "關閉筆記模式" : "開啟筆記模式"}
+                aria-label={
+                  noteModeEnabled ? t("toolbar.noteMode.close") : t("toolbar.noteMode.open")
+                }
                 className="note-mode-switch note-mode-switch--primary"
                 onClick={toggleNoteMode}
                 role="switch"
                 type="button"
               >
-                <span className="note-mode-switch__label">筆記模式</span>
+                <span className="note-mode-switch__label">{t("toolbar.noteMode")}</span>
               </button>
               <span
                 aria-hidden="true"
@@ -7335,20 +7796,24 @@ function App() {
               <button
                 aria-checked={glossaryModeActive}
                 aria-hidden={!noteModeEnabled}
-                aria-label={glossaryModeActive ? "關閉名詞解釋模式" : "開啟名詞解釋模式"}
+                aria-label={
+                  glossaryModeActive
+                    ? t("toolbar.glossaryMode.close")
+                    : t("toolbar.glossaryMode.open")
+                }
                 className="note-mode-switch note-mode-switch--secondary note-mode-switch--dependent"
                 disabled={!noteModeEnabled}
                 onClick={toggleGlossaryMode}
                 role="switch"
                 type="button"
               >
-                <span className="note-mode-switch__label">名詞</span>
+                <span className="note-mode-switch__label">{t("toolbar.glossaryMode")}</span>
               </button>
             </div>
             {!hasOpenDocument ? (
               <div className="empty-editor-state">
-                <h2>此目錄沒有 Markdown 檔案</h2>
-                <p>請選擇左側子目錄，或開啟其他 Markdown 檔案。</p>
+                <h2>{t("emptyDirectory.title")}</h2>
+                <p>{t("emptyDirectory.description")}</p>
               </div>
             ) : editorMode === "preview" ? (
                 <MilkdownMarkdownEditor
@@ -7380,24 +7845,30 @@ function App() {
         </div>
       </section>
 
-      {noteModeEnabled ? (
+      {!settingsViewOpen && noteModeEnabled ? (
         <>
           <button
             aria-expanded={noteLibraryOpen}
-            aria-label={noteLibraryOpen ? "收起筆記庫" : "展開筆記庫"}
+            aria-label={
+              noteLibraryOpen
+                ? t("noteLibrary.bookmark.close")
+                : t("noteLibrary.bookmark.open")
+            }
             className={`note-library-bookmark ${noteLibraryOpen ? "is-attached" : ""}`}
             onClick={toggleNoteLibrary}
             type="button"
           >
             <span aria-hidden="true" className="note-library-bookmark__label">
-              <span>筆</span>
-              <span>記</span>
-              <span>庫</span>
+              {t("noteLibrary.bookmark.label")
+                .split("")
+                .map((character, index) => (
+                  <span key={`${character}-${index}`}>{character}</span>
+                ))}
             </span>
           </button>
           <aside
             aria-hidden={!noteLibraryOpen}
-            aria-label="筆記庫"
+            aria-label={t("noteLibrary.label")}
             className={`note-library-pane ${noteLibraryOpen ? "is-open" : ""} ${
               noteLibraryFocusActive ? "is-focus-active" : ""
             }`}
@@ -7426,11 +7897,11 @@ function App() {
                       onKeyDown={(event) => handleNoteLibraryCardKeyDown(note.id, event)}
                     >
                     <div className="note-library-card__header">
-                      <PinBadge />
+                      <PinBadge ariaLabel={t("note.pin")} />
                     </div>
                     {isEditingLibraryNote ? (
                       <NoteMarkdownEditor
-                        ariaLabel="編輯筆記"
+                        ariaLabel={t("note.edit")}
                         className="note-library-card__editor"
                         editorRootRef={(element) => {
                           libraryNoteEditorRootRef.current = element;
@@ -7445,8 +7916,10 @@ function App() {
                     ) : (
                       <NoteLibraryPreviewContent
                         className="bottom-note-body note-library-card__body"
-                        emptyLabel="無內容"
+                        emptyLabel={t("note.empty")}
                         expanded={isFocusedLibraryNote}
+                        mermaidEmptyDefinitionLabel={t("mermaid.empty")}
+                        mermaidLoadingLabel={t("mermaid.loading")}
                         onDoubleClick={() => startLibraryNoteEditor(note.id)}
                         value={note.body}
                       />
@@ -7457,9 +7930,11 @@ function App() {
                     >
                       <button
                         type="button"
-                        aria-label={isEditingLibraryNote ? "完成編輯筆記" : "編輯筆記"}
+                        aria-label={
+                          isEditingLibraryNote ? t("note.edit.done") : t("note.edit")
+                        }
                         aria-pressed={isEditingLibraryNote}
-                        title={isEditingLibraryNote ? "完成編輯筆記" : "編輯筆記"}
+                        title={isEditingLibraryNote ? t("note.edit.done") : t("note.edit")}
                         tabIndex={isFocusedLibraryNote || isEditingLibraryNote ? 0 : -1}
                         onClick={(event) => {
                           event.stopPropagation();
@@ -7471,8 +7946,8 @@ function App() {
                       <button
                         className="is-danger"
                         type="button"
-                        aria-label="刪除筆記"
-                        title="刪除筆記"
+                        aria-label={t("note.delete")}
+                        title={t("note.delete")}
                         tabIndex={isFocusedLibraryNote || isEditingLibraryNote ? 0 : -1}
                         onClick={(event) => {
                           event.stopPropagation();
@@ -7486,20 +7961,20 @@ function App() {
                 );
               })
             ) : (
-              <p className="note-library-empty">尚無筆記</p>
+              <p className="note-library-empty">{t("noteLibrary.empty")}</p>
             )}
           </div>
         </aside>
         </>
       ) : null}
 
-      {noteModeEnabled && selectionWarningPosition ? (
+      {!settingsViewOpen && noteModeEnabled && selectionWarningPosition ? (
         <div className="selection-warning-popover" role="status" style={selectionWarningStyle}>
           {selectionWarningMessage}
         </div>
       ) : null}
 
-      {floatingNotePanelShouldRender ? (
+      {!settingsViewOpen && floatingNotePanelShouldRender ? (
         <>
           {notePanelModalActive ? (
             <div
@@ -7534,15 +8009,15 @@ function App() {
             aria-label={
               pendingAnchor
                 ? pendingAnchorIsGlossaryTerm
-                  ? "Create glossary term"
-                  : "Create selection note"
+                  ? t("glossary.create")
+                  : t("selectionNote.create")
                 : activeGlossaryIsEditing
-                  ? "Edit glossary term"
+                  ? t("glossary.edit")
                   : activeGlossaryTerm
-                    ? "View glossary term"
+                    ? t("glossary.view")
                     : activeNoteIsEditing
-                      ? "Edit selection note"
-                      : "View selection note"
+                      ? t("selectionNote.edit")
+                      : t("selectionNote.view")
             }
           >
             <div
@@ -7551,11 +8026,11 @@ function App() {
               ref={floatingNoteCardRef}
             >
               <div className="floating-note-card__header">
-                <PinBadge />
+                <PinBadge ariaLabel={t("note.pin")} />
                 <button
                   className="floating-note-close-button"
                   type="button"
-                  aria-label="Close note"
+                  aria-label={t("note.close")}
                   onClick={closeNotePanel}
                 >
                   ×
@@ -7573,10 +8048,12 @@ function App() {
 
               {pendingAnchor && pendingGlossaryTerm ? (
                 <div className="selection-confirmation">
-                  <p>已存在於詞彙庫中，是否綁定？</p>
+                  <p>{t("selection.glossary.exists")}</p>
                   <MarkdownPreviewContent
                     className="bottom-note-body glossary-existing-definition"
-                    emptyLabel="尚未填寫說明"
+                    emptyLabel={t("glossary.emptyDefinition")}
+                    mermaidEmptyDefinitionLabel={t("mermaid.empty")}
+                    mermaidLoadingLabel={t("mermaid.loading")}
                     value={pendingGlossaryTerm.definition}
                   />
                   <div className="note-actions bottom-note-actions">
@@ -7585,14 +8062,14 @@ function App() {
                       type="button"
                       onClick={rejectPendingGlossaryTerm}
                     >
-                      不綁定
+                      {t("selection.glossary.unbind")}
                     </button>
                     <button
                       className="is-primary selection-confirmation-button"
                       type="button"
                       onClick={bindPendingGlossaryTerm}
                     >
-                      綁定
+                      {t("selection.glossary.bind")}
                     </button>
                   </div>
                 </div>
@@ -7600,14 +8077,18 @@ function App() {
 
               {pendingAnchor && !pendingGlossaryTerm && pendingAnchorIsGlossaryTerm ? (
                 <div className="selection-confirmation">
-                  <p>要建立或綁定「{pendingAnchor.selectedText.replace(/\s+/g, " ").trim()}」的名詞解釋嗎？</p>
+                  <p>
+                    {t("selection.glossary.prompt", {
+                      text: pendingAnchor.selectedText.replace(/\s+/g, " ").trim(),
+                    })}
+                  </p>
                   <div className="note-actions bottom-note-actions">
                     <button
                       className="is-primary selection-confirmation-button"
                       type="button"
                       onClick={startPendingGlossaryFlow}
                     >
-                      處理名詞
+                      {t("selection.glossary.handle")}
                     </button>
                   </div>
                 </div>
@@ -7618,16 +8099,16 @@ function App() {
               !pendingAnchorIsGlossaryTerm &&
               pendingAnchorIsCompleteBlock ? (
                 <div className="selection-confirmation">
-                  <p>要新增筆記嗎？</p>
+                  <p>{t("selection.note.prompt")}</p>
                   <div className="note-actions bottom-note-actions">
                     <button
                       className="is-primary selection-confirmation-button"
                       type="button"
-                      aria-label="Add note"
-                      title="Add note"
+                      aria-label={t("note.add.aria")}
+                      title={t("note.add.aria")}
                       onClick={confirmPendingSelectionNote}
                     >
-                      新增
+                      {t("note.add")}
                     </button>
                   </div>
                 </div>
@@ -7635,7 +8116,7 @@ function App() {
 
               {!pendingAnchor && activeNoteIsEditing ? (
                 <NoteMarkdownEditor
-                  ariaLabel="Edit note"
+                  ariaLabel={t("note.edit")}
                   className="floating-note-card__editor"
                   editorRootRef={(element) => {
                     noteEditorRootRef.current = element;
@@ -7651,7 +8132,7 @@ function App() {
 
               {!pendingAnchor && activeGlossaryIsEditing ? (
                 <NoteMarkdownEditor
-                  ariaLabel="Edit glossary term"
+                  ariaLabel={t("glossary.edit")}
                   className="floating-note-card__editor"
                   editorRootRef={(element) => {
                     noteEditorRootRef.current = element;
@@ -7668,14 +8149,16 @@ function App() {
               {!pendingAnchor && (activeNoteIsEditing || activeGlossaryIsEditing) && isReturningToView ? (
                 <div className="note-returning-status" role="status">
                   <span className="note-returning-spinner" aria-hidden="true" />
-                  <span>正在回到閱覽模式</span>
+                  <span>{t("note.returningToView")}</span>
                 </div>
               ) : null}
 
               {!pendingAnchor && activeGlossaryTerm && !activeGlossaryIsEditing ? (
                 <MarkdownPreviewContent
                   className="bottom-note-body"
-                  emptyLabel="尚未填寫說明"
+                  emptyLabel={t("glossary.emptyDefinition")}
+                  mermaidEmptyDefinitionLabel={t("mermaid.empty")}
+                  mermaidLoadingLabel={t("mermaid.loading")}
                   onDoubleClick={() => openGlossaryEditor(activeGlossaryTerm.id)}
                   value={activeGlossaryTerm.definition}
                 />
@@ -7685,8 +8168,8 @@ function App() {
                 <div className="note-actions bottom-note-actions">
                   <button
                     type="button"
-                    aria-label="Edit glossary term"
-                    title="Edit"
+                    aria-label={t("glossary.edit")}
+                    title={t("glossary.edit")}
                     onClick={() => openGlossaryEditor(activeGlossaryTerm.id)}
                   >
                     <PencilIcon />
@@ -7695,8 +8178,8 @@ function App() {
                     <button
                       className="is-glossary-action"
                       type="button"
-                      aria-label="Remove glossary binding"
-                      title="Remove glossary binding"
+                      aria-label={t("glossary.removeBinding")}
+                      title={t("glossary.removeBinding")}
                       onClick={() => deleteGlossaryBinding(activeGlossaryBinding.id)}
                     >
                       <TrashIcon />
@@ -7708,7 +8191,9 @@ function App() {
               {!pendingAnchor && activeNote && !activeNoteIsEditing ? (
                 <MarkdownPreviewContent
                   className="bottom-note-body"
-                  emptyLabel="無內容"
+                  emptyLabel={t("note.empty")}
+                  mermaidEmptyDefinitionLabel={t("mermaid.empty")}
+                  mermaidLoadingLabel={t("mermaid.loading")}
                   onDoubleClick={() => openNoteEditor(activeNote.id)}
                   value={activeNote.body}
                 />
@@ -7718,8 +8203,8 @@ function App() {
                 <div className="note-actions bottom-note-actions">
                   <button
                     type="button"
-                    aria-label="Edit note"
-                    title="Edit"
+                    aria-label={t("note.edit")}
+                    title={t("note.edit")}
                     onClick={() => openNoteEditor(activeNote.id)}
                   >
                     <PencilIcon />
@@ -7727,8 +8212,8 @@ function App() {
                   <button
                     className="is-danger"
                     type="button"
-                    aria-label="Delete note"
-                    title="Delete"
+                    aria-label={t("note.delete")}
+                    title={t("note.delete")}
                     onClick={() => deleteNote(activeNote.id)}
                   >
                     <TrashIcon />
