@@ -135,7 +135,7 @@ export const settingsDefinitions: SettingDefinition[] = [
     type: "boolean",
     labelKey: "settings.app.directoryPaneOpen.label",
     descriptionKey: "settings.app.directoryPaneOpen.description",
-    defaultValue: true,
+    defaultValue: false,
     requiresRestart: false,
   },
   {

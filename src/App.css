@@ -451,8 +451,16 @@ button:disabled {
   fill: currentColor;
 }
 
+.document-icon svg [stroke] {
+  stroke: currentColor !important;
+}
+
 .document-row.is-folder .document-icon {
   color: var(--color-muted);
+}
+
+.document-icon.is-selected {
+  color: var(--color-heading);
 }
 
 .document-row.is-selected .document-icon {

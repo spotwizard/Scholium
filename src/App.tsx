@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open as openDialog, save } from "@tauri-apps/plugin-dialog";
 import { openUrl as openExternalUrl } from "@tauri-apps/plugin-opener";
 import {
@@ -29,6 +30,7 @@ import { SettingsView } from "./SettingsView";
 import fileSelectedGlyphSvg from "./assets/file-selected-glyph.svg?raw";
 import fileGlyphSvg from "./assets/file-glyph.svg?raw";
 import folderGlyphSvg from "./assets/folder-glyph.svg?raw";
+import folderSelectedGlyphSvg from "./assets/folder-selected-glyph.svg?raw";
 import { appLanguageHtmlLang, createTranslator } from "./i18n";
 import { loadScholiumMermaid } from "./mermaid";
 import {
@@ -292,12 +294,19 @@ type DuplicateFileDialogState = {
 };
 
 function DocumentGlyphIcon({ kind, selected = false }: { kind: "file" | "folder"; selected?: boolean }) {
-  const glyphSvg = kind === "folder" ? folderGlyphSvg : selected ? fileSelectedGlyphSvg : fileGlyphSvg;
+  const glyphSvg =
+    kind === "folder"
+      ? selected
+        ? folderSelectedGlyphSvg
+        : folderGlyphSvg
+      : selected
+        ? fileSelectedGlyphSvg
+        : fileGlyphSvg;
 
   return (
     <span
       aria-hidden="true"
-      className="document-icon"
+      className={`document-icon ${selected ? "is-selected" : ""}`}
       dangerouslySetInnerHTML={{ __html: glyphSvg }}
     />
   );
@@ -477,6 +486,8 @@ const previewAnnotationLineJoinMaxGap = 20;
 const notePanelAnimationMs = 180;
 const autosaveDelayMs = 1000;
 const lastOpenedMarkdownPathStorageKey = "scholium:last-opened-markdown-path";
+const lastOpenedMarkdownRootDirectoryStorageKey =
+  "scholium:last-opened-markdown-root-directory";
 const mobileViewportQuery = "(max-width: 640px)";
 const dropboxDocumentIdPrefix = "dropbox:";
 const configuredDropboxAppKey = import.meta.env.VITE_DROPBOX_APP_KEY?.trim() ?? "";
@@ -974,6 +985,89 @@ function rememberLastOpenedMarkdownPath(path: string | null | undefined) {
   } catch {
     // Remembering the last file is best-effort only.
   }
+}
+
+function readLastOpenedMarkdownRootDirectoryPath() {
+  try {
+    return window.localStorage.getItem(lastOpenedMarkdownRootDirectoryStorageKey)?.trim() ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function rememberLastOpenedMarkdownRootDirectoryPath(path: string | null | undefined) {
+  if (!path) return;
+
+  try {
+    window.localStorage.setItem(lastOpenedMarkdownRootDirectoryStorageKey, path);
+  } catch {
+    // Remembering the last root directory is best-effort only.
+  }
+}
+
+function forgetLastOpenedMarkdownRootDirectoryPath() {
+  try {
+    window.localStorage.removeItem(lastOpenedMarkdownRootDirectoryStorageKey);
+  } catch {
+    // Remembering the last root directory is best-effort only.
+  }
+}
+
+function parentDirectoryPath(path: string | null | undefined) {
+  const normalizedPath = path?.trim();
+  if (!normalizedPath) return "";
+
+  const separatorIndex = Math.max(
+    normalizedPath.lastIndexOf("/"),
+    normalizedPath.lastIndexOf("\\"),
+  );
+  if (separatorIndex <= 0) return "";
+
+  return normalizedPath.slice(0, separatorIndex);
+}
+
+function normalizeLocalPathForCompare(path: string | null | undefined) {
+  let normalizedPath = path?.trim().replace(/\\/g, "/") ?? "";
+  while (normalizedPath.length > 1 && normalizedPath.endsWith("/")) {
+    normalizedPath = normalizedPath.slice(0, -1);
+  }
+
+  return normalizedPath;
+}
+
+function localPathsMatch(left: string | null | undefined, right: string | null | undefined) {
+  return normalizeLocalPathForCompare(left) === normalizeLocalPathForCompare(right);
+}
+
+function localPathIsInsideDirectory(path: string, directoryPath: string) {
+  const normalizedPath = normalizeLocalPathForCompare(path);
+  const normalizedDirectoryPath = normalizeLocalPathForCompare(directoryPath);
+  if (!normalizedPath || !normalizedDirectoryPath) return false;
+  if (normalizedPath === normalizedDirectoryPath) return true;
+  if (normalizedDirectoryPath === "/") return normalizedPath.startsWith("/");
+
+  return normalizedPath.startsWith(`${normalizedDirectoryPath}/`);
+}
+
+function ancestorDirectoryPathsForFile(rootDirectoryPath: string, filePath: string) {
+  const rootPath = normalizeLocalPathForCompare(rootDirectoryPath);
+  const selectedDirectoryPath = normalizeLocalPathForCompare(parentDirectoryPath(filePath));
+  if (!rootPath || !selectedDirectoryPath) return [];
+  if (selectedDirectoryPath === rootPath) return [];
+  if (!localPathIsInsideDirectory(selectedDirectoryPath, rootPath)) return [];
+
+  const ancestorPaths: string[] = [];
+  let currentPath = selectedDirectoryPath;
+
+  while (currentPath && currentPath !== rootPath) {
+    ancestorPaths.unshift(currentPath);
+
+    const parentPath = normalizeLocalPathForCompare(parentDirectoryPath(currentPath));
+    if (!parentPath || parentPath === currentPath) return [];
+    currentPath = parentPath;
+  }
+
+  return currentPath === rootPath ? ancestorPaths : [];
 }
 
 function forgetLastOpenedMarkdownPath() {
@@ -4013,9 +4107,8 @@ function App() {
   const [editorMode, setEditorMode] = useState<EditorMode>("preview");
   const [noteModeEnabled, setNoteModeEnabled] = useState(false);
   const [glossaryModeEnabled, setGlossaryModeEnabled] = useState(false);
-  const [directoryPaneOpen, setDirectoryPaneOpen] = useState(
-    settingsSnapshot["app.directoryPaneOpen"],
-  );
+  const [directoryPaneOpen, setDirectoryPaneOpen] = useState(false);
+  const [windowIsFullscreen, setWindowIsFullscreen] = useState(false);
   const [noteLibraryOpen, setNoteLibraryOpen] = useState(false);
   const [focusedLibraryNoteId, setFocusedLibraryNoteId] = useState("");
   const [editingLibraryNoteId, setEditingLibraryNoteId] = useState("");
@@ -4045,6 +4138,11 @@ function App() {
   const floatingNoteAnchorRectRef = useRef<TextRangeRect | null>(null);
   const lastPointerAnchorRectRef = useRef<TextRangeRect | null>(null);
   const directoryPaneOpenBeforeNoteLibraryRef = useRef<boolean | null>(null);
+  const directoryPaneOpenBeforeFullscreenRef = useRef<boolean | null>(null);
+  const directoryPaneClosedInFullscreenRef = useRef(false);
+  const directoryPaneToggledInFullscreenRef = useRef(false);
+  const directoryPaneStartupSettingNormalizedRef = useRef(false);
+  const windowIsFullscreenRef = useRef(false);
   const noteEditorShouldRefocusRef = useRef(false);
   const noteEditorIsComposingRef = useRef(false);
   const noteEditorEnterIgnoredDuringCompositionRef = useRef(false);
@@ -4355,6 +4453,24 @@ function App() {
   );
 
   useEffect(() => {
+    function handlePlainTextCopy(event: ClipboardEvent) {
+      const selectedText = window.getSelection()?.toString() ?? "";
+      if (!selectedText) return;
+      if (!event.clipboardData) return;
+
+      event.preventDefault();
+      event.clipboardData.clearData();
+      event.clipboardData.setData("text/plain", selectedText);
+    }
+
+    document.addEventListener("copy", handlePlainTextCopy, true);
+
+    return () => {
+      document.removeEventListener("copy", handlePlainTextCopy, true);
+    };
+  }, []);
+
+  useEffect(() => {
     const mediaQuery = window.matchMedia(mobileViewportQuery);
 
     function updateMobileViewport() {
@@ -4368,6 +4484,105 @@ function App() {
       mediaQuery.removeEventListener("change", updateMobileViewport);
     };
   }, []);
+
+  useEffect(() => {
+    if (directoryPaneStartupSettingNormalizedRef.current) return;
+    directoryPaneStartupSettingNormalizedRef.current = true;
+    if (!settingsSnapshot["app.directoryPaneOpen"]) return;
+
+    const writtenValue = writeSetting("app.directoryPaneOpen", false) as boolean;
+    setSettingsSnapshot((currentSettings) => ({
+      ...currentSettings,
+      "app.directoryPaneOpen": writtenValue,
+    }));
+  }, [settingsSnapshot]);
+
+  useEffect(() => {
+    if (!nativeStorageAvailable) return;
+
+    const appWindow = getCurrentWindow();
+    let disposed = false;
+    let fullscreenSyncTimer = 0;
+    let unlistenResized: (() => void) | null = null;
+    let unlistenFocusChanged: (() => void) | null = null;
+
+    async function synchronizeWindowFullscreenState() {
+      try {
+        const nextWindowIsFullscreen = await appWindow.isFullscreen();
+        if (!disposed) {
+          setWindowIsFullscreen(nextWindowIsFullscreen);
+        }
+      } catch (error) {
+        console.error(error);
+      }
+    }
+
+    function scheduleWindowFullscreenSync() {
+      window.clearTimeout(fullscreenSyncTimer);
+      fullscreenSyncTimer = window.setTimeout(() => {
+        void synchronizeWindowFullscreenState();
+      }, 120);
+    }
+
+    void synchronizeWindowFullscreenState();
+
+    void Promise.all([
+      appWindow.onResized(() => scheduleWindowFullscreenSync()),
+      appWindow.onFocusChanged(() => scheduleWindowFullscreenSync()),
+    ]).then(([resizedListener, focusChangedListener]) => {
+      if (disposed) {
+        resizedListener();
+        focusChangedListener();
+        return;
+      }
+
+      unlistenResized = resizedListener;
+      unlistenFocusChanged = focusChangedListener;
+    });
+
+    return () => {
+      disposed = true;
+      window.clearTimeout(fullscreenSyncTimer);
+      unlistenResized?.();
+      unlistenFocusChanged?.();
+    };
+  }, [nativeStorageAvailable]);
+
+  useEffect(() => {
+    const wasWindowFullscreen = windowIsFullscreenRef.current;
+
+    if (wasWindowFullscreen !== windowIsFullscreen) {
+      windowIsFullscreenRef.current = windowIsFullscreen;
+
+      if (windowIsFullscreen) {
+        directoryPaneOpenBeforeFullscreenRef.current = directoryPaneOpen;
+        directoryPaneClosedInFullscreenRef.current = false;
+        directoryPaneToggledInFullscreenRef.current = false;
+      } else {
+        const restoreDirectoryPaneOpen = directoryPaneOpenBeforeFullscreenRef.current;
+        const userToggledDirectoryPaneInFullscreen =
+          directoryPaneToggledInFullscreenRef.current;
+
+        directoryPaneOpenBeforeFullscreenRef.current = null;
+        directoryPaneClosedInFullscreenRef.current = false;
+        directoryPaneToggledInFullscreenRef.current = false;
+
+        if (!userToggledDirectoryPaneInFullscreen && restoreDirectoryPaneOpen !== null) {
+          setDirectoryPaneOpen(restoreDirectoryPaneOpen);
+        }
+
+        return;
+      }
+    }
+
+    if (
+      windowIsFullscreen &&
+      !directoryPaneClosedInFullscreenRef.current &&
+      !directoryPaneOpen
+    ) {
+      setDirectoryPaneOpen(true);
+    }
+  }, [directoryPaneOpen, windowIsFullscreen]);
 
   useLayoutEffect(() => {
     if (!noteEditorShouldRefocusRef.current) return;
@@ -5308,27 +5523,54 @@ function App() {
     if (!settingsSnapshot["app.restoreLastOpenedFile"]) return;
 
     const lastOpenedPath = readLastOpenedMarkdownPath();
-    if (!lastOpenedPath) return;
+    const lastOpenedRootDirectoryPath = readLastOpenedMarkdownRootDirectoryPath();
+    if (!lastOpenedPath && !lastOpenedRootDirectoryPath) return;
 
     setStorageError(t("status.openingLastFile"));
 
-    void invoke<OpenMarkdownFileContextResult>("open_markdown_file_context", {
-      path: lastOpenedPath,
-    })
-      .then((context) => {
-        applyOpenedDirectory(directoryWithSelectedFile(context), context.selectedFile.path, {
-          rememberRecent: false,
-        });
+    function restoreFromSelectedFileParent() {
+      if (!lastOpenedPath) {
+        forgetLastOpenedMarkdownRootDirectoryPath();
         setStorageError("");
+        return;
+      }
+
+      void invoke<OpenMarkdownFileContextResult>("open_markdown_file_context", {
+        path: lastOpenedPath,
       })
-      .catch((error) => {
-        forgetLastOpenedMarkdownPath();
-        setStorageError(
-          t("error.couldNotReopenLastFile", {
-            message: error instanceof Error ? error.message : String(error),
-          }),
-        );
-      });
+        .then((context) => {
+          applyOpenedDirectory(directoryWithSelectedFile(context), context.selectedFile.path, {
+            rememberRecent: false,
+          });
+          setStorageError("");
+        })
+        .catch((error) => {
+          forgetLastOpenedMarkdownPath();
+          forgetLastOpenedMarkdownRootDirectoryPath();
+          setStorageError(
+            t("error.couldNotReopenLastFile", {
+              message: error instanceof Error ? error.message : String(error),
+            }),
+          );
+        });
+    }
+
+    if (lastOpenedRootDirectoryPath) {
+      void restoreLastOpenedMarkdownWorkspace(
+        lastOpenedRootDirectoryPath,
+        lastOpenedPath,
+      )
+        .then(() => {
+          setStorageError("");
+        })
+        .catch(() => {
+          forgetLastOpenedMarkdownRootDirectoryPath();
+          restoreFromSelectedFileParent();
+        });
+      return;
+    }
+
+    restoreFromSelectedFileParent();
   }, [nativeStorageAvailable, settingsSnapshot]);
 
   useEffect(() => {
@@ -5649,7 +5891,7 @@ function App() {
     return documentFromLoadedFileResult(loaded);
   }
 
-  function mergeLoadedFilesIntoWorkspace(loadedFiles: OpenMarkdownFileResult[]) {
+  function mergeLoadedFilesIntoDocumentState(loadedFiles: OpenMarkdownFileResult[]) {
     if (loadedFiles.length === 0) return;
 
     const loadedDocuments = loadedFiles.map(documentFromLoadedFile);
@@ -5684,6 +5926,12 @@ function App() {
     ]);
     setGlossaryTerms((currentTerms) => mergeGlossaryTerms(loadedGlossaryTerms, currentTerms));
     markLoadedDocumentsClean(loadedDocuments);
+  }
+
+  function mergeLoadedFilesIntoWorkspace(loadedFiles: OpenMarkdownFileResult[]) {
+    if (loadedFiles.length === 0) return;
+
+    mergeLoadedFilesIntoDocumentState(loadedFiles);
   }
 
   function directoryWithSelectedFile(context: OpenMarkdownFileContextResult) {
@@ -5782,6 +6030,7 @@ function App() {
     setActiveGlossaryMode("view");
     markLoadedDocumentsClean(loadedDocuments);
     rememberLastOpenedMarkdownPath(firstDocument.filePath);
+    rememberLastOpenedMarkdownRootDirectoryPath(parentDirectoryPath(firstDocument.filePath));
     if (options.rememberRecent !== false) {
       loadedFiles.forEach((loadedFile) => {
         rememberNativeRecentLocation({
@@ -5834,6 +6083,7 @@ function App() {
     setDirtyDocumentStates({});
     setSavedDocumentBodies({});
     forgetLastOpenedMarkdownPath();
+    forgetLastOpenedMarkdownRootDirectoryPath();
 
     if (nextEntries.length === 0) {
       setStorageError(t("dropbox.emptyFolder"));
@@ -5878,6 +6128,7 @@ function App() {
     setActiveGlossaryMode("view");
     markLoadedDocumentsClean([loadedDocument]);
     forgetLastOpenedMarkdownPath();
+    forgetLastOpenedMarkdownRootDirectoryPath();
   }
 
   function applyReloadedFile(loadedFile: OpenMarkdownFileResult) {
@@ -5937,7 +6188,11 @@ function App() {
   function applyOpenedDirectory(
     openedDirectory: OpenMarkdownDirectoryResult,
     selectedPath?: string,
-    options: { rememberRecent?: boolean } = {},
+    options: {
+      rememberRecent?: boolean;
+      rememberSelection?: boolean;
+      selectFallback?: boolean;
+    } = {},
   ) {
     discardTransientEmptySelectionNote();
     discardTransientEmptyGlossary();
@@ -5966,7 +6221,8 @@ function App() {
     const selectedDocument = selectedPath
       ? loadedDocuments.find((document) => document.id === selectedPath)
       : firstDocument;
-    const documentToSelect = selectedDocument ?? firstDocument;
+    const documentToSelect =
+      selectedDocument ?? (options.selectFallback === false ? null : firstDocument);
 
     setDocuments(loadedDocuments);
     setNotes(loadedNotes);
@@ -5982,13 +6238,18 @@ function App() {
     setNoteDraft("");
     setGlossaryDraft("");
     markLoadedDocumentsClean(loadedDocuments);
+    rememberLastOpenedMarkdownRootDirectoryPath(openedDirectory.path);
 
     if (documentToSelect) {
       setSelectedDocumentId(documentToSelect.id);
-      rememberLastOpenedMarkdownPath(documentToSelect.filePath);
+      if (options.rememberSelection !== false) {
+        rememberLastOpenedMarkdownPath(documentToSelect.filePath);
+      }
     } else {
       setSelectedDocumentId("");
-      forgetLastOpenedMarkdownPath();
+      if (options.rememberSelection !== false) {
+        forgetLastOpenedMarkdownPath();
+      }
     }
     setActiveNoteId("");
     setActiveGlossaryBindingId("");
@@ -6010,6 +6271,87 @@ function App() {
       });
     }
     setNativeCurrentDirectory(openedDirectory.path, openedDirectory.title);
+  }
+
+  async function restoreLastOpenedMarkdownWorkspace(
+    rootDirectoryPath: string,
+    selectedPath: string,
+  ) {
+    const openedDirectory = await invoke<OpenMarkdownDirectoryResult>("open_markdown_directory", {
+      path: rootDirectoryPath,
+    });
+    const rootLoadedFiles = openedDirectory.entries.flatMap((entry) =>
+      entry.kind === "file" ? [entry.file] : [],
+    );
+    const selectedIsRootEntry = rootLoadedFiles.some((file) =>
+      localPathsMatch(file.path, selectedPath),
+    );
+    const ancestorPaths =
+      selectedPath && !selectedIsRootEntry
+        ? ancestorDirectoryPathsForFile(rootDirectoryPath, selectedPath)
+        : [];
+
+    if (selectedPath && !selectedIsRootEntry && ancestorPaths.length === 0) {
+      throw new Error("last opened file is outside the saved root directory");
+    }
+
+    applyOpenedDirectory(openedDirectory, selectedIsRootEntry ? selectedPath : undefined, {
+      rememberRecent: false,
+      rememberSelection: false,
+      selectFallback: !selectedPath || selectedIsRootEntry,
+    });
+
+    if (!selectedPath) return;
+
+    if (selectedIsRootEntry) {
+      rememberLastOpenedMarkdownPath(selectedPath);
+      return;
+    }
+
+    let nextEntries = workspaceEntriesFromOpenedDirectory(openedDirectory, 1);
+    const nextExpandedDirectoryKeys = new Set<string>();
+    const loadedDescendantFiles: OpenMarkdownFileResult[] = [];
+
+    for (const ancestorPath of ancestorPaths) {
+      const ancestorEntry = nextEntries.find(
+        (entry): entry is Extract<WorkspaceEntry, { kind: "directory" }> =>
+          entry.kind === "directory" && localPathsMatch(entry.path, ancestorPath),
+      );
+      if (!ancestorEntry) {
+        throw new Error("last opened file ancestor is not visible from the saved root directory");
+      }
+
+      const openedAncestorDirectory = await invoke<OpenMarkdownDirectoryResult>(
+        "open_markdown_directory",
+        { path: ancestorEntry.path },
+      );
+      const childDepth = (ancestorEntry.depth ?? 1) + 1;
+      const childEntries = workspaceEntriesFromOpenedDirectory(
+        openedAncestorDirectory,
+        childDepth,
+      );
+
+      loadedDescendantFiles.push(
+        ...openedAncestorDirectory.entries.flatMap((entry) =>
+          entry.kind === "file" ? [entry.file] : [],
+        ),
+      );
+      nextEntries = insertWorkspaceDirectoryChildren(nextEntries, ancestorEntry, childEntries);
+      nextExpandedDirectoryKeys.add(directoryTreeKey(ancestorEntry));
+    }
+
+    const selectedFile = loadedDescendantFiles.find((file) =>
+      localPathsMatch(file.path, selectedPath),
+    );
+    if (!selectedFile) {
+      throw new Error("last opened file was not found in the restored directory tree");
+    }
+
+    mergeLoadedFilesIntoDocumentState(loadedDescendantFiles);
+    setWorkspaceEntries(nextEntries);
+    setExpandedDirectoryKeys(nextExpandedDirectoryKeys);
+    setSelectedDocumentId(selectedFile.path);
+    rememberLastOpenedMarkdownPath(selectedFile.path);
   }
 
   async function openDirectoryPath(path: string) {
@@ -6563,8 +6905,16 @@ function App() {
     setSettingsViewOpen(false);
   }
 
+  function recordFullscreenDirectoryPaneManualValue(nextValue: boolean) {
+    if (!windowIsFullscreenRef.current) return;
+
+    directoryPaneToggledInFullscreenRef.current = true;
+    directoryPaneClosedInFullscreenRef.current = !nextValue;
+  }
+
   function applySettingRuntimeValue(key: SettingKey, value: SettingValue) {
     if (key === "app.directoryPaneOpen" && typeof value === "boolean") {
+      recordFullscreenDirectoryPaneManualValue(value);
       setDirectoryPaneOpen(value);
       return;
     }
@@ -8028,6 +8378,7 @@ function App() {
     resetNoteModeInteractionState();
     if (directoryPaneOpen) {
       const writtenValue = writeSetting("app.directoryPaneOpen", false) as boolean;
+      recordFullscreenDirectoryPaneManualValue(writtenValue);
       setSettingsSnapshot((currentSettings) => ({
         ...currentSettings,
         "app.directoryPaneOpen": writtenValue,
@@ -8061,6 +8412,7 @@ function App() {
   function toggleDirectoryPane() {
     const nextValue = !directoryPaneOpen;
     const writtenValue = writeSetting("app.directoryPaneOpen", nextValue) as boolean;
+    recordFullscreenDirectoryPaneManualValue(writtenValue);
     setSettingsSnapshot((currentSettings) => ({
       ...currentSettings,
       "app.directoryPaneOpen": writtenValue,
@@ -8238,7 +8590,7 @@ function App() {
 
         <div className="document-list">
           <div className="document-tree-root" title={workspaceTitle}>
-            <DocumentGlyphIcon kind="folder" />
+            <DocumentGlyphIcon kind="folder" selected />
             <span className="document-tree-root__title">{workspaceTitle}</span>
           </div>
 
@@ -8248,6 +8600,7 @@ function App() {
             const isDirectory = entry.kind === "directory";
             const entryKey = isDirectory ? directoryTreeKey(entry) : "";
             const isExpanded = isDirectory && expandedDirectoryKeys.has(entryKey);
+            const useSelectedFolderIcon = isDirectory && isExpanded;
             const isLoading = isDirectory && loadingDirectoryKeys.has(entryKey);
             const rowStyle = {
               "--document-row-depth": entry.depth ?? 1,
@@ -8303,7 +8656,10 @@ function App() {
                 >
                   {isDirectory ? (isLoading ? "..." : isExpanded ? "⌄" : "›") : ""}
                 </span>
-                <DocumentGlyphIcon kind={isDirectory ? "folder" : "file"} selected={isSelected} />
+                <DocumentGlyphIcon
+                  kind={isDirectory ? "folder" : "file"}
+                  selected={isDirectory ? useSelectedFolderIcon : isSelected}
+                />
                 <span className="document-title">{entry.title}</span>
               </button>
             );

@@ -17,7 +17,7 @@
 管理 app 層級偏好：
 
 - 啟動時重新開啟上次的 Markdown 檔案
-- 啟動時是否顯示目錄面板
+- 一般視窗是否顯示目錄面板
 - 預設 app 顯示語言
 - 主題
 - 字體縮放
@@ -170,7 +170,7 @@ export const settingsDefinitions = [
     category: "app",
     type: "boolean",
     labelKey: "settings.app.directoryPaneOpen.label",
-    defaultValue: true,
+    defaultValue: false,
     requiresRestart: false,
   },
   {
@@ -279,8 +279,8 @@ readSettingsSnapshot()
   - default: `true`
 
 - `app.directoryPaneOpen`
-  - 控制 app 啟動時目錄面板是否展開。
-  - default: `true`
+  - 控制非全螢幕時目錄面板是否預設展開。
+  - default: `false`
 
 - `editor.fontSize`
   - 控制 Markdown 編輯與閱讀內容的本文字級。
@@ -317,7 +317,7 @@ readSettingsSnapshot()
 - [ ] `app.interfaceFontSize` 實際影響 app 介面字體縮放。
 - [ ] `app.theme` 實際影響 app 主題外觀。
 - [ ] `app.restoreLastOpenedFile` 實際影響啟動復原行為。
-- [ ] `app.directoryPaneOpen` 實際影響啟動時目錄面板狀態。
+- [ ] `app.directoryPaneOpen` 實際影響非全螢幕時目錄面板預設狀態。
 - [ ] `editor.fontSize` 實際影響 Markdown 編輯與閱讀內容。
 - [ ] `editor.lineHeight` 實際影響 Markdown 編輯與閱讀內容。
 - [ ] 不存在尚未接上 runtime 的假設定。
