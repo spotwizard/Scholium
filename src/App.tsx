@@ -131,6 +131,13 @@ type OpenMarkdownDirectoryResult = {
   entries: OpenDirectoryEntryResult[];
 };
 
+type SearchMarkdownFileResult = {
+  path: string;
+  parentPath: string | null;
+  title: string;
+  relativePath: string;
+};
+
 type OpenMarkdownFileContextResult = {
   selectedFile: OpenMarkdownFileResult;
   directory: OpenMarkdownDirectoryResult;
@@ -174,6 +181,7 @@ type WorkspaceEntry =
     };
 
 type NativeLocationKind = "directory" | "file";
+type WorkspaceSource = "local" | "dropbox";
 
 type NativeLocation = {
   kind: NativeLocationKind;
@@ -946,6 +954,58 @@ function estimateDocumentPaneWidth(workspaceTitle: string, entries: WorkspaceEnt
   }, rootWidth);
 
   return Math.max(272, Math.min(520, Math.ceil(entryWidth)));
+}
+
+function normalizedFileSearchTerms(query: string) {
+  return query
+    .trim()
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean);
+}
+
+function workspaceEntryMatchesSearch(entry: WorkspaceEntry, terms: string[]) {
+  if (terms.length === 0) return true;
+
+  const searchableText = `${entry.title} ${entry.path}`.toLowerCase();
+  return terms.every((term) => searchableText.includes(term));
+}
+
+function filterWorkspaceEntriesForSearch(entries: WorkspaceEntry[], query: string) {
+  const terms = normalizedFileSearchTerms(query);
+  if (terms.length === 0) return entries;
+
+  const includedEntryIndexes = new Set<number>();
+  const ancestorIndexesByDepth = new Map<number, number>();
+
+  entries.forEach((entry, index) => {
+    const depth = entry.depth ?? 1;
+
+    Array.from(ancestorIndexesByDepth.keys()).forEach((ancestorDepth) => {
+      if (ancestorDepth >= depth) ancestorIndexesByDepth.delete(ancestorDepth);
+    });
+
+    if (entry.kind !== "file") {
+      ancestorIndexesByDepth.set(depth, index);
+    }
+
+    if (!workspaceEntryMatchesSearch(entry, terms)) return;
+
+    includedEntryIndexes.add(index);
+    ancestorIndexesByDepth.forEach((ancestorIndex) => {
+      includedEntryIndexes.add(ancestorIndex);
+    });
+
+    if (entry.kind === "file") return;
+
+    for (let descendantIndex = index + 1; descendantIndex < entries.length; descendantIndex += 1) {
+      const descendantEntry = entries[descendantIndex];
+      if ((descendantEntry.depth ?? 1) <= depth) break;
+      includedEntryIndexes.add(descendantIndex);
+    }
+  });
+
+  return entries.filter((_, index) => includedEntryIndexes.has(index));
 }
 
 function savedBodiesFromDocuments(documents: MarkdownDocument[]) {
@@ -4076,6 +4136,14 @@ function App() {
   const [workspaceEntries, setWorkspaceEntries] = useState<WorkspaceEntry[]>(() =>
     documentsSeed.map(workspaceEntryFromDocument),
   );
+  const [workspaceRootPath, setWorkspaceRootPath] = useState<string | null>(null);
+  const [workspaceSource, setWorkspaceSource] = useState<WorkspaceSource | null>(null);
+  const [fileSearchQuery, setFileSearchQuery] = useState("");
+  const [localFileSearchResults, setLocalFileSearchResults] = useState<
+    SearchMarkdownFileResult[]
+  >([]);
+  const [fileSearchPending, setFileSearchPending] = useState(false);
+  const [fileSearchError, setFileSearchError] = useState("");
   const [expandedDirectoryKeys, setExpandedDirectoryKeys] = useState<Set<string>>(() => new Set());
   const [loadingDirectoryKeys, setLoadingDirectoryKeys] = useState<Set<string>>(() => new Set());
   const [selectedDocumentId, setSelectedDocumentId] = useState(documentsSeed[0].id);
@@ -5438,6 +5506,53 @@ function App() {
   }, [appLanguage, nativeStorageAvailable]);
 
   useEffect(() => {
+    const query = fileSearchQuery.trim();
+    const canSearchLocalWorkspace =
+      Boolean(query) &&
+      workspaceSource === "local" &&
+      Boolean(workspaceRootPath) &&
+      nativeStorageAvailable;
+
+    if (!canSearchLocalWorkspace) {
+      setLocalFileSearchResults([]);
+      setFileSearchPending(false);
+      setFileSearchError("");
+      return;
+    }
+
+    let cancelled = false;
+    setLocalFileSearchResults([]);
+    setFileSearchPending(true);
+    setFileSearchError("");
+
+    const searchTimer = window.setTimeout(() => {
+      void invoke<SearchMarkdownFileResult[]>("search_markdown_files", {
+        rootPath: workspaceRootPath,
+        query,
+      })
+        .then((results) => {
+          if (cancelled) return;
+          setLocalFileSearchResults(results);
+        })
+        .catch((error) => {
+          if (cancelled) return;
+          setLocalFileSearchResults([]);
+          setFileSearchError(error instanceof Error ? error.message : String(error));
+        })
+        .finally(() => {
+          if (!cancelled) {
+            setFileSearchPending(false);
+          }
+        });
+    }, 180);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(searchTimer);
+    };
+  }, [fileSearchQuery, nativeStorageAvailable, workspaceRootPath, workspaceSource]);
+
+  useEffect(() => {
     const interfaceFontSize = settingsSnapshot["app.interfaceFontSize"];
     document.documentElement.style.fontSize = `${interfaceFontSize}px`;
 
@@ -5887,6 +6002,13 @@ function App() {
     });
   }
 
+  function resetFileSearch() {
+    setFileSearchQuery("");
+    setLocalFileSearchResults([]);
+    setFileSearchPending(false);
+    setFileSearchError("");
+  }
+
   function documentFromLoadedFile(loaded: OpenMarkdownFileResult): MarkdownDocument {
     return documentFromLoadedFileResult(loaded);
   }
@@ -6008,6 +6130,9 @@ function App() {
 
       return options.sortEntries ? sortWorkspaceEntriesForDirectory(nextEntries) : nextEntries;
     });
+    setWorkspaceRootPath(parentDirectoryPath(firstDocument.filePath));
+    setWorkspaceSource("local");
+    resetFileSearch();
     setNotes((currentNotes) => [
       ...loadedNotes,
       ...currentNotes.filter((note) => !loadedDocumentIds.has(note.documentId)),
@@ -6066,6 +6191,9 @@ function App() {
     setGlossaryTerms([]);
     setWorkspaceTitle(openedDirectory.title);
     setWorkspaceEntries(nextEntries);
+    setWorkspaceRootPath(openedDirectory.path);
+    setWorkspaceSource("dropbox");
+    resetFileSearch();
     setExpandedDirectoryKeys(new Set());
     setLoadingDirectoryKeys(new Set());
     setSelectedDocumentId("");
@@ -6230,6 +6358,9 @@ function App() {
     setGlossaryTerms(mergeGlossaryTerms(loadedGlossaryTerms, []));
     setWorkspaceTitle(openedDirectory.title);
     setWorkspaceEntries(nextEntries);
+    setWorkspaceRootPath(openedDirectory.path);
+    setWorkspaceSource("local");
+    resetFileSearch();
     setExpandedDirectoryKeys(new Set());
     setLoadingDirectoryKeys(new Set());
     setSelectionWarningPosition(null);
@@ -6424,6 +6555,55 @@ function App() {
       if (firstMarkdownFile) {
         await openDropboxMarkdownFilePath(firstMarkdownFile.path, options);
       }
+    } catch (error) {
+      setStorageError(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  function openWorkspaceEntry(entry: WorkspaceEntry) {
+    if (entry.kind === "directory") {
+      void toggleWorkspaceDirectory(entry);
+      return;
+    }
+
+    if (entry.kind !== "file") return;
+
+    if (entry.source === "dropbox") {
+      const loadedDocument = documents.find((document) => document.id === entry.documentId);
+      if (loadedDocument) {
+        selectDocument(entry.documentId);
+      } else {
+        void openDropboxMarkdownFilePath(entry.path);
+      }
+      return;
+    }
+
+    selectDocument(entry.documentId);
+  }
+
+  async function openLocalFileSearchResult(result: SearchMarkdownFileResult) {
+    if (!nativeStorageAvailable) {
+      setStorageError(t("error.nativeRuntimeRequired"));
+      return;
+    }
+
+    const loadedDocument = documentsRef.current.find((document) => document.id === result.path);
+    if (loadedDocument) {
+      selectDocument(loadedDocument.id);
+      setStorageError("");
+      return;
+    }
+
+    setStorageError(t("status.openingFile"));
+
+    try {
+      const loaded = await invoke<OpenMarkdownFileResult>("open_markdown_file", {
+        path: result.path,
+      });
+      mergeLoadedFilesIntoDocumentState([loaded]);
+      setSelectedDocumentId(loaded.path);
+      rememberLastOpenedMarkdownPath(loaded.path);
+      setStorageError("");
     } catch (error) {
       setStorageError(error instanceof Error ? error.message : String(error));
     }
@@ -8510,6 +8690,24 @@ function App() {
   const selectionWarningMessage = glossaryModeActive
     ? t("selection.warning.glossary")
     : t("selection.warning.note");
+  const trimmedFileSearchQuery = fileSearchQuery.trim();
+  const fileSearchActive = trimmedFileSearchQuery.length > 0;
+  const localRecursiveFileSearchActive =
+    fileSearchActive &&
+    workspaceSource === "local" &&
+    Boolean(workspaceRootPath) &&
+    nativeStorageAvailable;
+  const visibleWorkspaceEntries =
+    fileSearchActive && !localRecursiveFileSearchActive
+      ? filterWorkspaceEntriesForSearch(workspaceEntries, trimmedFileSearchQuery)
+      : workspaceEntries;
+  const fileSearchHasNoResults =
+    fileSearchActive &&
+    !fileSearchPending &&
+    !fileSearchError &&
+    (localRecursiveFileSearchActive
+      ? localFileSearchResults.length === 0
+      : visibleWorkspaceEntries.length === 0);
 
   const shellClassName = [
     "scholium-shell",
@@ -8588,82 +8786,137 @@ function App() {
           </div>
         </section>
 
+        <label className="file-search" aria-label={t("fileSearch.label")}>
+          <input
+            aria-label={t("fileSearch.label")}
+            autoComplete="off"
+            placeholder={t("fileSearch.placeholder")}
+            type="search"
+            value={fileSearchQuery}
+            onChange={(event) => setFileSearchQuery(event.target.value)}
+          />
+          {fileSearchQuery ? (
+            <button
+              aria-label={t("fileSearch.clear")}
+              className="file-search__clear"
+              onClick={resetFileSearch}
+              type="button"
+            >
+              ×
+            </button>
+          ) : null}
+        </label>
+
         <div className="document-list">
           <div className="document-tree-root" title={workspaceTitle}>
             <DocumentGlyphIcon kind="folder" selected />
             <span className="document-tree-root__title">{workspaceTitle}</span>
           </div>
 
-          {workspaceEntries.map((entry) => {
-            const isSelected =
-              hasOpenDocument && entry.kind === "file" && entry.documentId === selectedDocument.id;
-            const isDirectory = entry.kind === "directory";
-            const entryKey = isDirectory ? directoryTreeKey(entry) : "";
-            const isExpanded = isDirectory && expandedDirectoryKeys.has(entryKey);
-            const useSelectedFolderIcon = isDirectory && isExpanded;
-            const isLoading = isDirectory && loadingDirectoryKeys.has(entryKey);
-            const rowStyle = {
-              "--document-row-depth": entry.depth ?? 1,
-            } as CSSProperties;
+          {localRecursiveFileSearchActive ? (
+            <>
+              {fileSearchPending ? (
+                <p className="file-search-status" role="status">
+                  {t("fileSearch.searching")}
+                </p>
+              ) : null}
+              {fileSearchError ? (
+                <p className="file-search-status is-error" role="status">
+                  {fileSearchError}
+                </p>
+              ) : null}
+              {!fileSearchPending && !fileSearchError
+                ? localFileSearchResults.map((result) => {
+                    const isSelected =
+                      hasOpenDocument && localPathsMatch(result.path, selectedDocument.id);
 
-            return (
-              <button
-                aria-expanded={isDirectory ? isExpanded : undefined}
-                className={`document-row ${isDirectory ? "is-folder" : ""} ${
-                  isExpanded ? "is-expanded" : ""
-                } ${isLoading ? "is-loading" : ""} ${isSelected ? "is-selected" : ""}`}
-                key={entry.id}
-                style={rowStyle}
-                onClick={() => {
-                  if (isDirectory) {
-                    void toggleWorkspaceDirectory(entry);
-                    return;
-                  }
-
-                  if (entry.kind !== "file") return;
-
-                  if (entry.source === "dropbox") {
-                    const loadedDocument = documents.find(
-                      (document) => document.id === entry.documentId,
+                    return (
+                      <button
+                        className={`document-row file-search-result ${
+                          isSelected ? "is-selected" : ""
+                        }`}
+                        key={result.path}
+                        onClick={() => {
+                          void openLocalFileSearchResult(result);
+                        }}
+                        title={result.relativePath}
+                        type="button"
+                      >
+                        <span
+                          className="document-disclosure is-placeholder"
+                          aria-hidden="true"
+                        />
+                        <DocumentGlyphIcon kind="file" selected={isSelected} />
+                        <span className="document-title">
+                          <span className="document-title__primary">{result.title}</span>
+                          <span className="document-title__meta">{result.relativePath}</span>
+                        </span>
+                      </button>
                     );
-                    if (loadedDocument) {
-                      selectDocument(entry.documentId);
-                    } else {
-                      void openDropboxMarkdownFilePath(entry.path);
-                    }
-                    return;
-                  }
+                  })
+                : null}
+            </>
+          ) : (
+            visibleWorkspaceEntries.map((entry) => {
+              const isSelected =
+                hasOpenDocument &&
+                entry.kind === "file" &&
+                entry.documentId === selectedDocument.id;
+              const isDirectory = entry.kind === "directory";
+              const entryKey = isDirectory ? directoryTreeKey(entry) : "";
+              const isExpanded = isDirectory && expandedDirectoryKeys.has(entryKey);
+              const useSelectedFolderIcon = isDirectory && isExpanded;
+              const isLoading = isDirectory && loadingDirectoryKeys.has(entryKey);
+              const rowStyle = {
+                "--document-row-depth": entry.depth ?? 1,
+              } as CSSProperties;
 
-                  selectDocument(entry.documentId);
-                }}
-                onContextMenu={(event) => {
-                  if (entry.kind !== "file") return;
+              return (
+                <button
+                  aria-expanded={isDirectory ? isExpanded : undefined}
+                  className={`document-row ${isDirectory ? "is-folder" : ""} ${
+                    isExpanded ? "is-expanded" : ""
+                  } ${isLoading ? "is-loading" : ""} ${isSelected ? "is-selected" : ""}`}
+                  key={entry.id}
+                  style={rowStyle}
+                  onClick={() => {
+                    openWorkspaceEntry(entry);
+                  }}
+                  onContextMenu={(event) => {
+                    if (entry.kind !== "file") return;
 
-                  event.preventDefault();
-                  event.stopPropagation();
-                  setFileContextMenu({
-                    documentId: entry.documentId,
-                    left: event.clientX,
-                    top: event.clientY,
-                  });
-                }}
-                title={entry.title}
-                type="button"
-              >
-                <span
-                  className={`document-disclosure ${isDirectory ? "" : "is-placeholder"}`}
-                  aria-hidden="true"
+                    event.preventDefault();
+                    event.stopPropagation();
+                    setFileContextMenu({
+                      documentId: entry.documentId,
+                      left: event.clientX,
+                      top: event.clientY,
+                    });
+                  }}
+                  title={entry.title}
+                  type="button"
                 >
-                  {isDirectory ? (isLoading ? "..." : isExpanded ? "⌄" : "›") : ""}
-                </span>
-                <DocumentGlyphIcon
-                  kind={isDirectory ? "folder" : "file"}
-                  selected={isDirectory ? useSelectedFolderIcon : isSelected}
-                />
-                <span className="document-title">{entry.title}</span>
-              </button>
-            );
-          })}
+                  <span
+                    className={`document-disclosure ${isDirectory ? "" : "is-placeholder"}`}
+                    aria-hidden="true"
+                  >
+                    {isDirectory ? (isLoading ? "..." : isExpanded ? "⌄" : "›") : ""}
+                  </span>
+                  <DocumentGlyphIcon
+                    kind={isDirectory ? "folder" : "file"}
+                    selected={isDirectory ? useSelectedFolderIcon : isSelected}
+                  />
+                  <span className="document-title">{entry.title}</span>
+                </button>
+              );
+            })
+          )}
+
+          {fileSearchHasNoResults ? (
+            <p className="file-search-status" role="status">
+              {t("fileSearch.noResults")}
+            </p>
+          ) : null}
         </div>
 
         {storageError ? <p className="storage-error">{storageError}</p> : null}

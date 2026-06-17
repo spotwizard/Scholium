@@ -24,6 +24,7 @@ const MENU_CLEAR_RECENT_LOCATIONS: &str = "file:clear-recent-locations";
 const MENU_FAVORITE_DIRECTORY_PREFIX: &str = "file:favorite-directory:";
 const MENU_RECENT_LOCATION_PREFIX: &str = "file:recent-location:";
 const MAX_RECENT_LOCATIONS: usize = 12;
+const MAX_FILE_SEARCH_RESULTS: usize = 200;
 const NOTES_STORE_DIRECTORY: &str = "notes";
 const DEFAULT_APP_LANGUAGE: &str = "zh-Hant";
 const DROPBOX_OAUTH_REDIRECT_PORT: u16 = 53682;
@@ -188,6 +189,15 @@ struct OpenMarkdownDirectory {
     parent_path: Option<String>,
     title: String,
     entries: Vec<OpenDirectoryEntry>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SearchMarkdownFile {
+    path: String,
+    parent_path: Option<String>,
+    title: String,
+    relative_path: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -1114,6 +1124,92 @@ fn entry_sort_key(entry: &OpenDirectoryEntry) -> (u8, String, String) {
     )
 }
 
+fn file_search_matches(path: &Path, root: &Path, query: &str) -> bool {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    let relative_path = path
+        .strip_prefix(root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/");
+    let searchable_text =
+        format!("{} {} {}", document_title(path), file_name, relative_path).to_lowercase();
+
+    query
+        .split_whitespace()
+        .all(|term| searchable_text.contains(term))
+}
+
+fn search_markdown_directory(
+    root: &Path,
+    directory: &Path,
+    query: &str,
+    results: &mut Vec<SearchMarkdownFile>,
+) -> Result<(), String> {
+    if results.len() >= MAX_FILE_SEARCH_RESULTS {
+        return Ok(());
+    }
+
+    let mut child_paths = Vec::new();
+
+    for entry in fs::read_dir(directory)
+        .map_err(|error| format!("failed to read Markdown directory: {error}"))?
+    {
+        let entry = entry.map_err(|error| format!("failed to read directory entry: {error}"))?;
+        let path = entry.path();
+
+        if is_hidden_path(&path) {
+            continue;
+        }
+
+        let file_type = entry
+            .file_type()
+            .map_err(|error| format!("failed to read directory entry type: {error}"))?;
+
+        if file_type.is_dir() {
+            child_paths.push(path);
+            continue;
+        }
+
+        if !file_type.is_file()
+            || !is_markdown_path(&path)
+            || !file_search_matches(&path, root, query)
+        {
+            continue;
+        }
+
+        results.push(SearchMarkdownFile {
+            path: path.to_string_lossy().to_string(),
+            parent_path: path
+                .parent()
+                .map(|parent| parent.to_string_lossy().to_string()),
+            title: document_title(&path),
+            relative_path: path
+                .strip_prefix(root)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .replace('\\', "/"),
+        });
+
+        if results.len() >= MAX_FILE_SEARCH_RESULTS {
+            return Ok(());
+        }
+    }
+
+    child_paths.sort_by_key(|path| path.to_string_lossy().to_lowercase());
+
+    for child_path in child_paths {
+        search_markdown_directory(root, &child_path, query, results)?;
+        if results.len() >= MAX_FILE_SEARCH_RESULTS {
+            return Ok(());
+        }
+    }
+
+    Ok(())
+}
+
 fn read_markdown_directory(
     app: &AppHandle,
     directory: PathBuf,
@@ -1292,6 +1388,29 @@ fn open_markdown_directory(app: AppHandle, path: String) -> Result<OpenMarkdownD
     }
 
     read_markdown_directory(&app, directory)
+}
+
+#[tauri::command]
+fn search_markdown_files(
+    root_path: String,
+    query: String,
+) -> Result<Vec<SearchMarkdownFile>, String> {
+    let root = PathBuf::from(root_path);
+    if !root.is_dir() {
+        return Err("selected path is not a directory".to_string());
+    }
+
+    let normalized_query = query.trim().to_lowercase();
+    if normalized_query.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut results = Vec::new();
+    search_markdown_directory(&root, &root, &normalized_query, &mut results)?;
+    results.sort_by_key(|result| result.relative_path.to_lowercase());
+    results.truncate(MAX_FILE_SEARCH_RESULTS);
+
+    Ok(results)
 }
 
 #[tauri::command]
@@ -2073,6 +2192,7 @@ pub fn run() {
             open_markdown_directory,
             open_markdown_file,
             open_markdown_file_context,
+            search_markdown_files,
             duplicate_markdown_file,
             delete_markdown_file,
             save_markdown_file,

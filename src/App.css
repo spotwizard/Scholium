@@ -357,6 +357,69 @@ button:disabled {
   line-height: 1.35;
 }
 
+.file-search {
+  position: relative;
+  display: block;
+  border-bottom: 1px solid var(--color-border);
+  padding: 8px 12px;
+  background: var(--color-surface);
+}
+
+.file-search input {
+  display: block;
+  width: 100%;
+  height: 30px;
+  border: 1px solid var(--color-border);
+  border-radius: 7px;
+  padding: 0 30px 0 10px;
+  color: var(--color-heading);
+  background: var(--color-surface-raised);
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 560;
+  line-height: 1.2;
+  outline: none;
+}
+
+.file-search input::placeholder {
+  color: var(--color-muted);
+}
+
+.file-search input::-webkit-search-cancel-button {
+  display: none;
+}
+
+.file-search input:focus {
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-accent) 18%, transparent);
+}
+
+.file-search__clear {
+  position: absolute;
+  top: 50%;
+  right: 18px;
+  display: grid;
+  width: 20px;
+  height: 20px;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  padding: 0;
+  color: var(--color-muted);
+  background: transparent;
+  font-size: 1rem;
+  font-weight: 650;
+  line-height: 1;
+  transform: translateY(-50%);
+}
+
+.file-search__clear:hover,
+.file-search__clear:focus-visible {
+  color: var(--color-heading);
+  background: var(--color-surface-soft);
+  outline: none;
+}
+
 .document-list {
   display: block;
   overflow-x: hidden;
@@ -437,7 +500,7 @@ button:disabled {
   height: 22px;
   align-items: center;
   justify-content: center;
-  color: var(--color-muted);
+  color: var(--color-heading);
 }
 
 .document-icon svg {
@@ -453,10 +516,6 @@ button:disabled {
 
 .document-icon svg [stroke] {
   stroke: currentColor !important;
-}
-
-.document-row.is-folder .document-icon {
-  color: var(--color-muted);
 }
 
 .document-icon.is-selected {
@@ -514,6 +573,10 @@ button:disabled {
   color: var(--color-muted);
 }
 
+.document-row.file-search-result {
+  min-height: 46px;
+}
+
 .document-title {
   min-width: 0;
   overflow: hidden;
@@ -536,6 +599,44 @@ button:disabled {
 .document-row.is-selected .document-title {
   color: var(--color-directory-selected-text);
   font-weight: 650;
+}
+
+.document-row.file-search-result .document-title {
+  display: grid;
+  gap: 2px;
+  line-height: 1.15;
+  white-space: normal;
+}
+
+.document-title__primary,
+.document-title__meta {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.document-title__meta {
+  color: var(--color-muted);
+  font-size: 0.68rem;
+  font-weight: 540;
+}
+
+.document-row.is-selected .document-title__meta {
+  color: color-mix(in srgb, var(--color-directory-selected-text) 78%, transparent);
+}
+
+.file-search-status {
+  margin: 6px 12px;
+  color: var(--color-muted);
+  font-size: 0.76rem;
+  font-weight: 570;
+  line-height: 1.35;
+}
+
+.file-search-status.is-error {
+  color: var(--color-danger-text);
+  overflow-wrap: anywhere;
 }
 
 .file-context-menu {
