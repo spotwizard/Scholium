@@ -72,6 +72,7 @@ type EditorBrowserSelection = Selection & {
 
 const setAnnotationsEffect = StateEffect.define<TextAnnotation[]>();
 const editorAnnotationFramePadding = 4;
+const editorAnnotationFrameHorizontalPadding = 12;
 const editorAnnotationLineJoinMaxGap = 20;
 const annotationSelectionSuppressionMs = 1200;
 const annotationClickDelayMs = 500;
@@ -342,11 +343,11 @@ function measureEditorAnnotationFrames(container: HTMLDivElement): EditorAnnotat
           kind,
           tone,
           left: roundEditorFrameValue(
-            Math.max(0, rect.left - containerRect.left - editorAnnotationFramePadding),
+            rect.left - containerRect.left - editorAnnotationFrameHorizontalPadding,
           ),
           top: roundEditorFrameValue(Math.max(0, top - containerRect.top)),
           width: roundEditorFrameValue(
-            rect.right - rect.left + editorAnnotationFramePadding * 2,
+            rect.right - rect.left + editorAnnotationFrameHorizontalPadding * 2,
           ),
           height: roundEditorFrameValue(bottom - top),
         };
@@ -586,8 +587,8 @@ export function MarkdownEditor({
 
       const hitAnnotation = Array.from(annotation.getClientRects()).some(
         (rect) =>
-          event.clientX >= rect.left - editorAnnotationFramePadding &&
-          event.clientX <= rect.right + editorAnnotationFramePadding &&
+          event.clientX >= rect.left - editorAnnotationFrameHorizontalPadding &&
+          event.clientX <= rect.right + editorAnnotationFrameHorizontalPadding &&
           event.clientY >= rect.top - editorAnnotationFramePadding &&
           event.clientY <= rect.bottom + editorAnnotationFramePadding,
       );

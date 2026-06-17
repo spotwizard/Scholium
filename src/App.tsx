@@ -416,7 +416,6 @@ type FloatingNotePosition = {
   } | null;
   left: number;
   top: number;
-  maxHeight: number;
   placement: "above" | "below" | "detached";
 };
 
@@ -499,6 +498,7 @@ const markdownFilters = [
 ];
 
 const previewAnnotationFramePadding = 4;
+const previewAnnotationFrameHorizontalPadding = 12;
 const previewAnnotationLineJoinMaxGap = 20;
 const notePanelAnimationMs = 180;
 const autosaveDelayMs = 1000;
@@ -2242,10 +2242,7 @@ function measurePreviewAnnotationFrames(container: HTMLDivElement): PreviewAnnot
       noteId,
       tone,
       left: roundPreviewFrameValue(
-        Math.max(
-          0,
-          left - containerRect.left + container.scrollLeft,
-        ),
+        left - containerRect.left + container.scrollLeft,
       ),
       top: roundPreviewFrameValue(
         Math.max(
@@ -2304,9 +2301,9 @@ function measurePreviewAnnotationFrames(container: HTMLDivElement): PreviewAnnot
             isFocusTarget,
             kind,
             tone,
-            rect.left - previewAnnotationFramePadding,
+            rect.left - previewAnnotationFrameHorizontalPadding,
             top,
-            rect.right + previewAnnotationFramePadding,
+            rect.right + previewAnnotationFrameHorizontalPadding,
             bottom,
           ),
         );
@@ -4058,7 +4055,6 @@ function MarkdownPreviewContent({
 function NoteLibraryPreviewContent({
   className,
   emptyLabel,
-  expanded,
   mermaidEmptyDefinitionLabel,
   mermaidLoadingLabel,
   onDoubleClick,
@@ -4066,71 +4062,14 @@ function NoteLibraryPreviewContent({
 }: {
   className: string;
   emptyLabel: string;
-  expanded: boolean;
   mermaidEmptyDefinitionLabel: string;
   mermaidLoadingLabel: string;
   onDoubleClick?: () => void;
   value: string;
 }) {
-  const contentRef = useRef<HTMLDivElement | null>(null);
-  const [expandedHeight, setExpandedHeight] = useState(0);
-  const [hasCollapsedOverflow, setHasCollapsedOverflow] = useState(false);
-
-  useLayoutEffect(() => {
-    const contentElement = contentRef.current;
-    if (!contentElement) return;
-
-    const measuredElement = contentElement;
-    let measureFrame = 0;
-
-    function measureExpandedHeight() {
-      window.cancelAnimationFrame(measureFrame);
-      measureFrame = window.requestAnimationFrame(() => {
-        const previewBody = measuredElement.querySelector<HTMLElement>(
-          ".note-library-card__body",
-        );
-        const previewBodyStyle = previewBody ? window.getComputedStyle(previewBody) : null;
-        const fontSize = previewBodyStyle ? Number.parseFloat(previewBodyStyle.fontSize) : 0;
-        const rawLineHeight = previewBodyStyle?.lineHeight ?? "";
-        const lineHeight =
-          rawLineHeight === "normal"
-            ? fontSize * 1.5
-            : Number.parseFloat(rawLineHeight) || fontSize * 1.5;
-        const collapsedHeight = lineHeight * 2.5;
-        const nextHeight = Math.ceil(measuredElement.scrollHeight);
-        setExpandedHeight((currentHeight) =>
-          currentHeight === nextHeight ? currentHeight : nextHeight,
-        );
-        setHasCollapsedOverflow((currentOverflow) => {
-          const nextOverflow = nextHeight > collapsedHeight + 1;
-
-          return currentOverflow === nextOverflow ? currentOverflow : nextOverflow;
-        });
-      });
-    }
-
-    measureExpandedHeight();
-
-    const resizeObserver = new ResizeObserver(measureExpandedHeight);
-    resizeObserver.observe(measuredElement);
-
-    return () => {
-      window.cancelAnimationFrame(measureFrame);
-      resizeObserver.disconnect();
-    };
-  }, [value]);
-
-  const bodyShellStyle = {
-    "--note-library-card-body-expanded-height": `${expandedHeight}px`,
-  } as CSSProperties;
-
   return (
-    <div
-      className={`note-library-card__body-shell ${expanded ? "is-expanded" : ""}`}
-      data-has-overflow={hasCollapsedOverflow ? "true" : "false"}
-      style={bodyShellStyle}
-    >
-      <div className="note-library-card__body-measure" ref={contentRef}>
+    <div className="note-library-card__body-shell">
+      <div className="note-library-card__body-measure">
         <MarkdownPreviewContent
           className={className}
           emptyLabel={emptyLabel}
@@ -4516,6 +4455,15 @@ function App() {
   const floatingNotePanelShouldRender = noteModeEnabled && notePanelHasContent;
   const notePanelModalActive = floatingNotePanelShouldRender && !isNotePanelClosing;
   noteEditModalActiveRef.current = notePanelModalActive;
+
+  useEffect(() => {
+    if (!notePanelModalActive || !pendingAnchor) return;
+
+    const selection = window.getSelection();
+    if (!selection || selection.isCollapsed) return;
+
+    selection.removeAllRanges();
+  }, [notePanelModalActive, pendingAnchor]);
 
   useEffect(() => {
     notePanelHasContentRef.current = notePanelHasContent;
@@ -5114,13 +5062,7 @@ function App() {
     const preferredHeight = Math.min(cardHeight, 280);
     const placement =
       belowRoom >= preferredHeight || belowRoom >= aboveRoom ? "below" : "above";
-    const availableHeight = placement === "below" ? belowRoom : aboveRoom;
-    const maxHeight = Math.min(
-      360,
-      Math.max(120, availableHeight > 0 ? availableHeight : cardHeight),
-      Math.max(120, viewportHeight - viewportMargin * 2),
-    );
-    const positionedHeight = Math.min(cardHeight, maxHeight);
+    const positionedHeight = cardHeight;
     const connectorAnchorGap = 6;
     const panelAnchorY =
       placement === "below"
@@ -5145,10 +5087,15 @@ function App() {
       minSourceX <= maxSourceX
         ? clampNumber(preferredSourceX, minSourceX, maxSourceX)
         : clampNumber(targetX, left, right);
-    const top =
+    const rawTop =
       placement === "below"
         ? panelAnchorY + verticalDistance
         : panelAnchorY - positionedHeight - verticalDistance;
+    const maxFittingTop = viewportHeight - viewportMargin - positionedHeight;
+    const top =
+      maxFittingTop >= viewportMargin
+        ? clampNumber(rawTop, viewportMargin, maxFittingTop)
+        : viewportMargin;
     const sourceY = placement === "below" ? top : top + positionedHeight;
     const connectorDeltaX = sourceX - targetX;
     const connectorDeltaY = sourceY - targetY;
@@ -5167,7 +5114,6 @@ function App() {
         width: Math.round(connectorWidth),
       },
       left: Math.round(left),
-      maxHeight: Math.round(maxHeight),
       placement,
       top: Math.round(top),
     };
@@ -5177,18 +5123,17 @@ function App() {
     const viewportHeight = window.innerHeight;
     const viewportMargin = 12;
     const cardHeight = cardRect.height || 260;
-    const maxHeight = Math.min(
-      360,
-      Math.max(120, viewportHeight - viewportMargin * 2),
-    );
-    const positionedHeight = Math.min(cardHeight, maxHeight);
+    const maxFittingTop = viewportHeight - viewportMargin - cardHeight;
+    const top =
+      maxFittingTop >= viewportMargin
+        ? viewportHeight - viewportMargin - cardHeight
+        : viewportMargin;
 
     return {
       connector: null,
       left: viewportMargin,
-      maxHeight: Math.round(maxHeight),
       placement: "detached",
-      top: Math.round(viewportHeight - viewportMargin - positionedHeight),
+      top: Math.round(top),
     };
   }
 
@@ -5199,7 +5144,6 @@ function App() {
     return (
       leftPosition?.left === rightPosition.left &&
       leftPosition.top === rightPosition.top &&
-      leftPosition.maxHeight === rightPosition.maxHeight &&
       leftPosition.placement === rightPosition.placement &&
       leftPosition.connector?.left === rightPosition.connector?.left &&
       leftPosition.connector?.top === rightPosition.connector?.top &&
@@ -8877,15 +8821,13 @@ function App() {
   const floatingNotePanelStyle: CSSProperties = floatingNotePanelPosition
     ? {
         left: floatingNotePanelPosition.left,
-        maxHeight: floatingNotePanelPosition.maxHeight,
         top: floatingNotePanelPosition.top,
       }
     : {
-        left: 0,
-        maxHeight: 360,
-        top: 0,
-        visibility: "hidden",
-      };
+      left: 0,
+      top: 0,
+      visibility: "hidden",
+    };
   const selectionWarningStyle: CSSProperties | undefined = selectionWarningPosition
     ? {
         left: selectionWarningPosition.left,
@@ -9520,7 +9462,6 @@ function App() {
                       <NoteLibraryPreviewContent
                         className="bottom-note-body note-library-card__body"
                         emptyLabel={t("note.empty")}
-                        expanded={isFocusedLibraryNote}
                         mermaidEmptyDefinitionLabel={t("mermaid.empty")}
                         mermaidLoadingLabel={t("mermaid.loading")}
                         onDoubleClick={() => startLibraryNoteEditor(note.id)}

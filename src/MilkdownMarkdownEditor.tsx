@@ -39,6 +39,7 @@ const milkdownAnnotationPluginKey = new PluginKey<DecorationSet>(
   "scholium-milkdown-annotations",
 );
 const milkdownAnnotationFramePadding = 4;
+const milkdownAnnotationFrameHorizontalPadding = 12;
 const milkdownAnnotationLineJoinMaxGap = 20;
 const milkdownAnnotationClassPrefix = "scholium-milkdown-annotation-";
 const milkdownSelectionFallbackMs = 220;
@@ -506,11 +507,11 @@ function measureMilkdownAnnotationFrames(
           kind,
           tone,
           left: roundFrameValue(
-            Math.max(0, rect.left - containerRect.left - milkdownAnnotationFramePadding),
+            rect.left - containerRect.left - milkdownAnnotationFrameHorizontalPadding,
           ),
           top: roundFrameValue(Math.max(0, top - containerRect.top)),
           width: roundFrameValue(
-            rect.right - rect.left + milkdownAnnotationFramePadding * 2,
+            rect.right - rect.left + milkdownAnnotationFrameHorizontalPadding * 2,
           ),
           height: roundFrameValue(bottom - top),
         };

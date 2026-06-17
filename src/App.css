@@ -1583,6 +1583,7 @@ button:disabled {
   position: absolute;
   inset: 0;
   z-index: 0;
+  overflow: visible;
   pointer-events: none;
 }
 
@@ -1812,6 +1813,7 @@ button:disabled {
   position: absolute;
   inset: 0;
   z-index: 0;
+  overflow: visible;
   pointer-events: none;
 }
 
@@ -1861,6 +1863,7 @@ button:disabled {
   position: absolute;
   inset: 0;
   z-index: 0;
+  overflow: visible;
   pointer-events: none;
 }
 
@@ -2061,9 +2064,7 @@ button:disabled {
   z-index: 87;
   color: var(--color-text) !important;
   border-radius: 2px;
-  background: var(--color-annotation-surface);
-  -webkit-box-decoration-break: clone;
-  box-decoration-break: clone;
+  background: transparent;
   opacity: 1;
   filter: none;
 }
@@ -2074,7 +2075,7 @@ button:disabled {
   .preview-note-annotation.is-focus-target[data-note-tone="1"],
 .scholium-shell.is-note-panel-modal-active
   .milkdown-note-annotation.is-focus-target[data-note-tone="1"] {
-  background: var(--color-annotation-surface-alt);
+  background: transparent;
 }
 
 .scholium-shell.is-note-panel-modal-active
@@ -2083,7 +2084,7 @@ button:disabled {
   .preview-note-annotation.is-focus-target[data-annotation-kind="glossary"],
 .scholium-shell.is-note-panel-modal-active
   .milkdown-note-annotation.is-focus-target[data-annotation-kind="glossary"] {
-  background: var(--color-glossary-surface);
+  background: transparent;
 }
 
 .note-library-pane {
@@ -2365,46 +2366,9 @@ button:disabled {
 }
 
 .note-library-card__body-shell {
-  --note-library-card-body-preview-height: 3.75em;
   position: relative;
-  max-height: var(--note-library-card-body-preview-height);
-  overflow: hidden;
-  transition: max-height 450ms cubic-bezier(0.2, 0.8, 0.2, 1);
-  will-change: max-height;
-}
-
-.note-library-card__body-shell[data-has-overflow="true"]:not(.is-expanded)::after {
-  content: "";
-  position: absolute;
-  right: 0;
-  bottom: 0;
-  left: 0;
-  z-index: 1;
-  height: 1.8em;
-  background: linear-gradient(
-    180deg,
-    color-mix(in srgb, var(--note-library-card-background) 0%, transparent) 0%,
-    color-mix(in srgb, var(--note-library-card-background) 12%, transparent) 28%,
-    color-mix(in srgb, var(--note-library-card-background) 58%, transparent) 68%,
-    var(--note-library-card-background) 100%
-  );
-  pointer-events: none;
-}
-
-.note-library-card.is-focused .note-library-card__body-shell,
-.note-library-card:focus-within .note-library-card__body-shell {
-  max-height: max(
-    var(--note-library-card-body-preview-height),
-    var(
-      --note-library-card-body-expanded-height,
-      var(--note-library-card-body-preview-height)
-    )
-  );
-}
-
-.note-library-card.is-focused .note-library-card__body-shell::after,
-.note-library-card:focus-within .note-library-card__body-shell::after {
-  content: none;
+  max-height: none;
+  overflow: visible;
 }
 
 .note-library-card__body-measure {
@@ -2416,13 +2380,11 @@ button:disabled {
 }
 
 .note-markdown-editor {
-  --note-markdown-editor-min-height: 180px;
-  --note-markdown-editor-max-height: 320px;
+  --note-markdown-editor-min-height: 96px;
   width: 100%;
   min-height: var(--note-markdown-editor-min-height);
-  max-height: var(--note-markdown-editor-max-height);
-  overflow: auto;
-  resize: vertical;
+  overflow: visible;
+  resize: none;
   border: 1px solid var(--color-border);
   border-radius: 8px;
   color: var(--color-text);
@@ -2445,6 +2407,7 @@ button:disabled {
 .note-markdown-editor .markdown-editor-host,
 .note-markdown-editor .milkdown-markdown-editor-shell {
   min-height: var(--note-markdown-editor-min-height);
+  overflow: visible;
   background: transparent;
   font: inherit;
   line-height: inherit;
@@ -2454,6 +2417,7 @@ button:disabled {
 .note-markdown-editor .milkdown-markdown-editor,
 .note-markdown-editor .milkdown-markdown-editor .milkdown {
   min-height: inherit;
+  overflow: visible;
   background: transparent;
   font: inherit;
   line-height: inherit;
@@ -2462,6 +2426,7 @@ button:disabled {
 .note-markdown-editor .cm-scroller,
 .note-markdown-editor .cm-content {
   min-height: var(--note-markdown-editor-min-height);
+  overflow: visible;
   font-family: inherit;
   font-size: inherit;
   line-height: inherit;
@@ -2473,6 +2438,7 @@ button:disabled {
 
 .note-markdown-editor .milkdown-markdown-editor .milkdown .ProseMirror {
   min-height: var(--note-markdown-editor-min-height);
+  overflow: visible;
   padding: 10px 12px;
   font-size: inherit !important;
   line-height: inherit !important;
@@ -2486,13 +2452,11 @@ button:disabled {
 }
 
 .note-library-card__editor {
-  --note-markdown-editor-min-height: 170px;
-  --note-markdown-editor-max-height: 300px;
+  --note-markdown-editor-min-height: 120px;
 }
 
 .floating-note-card__editor {
-  --note-markdown-editor-min-height: 180px;
-  --note-markdown-editor-max-height: 320px;
+  --note-markdown-editor-min-height: 96px;
 }
 
 .note-library-empty {
@@ -2511,6 +2475,7 @@ button:disabled {
   position: fixed;
   z-index: 90;
   width: min(420px, calc(100vw - 24px));
+  max-height: none;
   pointer-events: none;
 }
 
@@ -2568,10 +2533,10 @@ button:disabled {
   --note-library-card-background: var(--color-note-surface);
   position: relative;
   display: grid;
-  max-height: inherit;
+  max-height: none;
   grid-template-columns: 1fr;
   gap: 10px;
-  overflow: auto;
+  overflow: visible;
   padding: 12px 12px 14px;
   border: 1px solid var(--color-note-border);
   border-radius: 6px;
