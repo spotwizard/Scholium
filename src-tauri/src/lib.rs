@@ -1,9 +1,16 @@
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::fs;
+use std::io::{Read, Write};
+use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::menu::{AboutMetadata, Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::{AppHandle, Emitter, Manager};
+use url::Url;
 
 const MENU_NEW_FILE: &str = "file:new-file";
 const MENU_OPEN_FILE: &str = "file:open-file";
@@ -19,6 +26,14 @@ const MENU_RECENT_LOCATION_PREFIX: &str = "file:recent-location:";
 const MAX_RECENT_LOCATIONS: usize = 12;
 const NOTES_STORE_DIRECTORY: &str = "notes";
 const DEFAULT_APP_LANGUAGE: &str = "zh-Hant";
+const DROPBOX_OAUTH_REDIRECT_PORT: u16 = 53682;
+const DROPBOX_OAUTH_CALLBACK_PATH: &str = "/dropbox/oauth/callback";
+const DROPBOX_OAUTH_AUTHORIZE_URL: &str = "https://www.dropbox.com/oauth2/authorize";
+const DROPBOX_OAUTH_TOKEN_URL: &str = "https://api.dropboxapi.com/oauth2/token";
+const DROPBOX_LIST_FOLDER_URL: &str = "https://api.dropboxapi.com/2/files/list_folder";
+const DROPBOX_LIST_FOLDER_CONTINUE_URL: &str =
+    "https://api.dropboxapi.com/2/files/list_folder/continue";
+const DROPBOX_DOWNLOAD_URL: &str = "https://content.dropboxapi.com/2/files/download";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -51,6 +66,29 @@ impl Default for LocationMenuState {
             store: Mutex::new(LocationStore::default()),
         }
     }
+}
+
+#[derive(Debug, Clone)]
+struct DropboxOAuthSession {
+    app_key: String,
+    code_verifier: String,
+    redirect_uri: String,
+    state: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DropboxTokenStore {
+    app_key: String,
+    access_token: String,
+    refresh_token: Option<String>,
+    expires_at: Option<u64>,
+}
+
+#[derive(Default)]
+struct DropboxState {
+    oauth_session: Mutex<Option<DropboxOAuthSession>>,
+    tokens: Mutex<Option<DropboxTokenStore>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -173,6 +211,124 @@ struct DeleteMarkdownFile {
     notes_path: String,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DropboxOAuthStatus {
+    connected: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DropboxOAuthStart {
+    auth_url: String,
+    redirect_uri: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DropboxOAuthCallbackPayload {
+    status: String,
+    code: Option<String>,
+    state: Option<String>,
+    error: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DropboxTokenResponse {
+    access_token: String,
+    #[serde(default)]
+    expires_in: Option<u64>,
+    #[serde(default)]
+    refresh_token: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DropboxErrorResponse {
+    #[serde(default)]
+    error_summary: Option<String>,
+    #[serde(default)]
+    error_description: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DropboxListFolderResponse {
+    entries: Vec<DropboxMetadata>,
+    cursor: String,
+    has_more: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = ".tag")]
+enum DropboxMetadata {
+    #[serde(rename = "file")]
+    File {
+        name: String,
+        #[serde(default)]
+        path_display: Option<String>,
+        #[serde(default)]
+        path_lower: Option<String>,
+        #[serde(default)]
+        server_modified: Option<String>,
+        #[serde(default)]
+        size: Option<u64>,
+        #[serde(default)]
+        is_downloadable: Option<bool>,
+    },
+    #[serde(rename = "folder")]
+    Folder {
+        name: String,
+        #[serde(default)]
+        path_display: Option<String>,
+        #[serde(default)]
+        path_lower: Option<String>,
+    },
+    #[serde(other)]
+    Other,
+}
+
+#[derive(Debug, Deserialize)]
+struct DropboxDownloadMetadata {
+    name: String,
+    #[serde(default)]
+    path_display: Option<String>,
+    #[serde(default)]
+    path_lower: Option<String>,
+    #[serde(default)]
+    rev: Option<String>,
+    #[serde(default)]
+    server_modified: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DropboxDirectoryEntry {
+    kind: String,
+    path: String,
+    title: String,
+    size: Option<u64>,
+    server_modified: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DropboxMarkdownDirectory {
+    path: String,
+    parent_path: Option<String>,
+    title: String,
+    entries: Vec<DropboxDirectoryEntry>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DropboxMarkdownFile {
+    path: String,
+    title: String,
+    body: String,
+    rev: Option<String>,
+    server_modified: Option<String>,
+}
+
 fn validate_markdown_file_name(file_name: &str) -> Result<PathBuf, String> {
     let trimmed_file_name = file_name.trim();
     if trimmed_file_name.is_empty() {
@@ -256,6 +412,437 @@ fn normalize_app_language(language: &str) -> &'static str {
         "zh-Hans" => "zh-Hans",
         _ => DEFAULT_APP_LANGUAGE,
     }
+}
+
+fn now_unix_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
+}
+
+fn random_url_token(byte_count: usize) -> Result<String, String> {
+    let mut bytes = vec![0u8; byte_count];
+    getrandom::getrandom(&mut bytes)
+        .map_err(|error| format!("failed to generate secure random bytes: {error}"))?;
+
+    Ok(URL_SAFE_NO_PAD.encode(bytes))
+}
+
+fn pkce_code_challenge(code_verifier: &str) -> String {
+    let digest = Sha256::digest(code_verifier.as_bytes());
+
+    URL_SAFE_NO_PAD.encode(digest)
+}
+
+fn urlencoded_form_body(params: &[(&str, &str)]) -> String {
+    let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+    for (key, value) in params {
+        serializer.append_pair(key, value);
+    }
+
+    serializer.finish()
+}
+
+fn dropbox_redirect_uri() -> String {
+    format!("http://127.0.0.1:{DROPBOX_OAUTH_REDIRECT_PORT}{DROPBOX_OAUTH_CALLBACK_PATH}")
+}
+
+fn dropbox_token_store_path(app_handle: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let app_data_dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("failed to resolve app data directory: {error}"))?;
+
+    fs::create_dir_all(&app_data_dir)
+        .map_err(|error| format!("failed to create app data directory: {error}"))?;
+
+    Ok(app_data_dir.join("dropbox.json"))
+}
+
+fn read_dropbox_tokens_from_disk(app_handle: &tauri::AppHandle) -> Option<DropboxTokenStore> {
+    let store_path = dropbox_token_store_path(app_handle).ok()?;
+    let raw_store = fs::read_to_string(store_path).ok()?;
+
+    serde_json::from_str(&raw_store).ok()
+}
+
+fn replace_dropbox_tokens(
+    app_handle: &tauri::AppHandle,
+    tokens: Option<DropboxTokenStore>,
+) -> Result<(), String> {
+    let state = app_handle.state::<DropboxState>();
+    let mut current_tokens = state
+        .tokens
+        .lock()
+        .map_err(|_| "failed to lock Dropbox token store".to_string())?;
+
+    *current_tokens = tokens;
+    Ok(())
+}
+
+fn write_dropbox_tokens(
+    app_handle: &tauri::AppHandle,
+    tokens: &DropboxTokenStore,
+) -> Result<(), String> {
+    let store_path = dropbox_token_store_path(app_handle)?;
+    let serialized = serde_json::to_string_pretty(tokens)
+        .map_err(|error| format!("failed to serialize Dropbox tokens: {error}"))?;
+
+    fs::write(store_path, serialized)
+        .map_err(|error| format!("failed to write Dropbox tokens: {error}"))
+}
+
+fn remove_dropbox_tokens(app_handle: &tauri::AppHandle) -> Result<(), String> {
+    replace_dropbox_tokens(app_handle, None)?;
+
+    let store_path = dropbox_token_store_path(app_handle)?;
+    if store_path.exists() {
+        fs::remove_file(store_path)
+            .map_err(|error| format!("failed to remove Dropbox tokens: {error}"))?;
+    }
+
+    Ok(())
+}
+
+fn current_dropbox_tokens(
+    app_handle: &tauri::AppHandle,
+) -> Result<Option<DropboxTokenStore>, String> {
+    app_handle
+        .state::<DropboxState>()
+        .tokens
+        .lock()
+        .map(|tokens| tokens.clone())
+        .map_err(|_| "failed to lock Dropbox token store".to_string())
+}
+
+fn dropbox_oauth_callback_payload(error: String) -> DropboxOAuthCallbackPayload {
+    DropboxOAuthCallbackPayload {
+        status: "error".to_string(),
+        code: None,
+        state: None,
+        error: Some(error),
+    }
+}
+
+fn write_dropbox_oauth_http_response(
+    stream: &mut std::net::TcpStream,
+    ok: bool,
+) -> std::io::Result<()> {
+    let body = if ok {
+        "<!doctype html><html><body><h1>Dropbox authorization received.</h1><p>You can return to Scholium.</p></body></html>"
+    } else {
+        "<!doctype html><html><body><h1>Dropbox authorization failed.</h1><p>You can return to Scholium.</p></body></html>"
+    };
+    let response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    );
+
+    stream.write_all(response.as_bytes())
+}
+
+fn wait_for_dropbox_oauth_callback(listener: TcpListener) -> DropboxOAuthCallbackPayload {
+    if let Err(error) = listener.set_nonblocking(true) {
+        return dropbox_oauth_callback_payload(format!(
+            "failed to prepare Dropbox callback listener: {error}"
+        ));
+    }
+
+    let deadline = Instant::now() + Duration::from_secs(180);
+
+    loop {
+        match listener.accept() {
+            Ok((mut stream, _address)) => {
+                let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+                let mut buffer = [0u8; 4096];
+                let read_bytes = match stream.read(&mut buffer) {
+                    Ok(read_bytes) => read_bytes,
+                    Err(error) => {
+                        let _ = write_dropbox_oauth_http_response(&mut stream, false);
+                        return dropbox_oauth_callback_payload(format!(
+                            "failed to read Dropbox callback: {error}"
+                        ));
+                    }
+                };
+                let request = String::from_utf8_lossy(&buffer[..read_bytes]);
+                let request_target = request
+                    .lines()
+                    .next()
+                    .and_then(|line| line.split_whitespace().nth(1));
+                let Some(request_target) = request_target else {
+                    let _ = write_dropbox_oauth_http_response(&mut stream, false);
+                    return dropbox_oauth_callback_payload(
+                        "Dropbox callback request was empty".to_string(),
+                    );
+                };
+                let Ok(url) = Url::parse(&format!("http://127.0.0.1{request_target}")) else {
+                    let _ = write_dropbox_oauth_http_response(&mut stream, false);
+                    return dropbox_oauth_callback_payload(
+                        "Dropbox callback URL could not be parsed".to_string(),
+                    );
+                };
+                let query_pairs: std::collections::HashMap<String, String> =
+                    url.query_pairs().into_owned().collect();
+                let code = query_pairs.get("code").cloned();
+                let state = query_pairs.get("state").cloned();
+                let error = query_pairs
+                    .get("error_description")
+                    .or_else(|| query_pairs.get("error"))
+                    .cloned();
+                let is_success = code.is_some() && error.is_none();
+                let _ = write_dropbox_oauth_http_response(&mut stream, is_success);
+
+                if let Some(error) = error {
+                    return dropbox_oauth_callback_payload(error);
+                }
+
+                if code.is_none() {
+                    return dropbox_oauth_callback_payload(
+                        "Dropbox callback did not include an authorization code".to_string(),
+                    );
+                }
+
+                return DropboxOAuthCallbackPayload {
+                    status: "success".to_string(),
+                    code,
+                    state,
+                    error: None,
+                };
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                if Instant::now() >= deadline {
+                    return dropbox_oauth_callback_payload(
+                        "Dropbox authorization timed out".to_string(),
+                    );
+                }
+
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            Err(error) => {
+                return dropbox_oauth_callback_payload(format!(
+                    "failed to accept Dropbox callback: {error}"
+                ));
+            }
+        }
+    }
+}
+
+async fn dropbox_response_error(response: reqwest::Response, context: &str) -> String {
+    let status = response.status();
+    let raw_body = response.text().await.unwrap_or_default();
+
+    if let Ok(parsed) = serde_json::from_str::<DropboxErrorResponse>(&raw_body) {
+        if let Some(description) = parsed.error_description {
+            return format!("{context}: {description}");
+        }
+        if let Some(summary) = parsed.error_summary {
+            return format!("{context}: {summary}");
+        }
+    }
+
+    if raw_body.trim().is_empty() {
+        format!("{context}: Dropbox returned HTTP {status}")
+    } else {
+        format!("{context}: Dropbox returned HTTP {status}: {raw_body}")
+    }
+}
+
+fn tokens_expire_soon(tokens: &DropboxTokenStore) -> bool {
+    tokens
+        .expires_at
+        .map(|expires_at| expires_at <= now_unix_seconds() + 90)
+        .unwrap_or(false)
+}
+
+async fn refresh_dropbox_access_token(
+    app_handle: &tauri::AppHandle,
+    tokens: DropboxTokenStore,
+) -> Result<DropboxTokenStore, String> {
+    let refresh_token = tokens
+        .refresh_token
+        .clone()
+        .ok_or_else(|| "Dropbox session expired; reconnect Dropbox.".to_string())?;
+    let response = reqwest::Client::new()
+        .post(DROPBOX_OAUTH_TOKEN_URL)
+        .header(
+            "Content-Type",
+            "application/x-www-form-urlencoded; charset=utf-8",
+        )
+        .body(urlencoded_form_body(&[
+            ("grant_type", "refresh_token"),
+            ("refresh_token", refresh_token.as_str()),
+            ("client_id", tokens.app_key.as_str()),
+        ]))
+        .send()
+        .await
+        .map_err(|error| format!("failed to refresh Dropbox token: {error}"))?;
+
+    if !response.status().is_success() {
+        return Err(dropbox_response_error(response, "failed to refresh Dropbox token").await);
+    }
+
+    let token_response = response
+        .json::<DropboxTokenResponse>()
+        .await
+        .map_err(|error| format!("failed to parse Dropbox token response: {error}"))?;
+    let refreshed_tokens = DropboxTokenStore {
+        app_key: tokens.app_key,
+        access_token: token_response.access_token,
+        refresh_token: token_response.refresh_token.or(tokens.refresh_token),
+        expires_at: token_response
+            .expires_in
+            .map(|expires_in| now_unix_seconds() + expires_in),
+    };
+
+    replace_dropbox_tokens(app_handle, Some(refreshed_tokens.clone()))?;
+    write_dropbox_tokens(app_handle, &refreshed_tokens)?;
+
+    Ok(refreshed_tokens)
+}
+
+async fn dropbox_access_token(app_handle: &tauri::AppHandle) -> Result<String, String> {
+    let tokens = current_dropbox_tokens(app_handle)?
+        .ok_or_else(|| "Dropbox is not connected.".to_string())?;
+    let tokens = if tokens_expire_soon(&tokens) {
+        refresh_dropbox_access_token(app_handle, tokens).await?
+    } else {
+        tokens
+    };
+
+    Ok(tokens.access_token)
+}
+
+fn normalize_dropbox_path(path: &str) -> String {
+    let trimmed_path = path.trim();
+    if trimmed_path.is_empty() || trimmed_path == "/" {
+        return String::new();
+    }
+
+    if trimmed_path.starts_with('/') {
+        trimmed_path.to_string()
+    } else {
+        format!("/{trimmed_path}")
+    }
+}
+
+fn dropbox_parent_path(path: &str) -> Option<String> {
+    let normalized_path = normalize_dropbox_path(path);
+    if normalized_path.is_empty() {
+        return None;
+    }
+
+    let trimmed_path = normalized_path.trim_matches('/');
+    let Some((parent, _name)) = trimmed_path.rsplit_once('/') else {
+        return Some(String::new());
+    };
+
+    Some(format!("/{parent}"))
+}
+
+fn dropbox_path_title(path: &str) -> String {
+    let normalized_path = normalize_dropbox_path(path);
+    if normalized_path.is_empty() {
+        return "Dropbox".to_string();
+    }
+
+    normalized_path
+        .trim_matches('/')
+        .rsplit('/')
+        .next()
+        .filter(|name| !name.is_empty())
+        .unwrap_or("Dropbox")
+        .to_string()
+}
+
+fn dropbox_metadata_path(
+    path_display: Option<String>,
+    path_lower: Option<String>,
+    name: &str,
+) -> String {
+    path_display
+        .or(path_lower)
+        .unwrap_or_else(|| format!("/{name}"))
+}
+
+fn dropbox_entry_sort_key(entry: &DropboxDirectoryEntry) -> (u8, String, String) {
+    let kind_order = if entry.kind == "directory" { 0 } else { 1 };
+
+    (
+        kind_order,
+        entry.title.to_lowercase(),
+        entry.path.to_lowercase(),
+    )
+}
+
+fn is_markdown_dropbox_path(path: &str) -> bool {
+    Path::new(path)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| {
+            matches!(
+                extension.to_lowercase().as_str(),
+                "md" | "markdown" | "mdown"
+            )
+        })
+        .unwrap_or(false)
+}
+
+async fn read_dropbox_list_page(
+    client: &reqwest::Client,
+    access_token: &str,
+    path: &str,
+) -> Result<DropboxListFolderResponse, String> {
+    let response = client
+        .post(DROPBOX_LIST_FOLDER_URL)
+        .bearer_auth(access_token)
+        .json(&serde_json::json!({
+            "path": path,
+            "recursive": false,
+            "include_media_info": false,
+            "include_deleted": false,
+            "include_has_explicit_shared_members": false,
+            "include_mounted_folders": true,
+            "include_non_downloadable_files": true
+        }))
+        .send()
+        .await
+        .map_err(|error| format!("failed to list Dropbox folder: {error}"))?;
+
+    if !response.status().is_success() {
+        return Err(dropbox_response_error(response, "failed to list Dropbox folder").await);
+    }
+
+    response
+        .json::<DropboxListFolderResponse>()
+        .await
+        .map_err(|error| format!("failed to parse Dropbox folder response: {error}"))
+}
+
+async fn read_dropbox_list_continue_page(
+    client: &reqwest::Client,
+    access_token: &str,
+    cursor: &str,
+) -> Result<DropboxListFolderResponse, String> {
+    let response = client
+        .post(DROPBOX_LIST_FOLDER_CONTINUE_URL)
+        .bearer_auth(access_token)
+        .json(&serde_json::json!({ "cursor": cursor }))
+        .send()
+        .await
+        .map_err(|error| format!("failed to continue Dropbox folder listing: {error}"))?;
+
+    if !response.status().is_success() {
+        return Err(
+            dropbox_response_error(response, "failed to continue Dropbox folder listing").await,
+        );
+    }
+
+    response
+        .json::<DropboxListFolderResponse>()
+        .await
+        .map_err(|error| format!("failed to parse Dropbox folder response: {error}"))
 }
 
 fn current_app_language(app_handle: &tauri::AppHandle) -> String {
@@ -343,9 +930,15 @@ fn sanitize_location_entry(
     }
 
     let fallback_title = if kind == "directory" {
-        location_title(Path::new(trimmed_path), menu_text(language, "directoryFallback"))
+        location_title(
+            Path::new(trimmed_path),
+            menu_text(language, "directoryFallback"),
+        )
     } else {
-        location_title(Path::new(trimmed_path), menu_text(language, "markdownFileFallback"))
+        location_title(
+            Path::new(trimmed_path),
+            menu_text(language, "markdownFileFallback"),
+        )
     };
     let trimmed_title = title.trim();
 
@@ -568,8 +1161,8 @@ fn read_markdown_directory(
 }
 
 fn parse_notes_file(notes_path: &Path) -> Result<NotesFile, String> {
-    let raw_notes = fs::read_to_string(notes_path)
-        .map_err(|error| format!("failed to read notes: {error}"))?;
+    let raw_notes =
+        fs::read_to_string(notes_path).map_err(|error| format!("failed to read notes: {error}"))?;
 
     serde_json::from_str(&raw_notes).map_err(|error| format!("failed to parse notes: {error}"))
 }
@@ -621,7 +1214,8 @@ fn write_notes_file(
 
     let serialized = serde_json::to_string_pretty(&notes_file)
         .map_err(|error| format!("failed to serialize notes: {error}"))?;
-    fs::write(&notes_path, serialized).map_err(|error| format!("failed to write notes: {error}"))?;
+    fs::write(&notes_path, serialized)
+        .map_err(|error| format!("failed to write notes: {error}"))?;
 
     if legacy_notes_path.exists() {
         fs::remove_file(&legacy_notes_path)
@@ -795,8 +1389,7 @@ fn delete_markdown_file(app: AppHandle, path: String) -> Result<DeleteMarkdownFi
         .map_err(|error| format!("failed to delete Markdown file: {error}"))?;
 
     if notes_path.exists() {
-        fs::remove_file(&notes_path)
-            .map_err(|error| format!("failed to delete notes: {error}"))?;
+        fs::remove_file(&notes_path).map_err(|error| format!("failed to delete notes: {error}"))?;
     }
 
     if legacy_notes_path.exists() {
@@ -863,6 +1456,283 @@ fn set_app_language(app: tauri::AppHandle, language: String) -> Result<(), Strin
     }
 
     refresh_app_menu(&app)
+}
+
+#[tauri::command]
+fn dropbox_oauth_status(app: tauri::AppHandle) -> Result<DropboxOAuthStatus, String> {
+    Ok(DropboxOAuthStatus {
+        connected: current_dropbox_tokens(&app)?.is_some(),
+    })
+}
+
+#[tauri::command]
+fn start_dropbox_oauth(
+    app: tauri::AppHandle,
+    app_key: String,
+) -> Result<DropboxOAuthStart, String> {
+    let app_key = app_key.trim().to_string();
+    if app_key.is_empty() {
+        return Err("Dropbox app key is required.".to_string());
+    }
+
+    let listener = TcpListener::bind(("127.0.0.1", DROPBOX_OAUTH_REDIRECT_PORT))
+        .map_err(|error| format!("failed to start Dropbox callback listener: {error}"))?;
+    let redirect_uri = dropbox_redirect_uri();
+    let state = random_url_token(32)?;
+    let code_verifier = random_url_token(64)?;
+    let code_challenge = pkce_code_challenge(&code_verifier);
+
+    {
+        let dropbox_state = app.state::<DropboxState>();
+        let mut oauth_session = dropbox_state
+            .oauth_session
+            .lock()
+            .map_err(|_| "failed to lock Dropbox OAuth session".to_string())?;
+
+        *oauth_session = Some(DropboxOAuthSession {
+            app_key: app_key.clone(),
+            code_verifier,
+            redirect_uri: redirect_uri.clone(),
+            state: state.clone(),
+        });
+    }
+
+    let mut authorize_url = Url::parse(DROPBOX_OAUTH_AUTHORIZE_URL)
+        .map_err(|error| format!("failed to prepare Dropbox OAuth URL: {error}"))?;
+    authorize_url
+        .query_pairs_mut()
+        .append_pair("client_id", &app_key)
+        .append_pair("response_type", "code")
+        .append_pair("token_access_type", "offline")
+        .append_pair("code_challenge", &code_challenge)
+        .append_pair("code_challenge_method", "S256")
+        .append_pair("redirect_uri", &redirect_uri)
+        .append_pair("state", &state);
+
+    let app_for_callback = app.clone();
+    std::thread::spawn(move || {
+        let payload = wait_for_dropbox_oauth_callback(listener);
+        let _ = app_for_callback.emit("scholium-dropbox-oauth-callback", payload);
+    });
+
+    Ok(DropboxOAuthStart {
+        auth_url: authorize_url.to_string(),
+        redirect_uri,
+    })
+}
+
+#[tauri::command]
+async fn complete_dropbox_oauth(
+    app: tauri::AppHandle,
+    code: String,
+    state: String,
+) -> Result<DropboxOAuthStatus, String> {
+    let code = code.trim().to_string();
+    let state = state.trim().to_string();
+    if code.is_empty() {
+        return Err("Dropbox authorization code is missing.".to_string());
+    }
+
+    let session = {
+        let dropbox_state = app.state::<DropboxState>();
+        let mut oauth_session = dropbox_state
+            .oauth_session
+            .lock()
+            .map_err(|_| "failed to lock Dropbox OAuth session".to_string())?;
+        let Some(session) = oauth_session.as_ref() else {
+            return Err("Dropbox OAuth session was not started.".to_string());
+        };
+        if session.state != state {
+            return Err("Dropbox OAuth state did not match.".to_string());
+        }
+
+        oauth_session.take().expect("Dropbox OAuth session exists")
+    };
+
+    let response = reqwest::Client::new()
+        .post(DROPBOX_OAUTH_TOKEN_URL)
+        .header(
+            "Content-Type",
+            "application/x-www-form-urlencoded; charset=utf-8",
+        )
+        .body(urlencoded_form_body(&[
+            ("grant_type", "authorization_code"),
+            ("code", code.as_str()),
+            ("client_id", session.app_key.as_str()),
+            ("code_verifier", session.code_verifier.as_str()),
+            ("redirect_uri", session.redirect_uri.as_str()),
+        ]))
+        .send()
+        .await
+        .map_err(|error| format!("failed to exchange Dropbox authorization code: {error}"))?;
+
+    if !response.status().is_success() {
+        return Err(dropbox_response_error(
+            response,
+            "failed to exchange Dropbox authorization code",
+        )
+        .await);
+    }
+
+    let token_response = response
+        .json::<DropboxTokenResponse>()
+        .await
+        .map_err(|error| format!("failed to parse Dropbox token response: {error}"))?;
+    let tokens = DropboxTokenStore {
+        app_key: session.app_key,
+        access_token: token_response.access_token,
+        refresh_token: token_response.refresh_token,
+        expires_at: token_response
+            .expires_in
+            .map(|expires_in| now_unix_seconds() + expires_in),
+    };
+
+    replace_dropbox_tokens(&app, Some(tokens.clone()))?;
+    write_dropbox_tokens(&app, &tokens)?;
+
+    Ok(DropboxOAuthStatus { connected: true })
+}
+
+#[tauri::command]
+fn disconnect_dropbox(app: tauri::AppHandle) -> Result<DropboxOAuthStatus, String> {
+    remove_dropbox_tokens(&app)?;
+
+    Ok(DropboxOAuthStatus { connected: false })
+}
+
+#[tauri::command]
+async fn list_dropbox_markdown_directory(
+    app: tauri::AppHandle,
+    path: String,
+) -> Result<DropboxMarkdownDirectory, String> {
+    let normalized_path = normalize_dropbox_path(&path);
+    let access_token = dropbox_access_token(&app).await?;
+    let client = reqwest::Client::new();
+    let mut page = read_dropbox_list_page(&client, &access_token, &normalized_path).await?;
+    let mut entries = Vec::new();
+
+    loop {
+        for entry in page.entries {
+            match entry {
+                DropboxMetadata::Folder {
+                    name,
+                    path_display,
+                    path_lower,
+                } => {
+                    entries.push(DropboxDirectoryEntry {
+                        kind: "directory".to_string(),
+                        path: dropbox_metadata_path(path_display, path_lower, &name),
+                        title: name,
+                        size: None,
+                        server_modified: None,
+                    });
+                }
+                DropboxMetadata::File {
+                    name,
+                    path_display,
+                    path_lower,
+                    server_modified,
+                    size,
+                    is_downloadable,
+                } => {
+                    let path = dropbox_metadata_path(path_display, path_lower, &name);
+                    if is_downloadable == Some(false) || !is_markdown_dropbox_path(&path) {
+                        continue;
+                    }
+
+                    entries.push(DropboxDirectoryEntry {
+                        kind: "file".to_string(),
+                        path,
+                        title: document_title(Path::new(&name)),
+                        size,
+                        server_modified,
+                    });
+                }
+                DropboxMetadata::Other => {}
+            }
+        }
+
+        if !page.has_more {
+            break;
+        }
+
+        page = read_dropbox_list_continue_page(&client, &access_token, &page.cursor).await?;
+    }
+
+    entries.sort_by_key(dropbox_entry_sort_key);
+
+    Ok(DropboxMarkdownDirectory {
+        title: dropbox_path_title(&normalized_path),
+        path: normalized_path.clone(),
+        parent_path: dropbox_parent_path(&normalized_path),
+        entries,
+    })
+}
+
+#[tauri::command]
+async fn open_dropbox_markdown_file(
+    app: tauri::AppHandle,
+    path: String,
+) -> Result<DropboxMarkdownFile, String> {
+    let normalized_path = normalize_dropbox_path(&path);
+    if !is_markdown_dropbox_path(&normalized_path) {
+        return Err("selected Dropbox file is not a Markdown file".to_string());
+    }
+
+    let access_token = dropbox_access_token(&app).await?;
+    let response = reqwest::Client::new()
+        .post(DROPBOX_DOWNLOAD_URL)
+        .bearer_auth(access_token)
+        .header(
+            "Dropbox-API-Arg",
+            serde_json::json!({ "path": normalized_path }).to_string(),
+        )
+        .send()
+        .await
+        .map_err(|error| format!("failed to download Dropbox Markdown file: {error}"))?;
+
+    if response.status() == StatusCode::UNAUTHORIZED {
+        return Err("Dropbox authorization failed; reconnect Dropbox.".to_string());
+    }
+    if !response.status().is_success() {
+        return Err(
+            dropbox_response_error(response, "failed to download Dropbox Markdown file").await,
+        );
+    }
+
+    let metadata = response
+        .headers()
+        .get("dropbox-api-result")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| serde_json::from_str::<DropboxDownloadMetadata>(value).ok());
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|error| format!("failed to read Dropbox Markdown response: {error}"))?;
+    let body = String::from_utf8(bytes.to_vec())
+        .map_err(|error| format!("Dropbox Markdown file is not valid UTF-8: {error}"))?;
+    let path = metadata
+        .as_ref()
+        .map(|metadata| {
+            dropbox_metadata_path(
+                metadata.path_display.clone(),
+                metadata.path_lower.clone(),
+                &metadata.name,
+            )
+        })
+        .unwrap_or(normalized_path);
+    let title = metadata
+        .as_ref()
+        .map(|metadata| document_title(Path::new(&metadata.name)))
+        .unwrap_or_else(|| document_title(Path::new(&path)));
+
+    Ok(DropboxMarkdownFile {
+        path,
+        title,
+        body,
+        rev: metadata.as_ref().and_then(|metadata| metadata.rev.clone()),
+        server_modified: metadata.and_then(|metadata| metadata.server_modified),
+    })
 }
 
 fn build_favorite_directories_submenu(
@@ -1013,8 +1883,7 @@ fn build_app_menu(app_handle: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wr
     )?;
     let favorite_directories =
         build_favorite_directories_submenu(app_handle, &location_store, &language)?;
-    let recent_locations =
-        build_recent_locations_submenu(app_handle, &location_store, &language)?;
+    let recent_locations = build_recent_locations_submenu(app_handle, &location_store, &language)?;
 
     Menu::with_items(
         app_handle,
@@ -1126,6 +1995,7 @@ fn greet(name: &str) -> String {
 pub fn run() {
     tauri::Builder::default()
         .manage(LocationMenuState::default())
+        .manage(DropboxState::default())
         .setup(|app| {
             #[cfg(target_os = "macos")]
             set_runtime_dock_icon();
@@ -1134,6 +2004,11 @@ pub fn run() {
             if let Err(error) = replace_current_location_store(app.handle(), location_store)
                 .and_then(|_| refresh_app_menu(app.handle()))
             {
+                eprintln!("{error}");
+            }
+
+            let dropbox_tokens = read_dropbox_tokens_from_disk(app.handle());
+            if let Err(error) = replace_dropbox_tokens(app.handle(), dropbox_tokens) {
                 eprintln!("{error}");
             }
 
@@ -1203,7 +2078,13 @@ pub fn run() {
             save_markdown_file,
             remember_recent_location,
             set_current_directory_location,
-            set_app_language
+            set_app_language,
+            dropbox_oauth_status,
+            start_dropbox_oauth,
+            complete_dropbox_oauth,
+            disconnect_dropbox,
+            list_dropbox_markdown_directory,
+            open_dropbox_markdown_file
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
