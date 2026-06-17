@@ -127,7 +127,7 @@ button:disabled {
   --note-library-open-width: 34%;
   --note-library-content-gap: 24px;
   --document-pane-measured-width: 272px;
-  --directory-bookmark-width: 47px;
+  --directory-bookmark-width: 43px;
   --side-panel-body-width: calc(var(--side-panel-reserved-width) - var(--directory-bookmark-width));
   --document-pane-width: var(--side-panel-body-width);
   --document-pane-active-width: var(--document-pane-width);
@@ -2100,7 +2100,7 @@ button:disabled {
   left: calc(-1 * var(--directory-bookmark-width));
   z-index: 72;
   display: grid;
-  width: 47px;
+  width: 43px;
   height: 128px;
   place-items: center;
   border: 1px solid rgba(247, 224, 200, 0.5);
@@ -2125,7 +2125,7 @@ button:disabled {
   right: calc(-1 * var(--directory-bookmark-width));
   z-index: 72;
   display: grid;
-  width: 47px;
+  width: 43px;
   height: 128px;
   place-items: center;
   border: 1px solid rgba(247, 224, 200, 0.5);
