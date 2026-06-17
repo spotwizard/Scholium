@@ -43,6 +43,7 @@ const unorderedListMarkerPattern = /^ {0,3}[-*+]\s+/;
 const typedUnorderedListMarkerPattern = /^[-*+]\s+(.*)$/;
 const orderedListMarkerPattern = /^ {0,3}\d+[.)]\s+/;
 const typedOrderedListMarkerPattern = /^\d+[.)]\s+(.*)$/;
+const inlineBreakPattern = /<br\s*\/?>/gi;
 const emptyPreviewListItemText = "\u200b";
 const annotationClickDelayMs = 500;
 const pendingAnchorAnnotationId = "__scholium_pending_anchor__";
@@ -783,9 +784,13 @@ function isSafeLink(href: string) {
   return /^(https?:|mailto:)/i.test(href);
 }
 
+function isInlineBreakToken(token: string) {
+  return token === "\n" || /^<br\s*\/?>$/i.test(token);
+}
+
 function renderInlineMarkdown(text: string, keyPrefix: string): ReactNode[] {
   const nodes: ReactNode[] = [];
-  const tokenPattern = /(`[^`]+`|\*\*[^*]+\*\*|\*[^*]+\*|\[[^\]]+\]\([^)]+\))/g;
+  const tokenPattern = /(\n|`[^`]+`|\*\*[^*]+\*\*|\*[^*]+\*|\[[^\]]+\]\([^)]+\)|<br\s*\/?>)/gi;
   let lastIndex = 0;
   let tokenIndex = 0;
 
@@ -799,7 +804,9 @@ function renderInlineMarkdown(text: string, keyPrefix: string): ReactNode[] {
 
     const key = `${keyPrefix}-inline-${tokenIndex}`;
 
-    if (token.startsWith("`")) {
+    if (isInlineBreakToken(token)) {
+      nodes.push(<br key={key} />);
+    } else if (token.startsWith("`")) {
       nodes.push(<code key={key}>{token.slice(1, -1)}</code>);
     } else if (token.startsWith("**")) {
       nodes.push(<strong key={key}>{token.slice(2, -2)}</strong>);
@@ -976,6 +983,45 @@ function appendTextMapSeparator(target: PreviewTextMap, separator: string) {
   appendTextMap(target, separator, null);
 }
 
+function appendPreviewTextMap(target: PreviewTextMap, source: PreviewTextMap) {
+  target.text += source.text;
+  target.sourceOffsets.push(...source.sourceOffsets);
+}
+
+function appendInlineTextMap(target: PreviewTextMap, text: string, sourceStart: number | null) {
+  let lastIndex = 0;
+
+  for (const match of text.matchAll(inlineBreakPattern)) {
+    const token = match[0];
+    const index = match.index ?? 0;
+
+    if (index > lastIndex) {
+      appendTextMap(
+        target,
+        text.slice(lastIndex, index),
+        sourceStart === null ? null : sourceStart + lastIndex,
+      );
+    }
+
+    appendTextMap(target, "\n", sourceStart === null ? null : sourceStart + index);
+    lastIndex = index + token.length;
+  }
+
+  if (lastIndex < text.length) {
+    appendTextMap(
+      target,
+      text.slice(lastIndex),
+      sourceStart === null ? null : sourceStart + lastIndex,
+    );
+  }
+}
+
+function previewTextMapFromInlineText(text: string, sourceStart: number | null): PreviewTextMap {
+  const textMap: PreviewTextMap = { text: "", sourceOffsets: [] };
+  appendInlineTextMap(textMap, text, sourceStart);
+  return textMap;
+}
+
 function getHeadingTextMap(markdown: string, block: Extract<MarkdownPreviewBlock, { kind: "heading" }>) {
   const lines = markdown.replace(/\r\n/g, "\n").split("\n");
   const lineStartOffsets = getLineStartOffsets(markdown);
@@ -984,10 +1030,7 @@ function getHeadingTextMap(markdown: string, block: Extract<MarkdownPreviewBlock
   const markerLength = match ? match[1].length + (line[match[1].length] === " " ? 1 : 0) : 0;
   const sourceStart = (lineStartOffsets[block.startLine] ?? 0) + markerLength;
 
-  return {
-    text: block.text,
-    sourceOffsets: Array.from({ length: block.text.length }, (_, index) => sourceStart + index),
-  };
+  return previewTextMapFromInlineText(block.text, sourceStart);
 }
 
 function getParagraphTextMap(
@@ -1005,7 +1048,7 @@ function getParagraphTextMap(
       appendTextMapSeparator(textMap, " ");
     }
 
-    appendTextMap(
+    appendInlineTextMap(
       textMap,
       trimmed,
       (lineStartOffsets[lineIndex] ?? 0) + getLineContentStart(line),
@@ -1027,13 +1070,10 @@ function getQuoteLineTextMap(
   const marker = line.match(/^>\s?/)?.[0] ?? "";
   const text = line.slice(marker.length);
 
-  return {
+  return previewTextMapFromInlineText(
     text,
-    sourceOffsets: Array.from(
-      { length: text.length },
-      (_, index) => (lineStartOffsets[lineIndex] ?? 0) + marker.length + index,
-    ),
-  };
+    (lineStartOffsets[lineIndex] ?? 0) + marker.length,
+  );
 }
 
 function getListItemTextMap(
@@ -1051,13 +1091,10 @@ function getListItemTextMap(
       : line.match(orderedListMarkerPattern)?.[0] ?? "";
   const text = line.slice(marker.length);
 
-  return {
+  return previewTextMapFromInlineText(
     text,
-    sourceOffsets: Array.from(
-      { length: text.length },
-      (_, index) => (lineStartOffsets[lineIndex] ?? 0) + marker.length + index,
-    ),
-  };
+    (lineStartOffsets[lineIndex] ?? 0) + marker.length,
+  );
 }
 
 function getCodeTextMap(markdown: string, block: Extract<MarkdownPreviewBlock, { kind: "code" }>) {
@@ -1085,7 +1122,7 @@ function getPreviewBlockTextMap(markdown: string, block: MarkdownPreviewBlock): 
       (textMap, _quoteLine, quoteIndex) => {
         if (quoteIndex > 0) appendTextMapSeparator(textMap, "\n");
         const quoteLineTextMap = getQuoteLineTextMap(markdown, block, quoteIndex);
-        appendTextMap(textMap, quoteLineTextMap.text, quoteLineTextMap.sourceOffsets[0] ?? null);
+        appendPreviewTextMap(textMap, quoteLineTextMap);
         return textMap;
       },
       { text: "", sourceOffsets: [] },
@@ -1096,7 +1133,7 @@ function getPreviewBlockTextMap(markdown: string, block: MarkdownPreviewBlock): 
       (textMap, _item, itemIndex) => {
         if (itemIndex > 0) appendTextMapSeparator(textMap, "\n");
         const itemTextMap = getListItemTextMap(markdown, block, itemIndex);
-        appendTextMap(textMap, itemTextMap.text, itemTextMap.sourceOffsets[0] ?? null);
+        appendPreviewTextMap(textMap, itemTextMap);
         return textMap;
       },
       { text: "", sourceOffsets: [] },
