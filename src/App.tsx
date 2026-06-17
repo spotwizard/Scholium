@@ -27,6 +27,7 @@ import {
 import { SettingsView } from "./SettingsView";
 import fileGlyphSvg from "./assets/file-glyph.svg?raw";
 import folderGlyphSvg from "./assets/folder-glyph.svg?raw";
+import { appLanguageHtmlLang, createTranslator } from "./i18n";
 import { loadScholiumMermaid } from "./mermaid";
 import {
   readSettingsSnapshot,
@@ -303,9 +304,9 @@ function PencilIcon() {
   );
 }
 
-function PinBadge() {
+function PinBadge({ ariaLabel }: { ariaLabel: string }) {
   return (
-    <div className="pin-badge" aria-label="Note">
+    <div className="pin-badge" aria-label={ariaLabel}>
       <svg aria-hidden="true" width="13.5" height="13.5" viewBox="0 0 24 24" fill="none">
         <path
           d="M14.5 3.5 9 9 5.5 9.8 4 11.3l3.8 3.8-3.3 4.6 4.6-3.3 3.8 3.8 1.5-1.5.8-3.5 5.5-5.5z"
@@ -1639,7 +1640,15 @@ function isMermaidLanguage(language: string) {
   return language.toLowerCase() === "mermaid";
 }
 
-function MermaidDiagram({ definition }: { definition: string }) {
+function MermaidDiagram({
+  definition,
+  emptyDefinitionLabel,
+  loadingLabel,
+}: {
+  definition: string;
+  emptyDefinitionLabel: string;
+  loadingLabel: string;
+}) {
   const reactId = useId();
   const diagramId = `scholium-mermaid-${reactId.replace(/[^A-Za-z0-9_-]/g, "")}`;
   const [renderState, setRenderState] = useState<
@@ -1656,7 +1665,7 @@ function MermaidDiagram({ definition }: { definition: string }) {
       setRenderState({
         status: "error",
         svg: "",
-        error: "Mermaid diagram is empty.",
+        error: emptyDefinitionLabel,
       });
       return;
     }
@@ -1687,7 +1696,7 @@ function MermaidDiagram({ definition }: { definition: string }) {
     return () => {
       cancelled = true;
     };
-  }, [definition, diagramId]);
+  }, [definition, diagramId, emptyDefinitionLabel]);
 
   return (
     <figure className="mermaid-diagram">
@@ -1699,7 +1708,7 @@ function MermaidDiagram({ definition }: { definition: string }) {
       ) : renderState.status === "error" ? (
         <pre className="mermaid-diagram__error">{renderState.error}</pre>
       ) : (
-        <div className="mermaid-diagram__loading">Rendering diagram...</div>
+        <div className="mermaid-diagram__loading">{loadingLabel}</div>
       )}
     </figure>
   );
@@ -2461,12 +2470,16 @@ function MarkdownPreviewBlockView({
   block,
   markdown,
   annotations,
+  mermaidEmptyDefinitionLabel,
+  mermaidLoadingLabel,
   onAnnotationClick,
   onAnnotationDoubleClick,
 }: {
   block: MarkdownPreviewBlock;
   markdown: string;
   annotations: TextRangeAnnotation[];
+  mermaidEmptyDefinitionLabel: string;
+  mermaidLoadingLabel: string;
   onAnnotationClick: (annotationId: string) => void;
   onAnnotationDoubleClick: (annotationId: string) => void;
 }) {
@@ -2546,7 +2559,14 @@ function MarkdownPreviewBlockView({
 
   if (block.kind === "code") {
     if (isMermaidLanguage(block.language)) {
-      return <MermaidDiagram definition={block.text} key={block.key} />;
+      return (
+        <MermaidDiagram
+          definition={block.text}
+          emptyDefinitionLabel={mermaidEmptyDefinitionLabel}
+          key={block.key}
+          loadingLabel={mermaidLoadingLabel}
+        />
+      );
     }
 
     return (
@@ -2588,6 +2608,8 @@ function MarkdownPreviewBlockView({
 export function MarkdownPreview({
   value,
   annotations,
+  mermaidEmptyDefinitionLabel,
+  mermaidLoadingLabel,
   readOnly,
   onChange,
   onSelectionChange,
@@ -2596,6 +2618,8 @@ export function MarkdownPreview({
 }: {
   value: string;
   annotations: TextRangeAnnotation[];
+  mermaidEmptyDefinitionLabel: string;
+  mermaidLoadingLabel: string;
   readOnly?: boolean;
   onChange: (
     value: string,
@@ -3410,6 +3434,8 @@ export function MarkdownPreview({
             key={block.key}
             markdown={value}
             annotations={annotations}
+            mermaidEmptyDefinitionLabel={mermaidEmptyDefinitionLabel}
+            mermaidLoadingLabel={mermaidLoadingLabel}
             onAnnotationClick={queueAnnotationClick}
             onAnnotationDoubleClick={handleAnnotationDoubleClick}
           />
@@ -3441,9 +3467,13 @@ export function MarkdownPreview({
 function MarkdownPreviewContentBlock({
   block,
   keyPrefix,
+  mermaidEmptyDefinitionLabel,
+  mermaidLoadingLabel,
 }: {
   block: MarkdownPreviewBlock;
   keyPrefix: string;
+  mermaidEmptyDefinitionLabel: string;
+  mermaidLoadingLabel: string;
 }) {
   if (block.kind === "heading") {
     const tagName = `h${block.level}` as "h1" | "h2" | "h3" | "h4" | "h5" | "h6";
@@ -3483,7 +3513,14 @@ function MarkdownPreviewContentBlock({
 
   if (block.kind === "code") {
     if (isMermaidLanguage(block.language)) {
-      return <MermaidDiagram definition={block.text} key={block.key} />;
+      return (
+        <MermaidDiagram
+          definition={block.text}
+          emptyDefinitionLabel={mermaidEmptyDefinitionLabel}
+          key={block.key}
+          loadingLabel={mermaidLoadingLabel}
+        />
+      );
     }
 
     return (
@@ -3511,11 +3548,15 @@ function MarkdownPreviewContentBlock({
 function MarkdownPreviewContent({
   className,
   emptyLabel,
+  mermaidEmptyDefinitionLabel,
+  mermaidLoadingLabel,
   onDoubleClick,
   value,
 }: {
   className: string;
   emptyLabel: string;
+  mermaidEmptyDefinitionLabel: string;
+  mermaidLoadingLabel: string;
   onDoubleClick?: () => void;
   value: string;
 }) {
@@ -3534,6 +3575,8 @@ function MarkdownPreviewContent({
               block={block}
               key={block.key}
               keyPrefix={`markdown-content-${blockIndex}`}
+              mermaidEmptyDefinitionLabel={mermaidEmptyDefinitionLabel}
+              mermaidLoadingLabel={mermaidLoadingLabel}
             />
           ))}
     </div>
@@ -3544,12 +3587,16 @@ function NoteLibraryPreviewContent({
   className,
   emptyLabel,
   expanded,
+  mermaidEmptyDefinitionLabel,
+  mermaidLoadingLabel,
   onDoubleClick,
   value,
 }: {
   className: string;
   emptyLabel: string;
   expanded: boolean;
+  mermaidEmptyDefinitionLabel: string;
+  mermaidLoadingLabel: string;
   onDoubleClick?: () => void;
   value: string;
 }) {
@@ -3615,6 +3662,8 @@ function NoteLibraryPreviewContent({
         <MarkdownPreviewContent
           className={className}
           emptyLabel={emptyLabel}
+          mermaidEmptyDefinitionLabel={mermaidEmptyDefinitionLabel}
+          mermaidLoadingLabel={mermaidLoadingLabel}
           onDoubleClick={onDoubleClick}
           value={value}
         />
@@ -3712,6 +3761,8 @@ function App() {
   );
   const [settingsSnapshot, setSettingsSnapshot] =
     useState<SettingsSnapshot>(readSettingsSnapshot);
+  const appLanguage = settingsSnapshot["app.language"];
+  const t = createTranslator(appLanguage);
   const [editorMode, setEditorMode] = useState<EditorMode>("preview");
   const [noteModeEnabled, setNoteModeEnabled] = useState(false);
   const [glossaryModeEnabled, setGlossaryModeEnabled] = useState(false);
@@ -4885,6 +4936,22 @@ function App() {
   }, [settingsViewOpen]);
 
   useEffect(() => {
+    document.documentElement.lang = appLanguageHtmlLang[appLanguage];
+
+    return () => {
+      document.documentElement.removeAttribute("lang");
+    };
+  }, [appLanguage]);
+
+  useEffect(() => {
+    if (!nativeStorageAvailable) return;
+
+    void invoke("set_app_language", { language: appLanguage }).catch((error) => {
+      console.error(error);
+    });
+  }, [appLanguage, nativeStorageAvailable]);
+
+  useEffect(() => {
     const interfaceFontSize = settingsSnapshot["app.interfaceFontSize"];
     document.documentElement.style.fontSize = `${interfaceFontSize}px`;
 
@@ -4972,7 +5039,7 @@ function App() {
     const lastOpenedPath = readLastOpenedMarkdownPath();
     if (!lastOpenedPath) return;
 
-    setStorageError("Opening last file...");
+    setStorageError(t("status.openingLastFile"));
 
     void invoke<OpenMarkdownFileContextResult>("open_markdown_file_context", {
       path: lastOpenedPath,
@@ -4986,7 +5053,9 @@ function App() {
       .catch((error) => {
         forgetLastOpenedMarkdownPath();
         setStorageError(
-          `Could not reopen last file: ${error instanceof Error ? error.message : String(error)}`,
+          t("error.couldNotReopenLastFile", {
+            message: error instanceof Error ? error.message : String(error),
+          }),
         );
       });
   }, [nativeStorageAvailable, settingsSnapshot]);
@@ -5496,7 +5565,7 @@ function App() {
           {
             kind: "parent-directory",
             id: `parent-directory:${openedDirectory.parentPath}`,
-            title: "上一層",
+            title: t("app.parentDirectory"),
             path: openedDirectory.parentPath,
           },
           ...childEntries,
@@ -5535,7 +5604,7 @@ function App() {
     setActiveGlossaryMode("view");
 
     if (nextEntries.length === 0) {
-      setStorageError("No folders or Markdown files found in the selected folder.");
+      setStorageError(t("status.noFoldersOrMarkdown"));
     } else {
       setStorageError("");
     }
@@ -5552,11 +5621,11 @@ function App() {
 
   async function openDirectoryPath(path: string) {
     if (!nativeStorageAvailable) {
-      setStorageError("Open/save requires the Scholium macOS app runtime.");
+      setStorageError(t("error.nativeRuntimeRequired"));
       return;
     }
 
-    setStorageError("Opening folder...");
+    setStorageError(t("status.openingFolder"));
 
     try {
       const openedDirectory = await invoke<OpenMarkdownDirectoryResult>("open_markdown_directory", {
@@ -5570,11 +5639,11 @@ function App() {
 
   async function openMarkdownFilePath(path: string) {
     if (!nativeStorageAvailable) {
-      setStorageError("Open/save requires the Scholium macOS app runtime.");
+      setStorageError(t("error.nativeRuntimeRequired"));
       return;
     }
 
-    setStorageError("Opening file...");
+    setStorageError(t("status.openingFile"));
 
     try {
       const context = await invoke<OpenMarkdownFileContextResult>("open_markdown_file_context", {
@@ -5598,7 +5667,7 @@ function App() {
 
   async function openMarkdownFolder() {
     if (!nativeStorageAvailable) {
-      setStorageError("Open/save requires the Scholium macOS app runtime.");
+      setStorageError(t("error.nativeRuntimeRequired"));
       return;
     }
 
@@ -5619,11 +5688,11 @@ function App() {
 
   async function openMarkdownFileFromPicker() {
     if (!nativeStorageAvailable) {
-      setStorageError("Open/save requires the Scholium macOS app runtime.");
+      setStorageError(t("error.nativeRuntimeRequired"));
       return;
     }
 
-    setStorageError("Opening file...");
+    setStorageError(t("status.openingFile"));
 
     try {
       const selectedPath = await open({
@@ -5644,7 +5713,7 @@ function App() {
 
   async function newMarkdownFile() {
     if (!nativeStorageAvailable) {
-      setStorageError("Open/save requires the Scholium macOS app runtime.");
+      setStorageError(t("error.nativeRuntimeRequired"));
       return;
     }
 
@@ -5652,7 +5721,7 @@ function App() {
 
     try {
       const selectedPath = await save({
-        defaultPath: "Untitled.md",
+        defaultPath: t("app.untitledFile"),
         filters: markdownFilters,
       });
       if (!selectedPath) return;
@@ -5777,7 +5846,7 @@ function App() {
     });
     if (currentDiskFile.body !== savedBodySnapshot && currentDiskFile.body !== bodyToSave) {
       throw new Error(
-        "檔案已在 Scholium 外更新，已停止自動儲存以避免覆蓋磁碟內容。請重新開啟檔案後再編輯。",
+        t("error.externalFileChanged"),
       );
     }
 
@@ -5858,13 +5927,14 @@ function App() {
 
   function defaultDuplicateFileName(documentToDuplicate: MarkdownDocument) {
     const fileName = fileNameFromPath(documentToDuplicate.filePath ?? documentToDuplicate.path);
-    const fallbackName = `${documentToDuplicate.title || "Untitled"} 副本.md`;
+    const duplicateSuffix = t("duplicate.suffix");
+    const fallbackName = `${documentToDuplicate.title || t("app.untitled")} ${duplicateSuffix}.md`;
     if (!fileName) return fallbackName;
 
     const extensionStart = fileName.lastIndexOf(".");
-    if (extensionStart <= 0) return `${fileName} 副本.md`;
+    if (extensionStart <= 0) return `${fileName} ${duplicateSuffix}.md`;
 
-    return `${fileName.slice(0, extensionStart)} 副本${fileName.slice(extensionStart)}`;
+    return `${fileName.slice(0, extensionStart)} ${duplicateSuffix}${fileName.slice(extensionStart)}`;
   }
 
   async function writeTextToClipboard(text: string) {
@@ -6020,18 +6090,18 @@ function App() {
     setFileContextMenu(null);
 
     if (!nativeStorageAvailable) {
-      setStorageError("Open/save requires the Scholium macOS app runtime.");
+      setStorageError(t("error.nativeRuntimeRequired"));
       return false;
     }
 
     if (autosaveInFlightRef.current) {
-      setStorageError("請稍候目前儲存完成後再建立副本。");
+      setStorageError(t("error.waitForAutosaveBeforeDuplicate"));
       return false;
     }
 
     const documentToDuplicate = documentsRef.current.find((document) => document.id === documentId);
     if (!documentToDuplicate?.filePath) {
-      setStorageError("This document is not backed by a local Markdown file.");
+      setStorageError(t("error.notBackedByMarkdownFile"));
       return false;
     }
 
@@ -6047,24 +6117,24 @@ function App() {
 
   async function duplicateDocumentFile(documentId: string, fileName: string) {
     if (!nativeStorageAvailable) {
-      setStorageError("Open/save requires the Scholium macOS app runtime.");
+      setStorageError(t("error.nativeRuntimeRequired"));
       return false;
     }
 
     if (autosaveInFlightRef.current) {
-      setStorageError("請稍候目前儲存完成後再建立副本。");
+      setStorageError(t("error.waitForAutosaveBeforeDuplicate"));
       return false;
     }
 
     const documentToDuplicate = documentsRef.current.find((document) => document.id === documentId);
     if (!documentToDuplicate?.filePath) {
-      setStorageError("This document is not backed by a local Markdown file.");
+      setStorageError(t("error.notBackedByMarkdownFile"));
       return false;
     }
 
     const trimmedFileName = fileName.trim();
     if (!trimmedFileName) {
-      setStorageError("請輸入副本檔名。");
+      setStorageError(t("error.duplicateFileNameRequired"));
       return false;
     }
 
@@ -6085,11 +6155,11 @@ function App() {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (message === "duplicate file already exists") {
-        setStorageError("副本檔案已存在，請換一個檔名。");
+        setStorageError(t("error.duplicateExists"));
       } else if (message === "duplicate file name must not include folders") {
-        setStorageError("副本檔名不能包含資料夾路徑。");
+        setStorageError(t("error.duplicateNameNoFolders"));
       } else if (message === "duplicate file name is empty") {
-        setStorageError("請輸入副本檔名。");
+        setStorageError(t("error.duplicateFileNameRequired"));
       } else {
         setStorageError(message);
       }
@@ -6142,29 +6212,29 @@ function App() {
 
   async function deleteDocumentFile(documentId: string) {
     if (!nativeStorageAvailable) {
-      setStorageError("Open/save requires the Scholium macOS app runtime.");
+      setStorageError(t("error.nativeRuntimeRequired"));
       return;
     }
 
     if (autosaveInFlightRef.current) {
-      setStorageError("請稍候目前儲存完成後再刪除檔案。");
+      setStorageError(t("error.waitForAutosaveBeforeDelete"));
       return;
     }
 
     const documentToDelete = documentsRef.current.find((document) => document.id === documentId);
     if (!documentToDelete?.filePath) {
-      setStorageError("This document is not backed by a local Markdown file.");
+      setStorageError(t("error.notBackedByMarkdownFile"));
       return;
     }
 
     setFileContextMenu(null);
 
     const confirmed = window.confirm(
-      `確定要刪除「${documentToDelete.title}」嗎？\n\n這會刪除 Markdown 檔案與對應的 notes sidecar。`,
+      t("confirm.deleteFile", { title: documentToDelete.title }),
     );
     if (!confirmed) return;
 
-    setStorageError("Deleting file...");
+    setStorageError(t("status.deletingFile"));
 
     try {
       await invoke<DeleteMarkdownFileResult>("delete_markdown_file", {
@@ -7426,7 +7496,7 @@ function App() {
     ? [
         {
           id: "duplicate",
-          label: "建立副本",
+          label: t("duplicate.action"),
           icon: <DuplicateIcon />,
           onSelect: () => {
             openDuplicateDocumentDialog(fileContextMenu.documentId);
@@ -7434,7 +7504,7 @@ function App() {
         },
         {
           id: "copy-content",
-          label: "複製內容",
+          label: t("file.copyContent"),
           icon: <CopyIcon />,
           onSelect: () => {
             void copyDocumentContent(fileContextMenu.documentId);
@@ -7442,7 +7512,7 @@ function App() {
         },
         {
           id: "delete",
-          label: "刪除檔案",
+          label: t("file.delete"),
           icon: <TrashIcon />,
           tone: "danger",
           onSelect: () => {
@@ -7461,8 +7531,8 @@ function App() {
     ? (activeNoteToneById.get(activeNote.id) ?? activeNote.tone ?? 0)
     : 0;
   const selectionWarningMessage = glossaryModeActive
-    ? "請選取 1-3 個單詞建立名詞解釋，或選取完整句子/段落新增筆記。"
-    : "請選取完整句子或段落新增筆記。";
+    ? t("selection.warning.glossary")
+    : t("selection.warning.note");
 
   const shellClassName = [
     "scholium-shell",
@@ -7476,7 +7546,7 @@ function App() {
 
   return (
     <main className={shellClassName} onMouseDownCapture={handleShellMouseDownCapture}>
-      <aside className="document-pane" aria-label="Documents">
+      <aside className="document-pane" aria-label={t("app.documents")}>
         <div className="pane-header">
           <div>
             <h1>{workspaceTitle}</h1>
@@ -7517,8 +7587,8 @@ function App() {
                     top: event.clientY,
                   });
                 }}
-                aria-label={entry.kind === "parent-directory" ? "回到上一層目錄" : undefined}
-                title={entry.kind === "parent-directory" ? "回到上一層目錄" : undefined}
+                aria-label={entry.kind === "parent-directory" ? t("app.parentDirectory.aria") : undefined}
+                title={entry.kind === "parent-directory" ? t("app.parentDirectory.aria") : undefined}
                 type="button"
               >
                 {entry.kind === "parent-directory" ? (
@@ -7542,14 +7612,19 @@ function App() {
       {!settingsViewOpen ? (
         <button
           aria-expanded={directoryPaneOpen}
-          aria-label={directoryPaneOpen ? "收起目錄" : "展開目錄"}
+          aria-label={
+            directoryPaneOpen ? t("directory.bookmark.close") : t("directory.bookmark.open")
+          }
           className={`directory-bookmark ${directoryPaneOpen ? "is-attached" : ""}`}
           onClick={toggleDirectoryPane}
           type="button"
         >
           <span aria-hidden="true" className="directory-bookmark__label">
-            <span>目</span>
-            <span>錄</span>
+            {t("directory.bookmark.label")
+              .split("")
+              .map((character, index) => (
+                <span key={`${character}-${index}`}>{character}</span>
+              ))}
           </span>
         </button>
       ) : null}
@@ -7592,9 +7667,9 @@ function App() {
             role="dialog"
           >
             <div className="duplicate-file-dialog__header">
-              <h2 id="duplicate-file-dialog-title">建立副本</h2>
+              <h2 id="duplicate-file-dialog-title">{t("duplicate.title")}</h2>
               <button
-                aria-label="關閉"
+                aria-label={t("dialog.close")}
                 className="duplicate-file-dialog__close"
                 disabled={duplicateFileDialog.isSubmitting}
                 onClick={closeDuplicateFileDialog}
@@ -7604,7 +7679,7 @@ function App() {
               </button>
             </div>
             <label className="duplicate-file-dialog__field">
-              <span>副本檔名</span>
+              <span>{t("duplicate.fileName")}</span>
               <input
                 disabled={duplicateFileDialog.isSubmitting}
                 ref={duplicateFileInputRef}
@@ -7629,14 +7704,16 @@ function App() {
                 onClick={closeDuplicateFileDialog}
                 type="button"
               >
-                取消
+                {t("duplicate.cancel")}
               </button>
               <button
                 className="is-primary"
                 disabled={duplicateFileDialog.isSubmitting}
                 type="submit"
               >
-                {duplicateFileDialog.isSubmitting ? "建立中..." : "建立"}
+                {duplicateFileDialog.isSubmitting
+                  ? t("duplicate.submitting")
+                  : t("duplicate.submit")}
               </button>
             </div>
           </form>
@@ -7647,6 +7724,7 @@ function App() {
         <SettingsView
           closeButtonRef={settingsCloseButtonRef}
           values={settingsSnapshot}
+          t={t}
           onChange={updateSettingValue}
           onClose={closeSettingsView}
           onResetAllSettings={resetAllSettingValues}
@@ -7654,23 +7732,25 @@ function App() {
         />
       ) : null}
 
-      <section className="editor-pane" aria-label="Markdown editor">
+      <section className="editor-pane" aria-label={t("app.markdownEditor")}>
         <div className="editor-grid">
           <div className="editor-surface" style={editorSurfaceStyle}>
             <div
-              aria-label="Editor tools"
+              aria-label={t("app.editorTools")}
               className="editor-toolbar"
               data-expanded={noteModeEnabled ? "true" : "false"}
             >
               <button
                 aria-checked={noteModeEnabled}
-                aria-label={noteModeEnabled ? "關閉筆記模式" : "開啟筆記模式"}
+                aria-label={
+                  noteModeEnabled ? t("toolbar.noteMode.close") : t("toolbar.noteMode.open")
+                }
                 className="note-mode-switch note-mode-switch--primary"
                 onClick={toggleNoteMode}
                 role="switch"
                 type="button"
               >
-                <span className="note-mode-switch__label">筆記模式</span>
+                <span className="note-mode-switch__label">{t("toolbar.noteMode")}</span>
               </button>
               <span
                 aria-hidden="true"
@@ -7679,20 +7759,24 @@ function App() {
               <button
                 aria-checked={glossaryModeActive}
                 aria-hidden={!noteModeEnabled}
-                aria-label={glossaryModeActive ? "關閉名詞解釋模式" : "開啟名詞解釋模式"}
+                aria-label={
+                  glossaryModeActive
+                    ? t("toolbar.glossaryMode.close")
+                    : t("toolbar.glossaryMode.open")
+                }
                 className="note-mode-switch note-mode-switch--secondary note-mode-switch--dependent"
                 disabled={!noteModeEnabled}
                 onClick={toggleGlossaryMode}
                 role="switch"
                 type="button"
               >
-                <span className="note-mode-switch__label">名詞</span>
+                <span className="note-mode-switch__label">{t("toolbar.glossaryMode")}</span>
               </button>
             </div>
             {!hasOpenDocument ? (
               <div className="empty-editor-state">
-                <h2>此目錄沒有 Markdown 檔案</h2>
-                <p>請選擇左側子目錄，或開啟其他 Markdown 檔案。</p>
+                <h2>{t("emptyDirectory.title")}</h2>
+                <p>{t("emptyDirectory.description")}</p>
               </div>
             ) : editorMode === "preview" ? (
                 <MilkdownMarkdownEditor
@@ -7728,20 +7812,26 @@ function App() {
         <>
           <button
             aria-expanded={noteLibraryOpen}
-            aria-label={noteLibraryOpen ? "收起筆記庫" : "展開筆記庫"}
+            aria-label={
+              noteLibraryOpen
+                ? t("noteLibrary.bookmark.close")
+                : t("noteLibrary.bookmark.open")
+            }
             className={`note-library-bookmark ${noteLibraryOpen ? "is-attached" : ""}`}
             onClick={toggleNoteLibrary}
             type="button"
           >
             <span aria-hidden="true" className="note-library-bookmark__label">
-              <span>筆</span>
-              <span>記</span>
-              <span>庫</span>
+              {t("noteLibrary.bookmark.label")
+                .split("")
+                .map((character, index) => (
+                  <span key={`${character}-${index}`}>{character}</span>
+                ))}
             </span>
           </button>
           <aside
             aria-hidden={!noteLibraryOpen}
-            aria-label="筆記庫"
+            aria-label={t("noteLibrary.label")}
             className={`note-library-pane ${noteLibraryOpen ? "is-open" : ""} ${
               noteLibraryFocusActive ? "is-focus-active" : ""
             }`}
@@ -7770,11 +7860,11 @@ function App() {
                       onKeyDown={(event) => handleNoteLibraryCardKeyDown(note.id, event)}
                     >
                     <div className="note-library-card__header">
-                      <PinBadge />
+                      <PinBadge ariaLabel={t("note.pin")} />
                     </div>
                     {isEditingLibraryNote ? (
                       <NoteMarkdownEditor
-                        ariaLabel="編輯筆記"
+                        ariaLabel={t("note.edit")}
                         className="note-library-card__editor"
                         editorRootRef={(element) => {
                           libraryNoteEditorRootRef.current = element;
@@ -7789,8 +7879,10 @@ function App() {
                     ) : (
                       <NoteLibraryPreviewContent
                         className="bottom-note-body note-library-card__body"
-                        emptyLabel="無內容"
+                        emptyLabel={t("note.empty")}
                         expanded={isFocusedLibraryNote}
+                        mermaidEmptyDefinitionLabel={t("mermaid.empty")}
+                        mermaidLoadingLabel={t("mermaid.loading")}
                         onDoubleClick={() => startLibraryNoteEditor(note.id)}
                         value={note.body}
                       />
@@ -7801,9 +7893,11 @@ function App() {
                     >
                       <button
                         type="button"
-                        aria-label={isEditingLibraryNote ? "完成編輯筆記" : "編輯筆記"}
+                        aria-label={
+                          isEditingLibraryNote ? t("note.edit.done") : t("note.edit")
+                        }
                         aria-pressed={isEditingLibraryNote}
-                        title={isEditingLibraryNote ? "完成編輯筆記" : "編輯筆記"}
+                        title={isEditingLibraryNote ? t("note.edit.done") : t("note.edit")}
                         tabIndex={isFocusedLibraryNote || isEditingLibraryNote ? 0 : -1}
                         onClick={(event) => {
                           event.stopPropagation();
@@ -7815,8 +7909,8 @@ function App() {
                       <button
                         className="is-danger"
                         type="button"
-                        aria-label="刪除筆記"
-                        title="刪除筆記"
+                        aria-label={t("note.delete")}
+                        title={t("note.delete")}
                         tabIndex={isFocusedLibraryNote || isEditingLibraryNote ? 0 : -1}
                         onClick={(event) => {
                           event.stopPropagation();
@@ -7830,7 +7924,7 @@ function App() {
                 );
               })
             ) : (
-              <p className="note-library-empty">尚無筆記</p>
+              <p className="note-library-empty">{t("noteLibrary.empty")}</p>
             )}
           </div>
         </aside>
@@ -7878,15 +7972,15 @@ function App() {
             aria-label={
               pendingAnchor
                 ? pendingAnchorIsGlossaryTerm
-                  ? "Create glossary term"
-                  : "Create selection note"
+                  ? t("glossary.create")
+                  : t("selectionNote.create")
                 : activeGlossaryIsEditing
-                  ? "Edit glossary term"
+                  ? t("glossary.edit")
                   : activeGlossaryTerm
-                    ? "View glossary term"
+                    ? t("glossary.view")
                     : activeNoteIsEditing
-                      ? "Edit selection note"
-                      : "View selection note"
+                      ? t("selectionNote.edit")
+                      : t("selectionNote.view")
             }
           >
             <div
@@ -7895,11 +7989,11 @@ function App() {
               ref={floatingNoteCardRef}
             >
               <div className="floating-note-card__header">
-                <PinBadge />
+                <PinBadge ariaLabel={t("note.pin")} />
                 <button
                   className="floating-note-close-button"
                   type="button"
-                  aria-label="Close note"
+                  aria-label={t("note.close")}
                   onClick={closeNotePanel}
                 >
                   ×
@@ -7917,10 +8011,12 @@ function App() {
 
               {pendingAnchor && pendingGlossaryTerm ? (
                 <div className="selection-confirmation">
-                  <p>已存在於詞彙庫中，是否綁定？</p>
+                  <p>{t("selection.glossary.exists")}</p>
                   <MarkdownPreviewContent
                     className="bottom-note-body glossary-existing-definition"
-                    emptyLabel="尚未填寫說明"
+                    emptyLabel={t("glossary.emptyDefinition")}
+                    mermaidEmptyDefinitionLabel={t("mermaid.empty")}
+                    mermaidLoadingLabel={t("mermaid.loading")}
                     value={pendingGlossaryTerm.definition}
                   />
                   <div className="note-actions bottom-note-actions">
@@ -7929,14 +8025,14 @@ function App() {
                       type="button"
                       onClick={rejectPendingGlossaryTerm}
                     >
-                      不綁定
+                      {t("selection.glossary.unbind")}
                     </button>
                     <button
                       className="is-primary selection-confirmation-button"
                       type="button"
                       onClick={bindPendingGlossaryTerm}
                     >
-                      綁定
+                      {t("selection.glossary.bind")}
                     </button>
                   </div>
                 </div>
@@ -7944,14 +8040,18 @@ function App() {
 
               {pendingAnchor && !pendingGlossaryTerm && pendingAnchorIsGlossaryTerm ? (
                 <div className="selection-confirmation">
-                  <p>要建立或綁定「{pendingAnchor.selectedText.replace(/\s+/g, " ").trim()}」的名詞解釋嗎？</p>
+                  <p>
+                    {t("selection.glossary.prompt", {
+                      text: pendingAnchor.selectedText.replace(/\s+/g, " ").trim(),
+                    })}
+                  </p>
                   <div className="note-actions bottom-note-actions">
                     <button
                       className="is-primary selection-confirmation-button"
                       type="button"
                       onClick={startPendingGlossaryFlow}
                     >
-                      處理名詞
+                      {t("selection.glossary.handle")}
                     </button>
                   </div>
                 </div>
@@ -7962,16 +8062,16 @@ function App() {
               !pendingAnchorIsGlossaryTerm &&
               pendingAnchorIsCompleteBlock ? (
                 <div className="selection-confirmation">
-                  <p>要新增筆記嗎？</p>
+                  <p>{t("selection.note.prompt")}</p>
                   <div className="note-actions bottom-note-actions">
                     <button
                       className="is-primary selection-confirmation-button"
                       type="button"
-                      aria-label="Add note"
-                      title="Add note"
+                      aria-label={t("note.add.aria")}
+                      title={t("note.add.aria")}
                       onClick={confirmPendingSelectionNote}
                     >
-                      新增
+                      {t("note.add")}
                     </button>
                   </div>
                 </div>
@@ -7979,7 +8079,7 @@ function App() {
 
               {!pendingAnchor && activeNoteIsEditing ? (
                 <NoteMarkdownEditor
-                  ariaLabel="Edit note"
+                  ariaLabel={t("note.edit")}
                   className="floating-note-card__editor"
                   editorRootRef={(element) => {
                     noteEditorRootRef.current = element;
@@ -7995,7 +8095,7 @@ function App() {
 
               {!pendingAnchor && activeGlossaryIsEditing ? (
                 <NoteMarkdownEditor
-                  ariaLabel="Edit glossary term"
+                  ariaLabel={t("glossary.edit")}
                   className="floating-note-card__editor"
                   editorRootRef={(element) => {
                     noteEditorRootRef.current = element;
@@ -8012,14 +8112,16 @@ function App() {
               {!pendingAnchor && (activeNoteIsEditing || activeGlossaryIsEditing) && isReturningToView ? (
                 <div className="note-returning-status" role="status">
                   <span className="note-returning-spinner" aria-hidden="true" />
-                  <span>正在回到閱覽模式</span>
+                  <span>{t("note.returningToView")}</span>
                 </div>
               ) : null}
 
               {!pendingAnchor && activeGlossaryTerm && !activeGlossaryIsEditing ? (
                 <MarkdownPreviewContent
                   className="bottom-note-body"
-                  emptyLabel="尚未填寫說明"
+                  emptyLabel={t("glossary.emptyDefinition")}
+                  mermaidEmptyDefinitionLabel={t("mermaid.empty")}
+                  mermaidLoadingLabel={t("mermaid.loading")}
                   onDoubleClick={() => openGlossaryEditor(activeGlossaryTerm.id)}
                   value={activeGlossaryTerm.definition}
                 />
@@ -8029,8 +8131,8 @@ function App() {
                 <div className="note-actions bottom-note-actions">
                   <button
                     type="button"
-                    aria-label="Edit glossary term"
-                    title="Edit"
+                    aria-label={t("glossary.edit")}
+                    title={t("glossary.edit")}
                     onClick={() => openGlossaryEditor(activeGlossaryTerm.id)}
                   >
                     <PencilIcon />
@@ -8039,8 +8141,8 @@ function App() {
                     <button
                       className="is-glossary-action"
                       type="button"
-                      aria-label="Remove glossary binding"
-                      title="Remove glossary binding"
+                      aria-label={t("glossary.removeBinding")}
+                      title={t("glossary.removeBinding")}
                       onClick={() => deleteGlossaryBinding(activeGlossaryBinding.id)}
                     >
                       <TrashIcon />
@@ -8052,7 +8154,9 @@ function App() {
               {!pendingAnchor && activeNote && !activeNoteIsEditing ? (
                 <MarkdownPreviewContent
                   className="bottom-note-body"
-                  emptyLabel="無內容"
+                  emptyLabel={t("note.empty")}
+                  mermaidEmptyDefinitionLabel={t("mermaid.empty")}
+                  mermaidLoadingLabel={t("mermaid.loading")}
                   onDoubleClick={() => openNoteEditor(activeNote.id)}
                   value={activeNote.body}
                 />
@@ -8062,8 +8166,8 @@ function App() {
                 <div className="note-actions bottom-note-actions">
                   <button
                     type="button"
-                    aria-label="Edit note"
-                    title="Edit"
+                    aria-label={t("note.edit")}
+                    title={t("note.edit")}
                     onClick={() => openNoteEditor(activeNote.id)}
                   >
                     <PencilIcon />
@@ -8071,8 +8175,8 @@ function App() {
                   <button
                     className="is-danger"
                     type="button"
-                    aria-label="Delete note"
-                    title="Delete"
+                    aria-label={t("note.delete")}
+                    title={t("note.delete")}
                     onClick={() => deleteNote(activeNote.id)}
                   >
                     <TrashIcon />

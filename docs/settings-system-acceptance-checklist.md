@@ -27,6 +27,7 @@
 | Settings schema / registry | 本次實作 | 所有已實作設定都從集中式 definitions 宣告 type、default value、validation、category、runtime metadata。 |
 | Settings store API | 本次實作 | 提供 `readSetting`、`writeSetting`、`resetSetting`、`resetSettings`、`readSettingsSnapshot`。 |
 | Persistence wrapper | 本次實作 | UI 不直接呼叫 raw `localStorage` key；一般偏好可由 store 包裝 `localStorage`。 |
+| i18n dictionary | 本次實作 | app UI、settings UI、主要狀態訊息與 native menu label 有統一翻譯來源，支援 English / 繁體中文 / 簡體中文。 |
 | Runtime application boundary | 本次實作 | `App.tsx` 只讀取已驗證 setting value，並套用到 runtime state。 |
 | No placeholder settings | 本次實作 | 沒有接上 runtime 行為的項目不得出現在 UI。 |
 
@@ -53,7 +54,7 @@
 | --- | --- | --- |
 | `app.restoreLastOpenedFile` | 本次實作 | 控制啟動時是否讀取上次開啟的 Markdown path，default 為 `true`。 |
 | `app.directoryPaneOpen` | 本次實作 | 控制 app 啟動時目錄面板是否展開，default 為 `true`。 |
-| 預設 app 顯示語言 | 需前置設計 | 需要 i18n dictionary 與文字來源整理；單放語言下拉選單不算完成。 |
+| 預設 app 顯示語言 | 本次實作 | 建立 i18n dictionary 與文字來源整理，支援 English / 繁體中文 / 簡體中文，並同步主要 UI、settings UI、狀態訊息與 native menu label。 |
 | 主題 | 本次實作 | 提供跟隨系統、淺色、深色，並以 app theme tokens 套用 runtime 外觀。 |
 | 字體縮放 | 本次實作 | 透過 `app.interfaceFontSize` 調整 app root typography scale。 |
 

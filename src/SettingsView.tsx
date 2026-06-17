@@ -1,6 +1,7 @@
 import { useMemo, useState, type RefObject } from "react";
+import type { TranslationKey } from "./i18n";
 import {
-  settingCategoryLabels,
+  settingCategoryLabelKeys,
   settingCategoryOrder,
   settingsDefinitions,
   type SettingCategory,
@@ -12,6 +13,7 @@ import {
 
 type SettingsViewProps = {
   closeButtonRef: RefObject<HTMLButtonElement | null>;
+  t: (key: TranslationKey, replacements?: Record<string, string | number>) => string;
   values: SettingsSnapshot;
   onChange: (key: SettingKey, value: SettingValue) => void;
   onClose: () => void;
@@ -21,6 +23,7 @@ type SettingsViewProps = {
 
 export function SettingsView({
   closeButtonRef,
+  t,
   values,
   onChange,
   onClose,
@@ -46,12 +49,13 @@ export function SettingsView({
 
   function renderSettingControl(definition: SettingDefinition) {
     const value = values[definition.key];
+    const label = t(definition.labelKey);
 
     if (definition.type === "boolean") {
       return (
         <label className="settings-view__switch">
           <input
-            aria-label={definition.label}
+            aria-label={label}
             checked={Boolean(value)}
             type="checkbox"
             onChange={(event) => onChange(definition.key, event.target.checked)}
@@ -67,7 +71,7 @@ export function SettingsView({
       return (
         <div className="settings-view__number-control">
           <input
-            aria-label={definition.label}
+            aria-label={label}
             className="settings-view__range"
             max={definition.max}
             min={definition.min}
@@ -78,7 +82,7 @@ export function SettingsView({
           />
           <label className="settings-view__number-field">
             <input
-              aria-label={`${definition.label}數值`}
+              aria-label={t("settings.numberValue", { label })}
               max={definition.max}
               min={definition.min}
               step={definition.step}
@@ -94,7 +98,7 @@ export function SettingsView({
 
     return (
       <div
-        aria-label={definition.label}
+        aria-label={label}
         className="settings-view__segmented"
         role="radiogroup"
       >
@@ -107,7 +111,7 @@ export function SettingsView({
             role="radio"
             type="button"
           >
-            {option.label}
+            {t(option.labelKey)}
           </button>
         ))}
       </div>
@@ -129,11 +133,11 @@ export function SettingsView({
       >
         <header className="settings-view__header">
           <div>
-            <h2 id="settings-view-title">設定</h2>
+            <h2 id="settings-view-title">{t("settings.title")}</h2>
           </div>
           <div className="settings-view__actions">
             <button
-              aria-label="關閉設定"
+              aria-label={t("settings.close")}
               className="settings-view__close"
               onClick={onClose}
               ref={closeButtonRef}
@@ -145,7 +149,7 @@ export function SettingsView({
         </header>
 
         <div className="settings-view__body">
-          <nav aria-label="設定分類" className="settings-view__sidebar">
+          <nav aria-label={t("settings.categories")} className="settings-view__sidebar">
             {activeCategories.map(({ category }) => (
               <button
                 aria-current={category === selectedSection?.category ? "page" : undefined}
@@ -154,7 +158,7 @@ export function SettingsView({
                 onClick={() => setSelectedCategory(category)}
                 type="button"
               >
-                <span>{settingCategoryLabels[category]}</span>
+                <span>{t(settingCategoryLabelKeys[category])}</span>
               </button>
             ))}
           </nav>
@@ -166,18 +170,18 @@ export function SettingsView({
                 id={`settings-${selectedSection.category}`}
                 key={selectedSection.category}
               >
-                <h3>{settingCategoryLabels[selectedSection.category]}</h3>
+                <h3>{t(settingCategoryLabelKeys[selectedSection.category])}</h3>
                 <div className="settings-view__setting-list">
                   {selectedSection.definitions.map((definition) => {
                     return (
                       <div className="settings-view__setting-row" key={definition.key}>
                         <div className="settings-view__setting-copy">
                           <span className="settings-view__setting-label">
-                            {definition.label}
+                            {t(definition.labelKey)}
                           </span>
-                          {definition.description ? (
+                          {definition.descriptionKey ? (
                             <span className="settings-view__setting-description">
-                              {definition.description}
+                              {t(definition.descriptionKey)}
                             </span>
                           ) : null}
                         </div>
@@ -186,7 +190,9 @@ export function SettingsView({
                         </div>
                         <div className="settings-view__setting-actions">
                           {definition.requiresRestart ? (
-                            <span className="settings-view__restart-badge">需重啟</span>
+                            <span className="settings-view__restart-badge">
+                              {t("settings.restartRequired")}
+                            </span>
                           ) : null}
                           {settingIsModified(definition) ? (
                             <button
@@ -194,7 +200,7 @@ export function SettingsView({
                               onClick={() => onResetSetting(definition.key)}
                               type="button"
                             >
-                              重設
+                              {t("settings.reset")}
                             </button>
                           ) : null}
                         </div>
@@ -210,7 +216,7 @@ export function SettingsView({
                 onClick={onResetAllSettings}
                 type="button"
               >
-                全部重設
+                {t("settings.resetAll")}
               </button>
             </div>
           </div>

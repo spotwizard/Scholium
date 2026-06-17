@@ -22,7 +22,7 @@
 - 主題
 - 字體縮放
 
-第一版只實作已能直接接到目前 runtime 的項目：啟動復原、目錄面板、主題與介面字體縮放。語言設定需要先建立 i18n dictionary 與文字來源整理，不能只放無效下拉選單。
+第一版只實作已能直接接到目前 runtime 的項目：啟動復原、目錄面板、語言、主題與介面字體縮放。語言設定必須建立 i18n dictionary 與文字來源整理，不能只放無效下拉選單。
 
 ### Editor settings
 
@@ -80,8 +80,8 @@ type BooleanSettingDefinition = {
   key: string;
   category: SettingCategory;
   type: "boolean";
-  label: string;
-  description?: string;
+  labelKey: TranslationKey;
+  descriptionKey?: TranslationKey;
   defaultValue: boolean;
   requiresRestart: boolean;
 };
@@ -90,8 +90,8 @@ type NumberSettingDefinition = {
   key: string;
   category: SettingCategory;
   type: "number";
-  label: string;
-  description?: string;
+  labelKey: TranslationKey;
+  descriptionKey?: TranslationKey;
   defaultValue: number;
   min: number;
   max: number;
@@ -103,10 +103,10 @@ type SelectSettingDefinition<T extends string = string> = {
   key: string;
   category: SettingCategory;
   type: "select";
-  label: string;
-  description?: string;
+  labelKey: TranslationKey;
+  descriptionKey?: TranslationKey;
   defaultValue: T;
-  options: Array<{ label: string; value: T }>;
+  options: Array<{ labelKey: TranslationKey; value: T }>;
   requiresRestart: boolean;
 };
 
@@ -121,10 +121,23 @@ type SettingDefinition =
 ```ts
 export const settingsDefinitions = [
   {
+    key: "app.language",
+    category: "app",
+    type: "select",
+    labelKey: "settings.app.language.label",
+    defaultValue: "zh-Hant",
+    options: [
+      { labelKey: "settings.app.language.option.english", value: "en" },
+      { labelKey: "settings.app.language.option.traditionalChinese", value: "zh-Hant" },
+      { labelKey: "settings.app.language.option.simplifiedChinese", value: "zh-Hans" },
+    ],
+    requiresRestart: false,
+  },
+  {
     key: "app.interfaceFontSize",
     category: "app",
     type: "number",
-    label: "介面字體大小",
+    labelKey: "settings.app.interfaceFontSize.label",
     defaultValue: 18,
     min: 15,
     max: 22,
@@ -135,12 +148,12 @@ export const settingsDefinitions = [
     key: "app.theme",
     category: "app",
     type: "select",
-    label: "主題",
+    labelKey: "settings.app.theme.label",
     defaultValue: "system",
     options: [
-      { label: "跟隨系統", value: "system" },
-      { label: "淺色", value: "light" },
-      { label: "深色", value: "dark" },
+      { labelKey: "settings.app.theme.option.system", value: "system" },
+      { labelKey: "settings.app.theme.option.light", value: "light" },
+      { labelKey: "settings.app.theme.option.dark", value: "dark" },
     ],
     requiresRestart: false,
   },
@@ -148,7 +161,7 @@ export const settingsDefinitions = [
     key: "app.restoreLastOpenedFile",
     category: "app",
     type: "boolean",
-    label: "啟動時重新開啟上次的檔案",
+    labelKey: "settings.app.restoreLastOpenedFile.label",
     defaultValue: true,
     requiresRestart: false,
   },
@@ -156,7 +169,7 @@ export const settingsDefinitions = [
     key: "app.directoryPaneOpen",
     category: "app",
     type: "boolean",
-    label: "啟動時顯示目錄面板",
+    labelKey: "settings.app.directoryPaneOpen.label",
     defaultValue: true,
     requiresRestart: false,
   },
@@ -164,7 +177,7 @@ export const settingsDefinitions = [
     key: "editor.fontSize",
     category: "editor",
     type: "number",
-    label: "編輯器字體大小",
+    labelKey: "settings.editor.fontSize.label",
     defaultValue: 18,
     min: 14,
     max: 28,
@@ -175,7 +188,7 @@ export const settingsDefinitions = [
     key: "editor.lineHeight",
     category: "editor",
     type: "number",
-    label: "編輯器行距",
+    labelKey: "settings.editor.lineHeight.label",
     defaultValue: 1.72,
     min: 1.3,
     max: 2.2,
@@ -201,10 +214,12 @@ readSettingsSnapshot()
 
 責任分工：
 
-- `settingsDefinitions`：宣告 schema、default、category、label、validation。
+- `settingsDefinitions`：宣告 schema、default、category、translation key、validation。
+- `i18n dictionary`：集中管理 app UI、settings UI、native menu label 與狀態訊息的 English / 繁體中文 / 簡體中文文案。
 - `settingsStore`：負責 persistence、validation、migration、reset。
-- `SettingsView`：根據 definitions render controls，不直接碰 storage key。
-- `App.tsx`：只訂閱或讀取已驗證的 setting value，並套用到 runtime state。
+- `SettingsView`：根據 definitions render controls，透過 translator 顯示文案，不直接碰 storage key。
+- `App.tsx`：只訂閱或讀取已驗證的 setting value，並套用到 runtime state 與 frontend 文案。
+- `src-tauri` native menu：由 app language 設定刷新 menu label，避免 menu 與 app 內容語言不一致。
 
 ## Persistence 策略
 
@@ -249,6 +264,12 @@ readSettingsSnapshot()
   - 控制 Scholium app 介面字體縮放。
   - default: `18`
 
+- `app.language`
+  - 控制 Scholium app 顯示語言。
+  - 支援 `en`、`zh-Hant`、`zh-Hans`。
+  - 必須同步 settings UI、主要 app UI、狀態訊息與 native menu label。
+  - default: `zh-Hant`
+
 - `app.theme`
   - 控制 app 主題為跟隨系統、淺色或深色。
   - default: `system`
@@ -274,7 +295,6 @@ readSettingsSnapshot()
 - AI / API settings。
 - API key storage。
 - project-specific settings。
-- app language，除非先建立 i18n dictionary 與文字來源整理。
 - default editor mode；閱讀/編輯模式應由 editor toolbar / shortcut 即時切換，不放進 preferences。
 - citation 顯示選項，除非先定義 preview / citation renderer 行為。
 - telemetry / debug log。
@@ -293,6 +313,7 @@ readSettingsSnapshot()
 - [ ] Settings dialog 點擊外部 backdrop 會關閉，內部互動不關閉。
 - [ ] Settings dialog 開啟時不保留可操作的檔案目錄。
 - [ ] 左側設定分類不顯示設定項目數量。
+- [ ] `app.language` 支援 English、繁體中文、簡體中文，並統一 app 主要 UI、settings UI、狀態訊息與 native menu label。
 - [ ] `app.interfaceFontSize` 實際影響 app 介面字體縮放。
 - [ ] `app.theme` 實際影響 app 主題外觀。
 - [ ] `app.restoreLastOpenedFile` 實際影響啟動復原行為。

@@ -1,6 +1,9 @@
+import { isAppLanguage, type AppLanguage, type TranslationKey } from "./i18n";
+
 export type SettingCategory = "app" | "editor" | "project" | "ai" | "privacy";
 
 export type SettingsValueMap = {
+  "app.language": AppLanguage;
   "app.interfaceFontSize": number;
   "app.theme": "system" | "light" | "dark";
   "app.restoreLastOpenedFile": boolean;
@@ -26,8 +29,8 @@ type SelectSettingKey = Exclude<SettingKey, BooleanSettingKey | NumberSettingKey
 type BaseSettingDefinition<Key extends SettingKey> = {
   key: Key;
   category: SettingCategory;
-  label: string;
-  description?: string;
+  labelKey: TranslationKey;
+  descriptionKey?: TranslationKey;
   requiresRestart: boolean;
 };
 
@@ -49,7 +52,7 @@ export type SelectSettingDefinition = BaseSettingDefinition<SelectSettingKey> & 
   type: "select";
   defaultValue: Extract<SettingsValueMap[SelectSettingKey], string>;
   options: Array<{
-    label: string;
+    labelKey: TranslationKey;
     value: Extract<SettingsValueMap[SelectSettingKey], string>;
   }>;
 };
@@ -59,12 +62,12 @@ export type SettingDefinition =
   | NumberSettingDefinition
   | SelectSettingDefinition;
 
-export const settingCategoryLabels: Record<SettingCategory, string> = {
-  app: "一般",
-  editor: "編輯器",
-  project: "專案 / 資料庫",
-  ai: "AI / API",
-  privacy: "隱私 / 進階",
+export const settingCategoryLabelKeys: Record<SettingCategory, TranslationKey> = {
+  app: "settings.category.app",
+  editor: "settings.category.editor",
+  project: "settings.category.project",
+  ai: "settings.category.ai",
+  privacy: "settings.category.privacy",
 };
 
 export const settingCategoryOrder: SettingCategory[] = [
@@ -77,11 +80,25 @@ export const settingCategoryOrder: SettingCategory[] = [
 
 export const settingsDefinitions: SettingDefinition[] = [
   {
+    key: "app.language",
+    category: "app",
+    type: "select",
+    labelKey: "settings.app.language.label",
+    descriptionKey: "settings.app.language.description",
+    defaultValue: "zh-Hant",
+    options: [
+      { labelKey: "settings.app.language.option.english", value: "en" },
+      { labelKey: "settings.app.language.option.traditionalChinese", value: "zh-Hant" },
+      { labelKey: "settings.app.language.option.simplifiedChinese", value: "zh-Hans" },
+    ],
+    requiresRestart: false,
+  },
+  {
     key: "app.interfaceFontSize",
     category: "app",
     type: "number",
-    label: "介面字體大小",
-    description: "調整 Scholium 工具列、目錄、設定與面板文字大小。",
+    labelKey: "settings.app.interfaceFontSize.label",
+    descriptionKey: "settings.app.interfaceFontSize.description",
     defaultValue: 18,
     min: 15,
     max: 22,
@@ -93,13 +110,13 @@ export const settingsDefinitions: SettingDefinition[] = [
     key: "app.theme",
     category: "app",
     type: "select",
-    label: "主題",
-    description: "控制 Scholium 的整體明暗外觀。",
+    labelKey: "settings.app.theme.label",
+    descriptionKey: "settings.app.theme.description",
     defaultValue: "system",
     options: [
-      { label: "跟隨系統", value: "system" },
-      { label: "淺色", value: "light" },
-      { label: "深色", value: "dark" },
+      { labelKey: "settings.app.theme.option.system", value: "system" },
+      { labelKey: "settings.app.theme.option.light", value: "light" },
+      { labelKey: "settings.app.theme.option.dark", value: "dark" },
     ],
     requiresRestart: false,
   },
@@ -107,8 +124,8 @@ export const settingsDefinitions: SettingDefinition[] = [
     key: "app.restoreLastOpenedFile",
     category: "app",
     type: "boolean",
-    label: "啟動時重新開啟上次的檔案",
-    description: "關閉後，Scholium 啟動時不會自動載入上次開啟的 Markdown 檔案。",
+    labelKey: "settings.app.restoreLastOpenedFile.label",
+    descriptionKey: "settings.app.restoreLastOpenedFile.description",
     defaultValue: true,
     requiresRestart: false,
   },
@@ -116,8 +133,8 @@ export const settingsDefinitions: SettingDefinition[] = [
     key: "app.directoryPaneOpen",
     category: "app",
     type: "boolean",
-    label: "啟動時顯示目錄面板",
-    description: "控制 app 啟動後左側目錄面板的預設展開狀態。",
+    labelKey: "settings.app.directoryPaneOpen.label",
+    descriptionKey: "settings.app.directoryPaneOpen.description",
     defaultValue: true,
     requiresRestart: false,
   },
@@ -125,8 +142,8 @@ export const settingsDefinitions: SettingDefinition[] = [
     key: "editor.fontSize",
     category: "editor",
     type: "number",
-    label: "編輯器字體大小",
-    description: "調整 Markdown 編輯與閱讀內容的本文字級。",
+    labelKey: "settings.editor.fontSize.label",
+    descriptionKey: "settings.editor.fontSize.description",
     defaultValue: 18,
     min: 14,
     max: 28,
@@ -138,8 +155,8 @@ export const settingsDefinitions: SettingDefinition[] = [
     key: "editor.lineHeight",
     category: "editor",
     type: "number",
-    label: "編輯器行距",
-    description: "調整 Markdown 編輯與閱讀內容的本文行高。",
+    labelKey: "settings.editor.lineHeight.label",
+    descriptionKey: "settings.editor.lineHeight.description",
     defaultValue: 1.72,
     min: 1.3,
     max: 2.2,
@@ -193,6 +210,10 @@ function coerceSettingValue(definition: SettingDefinition, value: unknown): Sett
     return Math.min(definition.max, Math.max(definition.min, numericValue));
   }
 
+  if (definition.key === "app.language") {
+    return isAppLanguage(value) ? value : definition.defaultValue;
+  }
+
   if (
     typeof value === "string" &&
     definition.options.some((option) => option.value === value)
@@ -243,6 +264,7 @@ export function resetSettings() {
 
 export function readSettingsSnapshot(): SettingsSnapshot {
   return {
+    "app.language": readSetting("app.language"),
     "app.interfaceFontSize": readSetting("app.interfaceFontSize"),
     "app.theme": readSetting("app.theme"),
     "app.restoreLastOpenedFile": readSetting("app.restoreLastOpenedFile"),
