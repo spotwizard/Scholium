@@ -353,8 +353,12 @@ struct DropboxMarkdownDirectory {
 #[serde(rename_all = "camelCase")]
 struct DropboxMarkdownFile {
     path: String,
+    notes_path: String,
     title: String,
     body: String,
+    notes: Vec<SelectionNote>,
+    glossary_terms: Vec<GlossaryTerm>,
+    glossary_bindings: Vec<GlossaryBinding>,
     rev: Option<String>,
     server_modified: Option<String>,
 }
@@ -409,6 +413,85 @@ fn notes_store_path(app: &AppHandle, markdown_path: &Path) -> Result<PathBuf, St
     Ok(app_data_dir
         .join(NOTES_STORE_DIRECTORY)
         .join(notes_file_name))
+}
+
+fn dropbox_notes_markdown_path(dropbox_path: &str) -> PathBuf {
+    let normalized_path = normalize_dropbox_path(dropbox_path).to_lowercase();
+
+    PathBuf::from(format!("dropbox:{normalized_path}"))
+}
+
+fn read_document_notes(
+    app: &AppHandle,
+    markdown_path: &Path,
+) -> Result<(String, Vec<SelectionNote>, Vec<GlossaryTerm>, Vec<GlossaryBinding>), String> {
+    let notes_path = notes_store_path(app, markdown_path)?;
+    let notes_file = read_notes_file(app, markdown_path)?;
+    let (notes, glossary_terms, glossary_bindings) = notes_file
+        .map(|parsed| {
+            (
+                parsed
+                    .notes
+                    .into_iter()
+                    .filter(|note| note.status != "deleted")
+                    .collect(),
+                parsed.glossary_terms,
+                parsed
+                    .glossary_bindings
+                    .into_iter()
+                    .filter(|binding| binding.status != "deleted")
+                    .collect(),
+            )
+        })
+        .unwrap_or_else(|| (Vec::new(), Vec::new(), Vec::new()));
+
+    Ok((
+        notes_path.to_string_lossy().to_string(),
+        notes,
+        glossary_terms,
+        glossary_bindings,
+    ))
+}
+
+fn write_document_notes(
+    app: &AppHandle,
+    markdown_path: &Path,
+    document_path: String,
+    notes: Vec<SelectionNote>,
+    glossary_terms: Vec<GlossaryTerm>,
+    glossary_bindings: Vec<GlossaryBinding>,
+) -> Result<PathBuf, String> {
+    let notes_file = NotesFile {
+        version: 1,
+        markdown_path: document_path,
+        notes: notes
+            .into_iter()
+            .filter(|note| note.status != "deleted")
+            .collect(),
+        glossary_terms,
+        glossary_bindings: glossary_bindings
+            .into_iter()
+            .filter(|binding| binding.status != "deleted")
+            .collect(),
+    };
+
+    write_notes_file(app, markdown_path, notes_file)
+}
+
+fn remove_document_notes(app: &AppHandle, markdown_path: &Path) -> Result<PathBuf, String> {
+    let notes_path = notes_store_path(app, markdown_path)?;
+    let legacy_notes_path = legacy_sidecar_path(markdown_path)?;
+
+    if notes_path.exists() {
+        fs::remove_file(&notes_path).map_err(|error| format!("failed to delete notes: {error}"))?;
+    }
+
+    if legacy_notes_path.exists() {
+        fs::remove_file(&legacy_notes_path)
+            .map_err(|error| format!("failed to delete legacy sidecar notes: {error}"))?;
+    }
+
+    Ok(notes_path)
 }
 
 fn document_title(markdown_path: &Path) -> String {
@@ -878,10 +961,11 @@ fn dropbox_child_path(parent_path: &str, file_name: &str) -> String {
 }
 
 fn dropbox_file_from_write_metadata(
+    app: &tauri::AppHandle,
     metadata: DropboxWriteMetadata,
     fallback_body: String,
     fallback_path: String,
-) -> DropboxMarkdownFile {
+) -> Result<DropboxMarkdownFile, String> {
     let path = dropbox_metadata_path(metadata.path_display, metadata.path_lower, &metadata.name);
     let normalized_path = normalize_dropbox_path(&path);
     let path = if normalized_path.is_empty() {
@@ -890,13 +974,39 @@ fn dropbox_file_from_write_metadata(
         normalized_path
     };
 
-    DropboxMarkdownFile {
-        title: document_title(Path::new(&metadata.name)),
+    dropbox_file_with_notes(
+        app,
         path,
-        body: fallback_body,
-        rev: metadata.rev,
-        server_modified: metadata.server_modified,
-    }
+        document_title(Path::new(&metadata.name)),
+        fallback_body,
+        metadata.rev,
+        metadata.server_modified,
+    )
+}
+
+fn dropbox_file_with_notes(
+    app: &tauri::AppHandle,
+    path: String,
+    title: String,
+    body: String,
+    rev: Option<String>,
+    server_modified: Option<String>,
+) -> Result<DropboxMarkdownFile, String> {
+    let notes_markdown_path = dropbox_notes_markdown_path(&path);
+    let (notes_path, notes, glossary_terms, glossary_bindings) =
+        read_document_notes(app, &notes_markdown_path)?;
+
+    Ok(DropboxMarkdownFile {
+        path,
+        notes_path,
+        title,
+        body,
+        notes,
+        glossary_terms,
+        glossary_bindings,
+        rev,
+        server_modified,
+    })
 }
 
 async fn upload_dropbox_markdown_file(
@@ -943,11 +1053,12 @@ async fn upload_dropbox_markdown_file(
         .await
         .map_err(|error| format!("failed to parse Dropbox upload response: {error}"))?;
 
-    Ok(dropbox_file_from_write_metadata(
+    dropbox_file_from_write_metadata(
+        app,
         metadata,
         body,
         normalized_path,
-    ))
+    )
 }
 
 async fn read_dropbox_list_page(
@@ -1481,30 +1592,12 @@ fn write_notes_file(
 fn read_markdown_file(app: &AppHandle, markdown_path: PathBuf) -> Result<OpenMarkdownFile, String> {
     let body = fs::read_to_string(&markdown_path)
         .map_err(|error| format!("failed to read Markdown file: {error}"))?;
-    let notes_path = notes_store_path(app, &markdown_path)?;
-
-    let notes_file = read_notes_file(app, &markdown_path)?;
-    let (notes, glossary_terms, glossary_bindings) = notes_file
-        .map(|parsed| {
-            (
-                parsed
-                    .notes
-                    .into_iter()
-                    .filter(|note| note.status != "deleted")
-                    .collect(),
-                parsed.glossary_terms,
-                parsed
-                    .glossary_bindings
-                    .into_iter()
-                    .filter(|binding| binding.status != "deleted")
-                    .collect(),
-            )
-        })
-        .unwrap_or_else(|| (Vec::new(), Vec::new(), Vec::new()));
+    let (notes_path, notes, glossary_terms, glossary_bindings) =
+        read_document_notes(app, &markdown_path)?;
 
     Ok(OpenMarkdownFile {
         path: markdown_path.to_string_lossy().to_string(),
-        notes_path: notes_path.to_string_lossy().to_string(),
+        notes_path,
         title: document_title(&markdown_path),
         body,
         notes,
@@ -1584,20 +1677,14 @@ fn save_markdown_file(
     fs::write(&markdown_path, body)
         .map_err(|error| format!("failed to write Markdown file: {error}"))?;
 
-    let notes_file = NotesFile {
-        version: 1,
-        markdown_path: markdown_path.to_string_lossy().to_string(),
-        notes: notes
-            .into_iter()
-            .filter(|note| note.status != "deleted")
-            .collect(),
+    let notes_path = write_document_notes(
+        &app,
+        &markdown_path,
+        markdown_path.to_string_lossy().to_string(),
+        notes,
         glossary_terms,
-        glossary_bindings: glossary_bindings
-            .into_iter()
-            .filter(|binding| binding.status != "deleted")
-            .collect(),
-    };
-    let notes_path = write_notes_file(&app, &markdown_path, notes_file)?;
+        glossary_bindings,
+    )?;
 
     Ok(SaveMarkdownFile {
         path: markdown_path.to_string_lossy().to_string(),
@@ -1658,20 +1745,10 @@ fn delete_markdown_file(app: AppHandle, path: String) -> Result<DeleteMarkdownFi
         return Err("selected file is not a Markdown file".to_string());
     }
 
-    let notes_path = notes_store_path(&app, &markdown_path)?;
-    let legacy_notes_path = legacy_sidecar_path(&markdown_path)?;
-
     fs::remove_file(&markdown_path)
         .map_err(|error| format!("failed to delete Markdown file: {error}"))?;
 
-    if notes_path.exists() {
-        fs::remove_file(&notes_path).map_err(|error| format!("failed to delete notes: {error}"))?;
-    }
-
-    if legacy_notes_path.exists() {
-        fs::remove_file(&legacy_notes_path)
-            .map_err(|error| format!("failed to delete legacy sidecar notes: {error}"))?;
-    }
+    let notes_path = remove_document_notes(&app, &markdown_path)?;
 
     Ok(DeleteMarkdownFile {
         path: markdown_path.to_string_lossy().to_string(),
@@ -1994,13 +2071,14 @@ async fn open_dropbox_markdown_file(
         .map(|metadata| document_title(Path::new(&metadata.name)))
         .unwrap_or_else(|| document_title(Path::new(&path)));
 
-    Ok(DropboxMarkdownFile {
+    dropbox_file_with_notes(
+        &app,
         path,
         title,
         body,
-        rev: metadata.as_ref().and_then(|metadata| metadata.rev.clone()),
-        server_modified: metadata.and_then(|metadata| metadata.server_modified),
-    })
+        metadata.as_ref().and_then(|metadata| metadata.rev.clone()),
+        metadata.and_then(|metadata| metadata.server_modified),
+    )
 }
 
 #[tauri::command]
@@ -2009,6 +2087,9 @@ async fn save_dropbox_markdown_file(
     path: String,
     body: String,
     rev: Option<String>,
+    notes: Vec<SelectionNote>,
+    glossary_terms: Vec<GlossaryTerm>,
+    glossary_bindings: Vec<GlossaryBinding>,
 ) -> Result<DropboxMarkdownFile, String> {
     let mode = rev
         .as_ref()
@@ -2020,7 +2101,25 @@ async fn save_dropbox_markdown_file(
         })
         .unwrap_or_else(|| serde_json::json!("overwrite"));
 
-    upload_dropbox_markdown_file(&app, path, body, mode).await
+    let saved = upload_dropbox_markdown_file(&app, path, body, mode).await?;
+    let notes_markdown_path = dropbox_notes_markdown_path(&saved.path);
+    write_document_notes(
+        &app,
+        &notes_markdown_path,
+        format!("dropbox:{}", saved.path),
+        notes,
+        glossary_terms,
+        glossary_bindings,
+    )?;
+
+    dropbox_file_with_notes(
+        &app,
+        saved.path,
+        saved.title,
+        saved.body,
+        saved.rev,
+        saved.server_modified,
+    )
 }
 
 #[tauri::command]
@@ -2073,6 +2172,22 @@ async fn duplicate_dropbox_markdown_file(
         );
     }
 
+    let source_notes_markdown_path = dropbox_notes_markdown_path(&source_path);
+    if let Some(mut parsed) = read_notes_file(&app, &source_notes_markdown_path)? {
+        let target_notes_markdown_path = dropbox_notes_markdown_path(&target_path);
+        let target_document_id = format!("dropbox-file:{target_path}");
+
+        parsed.markdown_path = format!("dropbox:{target_path}");
+        for note in parsed.notes.iter_mut() {
+            note.document_id = target_document_id.clone();
+        }
+        for binding in parsed.glossary_bindings.iter_mut() {
+            binding.document_id = target_document_id.clone();
+        }
+
+        write_notes_file(&app, &target_notes_markdown_path, parsed)?;
+    }
+
     open_dropbox_markdown_file(app, target_path).await
 }
 
@@ -2102,6 +2217,9 @@ async fn delete_dropbox_markdown_file(
     if !response.status().is_success() {
         return Err(dropbox_response_error(response, "failed to delete Dropbox Markdown file").await);
     }
+
+    let notes_markdown_path = dropbox_notes_markdown_path(&normalized_path);
+    remove_document_notes(&app, &notes_markdown_path)?;
 
     Ok(deleted_file)
 }

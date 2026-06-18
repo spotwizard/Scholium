@@ -231,8 +231,12 @@ type OpenDropboxMarkdownDirectoryResult = {
 
 type OpenDropboxMarkdownFileResult = {
   path: string;
+  notesPath: string;
   title: string;
   body: string;
+  notes: SelectionNote[];
+  glossaryTerms?: GlossaryTerm[];
+  glossaryBindings?: GlossaryBinding[];
   rev?: string | null;
   serverModified?: string | null;
 };
@@ -895,6 +899,13 @@ function dropboxPickerDirectories(openedDirectory: OpenDropboxMarkdownDirectoryR
   return openedDirectory.entries.filter(
     (entry): entry is DropboxDirectoryEntryResult & { kind: "directory" } =>
       entry.kind === "directory",
+  );
+}
+
+function firstDropboxMarkdownFileEntry(openedDirectory: OpenDropboxMarkdownDirectoryResult) {
+  return openedDirectory.entries.find(
+    (entry): entry is DropboxDirectoryEntryResult & { kind: "file" } =>
+      entry.kind === "file",
   );
 }
 
@@ -4304,8 +4315,10 @@ function App() {
     documents.find((document) => document.id === selectedDocumentId) ??
     documents[0] ??
     emptyDocument;
-  const selectedDocumentIsDropbox = documentIsFromDropbox(selectedDocument);
-  const annotationToolsAvailable = hasOpenDocument && !selectedDocumentIsDropbox;
+  const annotationToolsAvailable = hasOpenDocument;
+  const workspaceHasMarkdownFileEntries = workspaceEntries.some(
+    (entry) => entry.kind === "file",
+  );
   const glossaryModeActive = noteModeEnabled && glossaryModeEnabled;
 
   const documentNotes = notes.filter(
@@ -4499,7 +4512,7 @@ function App() {
   }, [noteModeEnabled]);
 
   useEffect(() => {
-    if (!selectedDocumentIsDropbox) return;
+    if (hasOpenDocument) return;
 
     if (noteModeEnabled) {
       resetNoteModeInteractionState();
@@ -4509,7 +4522,7 @@ function App() {
     if (noteLibraryOpen) {
       closeNoteLibrary({ restoreDirectoryPane: false });
     }
-  }, [noteLibraryOpen, noteModeEnabled, selectedDocumentIsDropbox]);
+  }, [hasOpenDocument, noteLibraryOpen, noteModeEnabled]);
 
   useEffect(() => {
     if (
@@ -6241,7 +6254,7 @@ function App() {
       title: loaded.title,
       path: loaded.path,
       filePath: null,
-      notesPath: null,
+      notesPath: loaded.notesPath,
       updatedAt: loaded.serverModified ? `Dropbox ${loaded.serverModified}` : "Dropbox",
       body: loaded.body,
       dropboxRev: loaded.rev ?? null,
@@ -6295,6 +6308,15 @@ function App() {
   function applyLoadedDropboxFile(loadedFile: OpenDropboxMarkdownFileResult) {
     const loadedDocument = documentFromDropboxFile(loadedFile);
     const documentId = loadedDocument.id;
+    const loadedNotes = loadedFile.notes.map((note) => ({
+      ...note,
+      documentId,
+    }));
+    const loadedGlossaryBindings = (loadedFile.glossaryBindings ?? []).map((binding) => ({
+      ...binding,
+      documentId,
+    }));
+    const loadedGlossaryTerms = loadedFile.glossaryTerms ?? [];
 
     setDocuments((currentDocuments) => [
       loadedDocument,
@@ -6305,10 +6327,15 @@ function App() {
 
       return insertOrUpdateWorkspaceFileEntry(currentEntries, fileEntry, workspaceRootPath);
     });
-    setNotes((currentNotes) => currentNotes.filter((note) => note.documentId !== documentId));
-    setGlossaryBindings((currentBindings) =>
-      currentBindings.filter((binding) => binding.documentId !== documentId),
-    );
+    setNotes((currentNotes) => [
+      ...loadedNotes,
+      ...currentNotes.filter((note) => note.documentId !== documentId),
+    ]);
+    setGlossaryBindings((currentBindings) => [
+      ...loadedGlossaryBindings,
+      ...currentBindings.filter((binding) => binding.documentId !== documentId),
+    ]);
+    setGlossaryTerms((currentTerms) => mergeGlossaryTerms(loadedGlossaryTerms, currentTerms));
     setSelectedDocumentId(documentId);
     setSelectionWarningPosition(null);
     setPendingAnchor(null);
@@ -6784,6 +6811,12 @@ function App() {
       );
       applyOpenedDropboxDirectory(openedDirectory);
       setDropboxDirectoryPicker(null);
+      const firstFile = firstDropboxMarkdownFileEntry(openedDirectory);
+      if (firstFile) {
+        await openDropboxMarkdownFilePath(firstFile.path);
+        return;
+      }
+
       setStorageError(openedDirectory.entries.length === 0 ? t("dropbox.emptyFolder") : "");
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -7214,6 +7247,9 @@ function App() {
       path: documentToSave.path,
       body: bodyToSave,
       rev: documentToSave.dropboxRev ?? null,
+      notes: notesToSave,
+      glossaryTerms: glossaryTermsToSave,
+      glossaryBindings: glossaryBindingsToSave,
     });
 
     setDocuments((currentDocuments) =>
@@ -7223,6 +7259,7 @@ function App() {
               ...document,
               title: saved.title,
               path: saved.path,
+              notesPath: saved.notesPath,
               updatedAt: saved.serverModified
                 ? `Dropbox ${saved.serverModified}`
                 : `Saved ${nowLabel()}`,
@@ -9484,18 +9521,22 @@ function App() {
               </button>
             </div>
             <div className="dropbox-directory-dialog__body">
-              <div className="dropbox-directory-dialog__navigation">
-                <button
-                  disabled={
-                    dropboxDirectoryPicker.isLoading ||
-                    dropboxDirectoryPicker.isOpening ||
-                    dropboxDirectoryPicker.parentPath === null
-                  }
-                  onClick={enterDropboxPickerParentDirectory}
-                  type="button"
-                >
-                  ← {t("dropbox.picker.parent")}
-                </button>
+              <div
+                className={`dropbox-directory-dialog__navigation ${
+                  dropboxDirectoryPicker.parentPath === null ? "is-root" : ""
+                }`}
+              >
+                {dropboxDirectoryPicker.parentPath === null ? null : (
+                  <button
+                    aria-label={t("dropbox.picker.parent")}
+                    disabled={dropboxDirectoryPicker.isLoading || dropboxDirectoryPicker.isOpening}
+                    onClick={enterDropboxPickerParentDirectory}
+                    title={t("dropbox.picker.parent")}
+                    type="button"
+                  >
+                    ←
+                  </button>
+                )}
                 <span title={dropboxDirectoryPicker.currentPath || "Dropbox"}>
                   {dropboxDirectoryPicker.currentTitle}
                 </span>
@@ -9608,50 +9649,59 @@ function App() {
       <section className="editor-pane" aria-label={t("app.markdownEditor")}>
         <div className="editor-grid">
           <div className="editor-surface" style={editorSurfaceStyle}>
-            <div
-              aria-label={t("app.editorTools")}
-              className="editor-toolbar"
-              data-expanded={noteModeEnabled ? "true" : "false"}
-            >
-              <button
-                aria-checked={noteModeEnabled}
-                aria-label={
-                  noteModeEnabled ? t("toolbar.noteMode.close") : t("toolbar.noteMode.open")
-                }
-                className="note-mode-switch note-mode-switch--primary"
-                disabled={!annotationToolsAvailable}
-                onClick={toggleNoteMode}
-                role="switch"
-                type="button"
+            {annotationToolsAvailable ? (
+              <div
+                aria-label={t("app.editorTools")}
+                className="editor-toolbar"
+                data-expanded={noteModeEnabled ? "true" : "false"}
               >
-                <span className="note-mode-switch__label">{t("toolbar.noteMode")}</span>
-              </button>
-              <span
-                aria-hidden="true"
-                className="editor-toolbar__divider note-mode-switch--dependent"
-              />
-              <button
-                aria-checked={glossaryModeActive}
-                aria-hidden={!noteModeEnabled}
-                aria-label={
-                  glossaryModeActive
-                    ? t("toolbar.glossaryMode.close")
-                    : t("toolbar.glossaryMode.open")
-                }
-                className="note-mode-switch note-mode-switch--secondary note-mode-switch--dependent"
-                disabled={!noteModeEnabled || !annotationToolsAvailable}
-                onClick={toggleGlossaryMode}
-                role="switch"
-                type="button"
-              >
-                <span className="note-mode-switch__label">{t("toolbar.glossaryMode")}</span>
-              </button>
-            </div>
+                <button
+                  aria-checked={noteModeEnabled}
+                  aria-label={
+                    noteModeEnabled ? t("toolbar.noteMode.close") : t("toolbar.noteMode.open")
+                  }
+                  className="note-mode-switch note-mode-switch--primary"
+                  onClick={toggleNoteMode}
+                  role="switch"
+                  type="button"
+                >
+                  <span className="note-mode-switch__label">{t("toolbar.noteMode")}</span>
+                </button>
+                <span
+                  aria-hidden="true"
+                  className="editor-toolbar__divider note-mode-switch--dependent"
+                />
+                <button
+                  aria-checked={glossaryModeActive}
+                  aria-hidden={!noteModeEnabled}
+                  aria-label={
+                    glossaryModeActive
+                      ? t("toolbar.glossaryMode.close")
+                      : t("toolbar.glossaryMode.open")
+                  }
+                  className="note-mode-switch note-mode-switch--secondary note-mode-switch--dependent"
+                  disabled={!noteModeEnabled}
+                  onClick={toggleGlossaryMode}
+                  role="switch"
+                  type="button"
+                >
+                  <span className="note-mode-switch__label">{t("toolbar.glossaryMode")}</span>
+                </button>
+              </div>
+            ) : null}
             <div className="editor-content-frame">
             {!hasOpenDocument ? (
               <div className="empty-editor-state">
-                <h2>{t("emptyDirectory.title")}</h2>
-                <p>{t("emptyDirectory.description")}</p>
+                <h2>
+                  {workspaceHasMarkdownFileEntries
+                    ? t("emptyDocumentSelection.title")
+                    : t("emptyDirectory.title")}
+                </h2>
+                <p>
+                  {workspaceHasMarkdownFileEntries
+                    ? t("emptyDocumentSelection.description")
+                    : t("emptyDirectory.description")}
+                </p>
               </div>
             ) : editorMode === "preview" ? (
                 <MilkdownMarkdownEditor

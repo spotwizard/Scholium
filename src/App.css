@@ -765,15 +765,23 @@ button:disabled {
   min-width: 0;
 }
 
+.dropbox-directory-dialog__navigation.is-root {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .dropbox-directory-dialog__navigation button {
+  display: inline-flex;
+  width: 30px;
   min-height: 30px;
+  align-items: center;
+  justify-content: center;
   border: 1px solid var(--color-border);
   border-radius: 8px;
-  padding: 0 10px;
   color: var(--color-text);
   background: var(--color-surface);
-  font-size: 0.82rem;
+  font-size: 1rem;
   font-weight: 700;
+  line-height: 1;
 }
 
 .dropbox-directory-dialog__navigation button:hover:not(:disabled) {
