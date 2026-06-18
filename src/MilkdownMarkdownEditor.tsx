@@ -39,11 +39,20 @@ const milkdownAnnotationPluginKey = new PluginKey<DecorationSet>(
   "scholium-milkdown-annotations",
 );
 const milkdownAnnotationFramePadding = 4;
+const milkdownAnnotationFrameHorizontalPadding = 12;
 const milkdownAnnotationLineJoinMaxGap = 20;
 const milkdownAnnotationClassPrefix = "scholium-milkdown-annotation-";
 const milkdownSelectionFallbackMs = 220;
 const annotationClickDelayMs = 500;
 let milkdownMermaidRenderIndex = 0;
+
+function milkdownAnnotationFramePaddingForKind(kind: "note" | "glossary") {
+  return kind === "glossary" ? 0 : milkdownAnnotationFramePadding;
+}
+
+function milkdownAnnotationFrameHorizontalPaddingForKind(kind: "note" | "glossary") {
+  return kind === "glossary" ? 0 : milkdownAnnotationFrameHorizontalPadding;
+}
 
 type MilkdownCodeBlockApplyPreview = (value: null | string | HTMLElement) => void;
 
@@ -423,7 +432,15 @@ function measureMilkdownAnnotationFrames(
   const kindsByNoteId = new Map<string, "note" | "glossary">();
   const focusByNoteId = new Map<string, boolean>();
 
-  function annotationListAdjustedRect(annotation: HTMLElement, rect: MilkdownAnnotationRect) {
+  function annotationListAdjustedRect(
+    annotation: HTMLElement,
+    rect: MilkdownAnnotationRect,
+    kind: "note" | "glossary",
+  ) {
+    if (kind === "glossary") {
+      return rect;
+    }
+
     const listItem = annotation.closest<HTMLLIElement>("li");
     const list = listItem?.closest<HTMLOListElement | HTMLUListElement>("ol, ul") ?? null;
     if (!listItem || !list || !container.contains(list)) {
@@ -454,18 +471,21 @@ function measureMilkdownAnnotationFrames(
 
           return { left, top, right, bottom };
         })
-        .filter((rect) => rect.right > rect.left && rect.bottom > rect.top)
-        .map((rect) => annotationListAdjustedRect(annotation, rect));
+        .filter((rect) => rect.right > rect.left && rect.bottom > rect.top);
       if (annotationRects.length === 0) return;
 
       sources.forEach((source) => {
+        const sourceAnnotationRects = annotationRects.map((rect) =>
+          annotationListAdjustedRect(annotation, rect, source.kind),
+        );
+
         tonesByNoteId.set(source.noteId, source.tone);
         kindsByNoteId.set(source.noteId, source.kind);
         focusByNoteId.set(source.noteId, Boolean(source.isFocusTarget));
 
         rectsByNoteId.set(source.noteId, [
           ...(rectsByNoteId.get(source.noteId) ?? []),
-          ...annotationRects,
+          ...sourceAnnotationRects,
         ]);
       });
     });
@@ -480,19 +500,22 @@ function measureMilkdownAnnotationFrames(
       );
 
       return sortedRects.map((rect, rectIndex) => {
-        let top = rect.top - milkdownAnnotationFramePadding;
-        let bottom = rect.bottom + milkdownAnnotationFramePadding;
+        const framePadding = milkdownAnnotationFramePaddingForKind(kind);
+        const frameHorizontalPadding = milkdownAnnotationFrameHorizontalPaddingForKind(kind);
+        const shouldJoinFrameLines = kind !== "glossary";
+        let top = rect.top - framePadding;
+        let bottom = rect.bottom + framePadding;
         const previousRect = sortedRects[rectIndex - 1];
         const nextRect = sortedRects[rectIndex + 1];
 
-        if (previousRect) {
+        if (shouldJoinFrameLines && previousRect) {
           const previousGap = rect.top - previousRect.bottom;
           if (previousGap >= 0 && previousGap <= milkdownAnnotationLineJoinMaxGap) {
             top = Math.min(top, previousRect.bottom + previousGap / 2 - 1);
           }
         }
 
-        if (nextRect) {
+        if (shouldJoinFrameLines && nextRect) {
           const nextGap = nextRect.top - rect.bottom;
           if (nextGap >= 0 && nextGap <= milkdownAnnotationLineJoinMaxGap) {
             bottom = Math.max(bottom, rect.bottom + nextGap / 2 + 1);
@@ -505,13 +528,9 @@ function measureMilkdownAnnotationFrames(
           noteId,
           kind,
           tone,
-          left: roundFrameValue(
-            Math.max(0, rect.left - containerRect.left - milkdownAnnotationFramePadding),
-          ),
+          left: roundFrameValue(rect.left - containerRect.left - frameHorizontalPadding),
           top: roundFrameValue(Math.max(0, top - containerRect.top)),
-          width: roundFrameValue(
-            rect.right - rect.left + milkdownAnnotationFramePadding * 2,
-          ),
+          width: roundFrameValue(rect.right - rect.left + frameHorizontalPadding * 2),
           height: roundFrameValue(bottom - top),
         };
       });
@@ -1097,12 +1116,37 @@ export function MilkdownMarkdownEditor({
     );
   }
 
+  function anchorFromDomSelection(selection: Selection & { anchorNode: Node; focusNode: Node }) {
+    const view = currentEditorView();
+    if (!view) return null;
+
+    try {
+      const anchorPosition = view.posAtDOM(selection.anchorNode, selection.anchorOffset);
+      const focusPosition = view.posAtDOM(selection.focusNode, selection.focusOffset);
+      const from = Math.min(anchorPosition, focusPosition);
+      const to = Math.max(anchorPosition, focusPosition);
+      if (from === to) return null;
+
+      const selectedText = view.state.doc.textBetween(from, to, " ");
+      return buildAnchor(
+        currentMarkdownRef.current,
+        selectedText,
+        visibleTextIndexFromProsePosition(view.state.doc, from),
+      );
+    } catch {
+      return null;
+    }
+  }
+
   function anchorFromCurrentSelection() {
     const root = rootRef.current;
     const selection = window.getSelection();
     if (!root || !nonCollapsedSelectionInRoot(root, selection)) {
       return anchorFromEditorSelection();
     }
+
+    const domAnchor = anchorFromDomSelection(selection);
+    if (domAnchor) return domAnchor;
 
     const view = currentEditorView();
     let approximateVisibleStart = 0;
@@ -1126,13 +1170,18 @@ export function MilkdownMarkdownEditor({
   }
 
   function publishSelectionAfterSelectionComplete() {
-    if (readOnlyRef.current) return;
-
     window.clearTimeout(selectionFallbackTimerRef.current);
     window.cancelAnimationFrame(selectionFrameRef.current);
     selectionFrameRef.current = window.requestAnimationFrame(() => {
+      const root = rootRef.current;
+      const selection = window.getSelection();
+      const anchor =
+        readOnlyRef.current && root && !selectionBelongsToRoot(root, selection)
+          ? null
+          : anchorFromCurrentSelection();
+
       mouseSelectionStartedRef.current = false;
-      onSelectionChangeRef.current(anchorFromCurrentSelection());
+      onSelectionChangeRef.current(anchor);
       selectionFrameRef.current = 0;
     });
   }
@@ -1284,9 +1333,6 @@ export function MilkdownMarkdownEditor({
   function handleSelectionEnterKeyDown(
     event: KeyboardEvent | ReactKeyboardEvent<HTMLDivElement>,
   ) {
-    if (readOnlyRef.current) return;
-    if (!noteModeEnabledRef.current) return;
-
     const isPlainEnter =
       event.key === "Enter" &&
       !event.metaKey &&
@@ -1298,19 +1344,22 @@ export function MilkdownMarkdownEditor({
     const anchor = anchorFromCurrentSelection();
     if (!anchor) return;
 
+    const handled = onSelectionEnterRef.current(anchor);
+    if (!handled) return;
+
     event.preventDefault();
     event.stopPropagation();
-    onSelectionEnterRef.current(anchor);
   }
 
   function handleKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
+    handleSelectionEnterKeyDown(event);
+    if (event.defaultPrevented) return;
+
     if (readOnlyRef.current) {
       event.preventDefault();
       event.stopPropagation();
       return;
     }
-
-    handleSelectionEnterKeyDown(event);
   }
 
   useEffect(() => {
@@ -1326,7 +1375,6 @@ export function MilkdownMarkdownEditor({
     }
 
     function handleDocumentKeyDown(event: KeyboardEvent) {
-      if (readOnlyRef.current) return;
       if (event.defaultPrevented) return;
       const isPlainEnter =
         event.key === "Enter" &&

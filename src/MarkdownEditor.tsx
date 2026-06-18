@@ -72,9 +72,18 @@ type EditorBrowserSelection = Selection & {
 
 const setAnnotationsEffect = StateEffect.define<TextAnnotation[]>();
 const editorAnnotationFramePadding = 4;
+const editorAnnotationFrameHorizontalPadding = 12;
 const editorAnnotationLineJoinMaxGap = 20;
 const annotationSelectionSuppressionMs = 1200;
 const annotationClickDelayMs = 500;
+
+function editorAnnotationFramePaddingForKind(kind: "note" | "glossary") {
+  return kind === "glossary" ? 0 : editorAnnotationFramePadding;
+}
+
+function editorAnnotationFrameHorizontalPaddingForKind(kind: "note" | "glossary") {
+  return kind === "glossary" ? 0 : editorAnnotationFrameHorizontalPadding;
+}
 
 function editorReadOnlyExtensions(readOnly: boolean) {
   return [
@@ -316,19 +325,22 @@ function measureEditorAnnotationFrames(container: HTMLDivElement): EditorAnnotat
       );
 
       return sortedRects.map((rect, rectIndex) => {
-        let top = rect.top - editorAnnotationFramePadding;
-        let bottom = rect.bottom + editorAnnotationFramePadding;
+        const framePadding = editorAnnotationFramePaddingForKind(kind);
+        const frameHorizontalPadding = editorAnnotationFrameHorizontalPaddingForKind(kind);
+        const shouldJoinFrameLines = kind !== "glossary";
+        let top = rect.top - framePadding;
+        let bottom = rect.bottom + framePadding;
         const previousRect = sortedRects[rectIndex - 1];
         const nextRect = sortedRects[rectIndex + 1];
 
-        if (previousRect) {
+        if (shouldJoinFrameLines && previousRect) {
           const previousGap = rect.top - previousRect.bottom;
           if (previousGap >= 0 && previousGap <= editorAnnotationLineJoinMaxGap) {
             top = Math.min(top, previousRect.bottom + previousGap / 2 - 1);
           }
         }
 
-        if (nextRect) {
+        if (shouldJoinFrameLines && nextRect) {
           const nextGap = nextRect.top - rect.bottom;
           if (nextGap >= 0 && nextGap <= editorAnnotationLineJoinMaxGap) {
             bottom = Math.max(bottom, rect.bottom + nextGap / 2 + 1);
@@ -341,13 +353,9 @@ function measureEditorAnnotationFrames(container: HTMLDivElement): EditorAnnotat
           noteId,
           kind,
           tone,
-          left: roundEditorFrameValue(
-            Math.max(0, rect.left - containerRect.left - editorAnnotationFramePadding),
-          ),
+          left: roundEditorFrameValue(rect.left - containerRect.left - frameHorizontalPadding),
           top: roundEditorFrameValue(Math.max(0, top - containerRect.top)),
-          width: roundEditorFrameValue(
-            rect.right - rect.left + editorAnnotationFramePadding * 2,
-          ),
+          width: roundEditorFrameValue(rect.right - rect.left + frameHorizontalPadding * 2),
           height: roundEditorFrameValue(bottom - top),
         };
       });
@@ -586,8 +594,8 @@ export function MarkdownEditor({
 
       const hitAnnotation = Array.from(annotation.getClientRects()).some(
         (rect) =>
-          event.clientX >= rect.left - editorAnnotationFramePadding &&
-          event.clientX <= rect.right + editorAnnotationFramePadding &&
+          event.clientX >= rect.left - editorAnnotationFrameHorizontalPadding &&
+          event.clientX <= rect.right + editorAnnotationFrameHorizontalPadding &&
           event.clientY >= rect.top - editorAnnotationFramePadding &&
           event.clientY <= rect.bottom + editorAnnotationFramePadding,
       );
@@ -811,7 +819,6 @@ export function MarkdownEditor({
           {
             key: "Enter",
             run(view) {
-              if (!noteModeEnabledRef.current) return false;
               const anchor = buildAnchorFromSelection(view);
               if (!anchor) return false;
 

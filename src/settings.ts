@@ -1,6 +1,6 @@
 import { isAppLanguage, type AppLanguage, type TranslationKey } from "./i18n";
 
-export type SettingCategory = "app" | "editor" | "project" | "ai" | "privacy";
+export type SettingCategory = "app" | "editor" | "cloud" | "project" | "ai" | "privacy";
 
 export type SettingsValueMap = {
   "app.language": AppLanguage;
@@ -65,6 +65,7 @@ export type SettingDefinition =
 export const settingCategoryLabelKeys: Record<SettingCategory, TranslationKey> = {
   app: "settings.category.app",
   editor: "settings.category.editor",
+  cloud: "settings.category.cloud",
   project: "settings.category.project",
   ai: "settings.category.ai",
   privacy: "settings.category.privacy",
@@ -73,6 +74,7 @@ export const settingCategoryLabelKeys: Record<SettingCategory, TranslationKey> =
 export const settingCategoryOrder: SettingCategory[] = [
   "app",
   "editor",
+  "cloud",
   "project",
   "ai",
   "privacy",
@@ -135,7 +137,7 @@ export const settingsDefinitions: SettingDefinition[] = [
     type: "boolean",
     labelKey: "settings.app.directoryPaneOpen.label",
     descriptionKey: "settings.app.directoryPaneOpen.description",
-    defaultValue: true,
+    defaultValue: false,
     requiresRestart: false,
   },
   {
