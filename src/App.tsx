@@ -311,8 +311,14 @@ type SelectionWarningPosition = {
   top: number;
 };
 
-type FileContextMenuState = {
+type FileActionTarget = {
   documentId: string;
+  path: string;
+  title: string;
+  source?: WorkspaceSource;
+};
+
+type FileContextMenuState = FileActionTarget & {
   left: number;
   top: number;
 };
@@ -325,8 +331,7 @@ type FileContextMenuAction = {
   onSelect: () => void;
 };
 
-type DuplicateFileDialogState = {
-  documentId: string;
+type DuplicateFileDialogState = FileActionTarget & {
   fileName: string;
   isSubmitting: boolean;
 };
@@ -7512,10 +7517,12 @@ function App() {
     return segments[segments.length - 1] ?? "";
   }
 
-  function defaultDuplicateFileName(documentToDuplicate: MarkdownDocument) {
-    const fileName = fileNameFromPath(documentToDuplicate.filePath ?? documentToDuplicate.path);
+  function defaultDuplicateFileName(
+    fileToDuplicate: Pick<MarkdownDocument, "filePath" | "path" | "title">,
+  ) {
+    const fileName = fileNameFromPath(fileToDuplicate.filePath ?? fileToDuplicate.path);
     const duplicateSuffix = t("duplicate.suffix");
-    const fallbackName = `${documentToDuplicate.title || t("app.untitled")} ${duplicateSuffix}.md`;
+    const fallbackName = `${fileToDuplicate.title || t("app.untitled")} ${duplicateSuffix}.md`;
     if (!fileName) return fallbackName;
 
     const extensionStart = fileName.lastIndexOf(".");
@@ -7826,7 +7833,7 @@ function App() {
     }px`,
   } as CSSProperties;
 
-  function openDuplicateDocumentDialog(documentId: string) {
+  function openDuplicateDocumentDialog(target: FileActionTarget) {
     setFileContextMenu(null);
 
     if (!nativeStorageAvailable) {
@@ -7839,26 +7846,38 @@ function App() {
       return false;
     }
 
-    const documentToDuplicate = documentsRef.current.find((document) => document.id === documentId);
-    if (
-      !documentToDuplicate ||
-      (!documentToDuplicate.filePath && !documentIsFromDropbox(documentToDuplicate))
-    ) {
+    const documentToDuplicate = documentsRef.current.find(
+      (document) => document.id === target.documentId,
+    );
+    const isDropboxTarget =
+      target.source === "dropbox" ||
+      (documentToDuplicate ? documentIsFromDropbox(documentToDuplicate) : false);
+    const path = documentToDuplicate?.path ?? target.path;
+    const title = documentToDuplicate?.title ?? target.title;
+
+    if (!documentToDuplicate && !isDropboxTarget) {
       setStorageError(t("error.notBackedByMarkdownFile"));
       return false;
     }
 
     setStorageError("");
     setDuplicateFileDialog({
-      documentId,
-      fileName: defaultDuplicateFileName(documentToDuplicate),
+      documentId: target.documentId,
+      path,
+      title,
+      source: isDropboxTarget ? "dropbox" : target.source,
+      fileName: defaultDuplicateFileName({
+        filePath: documentToDuplicate?.filePath ?? null,
+        path,
+        title,
+      }),
       isSubmitting: false,
     });
 
     return true;
   }
 
-  async function duplicateDocumentFile(documentId: string, fileName: string) {
+  async function duplicateDocumentFile(target: DuplicateFileDialogState) {
     if (!nativeStorageAvailable) {
       setStorageError(t("error.nativeRuntimeRequired"));
       return false;
@@ -7869,16 +7888,14 @@ function App() {
       return false;
     }
 
-    const documentToDuplicate = documentsRef.current.find((document) => document.id === documentId);
-    if (
-      !documentToDuplicate ||
-      (!documentToDuplicate.filePath && !documentIsFromDropbox(documentToDuplicate))
-    ) {
-      setStorageError(t("error.notBackedByMarkdownFile"));
-      return false;
-    }
+    const documentToDuplicate = documentsRef.current.find(
+      (document) => document.id === target.documentId,
+    );
+    const isDropboxTarget =
+      target.source === "dropbox" ||
+      (documentToDuplicate ? documentIsFromDropbox(documentToDuplicate) : false);
 
-    const trimmedFileName = fileName.trim();
+    const trimmedFileName = target.fileName.trim();
     if (!trimmedFileName) {
       setStorageError(t("error.duplicateFileNameRequired"));
       return false;
@@ -7887,21 +7904,35 @@ function App() {
     setStorageError("");
 
     try {
-      if (hasDirtyState(dirtyDocumentStatesRef.current[documentId])) {
+      if (
+        documentToDuplicate &&
+        hasDirtyState(dirtyDocumentStatesRef.current[target.documentId])
+      ) {
         await saveDocument(documentToDuplicate);
       }
 
-      if (documentIsFromDropbox(documentToDuplicate)) {
+      if (isDropboxTarget) {
+        const dropboxPath = documentToDuplicate?.path ?? target.path;
+        if (!dropboxPath) {
+          setStorageError(t("error.notBackedByMarkdownFile"));
+          return false;
+        }
+
         const loaded = await invoke<OpenDropboxMarkdownFileResult>(
           "duplicate_dropbox_markdown_file",
           {
-            path: documentToDuplicate.path,
+            path: dropboxPath,
             fileName: trimmedFileName,
           },
         );
         applyLoadedDropboxFile(loaded);
         setStorageError("");
         return true;
+      }
+
+      if (!documentToDuplicate?.filePath) {
+        setStorageError(t("error.notBackedByMarkdownFile"));
+        return false;
       }
 
       const loaded = await invoke<OpenMarkdownFileResult>("duplicate_markdown_file", {
@@ -7934,10 +7965,7 @@ function App() {
       currentDialog ? { ...currentDialog, isSubmitting: true } : currentDialog,
     );
 
-    const duplicated = await duplicateDocumentFile(
-      duplicateFileDialog.documentId,
-      duplicateFileDialog.fileName,
-    );
+    const duplicated = await duplicateDocumentFile(duplicateFileDialog);
     if (duplicated) {
       setDuplicateFileDialog(null);
       return;
@@ -7955,21 +7983,39 @@ function App() {
     setStorageError("");
   }
 
-  async function copyDocumentContent(documentId: string) {
-    const documentToCopy = documentsRef.current.find((document) => document.id === documentId);
-    if (!documentToCopy) return;
-
+  async function copyDocumentContent(target: FileActionTarget) {
     setFileContextMenu(null);
 
     try {
-      await writeTextToClipboard(documentToCopy.body);
+      const documentToCopy = documentsRef.current.find(
+        (document) => document.id === target.documentId,
+      );
+      const isDropboxTarget =
+        target.source === "dropbox" ||
+        (documentToCopy ? documentIsFromDropbox(documentToCopy) : false);
+      const bodyToCopy = documentToCopy
+        ? documentToCopy.body
+        : isDropboxTarget
+          ? (
+              await invoke<OpenDropboxMarkdownFileResult>("open_dropbox_markdown_file", {
+                path: target.path,
+              })
+            ).body
+          : "";
+
+      if (!bodyToCopy && !documentToCopy && !isDropboxTarget) {
+        setStorageError(t("error.notBackedByMarkdownFile"));
+        return;
+      }
+
+      await writeTextToClipboard(bodyToCopy);
       setStorageError("");
     } catch (error) {
       setStorageError(error instanceof Error ? error.message : String(error));
     }
   }
 
-  async function deleteDocumentFile(documentId: string) {
+  async function deleteDocumentFile(target: FileActionTarget) {
     if (!nativeStorageAvailable) {
       setStorageError(t("error.nativeRuntimeRequired"));
       return;
@@ -7980,23 +8026,32 @@ function App() {
       return;
     }
 
-    const documentToDelete = documentsRef.current.find((document) => document.id === documentId);
-    if (
-      !documentToDelete ||
-      (!documentToDelete.filePath && !documentIsFromDropbox(documentToDelete))
-    ) {
+    const documentToDelete = documentsRef.current.find(
+      (document) => document.id === target.documentId,
+    );
+    const isDropboxTarget =
+      target.source === "dropbox" ||
+      (documentToDelete ? documentIsFromDropbox(documentToDelete) : false);
+    const path = documentToDelete?.path ?? target.path;
+    const title = documentToDelete?.title ?? target.title;
+
+    if (!documentToDelete && !isDropboxTarget) {
+      setStorageError(t("error.notBackedByMarkdownFile"));
+      return;
+    }
+    if (!isDropboxTarget && !documentToDelete?.filePath) {
       setStorageError(t("error.notBackedByMarkdownFile"));
       return;
     }
 
     setFileContextMenu(null);
 
-    const deleteConfirmationKey = documentIsFromDropbox(documentToDelete)
+    const deleteConfirmationKey = isDropboxTarget
       ? "confirm.deleteDropboxFile"
       : "confirm.deleteFile";
     const confirmed = window.confirm(
       t(deleteConfirmationKey, {
-        title: documentToDelete.title,
+        title,
       }),
     );
     if (!confirmed) return;
@@ -8004,16 +8059,21 @@ function App() {
     setStorageError(t("status.deletingFile"));
 
     try {
-      if (documentIsFromDropbox(documentToDelete)) {
+      if (isDropboxTarget) {
         await invoke<OpenDropboxMarkdownFileResult>("delete_dropbox_markdown_file", {
-          path: documentToDelete.path,
+          path,
         });
       } else {
+        if (!documentToDelete?.filePath) {
+          setStorageError(t("error.notBackedByMarkdownFile"));
+          return;
+        }
+
         await invoke<DeleteMarkdownFileResult>("delete_markdown_file", {
           path: documentToDelete.filePath,
         });
       }
-      removeDocumentFromWorkspace(documentId);
+      removeDocumentFromWorkspace(target.documentId);
       setStorageError("");
     } catch (error) {
       setStorageError(error instanceof Error ? error.message : String(error));
@@ -9268,7 +9328,7 @@ function App() {
           label: t("file.copyContent"),
           icon: <CopyIcon />,
           onSelect: () => {
-            void copyDocumentContent(fileContextMenu.documentId);
+            void copyDocumentContent(fileContextMenu);
           },
         };
 
@@ -9278,7 +9338,7 @@ function App() {
             label: t("duplicate.action"),
             icon: <DuplicateIcon />,
             onSelect: () => {
-              openDuplicateDocumentDialog(fileContextMenu.documentId);
+              openDuplicateDocumentDialog(fileContextMenu);
             },
           },
           copyContentAction,
@@ -9288,7 +9348,7 @@ function App() {
             icon: <TrashIcon />,
             tone: "danger",
             onSelect: () => {
-              void deleteDocumentFile(fileContextMenu.documentId);
+              void deleteDocumentFile(fileContextMenu);
             },
           },
         ];
@@ -9520,6 +9580,9 @@ function App() {
                     event.stopPropagation();
                     setFileContextMenu({
                       documentId: entry.documentId,
+                      path: entry.path,
+                      title: entry.title,
+                      source: entry.source,
                       left: event.clientX,
                       top: event.clientY,
                     });
