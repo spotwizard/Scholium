@@ -241,13 +241,24 @@ type OpenDropboxMarkdownFileResult = {
   serverModified?: string | null;
 };
 
-type DropboxDirectoryPickerState = {
-  currentPath: string;
-  currentTitle: string;
-  parentPath: string | null;
-  directories: DropboxDirectoryEntryResult[];
-  selectedPath: string;
+type DropboxDirectoryPickerNode = DropboxDirectoryEntryResult & {
+  kind: "directory";
+  children: DropboxDirectoryPickerNode[];
+  isExpanded: boolean;
+  isLoaded: boolean;
   isLoading: boolean;
+  error: string;
+};
+
+type FlattenedDropboxDirectoryPickerNode = {
+  node: DropboxDirectoryPickerNode;
+  depth: number;
+};
+
+type DropboxDirectoryPickerState = {
+  directories: DropboxDirectoryPickerNode[];
+  selectedPath: string;
+  isLoadingRoot: boolean;
   isOpening: boolean;
   error: string;
 };
@@ -908,6 +919,57 @@ function dropboxPickerDirectories(openedDirectory: OpenDropboxMarkdownDirectoryR
     (entry): entry is DropboxDirectoryEntryResult & { kind: "directory" } =>
       entry.kind === "directory",
   );
+}
+
+function dropboxPickerNodeFromDirectory(
+  directory: DropboxDirectoryEntryResult & { kind: "directory" },
+): DropboxDirectoryPickerNode {
+  return {
+    ...directory,
+    children: [],
+    isExpanded: false,
+    isLoaded: false,
+    isLoading: false,
+    error: "",
+  };
+}
+
+function dropboxPickerNodesFromOpenedDirectory(
+  openedDirectory: OpenDropboxMarkdownDirectoryResult,
+) {
+  return dropboxPickerDirectories(openedDirectory).map(dropboxPickerNodeFromDirectory);
+}
+
+function flattenDropboxDirectoryPickerNodes(
+  nodes: DropboxDirectoryPickerNode[],
+  depth = 0,
+): FlattenedDropboxDirectoryPickerNode[] {
+  return nodes.flatMap((node) => {
+    const flattenedNode = { node, depth };
+    if (!node.isExpanded) return [flattenedNode];
+
+    return [
+      flattenedNode,
+      ...flattenDropboxDirectoryPickerNodes(node.children, depth + 1),
+    ];
+  });
+}
+
+function updateDropboxDirectoryPickerNode(
+  nodes: DropboxDirectoryPickerNode[],
+  path: string,
+  updater: (node: DropboxDirectoryPickerNode) => DropboxDirectoryPickerNode,
+): DropboxDirectoryPickerNode[] {
+  return nodes.map((node) => {
+    if (node.path === path) return updater(node);
+
+    if (node.children.length === 0) return node;
+
+    return {
+      ...node,
+      children: updateDropboxDirectoryPickerNode(node.children, path, updater),
+    };
+  });
 }
 
 function firstDropboxMarkdownFileEntry(openedDirectory: OpenDropboxMarkdownDirectoryResult) {
@@ -6665,12 +6727,9 @@ function App() {
       setDuplicateFileDialog(null);
     }
     setDropboxDirectoryPicker({
-      currentPath: "",
-      currentTitle: "Dropbox",
-      parentPath: null,
       directories: [],
       selectedPath: "",
-      isLoading: true,
+      isLoadingRoot: true,
       isOpening: false,
       error: "",
     });
@@ -6695,7 +6754,7 @@ function App() {
         throw new Error(t("dropbox.error.notConnected"));
       }
 
-      await loadDropboxDirectoryPickerPath("");
+      await loadDropboxDirectoryPickerRoot();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (dropboxErrorNeedsAuthorization(message)) {
@@ -6707,12 +6766,9 @@ function App() {
       }
 
       setDropboxDirectoryPicker({
-        currentPath: "",
-        currentTitle: "Dropbox",
-        parentPath: null,
         directories: [],
         selectedPath: "",
-        isLoading: false,
+        isLoadingRoot: false,
         isOpening: false,
         error: message,
       });
@@ -6720,14 +6776,12 @@ function App() {
     }
   }
 
-  async function loadDropboxDirectoryPickerPath(path: string) {
+  async function loadDropboxDirectoryPickerRoot() {
     setDropboxDirectoryPicker((currentPicker) =>
       currentPicker
         ? {
             ...currentPicker,
-            currentPath: path,
-            selectedPath: path,
-            isLoading: true,
+            isLoadingRoot: true,
             isOpening: false,
             error: "",
           }
@@ -6738,25 +6792,17 @@ function App() {
     try {
       const openedDirectory = await invoke<OpenDropboxMarkdownDirectoryResult>(
         "list_dropbox_markdown_directory",
-        { path },
+        { path: "" },
       );
-      const directories = dropboxPickerDirectories(openedDirectory);
-      const selectedPath = openedDirectory.path || directories[0]?.path || "";
+      const directories = dropboxPickerNodesFromOpenedDirectory(openedDirectory);
+      const selectedPath = directories[0]?.path || "";
 
       setDropboxDirectoryPicker({
-        currentPath: openedDirectory.path,
-        currentTitle: openedDirectory.title,
-        parentPath: openedDirectory.parentPath,
         directories,
         selectedPath,
-        isLoading: false,
+        isLoadingRoot: false,
         isOpening: false,
-        error:
-          directories.length > 0
-            ? ""
-            : openedDirectory.path
-              ? t("dropbox.picker.emptyNested")
-              : t("dropbox.picker.empty"),
+        error: directories.length > 0 ? "" : t("dropbox.picker.empty"),
       });
       setStorageError("");
     } catch (error) {
@@ -6773,7 +6819,7 @@ function App() {
         currentPicker
           ? {
               ...currentPicker,
-              isLoading: false,
+              isLoadingRoot: false,
               isOpening: false,
               error: message,
             }
@@ -6799,26 +6845,135 @@ function App() {
     event.stopPropagation();
   }
 
-  function enterDropboxPickerDirectory(path: string) {
+  async function toggleDropboxPickerDirectory(path: string) {
     const picker = dropboxDirectoryPicker;
-    if (!picker || picker.isLoading || picker.isOpening) return;
+    if (!picker || picker.isLoadingRoot || picker.isOpening) return;
 
-    void loadDropboxDirectoryPickerPath(path);
-  }
+    const directory = flattenDropboxDirectoryPickerNodes(picker.directories).find(
+      ({ node }) => node.path === path,
+    )?.node;
+    if (!directory || directory.isLoading) return;
 
-  function enterDropboxPickerParentDirectory() {
-    const picker = dropboxDirectoryPicker;
-    if (!picker || picker.isLoading || picker.isOpening || picker.parentPath === null) {
+    if (directory.isExpanded) {
+      setDropboxDirectoryPicker((currentPicker) =>
+        currentPicker
+          ? {
+              ...currentPicker,
+              directories: updateDropboxDirectoryPickerNode(
+                currentPicker.directories,
+                path,
+                (node) => ({
+                  ...node,
+                  isExpanded: false,
+                }),
+              ),
+            }
+          : currentPicker,
+      );
       return;
     }
 
-    void loadDropboxDirectoryPickerPath(picker.parentPath);
+    if (directory.isLoaded) {
+      setDropboxDirectoryPicker((currentPicker) =>
+        currentPicker
+          ? {
+              ...currentPicker,
+              directories: updateDropboxDirectoryPickerNode(
+                currentPicker.directories,
+                path,
+                (node) => ({
+                  ...node,
+                  isExpanded: true,
+                  error: "",
+                }),
+              ),
+            }
+          : currentPicker,
+      );
+      return;
+    }
+
+    setDropboxDirectoryPicker((currentPicker) =>
+      currentPicker
+        ? {
+            ...currentPicker,
+            directories: updateDropboxDirectoryPickerNode(
+              currentPicker.directories,
+              path,
+              (node) => ({
+                ...node,
+                isExpanded: true,
+                isLoading: true,
+                error: "",
+              }),
+            ),
+          }
+        : currentPicker,
+    );
+    setStorageError(t("dropbox.status.loadingRoot"));
+
+    try {
+      const openedDirectory = await invoke<OpenDropboxMarkdownDirectoryResult>(
+        "list_dropbox_markdown_directory",
+        { path },
+      );
+      const childDirectories = dropboxPickerNodesFromOpenedDirectory(openedDirectory);
+
+      setDropboxDirectoryPicker((currentPicker) =>
+        currentPicker
+          ? {
+              ...currentPicker,
+              directories: updateDropboxDirectoryPickerNode(
+                currentPicker.directories,
+                path,
+                (node) => ({
+                  ...node,
+                  children: childDirectories,
+                  isExpanded: true,
+                  isLoaded: true,
+                  isLoading: false,
+                  error: childDirectories.length > 0 ? "" : t("dropbox.picker.emptyNested"),
+                }),
+              ),
+            }
+          : currentPicker,
+      );
+      setStorageError("");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (dropboxErrorNeedsAuthorization(message)) {
+        setDropboxDirectoryPicker(null);
+        setDropboxConnected(false);
+        openSettingsView("cloud");
+        setStorageError(message);
+        return;
+      }
+
+      setDropboxDirectoryPicker((currentPicker) =>
+        currentPicker
+          ? {
+              ...currentPicker,
+              directories: updateDropboxDirectoryPickerNode(
+                currentPicker.directories,
+                path,
+                (node) => ({
+                  ...node,
+                  isExpanded: true,
+                  isLoading: false,
+                  error: message,
+                }),
+              ),
+            }
+          : currentPicker,
+      );
+      setStorageError(message);
+    }
   }
 
   async function openSelectedDropboxDirectory(pathOverride?: string) {
     const picker = dropboxDirectoryPicker;
     const selectedPath = pathOverride ?? picker?.selectedPath;
-    if (!selectedPath || !picker || picker.isLoading || picker.isOpening) {
+    if (!selectedPath || !picker || picker.isLoadingRoot || picker.isOpening) {
       return;
     }
 
@@ -9169,6 +9324,9 @@ function App() {
     (localRecursiveFileSearchActive
       ? localFileSearchResults.length === 0
       : visibleWorkspaceEntries.length === 0);
+  const visibleDropboxPickerDirectories = dropboxDirectoryPicker
+    ? flattenDropboxDirectoryPickerNodes(dropboxDirectoryPicker.directories)
+    : [];
 
   const shellClassName = [
     "scholium-shell",
@@ -9533,52 +9691,55 @@ function App() {
               </button>
             </div>
             <div className="dropbox-directory-dialog__body">
-              <div
-                className={`dropbox-directory-dialog__navigation ${
-                  dropboxDirectoryPicker.parentPath === null ? "is-root" : ""
-                }`}
-              >
-                {dropboxDirectoryPicker.parentPath === null ? null : (
-                  <button
-                    aria-label={t("dropbox.picker.parent")}
-                    disabled={dropboxDirectoryPicker.isLoading || dropboxDirectoryPicker.isOpening}
-                    onClick={enterDropboxPickerParentDirectory}
-                    title={t("dropbox.picker.parent")}
-                    type="button"
-                  >
-                    ←
-                  </button>
-                )}
-                <span title={dropboxDirectoryPicker.currentPath || "Dropbox"}>
-                  {dropboxDirectoryPicker.currentTitle}
+              <div className="dropbox-directory-dialog__navigation is-root">
+                <span title={dropboxDirectoryPicker.selectedPath || "Dropbox"}>
+                  {dropboxDirectoryPicker.selectedPath || "Dropbox"}
                 </span>
               </div>
-              {dropboxDirectoryPicker.isLoading ? (
+              {dropboxDirectoryPicker.isLoadingRoot ? (
                 <p className="dropbox-directory-dialog__status" role="status">
                   {t("dropbox.picker.loading")}
                 </p>
               ) : null}
-              {!dropboxDirectoryPicker.isLoading &&
-              dropboxDirectoryPicker.directories.length > 0 ? (
+              {!dropboxDirectoryPicker.isLoadingRoot &&
+              visibleDropboxPickerDirectories.length > 0 ? (
                 <div
                   aria-label={t("dropbox.picker.directoryList")}
                   className="dropbox-directory-dialog__list"
                   onWheel={handleDropboxDirectoryListWheel}
                   role="listbox"
                 >
-                  {dropboxDirectoryPicker.directories.map((directory) => {
+                  {visibleDropboxPickerDirectories.map(({ node: directory, depth }) => {
                     const isSelected = directory.path === dropboxDirectoryPicker.selectedPath;
+                    const rowStyle = {
+                      "--dropbox-directory-indent": `${depth * 18}px`,
+                    } as CSSProperties;
 
                     return (
                       <div
                         aria-selected={isSelected}
                         className={`dropbox-directory-dialog__row ${
+                          directory.isExpanded ? "is-expanded" : ""
+                        } ${directory.isLoading ? "is-loading" : ""} ${
                           isSelected ? "is-selected" : ""
                         }`}
                         key={directory.path}
                         role="option"
+                        style={rowStyle}
                         title={directory.path}
                       >
+                        <button
+                          aria-expanded={directory.isExpanded}
+                          aria-label={t("dropbox.picker.enterFolder", {
+                            name: directory.title,
+                          })}
+                          className="dropbox-directory-dialog__row-toggle"
+                          disabled={dropboxDirectoryPicker.isOpening || directory.isLoading}
+                          onClick={() => void toggleDropboxPickerDirectory(directory.path)}
+                          type="button"
+                        >
+                          {directory.isLoading ? "..." : directory.isExpanded ? "⌄" : "›"}
+                        </button>
                         <button
                           className="dropbox-directory-dialog__row-main"
                           disabled={dropboxDirectoryPicker.isOpening}
@@ -9595,17 +9756,11 @@ function App() {
                           <DocumentGlyphIcon kind="folder" selected={isSelected} />
                           <span>{directory.title}</span>
                         </button>
-                        <button
-                          aria-label={t("dropbox.picker.enterFolder", {
-                            name: directory.title,
-                          })}
-                          className="dropbox-directory-dialog__row-enter"
-                          disabled={dropboxDirectoryPicker.isLoading || dropboxDirectoryPicker.isOpening}
-                          onClick={() => enterDropboxPickerDirectory(directory.path)}
-                          type="button"
-                        >
-                          ›
-                        </button>
+                        {directory.error ? (
+                          <p className="dropbox-directory-dialog__row-message" role="status">
+                            {directory.error}
+                          </p>
+                        ) : null}
                       </div>
                     );
                   })}
@@ -9628,7 +9783,7 @@ function App() {
               <button
                 className="is-primary"
                 disabled={
-                  dropboxDirectoryPicker.isLoading ||
+                  dropboxDirectoryPicker.isLoadingRoot ||
                   dropboxDirectoryPicker.isOpening ||
                   !dropboxDirectoryPicker.selectedPath
                 }
