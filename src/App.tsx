@@ -519,6 +519,14 @@ const mobileViewportQuery = "(max-width: 640px)";
 const dropboxDocumentIdPrefix = "dropbox:";
 const configuredDropboxAppKey = import.meta.env.VITE_DROPBOX_APP_KEY?.trim() ?? "";
 
+function previewAnnotationFramePaddingForKind(kind: AnnotationKind) {
+  return kind === "glossary" ? 0 : previewAnnotationFramePadding;
+}
+
+function previewAnnotationFrameHorizontalPaddingForKind(kind: AnnotationKind) {
+  return kind === "glossary" ? 0 : previewAnnotationFrameHorizontalPadding;
+}
+
 const documentsSeed: MarkdownDocument[] = [
   {
     id: "roadmap",
@@ -1651,14 +1659,10 @@ function isSelectionCompleteMarkdownBlock(markdown: string, anchor: TextSelectio
     ({ sourceRange }) => selection.to > sourceRange.start && selection.from < sourceRange.end,
   );
 
-  if (intersectedBlocks.length === 0) return true;
-
-  if (intersectedBlocks.length > 1) {
-    return true;
-  }
+  if (intersectedBlocks.length === 0) return false;
 
   return intersectedBlocks.every(({ block, semanticRange }) => {
-    if (!semanticRange) return true;
+    if (!semanticRange) return false;
 
     if (selection.from <= semanticRange.from && selection.to >= semanticRange.to) {
       return true;
@@ -1669,7 +1673,7 @@ function isSelectionCompleteMarkdownBlock(markdown: string, anchor: TextSelectio
         (itemRange) => selection.to > itemRange.from && selection.from < itemRange.to,
       );
 
-      if (intersectedItemRanges.length === 0) return true;
+      if (intersectedItemRanges.length === 0) return false;
 
       if (
         intersectedItemRanges.length > 1 &&
@@ -2222,13 +2226,25 @@ function measurePreviewAnnotationFrames(container: HTMLDivElement): PreviewAnnot
   const containerRect = container.getBoundingClientRect();
   const frames: PreviewAnnotationFrame[] = [];
 
-  function annotationListAdjustedRect(annotation: HTMLElement, rect: DOMRect) {
-    const baseRect = {
+  function annotationRectBounds(rect: DOMRect) {
+    return {
       bottom: rect.bottom,
       left: rect.left,
       right: rect.right,
       top: rect.top,
     };
+  }
+
+  function annotationListAdjustedRect(
+    annotation: HTMLElement,
+    rect: DOMRect,
+    kind: AnnotationKind,
+  ) {
+    const baseRect = annotationRectBounds(rect);
+    if (kind === "glossary") {
+      return baseRect;
+    }
+
     const listItem = annotation.closest<HTMLLIElement>("li");
     const list = listItem?.closest<HTMLOListElement | HTMLUListElement>("ol, ul") ?? null;
     if (!listItem || !list || !container.contains(list)) {
@@ -2291,7 +2307,7 @@ function measurePreviewAnnotationFrames(container: HTMLDivElement): PreviewAnnot
 
       const annotationRects = Array.from(annotation.getClientRects())
         .filter((rect) => rect.width > 0 && rect.height > 0)
-        .map((rect) => annotationListAdjustedRect(annotation, rect));
+        .map((rect) => annotationListAdjustedRect(annotation, rect, kind));
       if (annotationRects.length === 0) return;
 
       const sortedRects = annotationRects.sort(
@@ -2299,19 +2315,22 @@ function measurePreviewAnnotationFrames(container: HTMLDivElement): PreviewAnnot
       );
 
       sortedRects.forEach((rect, rectIndex) => {
-        let top = rect.top - previewAnnotationFramePadding;
-        let bottom = rect.bottom + previewAnnotationFramePadding;
+        const framePadding = previewAnnotationFramePaddingForKind(kind);
+        const frameHorizontalPadding = previewAnnotationFrameHorizontalPaddingForKind(kind);
+        const shouldJoinFrameLines = kind !== "glossary";
+        let top = rect.top - framePadding;
+        let bottom = rect.bottom + framePadding;
         const previousRect = sortedRects[rectIndex - 1];
         const nextRect = sortedRects[rectIndex + 1];
 
-        if (previousRect) {
+        if (shouldJoinFrameLines && previousRect) {
           const previousGap = rect.top - previousRect.bottom;
           if (previousGap >= 0 && previousGap <= previewAnnotationLineJoinMaxGap) {
             top = Math.min(top, previousRect.bottom + previousGap / 2 - 1);
           }
         }
 
-        if (nextRect) {
+        if (shouldJoinFrameLines && nextRect) {
           const nextGap = nextRect.top - rect.bottom;
           if (nextGap >= 0 && nextGap <= previewAnnotationLineJoinMaxGap) {
             bottom = Math.max(bottom, rect.bottom + nextGap / 2 + 1);
@@ -2325,9 +2344,9 @@ function measurePreviewAnnotationFrames(container: HTMLDivElement): PreviewAnnot
             isFocusTarget,
             kind,
             tone,
-            rect.left - previewAnnotationFrameHorizontalPadding,
+            rect.left - frameHorizontalPadding,
             top,
-            rect.right + previewAnnotationFrameHorizontalPadding,
+            rect.right + frameHorizontalPadding,
             bottom,
           ),
         );
@@ -4273,6 +4292,7 @@ function App() {
   const selectedDocumentIdRef = useRef(selectedDocumentId);
   const notePanelHasContentRef = useRef(false);
   const selectionDismissedUntilRef = useRef(0);
+  const selectionClearedByAppUntilRef = useRef(0);
   const lastOpenedFileRestoreAttemptedRef = useRef(false);
   const dropboxOpenAfterAuthRef = useRef(false);
   const openSettingsHandlerRef = useRef<() => void>(() => undefined);
@@ -4471,7 +4491,7 @@ function App() {
   const activeGlossaryIsEditing = Boolean(activeGlossaryTerm && activeGlossaryMode === "edit");
   const noteEditModalActive = activeNoteIsEditing || activeGlossaryIsEditing;
   const shouldShowSelectionConfirmation = Boolean(
-    noteModeEnabled && pendingAnchor && (isMobileViewport || pendingAnchorIsGlossaryTerm),
+    noteModeEnabled && pendingAnchor && isMobileViewport && !pendingAnchorIsGlossaryTerm,
   );
   const notePanelHasContent = Boolean(
     noteModeEnabled &&
@@ -4490,8 +4510,11 @@ function App() {
     const selection = window.getSelection();
     if (!selection || selection.isCollapsed) return;
 
+    if (pendingAnchorIsGlossaryTerm) {
+      selectionClearedByAppUntilRef.current = Date.now() + 700;
+    }
     selection.removeAllRanges();
-  }, [notePanelModalActive, pendingAnchor]);
+  }, [notePanelModalActive, pendingAnchor, pendingAnchorIsGlossaryTerm]);
 
   useEffect(() => {
     notePanelHasContentRef.current = notePanelHasContent;
@@ -8227,11 +8250,29 @@ function App() {
   }
 
   function handleSelectionChange(anchor: TextSelectionAnchor | null) {
-    if (!noteModeEnabled || noteLibraryOpen) {
+    if (!noteModeEnabled) {
+      return;
+    }
+
+    if (noteLibraryOpen) {
+      if (!anchor && pendingAnchor) {
+        setPendingAnchor(null);
+        setPendingGlossaryTerm(null);
+        setNoteDraft("");
+        setGlossaryDraft("");
+        setSelectionWarningPosition(null);
+        floatingNoteAnchorRectRef.current = null;
+        notePanelHasContentRef.current = false;
+      }
       return;
     }
 
     if (!anchor) {
+      if (Date.now() < selectionClearedByAppUntilRef.current) {
+        setSelectionWarningPosition(null);
+        return;
+      }
+
       if (
         Date.now() < pendingGlossaryPromptLockUntilRef.current &&
         pendingAnchor &&
@@ -8247,6 +8288,9 @@ function App() {
       return;
     }
 
+    const anchorIsGlossaryCandidate =
+      glossaryModeActive && isGlossarySelectionCandidate(anchor);
+
     if (Date.now() < selectionDismissedUntilRef.current) {
       return;
     }
@@ -8256,17 +8300,6 @@ function App() {
       pendingGlossaryTerm &&
       textSelectionAnchorsMatch(anchor, pendingAnchor)
     ) {
-      return;
-    }
-
-    if (glossaryModeActive && isGlossarySelectionCandidate(anchor)) {
-      const existingGlossaryBinding = activeGlossaryBindingForSelection(anchor);
-      if (existingGlossaryBinding) {
-        showGlossaryViewer(existingGlossaryBinding.id);
-        return;
-      }
-
-      showPendingGlossaryPrompt(anchor);
       return;
     }
 
@@ -8285,7 +8318,7 @@ function App() {
     }
 
     if (
-      !(glossaryModeActive && isGlossarySelectionCandidate(anchor)) &&
+      !anchorIsGlossaryCandidate &&
       !isSelectionCompleteMarkdownBlock(selectedDocument.body, anchor)
     ) {
       const anchorRect = currentSelectionAnchorRect();
@@ -8314,7 +8347,7 @@ function App() {
     setActiveGlossaryMode("view");
     setNoteDraft("");
     setGlossaryDraft("");
-    notePanelHasContentRef.current = isMobileViewport;
+    notePanelHasContentRef.current = isMobileViewport && !anchorIsGlossaryCandidate;
   }
 
   function selectionOverlapsActiveNote(anchor: TextSelectionAnchor) {
@@ -8331,20 +8364,6 @@ function App() {
     );
   }
 
-  function activeGlossaryBindingForSelection(anchor: TextSelectionAnchor) {
-    if (!glossaryModeActive) return null;
-
-    return (
-      documentGlossaryBindings.find(
-        (binding) =>
-          binding.status === "active" &&
-          (glossaryTermIdsWithContent.has(binding.termId) ||
-            editableGlossaryBindingIds.has(binding.id)) &&
-          selectionOverlapsGlossaryBinding(anchor, binding),
-      ) ?? null
-    );
-  }
-
   function selectionIsBlockedByExistingAnnotations(anchor: TextSelectionAnchor) {
     if (glossaryModeActive && isGlossarySelectionCandidate(anchor)) {
       return selectionOverlapsActiveGlossary(anchor);
@@ -8354,24 +8373,52 @@ function App() {
   }
 
   function handleSelectionEnter(anchor: TextSelectionAnchor) {
-    if (!noteModeEnabled) return false;
     if (!hasOpenDocument) return false;
-    if (noteLibraryOpen) return false;
+    if (
+      settingsViewOpen ||
+      duplicateFileDialog ||
+      dropboxDirectoryPicker ||
+      notePanelModalActive ||
+      noteEditModalActive
+    ) {
+      return false;
+    }
 
     if (selectionIsBlockedByExistingAnnotations(anchor)) {
+      if (!noteModeEnabled) {
+        setNoteModeEnabled(true);
+      }
+      if (noteLibraryOpen) {
+        setNoteLibraryOpen(false);
+      }
       return true;
     }
 
     if (glossaryModeActive && isGlossarySelectionCandidate(anchor)) {
+      if (noteLibraryOpen) {
+        setNoteLibraryOpen(false);
+      }
       startGlossaryFlowForAnchor(anchor);
       return true;
     }
 
     if (isSelectionCompleteMarkdownBlock(selectedDocument.body, anchor)) {
-      confirmSelectionNoteForAnchor(anchor);
+      if (!noteModeEnabled) {
+        setNoteModeEnabled(true);
+        setGlossaryModeEnabled(false);
+      }
+      if (noteLibraryOpen) {
+        setNoteLibraryOpen(false);
+      }
+      createSelectionNoteForAnchor(anchor);
       return true;
     }
 
+    if (!noteModeEnabled) return false;
+
+    if (noteLibraryOpen) {
+      setNoteLibraryOpen(false);
+    }
     setPendingAnchor(null);
     setNoteDraft("");
     setPendingGlossaryTerm(null);
@@ -8521,45 +8568,6 @@ function App() {
     if (!pendingAnchor || !pendingAnchorIsGlossaryTerm) return;
 
     startGlossaryFlowForAnchor(pendingAnchor);
-  }
-
-  function showPendingGlossaryPrompt(anchor: TextSelectionAnchor) {
-    if (!glossaryModeActive) return;
-
-    discardTransientEmptySelectionNote();
-    setSelectionWarningPosition(null);
-    clearNotePanelCloseTimer();
-    clearReturnToViewTimer();
-    setIsNotePanelClosing(false);
-
-    const anchorRect =
-      currentSelectionAnchorRect() ??
-      activeNoteAnchorRect(pendingAnchorAnnotationId) ??
-      lastPointerAnchorRectRef.current;
-    if (anchorRect) {
-      floatingNoteAnchorRectRef.current = anchorRect;
-    }
-
-    const existingTerm = glossaryTermForAnchor(anchor);
-    if (existingTerm) {
-      pendingGlossaryPromptLockUntilRef.current = Date.now() + 350;
-      setPendingGlossaryTerm(existingTerm);
-      setActiveGlossaryTermId(existingTerm.id);
-      setGlossaryDraft(existingTerm.definition);
-    } else {
-      pendingGlossaryPromptLockUntilRef.current = 0;
-      setPendingGlossaryTerm(null);
-      setActiveGlossaryTermId("");
-      setGlossaryDraft("");
-    }
-
-    setPendingAnchor(anchor);
-    setActiveNoteId("");
-    setActiveGlossaryBindingId("");
-    setActiveNoteMode("view");
-    setActiveGlossaryMode("view");
-    setNoteDraft("");
-    notePanelHasContentRef.current = true;
   }
 
   function startGlossaryFlowForAnchor(anchor: TextSelectionAnchor) {
@@ -8788,6 +8796,10 @@ function App() {
   function confirmSelectionNoteForAnchor(anchor: TextSelectionAnchor) {
     if (!noteModeEnabled) return;
 
+    createSelectionNoteForAnchor(anchor);
+  }
+
+  function createSelectionNoteForAnchor(anchor: TextSelectionAnchor) {
     discardTransientEmptySelectionNote();
     setSelectionWarningPosition(null);
 
@@ -9577,7 +9589,7 @@ function App() {
                                 : currentPicker,
                             );
                           }}
-                          onDoubleClick={() => enterDropboxPickerDirectory(directory.path)}
+                          onDoubleClick={() => void openSelectedDropboxDirectory(directory.path)}
                           type="button"
                         >
                           <DocumentGlyphIcon kind="folder" selected={isSelected} />
@@ -9957,25 +9969,6 @@ function App() {
                       onClick={bindPendingGlossaryTerm}
                     >
                       {t("selection.glossary.bind")}
-                    </button>
-                  </div>
-                </div>
-              ) : null}
-
-              {pendingAnchor && !pendingGlossaryTerm && pendingAnchorIsGlossaryTerm ? (
-                <div className="selection-confirmation">
-                  <p>
-                    {t("selection.glossary.prompt", {
-                      text: pendingAnchor.selectedText.replace(/\s+/g, " ").trim(),
-                    })}
-                  </p>
-                  <div className="note-actions bottom-note-actions">
-                    <button
-                      className="is-primary selection-confirmation-button"
-                      type="button"
-                      onClick={startPendingGlossaryFlow}
-                    >
-                      {t("selection.glossary.handle")}
                     </button>
                   </div>
                 </div>
