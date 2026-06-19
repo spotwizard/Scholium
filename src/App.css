@@ -2514,6 +2514,21 @@ button:disabled {
   color: rgba(76, 70, 79, 0.82);
   background: transparent;
   box-shadow: none;
+  opacity: 0;
+  pointer-events: none;
+  visibility: hidden;
+  transition:
+    opacity 160ms ease,
+    visibility 0s linear 160ms;
+}
+
+.note-library-card.is-focused .note-library-card__expand-button,
+.note-library-card.is-editing .note-library-card__expand-button,
+.note-library-card:focus-within .note-library-card__expand-button {
+  opacity: 1;
+  pointer-events: auto;
+  visibility: visible;
+  transition-delay: 0s;
 }
 
 .note-library-card__expand-button:hover,
