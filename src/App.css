@@ -2551,9 +2551,46 @@ button:disabled {
 }
 
 .note-library-card__body-shell {
+  --note-library-card-body-preview-height: calc(2 * 1.5em);
   position: relative;
-  max-height: none;
-  overflow: visible;
+  max-height: var(--note-library-card-body-preview-height);
+  overflow: hidden;
+  transition: max-height 450ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  will-change: max-height;
+}
+
+.note-library-card__body-shell[data-has-overflow="true"]:not(.is-expanded)::after {
+  content: "";
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 1;
+  height: 1.35em;
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--note-library-card-background) 0%, transparent) 0%,
+    color-mix(in srgb, var(--note-library-card-background) 18%, transparent) 24%,
+    color-mix(in srgb, var(--note-library-card-background) 70%, transparent) 72%,
+    var(--note-library-card-background) 100%
+  );
+  pointer-events: none;
+}
+
+.note-library-card.is-focused .note-library-card__body-shell,
+.note-library-card:focus-within .note-library-card__body-shell {
+  max-height: max(
+    var(--note-library-card-body-preview-height),
+    var(
+      --note-library-card-body-expanded-height,
+      var(--note-library-card-body-preview-height)
+    )
+  );
+}
+
+.note-library-card.is-focused .note-library-card__body-shell::after,
+.note-library-card:focus-within .note-library-card__body-shell::after {
+  content: none;
 }
 
 .note-library-card__body-measure {

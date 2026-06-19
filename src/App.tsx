@@ -4165,6 +4165,7 @@ function MarkdownPreviewContent({
 function NoteLibraryPreviewContent({
   className,
   emptyLabel,
+  expanded,
   mermaidEmptyDefinitionLabel,
   mermaidLoadingLabel,
   onDoubleClick,
@@ -4172,14 +4173,72 @@ function NoteLibraryPreviewContent({
 }: {
   className: string;
   emptyLabel: string;
+  expanded: boolean;
   mermaidEmptyDefinitionLabel: string;
   mermaidLoadingLabel: string;
   onDoubleClick?: () => void;
   value: string;
 }) {
+  const contentRef = useRef<HTMLDivElement | null>(null);
+  const [expandedHeight, setExpandedHeight] = useState(0);
+  const [hasCollapsedOverflow, setHasCollapsedOverflow] = useState(false);
+
+  useLayoutEffect(() => {
+    const contentElement = contentRef.current;
+    if (!contentElement) return;
+
+    const measuredElement = contentElement;
+    let measureFrame = 0;
+
+    function measureExpandedHeight() {
+      window.cancelAnimationFrame(measureFrame);
+      measureFrame = window.requestAnimationFrame(() => {
+        const previewBody = measuredElement.querySelector<HTMLElement>(
+          ".note-library-card__body",
+        );
+        const previewBodyStyle = previewBody ? window.getComputedStyle(previewBody) : null;
+        const fontSize = previewBodyStyle ? Number.parseFloat(previewBodyStyle.fontSize) : 0;
+        const rawLineHeight = previewBodyStyle?.lineHeight ?? "";
+        const lineHeight =
+          rawLineHeight === "normal"
+            ? fontSize * 1.5
+            : Number.parseFloat(rawLineHeight) || fontSize * 1.5;
+        const collapsedHeight = lineHeight * 2;
+        const nextHeight = Math.ceil(measuredElement.scrollHeight);
+
+        setExpandedHeight((currentHeight) =>
+          currentHeight === nextHeight ? currentHeight : nextHeight,
+        );
+        setHasCollapsedOverflow((currentOverflow) => {
+          const nextOverflow = nextHeight > collapsedHeight + 1;
+
+          return currentOverflow === nextOverflow ? currentOverflow : nextOverflow;
+        });
+      });
+    }
+
+    measureExpandedHeight();
+
+    const resizeObserver = new ResizeObserver(measureExpandedHeight);
+    resizeObserver.observe(measuredElement);
+
+    return () => {
+      window.cancelAnimationFrame(measureFrame);
+      resizeObserver.disconnect();
+    };
+  }, [value]);
+
+  const bodyShellStyle = {
+    "--note-library-card-body-expanded-height": `${expandedHeight}px`,
+  } as CSSProperties;
+
   return (
-    <div className="note-library-card__body-shell">
-      <div className="note-library-card__body-measure">
+    <div
+      className={`note-library-card__body-shell ${expanded ? "is-expanded" : ""}`}
+      data-has-overflow={hasCollapsedOverflow ? "true" : "false"}
+      style={bodyShellStyle}
+    >
+      <div className="note-library-card__body-measure" ref={contentRef}>
         <MarkdownPreviewContent
           className={className}
           emptyLabel={emptyLabel}
@@ -10035,6 +10094,7 @@ function App() {
                       <NoteLibraryPreviewContent
                         className="bottom-note-body note-library-card__body"
                         emptyLabel={t("note.empty")}
+                        expanded={isFocusedLibraryNote}
                         mermaidEmptyDefinitionLabel={t("mermaid.empty")}
                         mermaidLoadingLabel={t("mermaid.loading")}
                         onDoubleClick={() => startLibraryNoteEditor(note.id)}
