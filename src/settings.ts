@@ -8,6 +8,7 @@ export type SettingsValueMap = {
   "app.theme": "system" | "light" | "dark";
   "app.restoreLastOpenedFile": boolean;
   "app.directoryPaneOpen": boolean;
+  "app.noteModeEnabledByDefault": boolean;
   "editor.fontSize": number;
   "editor.lineHeight": number;
 };
@@ -137,6 +138,15 @@ export const settingsDefinitions: SettingDefinition[] = [
     type: "boolean",
     labelKey: "settings.app.directoryPaneOpen.label",
     descriptionKey: "settings.app.directoryPaneOpen.description",
+    defaultValue: false,
+    requiresRestart: false,
+  },
+  {
+    key: "app.noteModeEnabledByDefault",
+    category: "app",
+    type: "boolean",
+    labelKey: "settings.app.noteModeEnabledByDefault.label",
+    descriptionKey: "settings.app.noteModeEnabledByDefault.description",
     defaultValue: false,
     requiresRestart: false,
   },
@@ -271,6 +281,7 @@ export function readSettingsSnapshot(): SettingsSnapshot {
     "app.theme": readSetting("app.theme"),
     "app.restoreLastOpenedFile": readSetting("app.restoreLastOpenedFile"),
     "app.directoryPaneOpen": readSetting("app.directoryPaneOpen"),
+    "app.noteModeEnabledByDefault": readSetting("app.noteModeEnabledByDefault"),
     "editor.fontSize": readSetting("editor.fontSize"),
     "editor.lineHeight": readSetting("editor.lineHeight"),
   };

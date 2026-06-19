@@ -2272,6 +2272,11 @@ button:disabled {
   background: transparent;
 }
 
+.scholium-shell.is-note-panel-expanded {
+  height: 100vh;
+  overflow: hidden;
+}
+
 .note-library-pane {
   position: absolute;
   top: 0;
@@ -2493,6 +2498,49 @@ button:disabled {
   display: flex;
   align-items: start;
   justify-content: space-between;
+  gap: 10px;
+}
+
+.note-library-card__expand-button {
+  display: inline-flex;
+  width: 26px;
+  min-width: 26px;
+  height: 26px;
+  min-height: 26px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 4px;
+  color: rgba(76, 70, 79, 0.82);
+  background: transparent;
+  box-shadow: none;
+  opacity: 0;
+  pointer-events: none;
+  visibility: hidden;
+  transition:
+    opacity 160ms ease,
+    visibility 0s linear 160ms;
+}
+
+.note-library-card.is-focused .note-library-card__expand-button,
+.note-library-card.is-editing .note-library-card__expand-button,
+.note-library-card:focus-within .note-library-card__expand-button {
+  opacity: 1;
+  pointer-events: auto;
+  visibility: visible;
+  transition-delay: 0s;
+}
+
+.note-library-card__expand-button:hover,
+.note-library-card__expand-button:focus-visible {
+  background: rgba(255, 255, 255, 0.32);
+  box-shadow: none;
+}
+
+.note-library-card__expand-button .note-action-icon {
+  width: 15px;
+  height: 15px;
+  stroke-width: 2;
 }
 
 .pin-badge {
@@ -2551,9 +2599,44 @@ button:disabled {
 }
 
 .note-library-card__body-shell {
+  --note-library-card-body-preview-height: calc(2 * 1.5em);
   position: relative;
-  max-height: none;
-  overflow: visible;
+  max-height: var(--note-library-card-body-preview-height);
+  overflow: hidden;
+  transition: max-height 450ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  will-change: max-height;
+}
+
+.note-library-card__body-shell[data-has-overflow="true"]:not(.is-expanded)::after {
+  content: "";
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 1;
+  height: 1.35em;
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--note-library-card-background) 0%, transparent) 0%,
+    color-mix(in srgb, var(--note-library-card-background) 18%, transparent) 24%,
+    color-mix(in srgb, var(--note-library-card-background) 70%, transparent) 72%,
+    var(--note-library-card-background) 100%
+  );
+  pointer-events: none;
+}
+
+.note-library-card__body-shell.is-expanded {
+  max-height: max(
+    var(--note-library-card-body-preview-height),
+    var(
+      --note-library-card-body-expanded-height,
+      var(--note-library-card-body-preview-height)
+    )
+  );
+}
+
+.note-library-card__body-shell.is-expanded::after {
+  content: none;
 }
 
 .note-library-card__body-measure {
@@ -2562,6 +2645,107 @@ button:disabled {
 
 .note-library-card__body {
   overflow: visible;
+}
+
+.note-library-expanded-panel {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 94;
+  width: 50vw;
+  max-width: none;
+  height: 100vh;
+  pointer-events: auto;
+  animation: floating-note-sidebar-in 180ms ease-out both;
+}
+
+.note-library-expanded-panel__card {
+  --note-library-card-background: var(--color-note-surface);
+  display: grid;
+  height: 100%;
+  max-height: 100%;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 12px;
+  overflow: hidden;
+  border-left: 1px solid var(--color-note-border);
+  color: var(--color-text);
+  background: var(--note-library-card-background);
+  box-shadow:
+    -18px 0 34px rgba(32, 35, 41, 0.16),
+    inset 0 1px 0 rgba(255, 255, 255, 0.75);
+  padding: 16px 18px 18px;
+}
+
+.note-library-expanded-panel__card[data-note-tone="1"] {
+  --note-library-card-background: var(--color-annotation-surface-alt);
+  border-color: rgba(209, 119, 55, 0.48);
+}
+
+.note-library-expanded-panel__header {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.note-library-expanded-panel__header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.note-library-expanded-panel__collapse-button {
+  display: inline-flex;
+  width: 26px;
+  min-width: 26px;
+  height: 26px;
+  min-height: 26px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 4px;
+  color: rgba(76, 70, 79, 0.82);
+  background: transparent;
+  box-shadow: none;
+}
+
+.note-library-expanded-panel__collapse-button:hover,
+.note-library-expanded-panel__collapse-button:focus-visible {
+  background: rgba(255, 255, 255, 0.32);
+  box-shadow: none;
+}
+
+.note-library-expanded-panel__collapse-button .note-action-icon {
+  width: 15px;
+  height: 15px;
+}
+
+.note-library-expanded-panel__body-scroll {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 6px;
+}
+
+.note-library-expanded-panel__body {
+  overflow: visible;
+}
+
+.note-library-expanded-panel__actions {
+  justify-content: flex-end;
+}
+
+.note-library-expanded-panel__actions button {
+  display: inline-flex;
+  width: 34px;
+  min-width: 34px;
+  height: 24px;
+  min-height: 24px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  padding: 0;
 }
 
 .note-markdown-editor {
@@ -2664,12 +2848,28 @@ button:disabled {
   pointer-events: none;
 }
 
+.floating-note-panel.is-expanded-sidebar {
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: auto;
+  width: 50vw;
+  max-width: none;
+  height: 100vh;
+  max-height: 100vh;
+  pointer-events: auto;
+}
+
 .note-edit-backdrop {
   position: fixed;
   inset: 0;
   z-index: 85;
   background: rgba(33, 37, 43, 0.32);
   pointer-events: auto;
+}
+
+.note-edit-backdrop.is-passive {
+  pointer-events: none;
 }
 
 .floating-note-connector {
@@ -2700,6 +2900,14 @@ button:disabled {
 
 .floating-note-panel.is-closing {
   animation: floating-note-pop-out 140ms ease-in both;
+}
+
+.floating-note-panel.is-expanded-sidebar.is-open {
+  animation: floating-note-sidebar-in 180ms ease-out both;
+}
+
+.floating-note-panel.is-expanded-sidebar.is-closing {
+  animation: floating-note-sidebar-out 160ms ease-in both;
 }
 
 .floating-note-panel.is-above {
@@ -2733,6 +2941,22 @@ button:disabled {
   pointer-events: auto;
 }
 
+.floating-note-panel.is-expanded-sidebar .floating-note-card {
+  height: 100%;
+  max-height: 100%;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  gap: 12px;
+  overflow: hidden;
+  border-top: 0;
+  border-right: 0;
+  border-bottom: 0;
+  border-radius: 0;
+  padding: 16px 18px 18px;
+  box-shadow:
+    -18px 0 34px rgba(32, 35, 41, 0.16),
+    inset 0 1px 0 rgba(255, 255, 255, 0.75);
+}
+
 .floating-note-card[data-note-tone="1"] {
   --note-library-card-background: var(--color-annotation-surface-alt);
   border-color: rgba(209, 119, 55, 0.48);
@@ -2752,16 +2976,24 @@ button:disabled {
   display: flex;
   align-items: start;
   justify-content: space-between;
+  gap: 12px;
 }
 
+.floating-note-card__header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.floating-note-panel-toggle-button,
 .floating-note-close-button {
   display: inline-flex;
   width: 24px;
   height: 24px;
   align-items: center;
   justify-content: center;
-  border: 1px solid transparent;
-  border-radius: 999px;
+  border: 0;
+  border-radius: 4px;
   color: var(--color-accent-ink);
   background: transparent;
   box-shadow: none;
@@ -2770,18 +3002,131 @@ button:disabled {
   line-height: 1;
 }
 
+.floating-note-panel-toggle-button:hover,
+.floating-note-panel-toggle-button:focus-visible,
 .floating-note-close-button:hover {
-  border-color: rgba(32, 35, 41, 0.16);
   background: var(--color-accent-softer);
 }
 
+.floating-note-panel.is-glossary .floating-note-panel-toggle-button:hover,
+.floating-note-panel.is-glossary .floating-note-panel-toggle-button:focus-visible,
 .floating-note-panel.is-glossary .floating-note-close-button:hover {
-  border-color: rgba(33, 132, 96, 0.22);
   background: rgba(33, 132, 96, 0.08);
+}
+
+.floating-note-panel-toggle-button .note-action-icon {
+  width: 15px;
+  height: 15px;
 }
 
 .floating-note-card__context {
   margin-top: -2px;
+}
+
+.floating-note-card__body-shell {
+  --floating-note-card-body-preview-height: calc(10 * 1.5em);
+  position: relative;
+  max-height: var(--floating-note-card-body-preview-height);
+  min-height: 0;
+  overflow: hidden;
+}
+
+.floating-note-card__body-shell[data-has-overflow="true"]:not(.is-expanded)::after {
+  content: "";
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 1;
+  height: 2.6em;
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--note-library-card-background) 0%, transparent) 0%,
+    color-mix(in srgb, var(--note-library-card-background) 24%, transparent) 32%,
+    color-mix(in srgb, var(--note-library-card-background) 78%, transparent) 78%,
+    var(--note-library-card-background) 100%
+  );
+  pointer-events: none;
+}
+
+.floating-note-card__body-shell.is-expanded {
+  max-height: none;
+  overflow: visible;
+}
+
+.floating-note-card__body-measure {
+  min-height: 0;
+}
+
+.floating-note-panel.is-expanded-sidebar .floating-note-card__context {
+  grid-row: 2;
+  min-height: 0;
+}
+
+.floating-note-panel.is-expanded-sidebar .floating-note-card__body-shell,
+.floating-note-panel.is-expanded-sidebar .floating-note-card__editor,
+.floating-note-panel.is-expanded-sidebar .selection-confirmation {
+  grid-row: 3;
+  align-self: stretch;
+}
+
+.floating-note-panel.is-expanded-sidebar .note-returning-status,
+.floating-note-panel.is-expanded-sidebar .bottom-note-actions {
+  grid-row: 4;
+}
+
+.floating-note-panel.is-expanded-sidebar .floating-note-card__body-shell {
+  max-height: none;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 6px;
+}
+
+.floating-note-panel.is-expanded-sidebar .floating-note-card__body-shell::after {
+  content: none;
+}
+
+.floating-note-panel.is-expanded-sidebar .floating-note-card__body-measure {
+  min-height: 100%;
+}
+
+.floating-note-panel.is-expanded-sidebar .selection-confirmation {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 6px;
+}
+
+.floating-note-panel.is-expanded-sidebar .floating-note-card__editor {
+  --note-markdown-editor-min-height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.floating-note-panel.is-expanded-sidebar .floating-note-card__editor,
+.floating-note-panel.is-expanded-sidebar .floating-note-card__editor .markdown-editor-host,
+.floating-note-panel.is-expanded-sidebar
+  .floating-note-card__editor
+  .milkdown-markdown-editor-shell,
+.floating-note-panel.is-expanded-sidebar .floating-note-card__editor .cm-editor,
+.floating-note-panel.is-expanded-sidebar .floating-note-card__editor .milkdown-markdown-editor,
+.floating-note-panel.is-expanded-sidebar
+  .floating-note-card__editor
+  .milkdown-markdown-editor
+  .milkdown {
+  height: 100%;
+  min-height: 0;
+}
+
+.floating-note-panel.is-expanded-sidebar .floating-note-card__editor .cm-scroller,
+.floating-note-panel.is-expanded-sidebar
+  .floating-note-card__editor
+  .milkdown-markdown-editor
+  .milkdown
+  .ProseMirror {
+  max-height: 100%;
+  overflow: auto;
+  overscroll-behavior: contain;
 }
 
 @keyframes floating-note-pop-in {
@@ -2805,6 +3150,30 @@ button:disabled {
   to {
     opacity: 0;
     transform: translateY(8px) scale(0.98);
+  }
+}
+
+@keyframes floating-note-sidebar-in {
+  from {
+    opacity: 0;
+    transform: translateX(18px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes floating-note-sidebar-out {
+  from {
+    opacity: 1;
+    transform: translateX(0);
+  }
+
+  to {
+    opacity: 0;
+    transform: translateX(18px);
   }
 }
 
@@ -3017,6 +3386,14 @@ button:disabled {
   font-weight: 700;
 }
 
+.note-library-expanded-panel .note-library-expanded-panel__actions button {
+  width: 34px;
+  min-width: 34px;
+  height: 24px;
+  min-height: 24px;
+  padding: 0;
+}
+
 .floating-note-card .note-actions {
   gap: 6px;
 }
@@ -3072,6 +3449,17 @@ button:disabled {
   stroke-linecap: round;
   stroke-linejoin: round;
   stroke-width: 2;
+}
+
+.note-action-icon--raw-svg svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  fill: currentColor;
+}
+
+.note-action-icon--raw-svg path {
+  fill: currentColor;
 }
 
 .floating-note-card .bottom-note-actions button:not(.selection-confirmation-button) .note-action-icon {
@@ -3167,5 +3555,17 @@ button:disabled {
 
   .floating-note-panel {
     width: min(420px, calc(100vw - 24px));
+  }
+
+  .floating-note-panel.is-expanded-sidebar {
+    inset: 0;
+    width: 100vw;
+    height: 100vh;
+  }
+
+  .note-library-expanded-panel {
+    inset: 0;
+    width: 100vw;
+    height: 100vh;
   }
 }
