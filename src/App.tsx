@@ -4352,9 +4352,12 @@ function App() {
   const [settingsSnapshot, setSettingsSnapshot] =
     useState<SettingsSnapshot>(readSettingsSnapshot);
   const appLanguage = settingsSnapshot["app.language"];
+  const noteModeEnabledByDefault = settingsSnapshot["app.noteModeEnabledByDefault"];
   const t = createTranslator(appLanguage);
   const [editorMode, setEditorMode] = useState<EditorMode>("preview");
-  const [noteModeEnabled, setNoteModeEnabled] = useState(false);
+  const [noteModeEnabled, setNoteModeEnabled] = useState(
+    () => noteModeEnabledByDefault && documentsSeed.length > 0,
+  );
   const [glossaryModeEnabled, setGlossaryModeEnabled] = useState(false);
   const [directoryPaneOpen, setDirectoryPaneOpen] = useState(false);
   const [windowIsFullscreen, setWindowIsFullscreen] = useState(false);
@@ -4384,6 +4387,7 @@ function App() {
   const duplicateFileInputRef = useRef<HTMLInputElement | null>(null);
   const noteEditorRootRef = useRef<HTMLDivElement | null>(null);
   const libraryNoteEditorRootRef = useRef<HTMLDivElement | null>(null);
+  const noteModeDefaultAppliedRef = useRef(noteModeEnabled);
   const returnToViewTimerRef = useRef(0);
   const notePanelCloseTimerRef = useRef(0);
   const floatingNotePanelPositionFrameRef = useRef(0);
@@ -4659,6 +4663,23 @@ function App() {
     setFocusedLibraryNoteId("");
     setEditingLibraryNoteId("");
   }, [noteModeEnabled]);
+
+  useEffect(() => {
+    if (!hasOpenDocument) {
+      noteModeDefaultAppliedRef.current = false;
+      return;
+    }
+
+    if (!noteModeEnabledByDefault) {
+      noteModeDefaultAppliedRef.current = false;
+      return;
+    }
+
+    if (noteModeDefaultAppliedRef.current) return;
+
+    noteModeDefaultAppliedRef.current = true;
+    setNoteModeEnabled(true);
+  }, [hasOpenDocument, noteModeEnabledByDefault]);
 
   useEffect(() => {
     if (hasOpenDocument) return;
@@ -7705,6 +7726,13 @@ function App() {
       return;
     }
 
+    if (key === "app.noteModeEnabledByDefault" && typeof value === "boolean") {
+      const shouldEnableNoteMode = value && documentsRef.current.length > 0;
+      noteModeDefaultAppliedRef.current = shouldEnableNoteMode;
+      setNoteModeEnabled(shouldEnableNoteMode);
+      return;
+    }
+
   }
 
   function updateSettingValue(key: SettingKey, value: SettingValue) {
@@ -7738,6 +7766,10 @@ function App() {
 
     setSettingsSnapshot(nextSettings);
     setDirectoryPaneOpen(nextSettings["app.directoryPaneOpen"]);
+    applySettingRuntimeValue(
+      "app.noteModeEnabledByDefault",
+      nextSettings["app.noteModeEnabledByDefault"],
+    );
   }
 
   async function refreshDropboxOAuthStatus() {

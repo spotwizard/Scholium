@@ -54,6 +54,7 @@
 | --- | --- | --- |
 | `app.restoreLastOpenedFile` | 本次實作 | 控制啟動時是否讀取上次開啟的 Markdown path，default 為 `true`。 |
 | `app.directoryPaneOpen` | 本次實作 | 控制非全螢幕時目錄面板是否預設展開，default 為 `false`。 |
+| `app.noteModeEnabledByDefault` | 本次實作 | 控制有可閱讀文件時是否預設進入筆記模式，default 為 `false`，並保留工具列手動切換。 |
 | 預設 app 顯示語言 | 本次實作 | 建立 i18n dictionary 與文字來源整理，支援 English / 繁體中文 / 簡體中文，並同步主要 UI、settings UI、狀態訊息與 native menu label。 |
 | 主題 | 本次實作 | 提供跟隨系統、淺色、深色，並以 app theme tokens 套用 runtime 外觀。 |
 | 字體縮放 | 本次實作 | 透過 `app.interfaceFontSize` 調整 app root typography scale。 |
