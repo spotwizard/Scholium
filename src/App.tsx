@@ -33,6 +33,8 @@ import fileSelectedGlyphSvg from "./assets/file-selected-glyph.svg?raw";
 import fileGlyphSvg from "./assets/file-glyph.svg?raw";
 import folderGlyphSvg from "./assets/folder-glyph.svg?raw";
 import folderSelectedGlyphSvg from "./assets/folder-selected-glyph.svg?raw";
+import collapseIconSvg from "./assets/collapse.svg?raw";
+import expandIconSvg from "./assets/expand.svg?raw";
 import { appLanguageHtmlLang, createTranslator } from "./i18n";
 import { loadScholiumMermaid } from "./mermaid";
 import {
@@ -411,6 +413,26 @@ function PencilIcon() {
       <path d="M4 20h4l10.5-10.5a2.1 2.1 0 0 0 0-3L17.5 5.5a2.1 2.1 0 0 0-3 0L4 16z" />
       <path d="m13.5 6.5 4 4" />
     </svg>
+  );
+}
+
+function ExpandPanelIcon() {
+  return (
+    <span
+      aria-hidden="true"
+      className="note-action-icon note-action-icon--raw-svg"
+      dangerouslySetInnerHTML={{ __html: expandIconSvg }}
+    />
+  );
+}
+
+function CollapsePanelIcon() {
+  return (
+    <span
+      aria-hidden="true"
+      className="note-action-icon note-action-icon--raw-svg"
+      dangerouslySetInnerHTML={{ __html: collapseIconSvg }}
+    />
   );
 }
 
@@ -4252,6 +4274,83 @@ function NoteLibraryPreviewContent({
   );
 }
 
+function FloatingNotePreviewContent({
+  className,
+  emptyLabel,
+  expanded,
+  mermaidEmptyDefinitionLabel,
+  mermaidLoadingLabel,
+  onDoubleClick,
+  value,
+}: {
+  className: string;
+  emptyLabel: string;
+  expanded: boolean;
+  mermaidEmptyDefinitionLabel: string;
+  mermaidLoadingLabel: string;
+  onDoubleClick?: () => void;
+  value: string;
+}) {
+  const contentRef = useRef<HTMLDivElement | null>(null);
+  const [hasCollapsedOverflow, setHasCollapsedOverflow] = useState(false);
+
+  useLayoutEffect(() => {
+    const contentElement = contentRef.current;
+    if (!contentElement) return;
+
+    const measuredElement = contentElement;
+    let measureFrame = 0;
+
+    function measureCollapsedOverflow() {
+      window.cancelAnimationFrame(measureFrame);
+      measureFrame = window.requestAnimationFrame(() => {
+        const previewBody = measuredElement.querySelector<HTMLElement>(".bottom-note-body");
+        const previewBodyStyle = previewBody ? window.getComputedStyle(previewBody) : null;
+        const fontSize = previewBodyStyle ? Number.parseFloat(previewBodyStyle.fontSize) : 0;
+        const rawLineHeight = previewBodyStyle?.lineHeight ?? "";
+        const lineHeight =
+          rawLineHeight === "normal"
+            ? fontSize * 1.5
+            : Number.parseFloat(rawLineHeight) || fontSize * 1.5;
+        const collapsedHeight = lineHeight * 10;
+        const nextOverflow = Math.ceil(measuredElement.scrollHeight) > collapsedHeight + 1;
+
+        setHasCollapsedOverflow((currentOverflow) =>
+          currentOverflow === nextOverflow ? currentOverflow : nextOverflow,
+        );
+      });
+    }
+
+    measureCollapsedOverflow();
+
+    const resizeObserver = new ResizeObserver(measureCollapsedOverflow);
+    resizeObserver.observe(measuredElement);
+
+    return () => {
+      window.cancelAnimationFrame(measureFrame);
+      resizeObserver.disconnect();
+    };
+  }, [value]);
+
+  return (
+    <div
+      className={`floating-note-card__body-shell ${expanded ? "is-expanded" : ""}`}
+      data-has-overflow={hasCollapsedOverflow ? "true" : "false"}
+    >
+      <div className="floating-note-card__body-measure" ref={contentRef}>
+        <MarkdownPreviewContent
+          className={className}
+          emptyLabel={emptyLabel}
+          mermaidEmptyDefinitionLabel={mermaidEmptyDefinitionLabel}
+          mermaidLoadingLabel={mermaidLoadingLabel}
+          onDoubleClick={onDoubleClick}
+          value={value}
+        />
+      </div>
+    </div>
+  );
+}
+
 function NoteMarkdownEditor({
   ariaLabel,
   className = "",
@@ -4340,6 +4439,7 @@ function App() {
   const [activeGlossaryTermId, setActiveGlossaryTermId] = useState("");
   const [activeNoteMode, setActiveNoteMode] = useState<ActiveNoteMode>("view");
   const [activeGlossaryMode, setActiveGlossaryMode] = useState<ActiveNoteMode>("view");
+  const [notePanelExpanded, setNotePanelExpanded] = useState(false);
   const [floatingNotePanelPosition, setFloatingNotePanelPosition] =
     useState<FloatingNotePosition | null>(null);
   const [selectionWarningPosition, setSelectionWarningPosition] =
@@ -4364,6 +4464,7 @@ function App() {
   const [noteLibraryOpen, setNoteLibraryOpen] = useState(false);
   const [focusedLibraryNoteId, setFocusedLibraryNoteId] = useState("");
   const [editingLibraryNoteId, setEditingLibraryNoteId] = useState("");
+  const [expandedLibraryNoteId, setExpandedLibraryNoteId] = useState("");
   const [dirtyDocumentStates, setDirtyDocumentStates] = useState<
     Record<string, DirtyDocumentState>
   >({});
@@ -4569,6 +4670,12 @@ function App() {
 
       return leftNote.createdAt.localeCompare(rightNote.createdAt);
     });
+  const expandedLibraryNote = noteLibraryNotes.find(
+    (note) => note.id === expandedLibraryNoteId,
+  );
+  const libraryNotePanelExpanded = Boolean(
+    !settingsViewOpen && noteModeEnabled && noteLibraryOpen && expandedLibraryNote,
+  );
   const glossaryNavigationBindings = glossaryModeActive
     ? documentGlossaryBindings
         .filter(
@@ -4632,6 +4739,21 @@ function App() {
   );
   const floatingNotePanelShouldRender = noteModeEnabled && notePanelHasContent;
   const notePanelModalActive = floatingNotePanelShouldRender && !isNotePanelClosing;
+  const floatingNoteCanExpand = Boolean(!pendingAnchor && (activeNote || activeGlossaryTerm));
+  const floatingNotePanelExpanded =
+    !settingsViewOpen && notePanelExpanded && floatingNoteCanExpand && !isNotePanelClosing;
+  const expandedNotePanelScrollLocked =
+    floatingNotePanelExpanded || libraryNotePanelExpanded;
+  const floatingNoteBackdropActive = notePanelModalActive;
+  const activeFloatingNoteKey = activeNote
+    ? `note:${activeNote.id}`
+    : activeGlossaryTerm
+      ? `glossary:${activeGlossaryTerm.id}`
+      : pendingGlossaryTerm
+        ? `pending-glossary:${pendingGlossaryTerm.id}`
+        : pendingAnchor
+          ? `pending:${pendingAnchor.from}:${pendingAnchor.to}`
+          : "";
   noteEditModalActiveRef.current = notePanelModalActive;
 
   useEffect(() => {
@@ -4649,6 +4771,30 @@ function App() {
   useEffect(() => {
     notePanelHasContentRef.current = notePanelHasContent;
   }, [notePanelHasContent]);
+
+  useEffect(() => {
+    setNotePanelExpanded(false);
+  }, [activeFloatingNoteKey]);
+
+  useEffect(() => {
+    if (floatingNotePanelShouldRender) return;
+
+    setNotePanelExpanded(false);
+  }, [floatingNotePanelShouldRender]);
+
+  useEffect(() => {
+    if (!expandedNotePanelScrollLocked) return undefined;
+
+    const originalBodyOverflow = document.body.style.overflow;
+    const originalDocumentOverflow = document.documentElement.style.overflow;
+    document.body.style.overflow = "hidden";
+    document.documentElement.style.overflow = "hidden";
+
+    return () => {
+      document.body.style.overflow = originalBodyOverflow;
+      document.documentElement.style.overflow = originalDocumentOverflow;
+    };
+  }, [expandedNotePanelScrollLocked]);
 
   useEffect(() => {
     if (noteModeEnabled) return;
@@ -4710,9 +4856,19 @@ function App() {
   }, [editingLibraryNoteId, focusedLibraryNoteId, noteLibrarySignature]);
 
   useEffect(() => {
+    if (
+      expandedLibraryNoteId &&
+      (!noteLibraryOpen || !noteLibraryNotes.some((note) => note.id === expandedLibraryNoteId))
+    ) {
+      setExpandedLibraryNoteId("");
+    }
+  }, [expandedLibraryNoteId, noteLibraryOpen, noteLibrarySignature]);
+
+  useEffect(() => {
     if (!noteLibraryOpen) {
       setFocusedLibraryNoteId("");
       setEditingLibraryNoteId("");
+      setExpandedLibraryNoteId("");
     }
   }, [noteLibraryOpen]);
 
@@ -7683,6 +7839,8 @@ function App() {
     setActiveGlossaryTermId("");
     setActiveNoteMode("view");
     setActiveGlossaryMode("view");
+    setNotePanelExpanded(false);
+    setExpandedLibraryNoteId("");
     setFloatingNotePanelPosition(null);
     setIsNotePanelClosing(false);
     notePanelHasContentRef.current = false;
@@ -8330,6 +8488,8 @@ function App() {
     setNoteDraft("");
     setGlossaryDraft("");
     setSelectionWarningPosition(null);
+    setNotePanelExpanded(false);
+    setExpandedLibraryNoteId("");
     setFloatingNotePanelPosition(null);
     setIsNotePanelClosing(false);
     floatingNoteAnchorRectRef.current = null;
@@ -8359,6 +8519,7 @@ function App() {
       clearNotePanelCloseTimer();
       clearReturnToViewTimer();
       setSelectionWarningPosition(null);
+      setNotePanelExpanded(false);
       setFloatingNotePanelPosition(null);
       setIsNotePanelClosing(false);
       floatingNoteAnchorRectRef.current = null;
@@ -8404,11 +8565,18 @@ function App() {
     noteEditorPostCompositionGuardUntilRef.current = 0;
   }
 
+  function toggleFloatingNotePanelExpanded() {
+    if (!floatingNoteCanExpand) return;
+
+    setNotePanelExpanded((currentValue) => !currentValue);
+  }
+
   function closeNotePanel() {
     clearNotePanelCloseTimer();
     clearReturnToViewTimer();
     resetNoteTextareaCompositionState();
     setSelectionWarningPosition(null);
+    setNotePanelExpanded(false);
 
     if (!notePanelHasContentRef.current) {
       setPendingAnchor(null);
@@ -9086,6 +9254,7 @@ function App() {
       setActiveGlossaryTermId("");
       setActiveGlossaryMode("view");
       setGlossaryDraft("");
+      setNotePanelExpanded(false);
       setIsNotePanelClosing(false);
       notePanelHasContentRef.current = false;
     }
@@ -9178,6 +9347,7 @@ function App() {
       setActiveNoteId("");
       setActiveNoteMode("view");
       setNoteDraft("");
+      setNotePanelExpanded(false);
       setIsNotePanelClosing(false);
       notePanelHasContentRef.current = false;
     }
@@ -9186,6 +9356,9 @@ function App() {
     }
     if (editingLibraryNoteId === noteId) {
       setEditingLibraryNoteId("");
+    }
+    if (expandedLibraryNoteId === noteId) {
+      setExpandedLibraryNoteId("");
     }
     markDocumentNotesDirty();
   }
@@ -9218,8 +9391,18 @@ function App() {
     noteId: string,
     event: FocusEvent<HTMLElement>,
   ) {
+    if (expandedLibraryNoteId === noteId) {
+      return;
+    }
+
     const nextFocusedElement = event.relatedTarget;
     if (nextFocusedElement instanceof Node && event.currentTarget.contains(nextFocusedElement)) {
+      return;
+    }
+    if (
+      nextFocusedElement instanceof Element &&
+      nextFocusedElement.closest(".note-library-expanded-panel")
+    ) {
       return;
     }
 
@@ -9233,8 +9416,12 @@ function App() {
 
   function handleShellMouseDownCapture(event: MouseEvent<HTMLElement>) {
     if (!noteLibraryFocusActive || !focusedLibraryNoteId) return;
+    if (libraryNotePanelExpanded) return;
 
     const target = event.target;
+    if (target instanceof Element && target.closest(".note-library-expanded-panel")) {
+      return;
+    }
     if (target instanceof Element && target.closest(".note-library-card.is-focused")) {
       return;
     }
@@ -9259,12 +9446,14 @@ function App() {
     setActiveGlossaryMode("view");
     setNoteDraft("");
     setGlossaryDraft("");
+    setNotePanelExpanded(false);
     setFloatingNotePanelPosition(null);
     setIsNotePanelClosing(false);
     notePanelHasContentRef.current = false;
     floatingNoteAnchorRectRef.current = null;
     setFocusedLibraryNoteId(noteId);
     setEditingLibraryNoteId(noteId);
+    setExpandedLibraryNoteId("");
   }
 
   function toggleLibraryNoteEditor(noteId: string) {
@@ -9326,11 +9515,30 @@ function App() {
     focusAdjacentLibraryNote(noteId, event);
   }
 
+  function openLibraryNoteExpandedPanel(noteId: string) {
+    const note = noteLibraryNotes.find((candidate) => candidate.id === noteId);
+    if (!note) return;
+
+    setEditingLibraryNoteId("");
+    setFocusedLibraryNoteId(note.id);
+    setExpandedLibraryNoteId(note.id);
+  }
+
+  function closeLibraryNoteExpandedPanel() {
+    const noteId = expandedLibraryNoteId;
+    setExpandedLibraryNoteId("");
+    if (noteId) {
+      setFocusedLibraryNoteId(noteId);
+      focusLibraryNoteCard(noteId);
+    }
+  }
+
   function openNoteLibrary() {
     if (!annotationToolsAvailable) return;
 
     setFocusedLibraryNoteId("");
     setEditingLibraryNoteId("");
+    setExpandedLibraryNoteId("");
     resetNoteModeInteractionState();
     if (directoryPaneOpen) {
       const writtenValue = writeSetting("app.directoryPaneOpen", false) as boolean;
@@ -9349,6 +9557,7 @@ function App() {
 
     setFocusedLibraryNoteId("");
     setEditingLibraryNoteId("");
+    setExpandedLibraryNoteId("");
     void restoreDirectoryPane;
     directoryPaneOpenBeforeNoteLibraryRef.current = null;
     setNoteLibraryOpen(false);
@@ -9376,16 +9585,18 @@ function App() {
     setDirectoryPaneOpen(writtenValue);
   }
 
-  const floatingNotePanelStyle: CSSProperties = floatingNotePanelPosition
-    ? {
-        left: floatingNotePanelPosition.left,
-        top: floatingNotePanelPosition.top,
-      }
-    : {
-      left: 0,
-      top: 0,
-      visibility: "hidden",
-    };
+  const floatingNotePanelStyle: CSSProperties = floatingNotePanelExpanded
+    ? {}
+    : floatingNotePanelPosition
+      ? {
+          left: floatingNotePanelPosition.left,
+          top: floatingNotePanelPosition.top,
+        }
+      : {
+          left: 0,
+          top: 0,
+          visibility: "hidden",
+        };
   const selectionWarningStyle: CSSProperties | undefined = selectionWarningPosition
     ? {
         left: selectionWarningPosition.left,
@@ -9402,15 +9613,15 @@ function App() {
         ),
       }
     : undefined;
-  const floatingNoteConnectorStyle: CSSProperties | null = floatingNotePanelPosition
-    ?.connector
-    ? {
-        left: floatingNotePanelPosition.connector.left,
-        top: floatingNotePanelPosition.connector.top,
-        transform: `translateY(-50%) rotate(${floatingNotePanelPosition.connector.angle}deg)`,
-        width: floatingNotePanelPosition.connector.width,
-      }
-    : null;
+  const floatingNoteConnectorStyle: CSSProperties | null =
+    floatingNotePanelExpanded || !floatingNotePanelPosition?.connector
+      ? null
+      : {
+          left: floatingNotePanelPosition.connector.left,
+          top: floatingNotePanelPosition.connector.top,
+          transform: `translateY(-50%) rotate(${floatingNotePanelPosition.connector.angle}deg)`,
+          width: floatingNotePanelPosition.connector.width,
+        };
   const editorReadOnly = notePanelModalActive || noteLibraryOpen;
   const fileContextMenuActions: FileContextMenuAction[] = fileContextMenu
     ? (() => {
@@ -9485,6 +9696,7 @@ function App() {
     !settingsViewOpen && noteModeEnabled && noteLibraryOpen ? "is-note-library-open" : "",
     !settingsViewOpen && noteLibraryFocusActive ? "is-note-library-focus-active" : "",
     !settingsViewOpen && notePanelModalActive ? "is-note-panel-modal-active" : "",
+    !settingsViewOpen && expandedNotePanelScrollLocked ? "is-note-panel-expanded" : "",
   ]
     .filter(Boolean)
     .join(" ");
@@ -10107,6 +10319,18 @@ function App() {
                     >
                     <div className="note-library-card__header">
                       <PinBadge ariaLabel={t("note.pin")} />
+                      <button
+                        className="note-library-card__expand-button"
+                        type="button"
+                        aria-label={t("note.expand")}
+                        title={t("note.expand")}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          openLibraryNoteExpandedPanel(note.id);
+                        }}
+                      >
+                        <ExpandPanelIcon />
+                      </button>
                     </div>
                     {isEditingLibraryNote ? (
                       <NoteMarkdownEditor
@@ -10126,7 +10350,7 @@ function App() {
                       <NoteLibraryPreviewContent
                         className="bottom-note-body note-library-card__body"
                         emptyLabel={t("note.empty")}
-                        expanded={isFocusedLibraryNote}
+                        expanded={false}
                         mermaidEmptyDefinitionLabel={t("mermaid.empty")}
                         mermaidLoadingLabel={t("mermaid.loading")}
                         onDoubleClick={() => startLibraryNoteEditor(note.id)}
@@ -10174,6 +10398,71 @@ function App() {
             )}
           </div>
         </aside>
+        {libraryNotePanelExpanded && expandedLibraryNote ? (
+          <section
+            aria-label={t("selectionNote.view")}
+            className="note-library-expanded-panel"
+          >
+            <div
+              className="note-library-expanded-panel__card"
+              data-note-tone={
+                activeNoteToneById.get(expandedLibraryNote.id) ??
+                expandedLibraryNote.tone ??
+                0
+              }
+            >
+              <div className="note-library-expanded-panel__header">
+                <PinBadge ariaLabel={t("note.pin")} />
+                <div className="note-library-expanded-panel__header-actions">
+                  <button
+                    className="note-library-expanded-panel__collapse-button"
+                    type="button"
+                    aria-label={t("note.collapse")}
+                    title={t("note.collapse")}
+                    onClick={closeLibraryNoteExpandedPanel}
+                  >
+                    <CollapsePanelIcon />
+                  </button>
+                </div>
+              </div>
+              <div className="note-library-expanded-panel__body-scroll">
+                <MarkdownPreviewContent
+                  className="bottom-note-body note-library-expanded-panel__body"
+                  emptyLabel={t("note.empty")}
+                  mermaidEmptyDefinitionLabel={t("mermaid.empty")}
+                  mermaidLoadingLabel={t("mermaid.loading")}
+                  onDoubleClick={() => {
+                    closeLibraryNoteExpandedPanel();
+                    startLibraryNoteEditor(expandedLibraryNote.id);
+                  }}
+                  value={expandedLibraryNote.body}
+                />
+              </div>
+              <div className="note-actions note-library-expanded-panel__actions">
+                <button
+                  type="button"
+                  aria-label={t("note.edit")}
+                  title={t("note.edit")}
+                  onClick={() => {
+                    closeLibraryNoteExpandedPanel();
+                    startLibraryNoteEditor(expandedLibraryNote.id);
+                  }}
+                >
+                  <PencilIcon />
+                </button>
+                <button
+                  className="is-danger"
+                  type="button"
+                  aria-label={t("note.delete")}
+                  title={t("note.delete")}
+                  onClick={() => deleteNote(expandedLibraryNote.id)}
+                >
+                  <TrashIcon />
+                </button>
+              </div>
+            </div>
+          </section>
+        ) : null}
         </>
       ) : null}
 
@@ -10185,14 +10474,24 @@ function App() {
 
       {!settingsViewOpen && floatingNotePanelShouldRender ? (
         <>
-          {notePanelModalActive ? (
+          {floatingNoteBackdropActive ? (
             <div
               aria-hidden="true"
-              className="note-edit-backdrop"
-              onClick={handleNotePanelOutsideModalInteraction}
-              onMouseDown={handleNotePanelOutsideModalInteraction}
-              onPointerDown={handleNotePanelOutsideModalInteraction}
-              onWheel={blockNoteEditBackdropInteraction}
+              className={`note-edit-backdrop ${
+                floatingNotePanelExpanded ? "is-passive" : ""
+              }`}
+              onClick={
+                floatingNotePanelExpanded ? undefined : handleNotePanelOutsideModalInteraction
+              }
+              onMouseDown={
+                floatingNotePanelExpanded ? undefined : handleNotePanelOutsideModalInteraction
+              }
+              onPointerDown={
+                floatingNotePanelExpanded ? undefined : handleNotePanelOutsideModalInteraction
+              }
+              onWheel={
+                floatingNotePanelExpanded ? undefined : blockNoteEditBackdropInteraction
+              }
             />
           ) : null}
           {floatingNoteConnectorStyle ? (
@@ -10211,7 +10510,9 @@ function App() {
                 : floatingNotePanelPosition?.placement === "detached"
                   ? "is-detached"
                   : "is-below"
-            } ${floatingPanelIsGlossary ? "is-glossary" : "is-note"}`}
+            } ${floatingNotePanelExpanded ? "is-expanded-sidebar" : ""} ${
+              floatingPanelIsGlossary ? "is-glossary" : "is-note"
+            }`}
             onBlur={handleFloatingNotePanelBlur}
             ref={notePanelRef}
             style={floatingNotePanelStyle}
@@ -10236,14 +10537,34 @@ function App() {
             >
               <div className="floating-note-card__header">
                 <PinBadge ariaLabel={t("note.pin")} />
-                <button
-                  className="floating-note-close-button"
-                  type="button"
-                  aria-label={t("note.close")}
-                  onClick={closeNotePanel}
-                >
-                  ×
-                </button>
+                <div className="floating-note-card__header-actions">
+                  {floatingNoteCanExpand ? (
+                    <button
+                      className={`floating-note-panel-toggle-button ${
+                        floatingNotePanelExpanded ? "is-expanded" : ""
+                      }`}
+                      type="button"
+                      aria-label={
+                        floatingNotePanelExpanded ? t("note.collapse") : t("note.expand")
+                      }
+                      aria-pressed={floatingNotePanelExpanded}
+                      title={
+                        floatingNotePanelExpanded ? t("note.collapse") : t("note.expand")
+                      }
+                      onClick={toggleFloatingNotePanelExpanded}
+                    >
+                      {floatingNotePanelExpanded ? <CollapsePanelIcon /> : <ExpandPanelIcon />}
+                    </button>
+                  ) : null}
+                  <button
+                    className="floating-note-close-button"
+                    type="button"
+                    aria-label={t("note.close")}
+                    onClick={closeNotePanel}
+                  >
+                    ×
+                  </button>
+                </div>
               </div>
               {activeGlossaryTerm || pendingGlossaryTerm ? (
                 <div className="bottom-note-context floating-note-card__context">
@@ -10344,8 +10665,9 @@ function App() {
               ) : null}
 
               {!pendingAnchor && activeGlossaryTerm && !activeGlossaryIsEditing ? (
-                <MarkdownPreviewContent
+                <FloatingNotePreviewContent
                   className="bottom-note-body"
+                  expanded={floatingNotePanelExpanded}
                   emptyLabel={t("glossary.emptyDefinition")}
                   mermaidEmptyDefinitionLabel={t("mermaid.empty")}
                   mermaidLoadingLabel={t("mermaid.loading")}
@@ -10379,8 +10701,9 @@ function App() {
               ) : null}
 
               {!pendingAnchor && activeNote && !activeNoteIsEditing ? (
-                <MarkdownPreviewContent
+                <FloatingNotePreviewContent
                   className="bottom-note-body"
+                  expanded={floatingNotePanelExpanded}
                   emptyLabel={t("note.empty")}
                   mermaidEmptyDefinitionLabel={t("mermaid.empty")}
                   mermaidLoadingLabel={t("mermaid.loading")}
