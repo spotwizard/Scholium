@@ -1036,7 +1036,6 @@ export function MilkdownMarkdownEditor({
       (document.activeElement as HTMLElement).blur();
     }
     window.getSelection()?.removeAllRanges();
-    onSelectionChangeRef.current(null);
   }, [readOnly]);
 
   useEffect(() => {

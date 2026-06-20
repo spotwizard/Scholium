@@ -502,7 +502,6 @@ export function MarkdownEditor({
     if (readOnly && document.activeElement instanceof Node && view.dom.contains(document.activeElement)) {
       view.contentDOM.blur();
       window.getSelection()?.removeAllRanges();
-      onSelectionChangeRef.current(null);
     }
   }, [readOnly, readOnlyCompartment]);
 

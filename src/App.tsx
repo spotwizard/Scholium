@@ -436,6 +436,126 @@ function CollapsePanelIcon() {
   );
 }
 
+function MobileFilesIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      className="mobile-command-bar__icon"
+      fill="none"
+      viewBox="0 0 24 24"
+    >
+      <path d="M3.5 6.5h6l2 2h9v9.5a2 2 0 0 1-2 2h-15z" />
+      <path d="M3.5 6.5v-2h5.4l2 2h6.6a2 2 0 0 1 2 2" />
+    </svg>
+  );
+}
+
+function MobileNoteIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      className="mobile-command-bar__icon"
+      fill="none"
+      viewBox="0 0 24 24"
+    >
+      <path d="M6 4.5h12v15H6z" />
+      <path d="M9 8h6" />
+      <path d="M9 11.5h6" />
+      <path d="M9 15h3.5" />
+    </svg>
+  );
+}
+
+function MobileTermIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      className="mobile-command-bar__icon"
+      fill="none"
+      viewBox="0 0 24 24"
+    >
+      <path d="M5 6h14" />
+      <path d="M12 6v12" />
+      <path d="M8 18h8" />
+    </svg>
+  );
+}
+
+function MobileLibraryIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      className="mobile-command-bar__icon"
+      fill="none"
+      viewBox="0 0 24 24"
+    >
+      <path d="M5 4.5h10.5a2.5 2.5 0 0 1 2.5 2.5v12.5H7.5A2.5 2.5 0 0 1 5 17z" />
+      <path d="M8 8h7" />
+      <path d="M8 11.5h7" />
+      <path d="M8 15h4" />
+    </svg>
+  );
+}
+
+function MobileNewFileIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      className="mobile-source-action__icon"
+      fill="none"
+      viewBox="0 0 24 24"
+    >
+      <path d="M7 4.5h7l3 3v12H7z" />
+      <path d="M14 4.5v3h3" />
+      <path d="M12 11v5" />
+      <path d="M9.5 13.5h5" />
+    </svg>
+  );
+}
+
+function MobileOpenFileIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      className="mobile-source-action__icon"
+      fill="none"
+      viewBox="0 0 24 24"
+    >
+      <path d="M7 4.5h7l3 3v12H7z" />
+      <path d="M14 4.5v3h3" />
+      <path d="M9.5 11h5" />
+      <path d="M9.5 14.5h4" />
+    </svg>
+  );
+}
+
+function MobileOpenFolderIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      className="mobile-source-action__icon"
+      fill="none"
+      viewBox="0 0 24 24"
+    >
+      <path d="M3.5 7h6l2 2h9v8.5a2 2 0 0 1-2 2h-15z" />
+      <path d="M3.5 7v-2h5.4l2 2h4.6" />
+    </svg>
+  );
+}
+
+function MobileCloudIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      className="mobile-source-action__icon"
+      fill="none"
+      viewBox="0 0 24 24"
+    >
+      <path d="M8.5 18.5h8a4 4 0 0 0 .6-8 5.2 5.2 0 0 0-10-1.8A3.8 3.8 0 0 0 8.5 18.5z" />
+    </svg>
+  );
+}
+
 function PinBadge({ ariaLabel }: { ariaLabel: string }) {
   return (
     <div className="pin-badge" aria-label={ariaLabel}>
@@ -549,6 +669,9 @@ const previewAnnotationFramePadding = 4;
 const previewAnnotationFrameHorizontalPadding = 12;
 const previewAnnotationLineJoinMaxGap = 20;
 const notePanelAnimationMs = 180;
+const selectionWarningMinimumVisibleMs = 1600;
+const selectionWarningAutoDismissMs = 2600;
+const appDrivenSelectionClearGuardMs = 1200;
 const autosaveDelayMs = 1000;
 const lastOpenedMarkdownPathStorageKey = "scholium:last-opened-markdown-path";
 const lastOpenedMarkdownRootDirectoryStorageKey =
@@ -4522,6 +4645,7 @@ function App() {
   const savedDocumentBodiesRef = useRef(savedDocumentBodies);
   const selectedDocumentIdRef = useRef(selectedDocumentId);
   const notePanelHasContentRef = useRef(false);
+  const selectionWarningPreserveUntilRef = useRef(0);
   const selectionDismissedUntilRef = useRef(0);
   const selectionClearedByAppUntilRef = useRef(0);
   const lastOpenedFileRestoreAttemptedRef = useRef(false);
@@ -4762,11 +4886,10 @@ function App() {
     const selection = window.getSelection();
     if (!selection || selection.isCollapsed) return;
 
-    if (pendingAnchorIsGlossaryTerm) {
-      selectionClearedByAppUntilRef.current = Date.now() + 700;
-    }
+    selectionClearedByAppUntilRef.current =
+      Date.now() + appDrivenSelectionClearGuardMs;
     selection.removeAllRanges();
-  }, [notePanelModalActive, pendingAnchor, pendingAnchorIsGlossaryTerm]);
+  }, [notePanelModalActive, pendingAnchor]);
 
   useEffect(() => {
     notePanelHasContentRef.current = notePanelHasContent;
@@ -5366,6 +5489,17 @@ function App() {
     };
   }
 
+  function showSelectionWarning(anchorRect: TextRangeRect | null) {
+    selectionWarningPreserveUntilRef.current =
+      Date.now() + selectionWarningMinimumVisibleMs;
+    setSelectionWarningPosition(selectionWarningPositionFromAnchor(anchorRect));
+  }
+
+  function clearSelectionWarning() {
+    selectionWarningPreserveUntilRef.current = 0;
+    setSelectionWarningPosition(null);
+  }
+
   function annotationAnchorRect(annotationId: string) {
     const frameElements = Array.from(
       document.querySelectorAll<HTMLElement>(
@@ -5775,6 +5909,8 @@ function App() {
     if (!notePanelHasContent || isNotePanelClosing) return;
 
     function handleWindowBlur() {
+      if (isMobileViewport && notePanelModalActive && pendingAnchor) return;
+
       closeNotePanel();
     }
 
@@ -5783,7 +5919,14 @@ function App() {
     return () => {
       window.removeEventListener("blur", handleWindowBlur);
     };
-  }, [closeNotePanel, isNotePanelClosing, notePanelHasContent]);
+  }, [
+    closeNotePanel,
+    isMobileViewport,
+    isNotePanelClosing,
+    notePanelHasContent,
+    notePanelModalActive,
+    pendingAnchor,
+  ]);
 
   useEffect(() => {
     if (!noteEditModalActive) return;
@@ -5813,13 +5956,20 @@ function App() {
   useEffect(() => {
     if (!selectionWarningPosition) return;
 
+    const dismissTimer = window.setTimeout(() => {
+      clearSelectionWarning();
+    }, selectionWarningAutoDismissMs);
+
     function dismissSelectionWarning() {
-      setSelectionWarningPosition(null);
+      if (Date.now() < selectionWarningPreserveUntilRef.current) return;
+
+      clearSelectionWarning();
     }
 
     document.addEventListener("pointerdown", dismissSelectionWarning, true);
 
     return () => {
+      window.clearTimeout(dismissTimer);
       document.removeEventListener("pointerdown", dismissSelectionWarning, true);
     };
   }, [selectionWarningPosition]);
@@ -7267,10 +7417,16 @@ function App() {
       } else {
         void openDropboxMarkdownFilePath(entry.path);
       }
+      if (isMobileViewport) {
+        setDirectoryPaneOpen(false);
+      }
       return;
     }
 
     selectDocument(entry.documentId);
+    if (isMobileViewport) {
+      setDirectoryPaneOpen(false);
+    }
   }
 
   async function openLocalFileSearchResult(result: SearchMarkdownFileResult) {
@@ -7283,6 +7439,9 @@ function App() {
     if (loadedDocument) {
       selectDocument(loadedDocument.id);
       setStorageError("");
+      if (isMobileViewport) {
+        setDirectoryPaneOpen(false);
+      }
       return;
     }
 
@@ -7296,6 +7455,9 @@ function App() {
       setSelectedDocumentId(loaded.path);
       rememberLastOpenedMarkdownPath(loaded.path);
       setStorageError("");
+      if (isMobileViewport) {
+        setDirectoryPaneOpen(false);
+      }
     } catch (error) {
       setStorageError(error instanceof Error ? error.message : String(error));
     }
@@ -8742,20 +8904,28 @@ function App() {
     }
 
     if (!anchor) {
-      if (Date.now() < selectionClearedByAppUntilRef.current) {
-        setSelectionWarningPosition(null);
+      const now = Date.now();
+
+      if (now < selectionClearedByAppUntilRef.current) {
+        if (now >= selectionWarningPreserveUntilRef.current) {
+          clearSelectionWarning();
+        }
         return;
       }
 
       if (
-        Date.now() < pendingGlossaryPromptLockUntilRef.current &&
+        now < pendingGlossaryPromptLockUntilRef.current &&
         pendingAnchor &&
         pendingGlossaryTerm
       ) {
         return;
       }
 
-      setSelectionWarningPosition(null);
+      if (now < selectionWarningPreserveUntilRef.current) {
+        return;
+      }
+
+      clearSelectionWarning();
       if (pendingAnchor) {
         closeNotePanel();
       }
@@ -8778,7 +8948,7 @@ function App() {
     }
 
     if (selectionIsBlockedByExistingAnnotations(anchor)) {
-      setSelectionWarningPosition(null);
+      clearSelectionWarning();
       if (
         pendingAnchor ||
         activeNoteId ||
@@ -8803,13 +8973,18 @@ function App() {
       if (notePanelHasContentRef.current) {
         closeNotePanel();
       }
-      setSelectionWarningPosition(selectionWarningPositionFromAnchor(anchorRect));
+      showSelectionWarning(anchorRect);
       return;
+    }
+
+    if (isMobileViewport && !anchorIsGlossaryCandidate) {
+      selectionClearedByAppUntilRef.current =
+        Date.now() + appDrivenSelectionClearGuardMs;
     }
 
     clearNotePanelCloseTimer();
     clearReturnToViewTimer();
-    setSelectionWarningPosition(null);
+    clearSelectionWarning();
     setIsNotePanelClosing(false);
     floatingNoteAnchorRectRef.current = currentSelectionAnchorRect();
     setPendingAnchor(anchor);
@@ -8897,7 +9072,7 @@ function App() {
     setNoteDraft("");
     setPendingGlossaryTerm(null);
     setGlossaryDraft("");
-    setSelectionWarningPosition(selectionWarningPositionFromAnchor(currentSelectionAnchorRect()));
+    showSelectionWarning(currentSelectionAnchorRect());
     return true;
   }
 
@@ -9541,13 +9716,17 @@ function App() {
     setExpandedLibraryNoteId("");
     resetNoteModeInteractionState();
     if (directoryPaneOpen) {
-      const writtenValue = writeSetting("app.directoryPaneOpen", false) as boolean;
-      recordFullscreenDirectoryPaneManualValue(writtenValue);
-      setSettingsSnapshot((currentSettings) => ({
-        ...currentSettings,
-        "app.directoryPaneOpen": writtenValue,
-      }));
-      setDirectoryPaneOpen(writtenValue);
+      if (isMobileViewport) {
+        setDirectoryPaneOpen(false);
+      } else {
+        const writtenValue = writeSetting("app.directoryPaneOpen", false) as boolean;
+        recordFullscreenDirectoryPaneManualValue(writtenValue);
+        setSettingsSnapshot((currentSettings) => ({
+          ...currentSettings,
+          "app.directoryPaneOpen": writtenValue,
+        }));
+        setDirectoryPaneOpen(writtenValue);
+      }
     }
     setNoteLibraryOpen(true);
   }
@@ -9576,6 +9755,14 @@ function App() {
 
   function toggleDirectoryPane() {
     const nextValue = !directoryPaneOpen;
+    if (isMobileViewport) {
+      if (nextValue && noteLibraryOpen) {
+        closeNoteLibrary({ restoreDirectoryPane: false });
+      }
+      setDirectoryPaneOpen(nextValue);
+      return;
+    }
+
     const writtenValue = writeSetting("app.directoryPaneOpen", nextValue) as boolean;
     recordFullscreenDirectoryPaneManualValue(writtenValue);
     setSettingsSnapshot((currentSettings) => ({
@@ -9583,6 +9770,18 @@ function App() {
       "app.directoryPaneOpen": writtenValue,
     }));
     setDirectoryPaneOpen(writtenValue);
+  }
+
+  function runMobileSourceAction(action: () => Promise<void> | void) {
+    if (isMobileViewport) {
+      setFileContextMenu(null);
+      setDirectoryPaneOpen(false);
+      if (noteLibraryOpen) {
+        closeNoteLibrary({ restoreDirectoryPane: false });
+      }
+    }
+
+    void action();
   }
 
   const floatingNotePanelStyle: CSSProperties = floatingNotePanelExpanded
@@ -9689,6 +9888,37 @@ function App() {
   const visibleDropboxPickerDirectories = dropboxDirectoryPicker
     ? flattenDropboxDirectoryPickerNodes(dropboxDirectoryPicker.directories)
     : [];
+  const mobileSourceActions: Array<{
+    id: string;
+    label: string;
+    icon: ReactNode;
+    onSelect: () => void;
+  }> = [
+    {
+      id: "dropbox",
+      label: t("mobileSource.openDropbox"),
+      icon: <MobileCloudIcon />,
+      onSelect: () => runMobileSourceAction(openDropboxCloudSource),
+    },
+    {
+      id: "open-file",
+      label: t("mobileSource.openFile"),
+      icon: <MobileOpenFileIcon />,
+      onSelect: () => runMobileSourceAction(openMarkdownFileFromPicker),
+    },
+    {
+      id: "open-folder",
+      label: t("mobileSource.openFolder"),
+      icon: <MobileOpenFolderIcon />,
+      onSelect: () => runMobileSourceAction(openMarkdownFolder),
+    },
+    {
+      id: "new-file",
+      label: t("mobileSource.newFile"),
+      icon: <MobileNewFileIcon />,
+      onSelect: () => runMobileSourceAction(newMarkdownFile),
+    },
+  ];
 
   const shellClassName = [
     "scholium-shell",
@@ -9778,6 +10008,14 @@ function App() {
           <div>
             <h1>{t("app.documents")}</h1>
           </div>
+          <button
+            aria-label={t("directory.bookmark.close")}
+            className="mobile-panel-close"
+            onClick={toggleDirectoryPane}
+            type="button"
+          >
+            ×
+          </button>
         </div>
 
         <label className="file-search" aria-label={t("fileSearch.label")}>
@@ -9800,6 +10038,15 @@ function App() {
             </button>
           ) : null}
         </label>
+
+        <div className="mobile-source-actions" aria-label={t("mobileSource.label")}>
+          {mobileSourceActions.map((action) => (
+            <button key={action.id} onClick={action.onSelect} type="button">
+              {action.icon}
+              <span>{action.label}</span>
+            </button>
+          ))}
+        </div>
 
         <div className="document-list">
           <div className="document-tree-root" title={workspaceTitle}>
@@ -10235,6 +10482,14 @@ function App() {
                     ? t("emptyDocumentSelection.description")
                     : t("emptyDirectory.description")}
                 </p>
+                <div className="mobile-empty-actions" aria-label={t("mobileSource.label")}>
+                  {mobileSourceActions.map((action) => (
+                    <button key={action.id} onClick={action.onSelect} type="button">
+                      {action.icon}
+                      <span>{action.label}</span>
+                    </button>
+                  ))}
+                </div>
               </div>
             ) : editorMode === "preview" ? (
                 <MilkdownMarkdownEditor
@@ -10296,6 +10551,14 @@ function App() {
             </button>
             <div className="note-library-header">
               <span>{noteLibraryNotes.length}</span>
+              <button
+                aria-label={t("noteLibrary.bookmark.close")}
+                className="mobile-panel-close"
+                onClick={() => closeNoteLibrary()}
+                type="button"
+              >
+                ×
+              </button>
             </div>
             <div className="note-library-list">
               {noteLibraryNotes.length > 0 ? (
@@ -10464,6 +10727,66 @@ function App() {
           </section>
         ) : null}
         </>
+      ) : null}
+
+      {!settingsViewOpen ? (
+        <nav className="mobile-command-bar" aria-label={t("app.editorTools")}>
+          <button
+            aria-label={
+              directoryPaneOpen ? t("directory.bookmark.close") : t("directory.bookmark.open")
+            }
+            aria-pressed={directoryPaneOpen}
+            className={directoryPaneOpen ? "is-active" : ""}
+            onClick={toggleDirectoryPane}
+            type="button"
+          >
+            <MobileFilesIcon />
+            <span>{t("app.documents")}</span>
+          </button>
+          <button
+            aria-checked={noteModeEnabled}
+            aria-label={noteModeEnabled ? t("toolbar.noteMode.close") : t("toolbar.noteMode.open")}
+            className={noteModeEnabled ? "is-active" : ""}
+            disabled={!annotationToolsAvailable}
+            onClick={toggleNoteMode}
+            role="switch"
+            type="button"
+          >
+            <MobileNoteIcon />
+            <span>{t("toolbar.noteMode")}</span>
+          </button>
+          <button
+            aria-checked={glossaryModeActive}
+            aria-label={
+              glossaryModeActive
+                ? t("toolbar.glossaryMode.close")
+                : t("toolbar.glossaryMode.open")
+            }
+            className={glossaryModeActive ? "is-active" : ""}
+            disabled={!noteModeEnabled}
+            onClick={toggleGlossaryMode}
+            role="switch"
+            type="button"
+          >
+            <MobileTermIcon />
+            <span>{t("toolbar.glossaryMode")}</span>
+          </button>
+          <button
+            aria-label={
+              noteLibraryOpen
+                ? t("noteLibrary.bookmark.close")
+                : t("noteLibrary.bookmark.open")
+            }
+            aria-pressed={noteLibraryOpen}
+            className={noteLibraryOpen ? "is-active" : ""}
+            disabled={!noteModeEnabled}
+            onClick={toggleNoteLibrary}
+            type="button"
+          >
+            <MobileLibraryIcon />
+            <span>{t("noteLibrary.bookmark.label")}</span>
+          </button>
+        </nav>
       ) : null}
 
       {!settingsViewOpen && noteModeEnabled && selectionWarningPosition ? (
