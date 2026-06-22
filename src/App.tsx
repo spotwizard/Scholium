@@ -680,6 +680,7 @@ const previewAnnotationFrameHorizontalPadding = 12;
 const previewAnnotationLineJoinMaxGap = 20;
 const previewAnnotationLineEndTolerance = 2;
 const previewAnnotationFrameCornerRadius = "4px";
+const noteLibraryFocusAlignmentRatio = 0.2;
 const notePanelAnimationMs = 180;
 const selectionWarningMinimumVisibleMs = 1600;
 const selectionWarningAutoDismissMs = 2600;
@@ -4766,6 +4767,7 @@ function App() {
   const directoryPaneStartupSettingNormalizedRef = useRef(false);
   const windowIsFullscreenRef = useRef(false);
   const noteEditorShouldRefocusRef = useRef(false);
+  const noteLibraryFocusAlignmentKeyRef = useRef("");
   const noteEditorIsComposingRef = useRef(false);
   const noteEditorEnterIgnoredDuringCompositionRef = useRef(false);
   const noteEditorPostCompositionGuardUntilRef = useRef(0);
@@ -5136,6 +5138,49 @@ function App() {
       setExpandedLibraryNoteId("");
     }
   }, [noteLibraryOpen]);
+
+  useEffect(() => {
+    if (!noteLibraryFocusActive || !focusedLibraryNoteId) {
+      noteLibraryFocusAlignmentKeyRef.current = "";
+      return undefined;
+    }
+
+    const alignmentKey = `${selectedDocumentId}:${editorMode}:${focusedLibraryNoteId}`;
+    if (noteLibraryFocusAlignmentKeyRef.current === alignmentKey) return undefined;
+
+    noteLibraryFocusAlignmentKeyRef.current = alignmentKey;
+
+    let cancelled = false;
+    let animationFrame = 0;
+    let attempts = 0;
+
+    function alignFocusedTargets() {
+      if (cancelled) return;
+
+      const annotationAligned = alignFocusedAnnotationToViewport(focusedLibraryNoteId);
+      const noteCardAligned = alignLibraryNoteCardToViewport(focusedLibraryNoteId);
+      attempts += 1;
+
+      if ((!annotationAligned || !noteCardAligned) && attempts < 8) {
+        animationFrame = window.requestAnimationFrame(alignFocusedTargets);
+      }
+    }
+
+    animationFrame = window.requestAnimationFrame(() => {
+      animationFrame = window.requestAnimationFrame(alignFocusedTargets);
+    });
+
+    return () => {
+      cancelled = true;
+      window.cancelAnimationFrame(animationFrame);
+    };
+  }, [
+    editorMode,
+    focusedLibraryNoteId,
+    noteLibraryFocusActive,
+    noteLibrarySignature,
+    selectedDocumentId,
+  ]);
 
   useEffect(() => {
     if (!editingLibraryNoteId) return;
@@ -5672,6 +5717,117 @@ function App() {
 
   function activeGlossaryAnchorRect(bindingId: string) {
     return annotationAnchorRect(`glossary:${bindingId}`);
+  }
+
+  function cssAttributeSelectorValue(value: string) {
+    return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  }
+
+  function scrollableAncestor(element: Element) {
+    let currentElement = element.parentElement;
+
+    while (currentElement && currentElement !== document.body) {
+      const style = window.getComputedStyle(currentElement);
+      const canScrollVertically =
+        currentElement.scrollHeight > currentElement.clientHeight + 1;
+      if (
+        canScrollVertically &&
+        (style.overflowY === "auto" ||
+          style.overflowY === "scroll" ||
+          style.overflowY === "overlay")
+      ) {
+        return currentElement;
+      }
+
+      currentElement = currentElement.parentElement;
+    }
+
+    return null;
+  }
+
+  function alignRectToVerticalViewportPosition(
+    rect: Pick<TextRangeRect, "top">,
+    scrollContainer: HTMLElement | null,
+  ) {
+    const targetViewportTop = window.innerHeight * noteLibraryFocusAlignmentRatio;
+
+    if (scrollContainer) {
+      const rawTop = scrollContainer.scrollTop + rect.top - targetViewportTop;
+      const maxTop = Math.max(0, scrollContainer.scrollHeight - scrollContainer.clientHeight);
+      const nextTop = clampNumber(rawTop, 0, maxTop);
+
+      if (Math.abs(scrollContainer.scrollTop - nextTop) > 1) {
+        scrollContainer.scrollTo({ top: nextTop, behavior: "instant" });
+      }
+      return true;
+    }
+
+    const scrollingElement = document.scrollingElement ?? document.documentElement;
+    const rawTop = window.scrollY + rect.top - targetViewportTop;
+    const maxTop = Math.max(0, scrollingElement.scrollHeight - window.innerHeight);
+    const nextTop = clampNumber(rawTop, 0, maxTop);
+
+    if (Math.abs(window.scrollY - nextTop) > 1) {
+      window.scrollTo({ top: nextTop, behavior: "instant" });
+    }
+    return true;
+  }
+
+  function annotationElementsForNote(noteId: string) {
+    const safeNoteId = cssAttributeSelectorValue(noteId);
+    return Array.from(
+      document.querySelectorAll<HTMLElement>(
+        `.cm-annotation-frame[data-note-id="${safeNoteId}"], .preview-annotation-frame[data-note-id="${safeNoteId}"], .milkdown-annotation-frame[data-note-id="${safeNoteId}"], .cm-note-annotation[data-note-id="${safeNoteId}"], .preview-note-annotation[data-note-id="${safeNoteId}"], .milkdown-note-annotation[data-note-id="${safeNoteId}"]`,
+      ),
+    )
+      .filter((element) => {
+        const rect = element.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+      })
+      .sort(
+        (leftElement, rightElement) =>
+          leftElement.getBoundingClientRect().top -
+            rightElement.getBoundingClientRect().top ||
+          leftElement.getBoundingClientRect().left -
+            rightElement.getBoundingClientRect().left,
+      );
+  }
+
+  function alignFocusedAnnotationToViewport(noteId: string) {
+    const annotationElements = annotationElementsForNote(noteId);
+    if (annotationElements.length === 0) return false;
+
+    const annotationRects = annotationElements.flatMap((element) =>
+      Array.from(element.getClientRects()).filter(
+        (rect) => rect.width > 0 && rect.height > 0,
+      ),
+    );
+    const anchorRect = textAnchorRectFromClientRects(annotationRects);
+    if (!anchorRect) return false;
+
+    alignRectToVerticalViewportPosition(
+      anchorRect,
+      scrollableAncestor(annotationElements[0]),
+    );
+    return true;
+  }
+
+  function noteLibraryCardElement(noteId: string) {
+    const safeNoteId = cssAttributeSelectorValue(noteId);
+    return document.querySelector<HTMLElement>(
+      `.note-library-card[data-note-id="${safeNoteId}"]`,
+    );
+  }
+
+  function alignLibraryNoteCardToViewport(noteId: string) {
+    const noteCard = noteLibraryCardElement(noteId);
+    if (!noteCard) return false;
+
+    alignRectToVerticalViewportPosition(
+      noteCard.getBoundingClientRect(),
+      noteCard.closest<HTMLElement>(".note-library-list") ?? scrollableAncestor(noteCard),
+    );
+    return true;
   }
 
   function calculateFloatingNotePosition(
@@ -9788,14 +9944,11 @@ function App() {
 
   function focusLibraryNoteCard(noteId: string) {
     window.requestAnimationFrame(() => {
-      const safeNoteId = noteId.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-      const noteCard = document.querySelector<HTMLElement>(
-        `.note-library-card[data-note-id="${safeNoteId}"]`,
-      );
+      const noteCard = noteLibraryCardElement(noteId);
       if (!noteCard) return;
 
       noteCard.focus({ preventScroll: true });
-      noteCard.scrollIntoView({ block: "nearest" });
+      alignLibraryNoteCardToViewport(noteId);
     });
   }
 
@@ -9949,6 +10102,99 @@ function App() {
     if (canScrollVertically) {
       scrollTarget.scrollTop += scrollDeltaY;
     }
+  }
+
+  function renderNoteLibraryCard(note: SelectionNote) {
+    const isEditingLibraryNote = editingLibraryNoteId === note.id;
+    const isFocusedLibraryNote = focusedLibraryNoteId === note.id;
+
+    return (
+      <article
+        className={`note-library-card ${activeNoteId === note.id ? "is-active" : ""} ${
+          isFocusedLibraryNote ? "is-focused" : ""
+        } ${isEditingLibraryNote ? "is-editing" : ""}`}
+        data-note-id={note.id}
+        data-note-tone={activeNoteToneById.get(note.id) ?? note.tone ?? 0}
+        key={note.id}
+        tabIndex={0}
+        onBlur={(event) => handleNoteLibraryCardBlur(note.id, event)}
+        onClick={() => setFocusedLibraryNoteId(note.id)}
+        onFocus={() => setFocusedLibraryNoteId(note.id)}
+        onKeyDown={(event) => handleNoteLibraryCardKeyDown(note.id, event)}
+      >
+        <div className="note-library-card__header">
+          <PinBadge ariaLabel={t("note.pin")} />
+          <button
+            className="note-library-card__expand-button"
+            type="button"
+            aria-label={t("note.expand")}
+            title={t("note.expand")}
+            onClick={(event) => {
+              event.stopPropagation();
+              openLibraryNoteExpandedPanel(note.id);
+            }}
+          >
+            <ExpandPanelIcon />
+          </button>
+        </div>
+        {isEditingLibraryNote ? (
+          <NoteMarkdownEditor
+            ariaLabel={t("note.edit")}
+            className="note-library-card__editor"
+            editorRootRef={(element) => {
+              libraryNoteEditorRootRef.current = element;
+            }}
+            value={note.body}
+            onChange={(value) => updateLibraryNoteDraft(note.id, value)}
+            onClick={(event) => event.stopPropagation()}
+            onCompositionStart={handleNoteEditorCompositionStart}
+            onCompositionEnd={handleNoteEditorCompositionEnd}
+            onKeyDown={(event) => handleLibraryNoteEditorKeyDown(note.id, event)}
+          />
+        ) : (
+          <NoteLibraryPreviewContent
+            className="bottom-note-body note-library-card__body"
+            emptyLabel={t("note.empty")}
+            expanded={false}
+            mermaidEmptyDefinitionLabel={t("mermaid.empty")}
+            mermaidLoadingLabel={t("mermaid.loading")}
+            onDoubleClick={() => startLibraryNoteEditor(note.id)}
+            value={note.body}
+          />
+        )}
+        <div
+          className="note-actions note-library-card__actions"
+          aria-hidden={!isFocusedLibraryNote && !isEditingLibraryNote}
+        >
+          <button
+            type="button"
+            aria-label={isEditingLibraryNote ? t("note.edit.done") : t("note.edit")}
+            aria-pressed={isEditingLibraryNote}
+            title={isEditingLibraryNote ? t("note.edit.done") : t("note.edit")}
+            tabIndex={isFocusedLibraryNote || isEditingLibraryNote ? 0 : -1}
+            onClick={(event) => {
+              event.stopPropagation();
+              toggleLibraryNoteEditor(note.id);
+            }}
+          >
+            <PencilIcon />
+          </button>
+          <button
+            className="is-danger"
+            type="button"
+            aria-label={t("note.delete")}
+            title={t("note.delete")}
+            tabIndex={isFocusedLibraryNote || isEditingLibraryNote ? 0 : -1}
+            onClick={(event) => {
+              event.stopPropagation();
+              deleteNote(note.id);
+            }}
+          >
+            <TrashIcon />
+          </button>
+        </div>
+      </article>
+    );
   }
 
   function closeLibraryNoteExpandedPanel() {
@@ -10824,100 +11070,7 @@ function App() {
             </div>
             <div className="note-library-list">
               {noteLibraryNotes.length > 0 ? (
-                noteLibraryNotes.map((note) => {
-                  const isEditingLibraryNote = editingLibraryNoteId === note.id;
-                  const isFocusedLibraryNote = focusedLibraryNoteId === note.id;
-
-                  return (
-                    <article
-                      className={`note-library-card ${activeNoteId === note.id ? "is-active" : ""} ${
-                        isFocusedLibraryNote ? "is-focused" : ""
-                      } ${isEditingLibraryNote ? "is-editing" : ""}`}
-                      data-note-id={note.id}
-                      data-note-tone={activeNoteToneById.get(note.id) ?? note.tone ?? 0}
-                      key={note.id}
-                      tabIndex={0}
-                      onBlur={(event) => handleNoteLibraryCardBlur(note.id, event)}
-                      onClick={() => setFocusedLibraryNoteId(note.id)}
-                      onFocus={() => setFocusedLibraryNoteId(note.id)}
-                      onKeyDown={(event) => handleNoteLibraryCardKeyDown(note.id, event)}
-                    >
-                    <div className="note-library-card__header">
-                      <PinBadge ariaLabel={t("note.pin")} />
-                      <button
-                        className="note-library-card__expand-button"
-                        type="button"
-                        aria-label={t("note.expand")}
-                        title={t("note.expand")}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          openLibraryNoteExpandedPanel(note.id);
-                        }}
-                      >
-                        <ExpandPanelIcon />
-                      </button>
-                    </div>
-                    {isEditingLibraryNote ? (
-                      <NoteMarkdownEditor
-                        ariaLabel={t("note.edit")}
-                        className="note-library-card__editor"
-                        editorRootRef={(element) => {
-                          libraryNoteEditorRootRef.current = element;
-                        }}
-                        value={note.body}
-                        onChange={(value) => updateLibraryNoteDraft(note.id, value)}
-                        onClick={(event) => event.stopPropagation()}
-                        onCompositionStart={handleNoteEditorCompositionStart}
-                        onCompositionEnd={handleNoteEditorCompositionEnd}
-                        onKeyDown={(event) => handleLibraryNoteEditorKeyDown(note.id, event)}
-                      />
-                    ) : (
-                      <NoteLibraryPreviewContent
-                        className="bottom-note-body note-library-card__body"
-                        emptyLabel={t("note.empty")}
-                        expanded={false}
-                        mermaidEmptyDefinitionLabel={t("mermaid.empty")}
-                        mermaidLoadingLabel={t("mermaid.loading")}
-                        onDoubleClick={() => startLibraryNoteEditor(note.id)}
-                        value={note.body}
-                      />
-                    )}
-                    <div
-                      className="note-actions note-library-card__actions"
-                      aria-hidden={!isFocusedLibraryNote && !isEditingLibraryNote}
-                    >
-                      <button
-                        type="button"
-                        aria-label={
-                          isEditingLibraryNote ? t("note.edit.done") : t("note.edit")
-                        }
-                        aria-pressed={isEditingLibraryNote}
-                        title={isEditingLibraryNote ? t("note.edit.done") : t("note.edit")}
-                        tabIndex={isFocusedLibraryNote || isEditingLibraryNote ? 0 : -1}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          toggleLibraryNoteEditor(note.id);
-                        }}
-                      >
-                        <PencilIcon />
-                      </button>
-                      <button
-                        className="is-danger"
-                        type="button"
-                        aria-label={t("note.delete")}
-                        title={t("note.delete")}
-                        tabIndex={isFocusedLibraryNote || isEditingLibraryNote ? 0 : -1}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          deleteNote(note.id);
-                        }}
-                      >
-                        <TrashIcon />
-                      </button>
-                    </div>
-                  </article>
-                );
-              })
+                noteLibraryNotes.map((note) => renderNoteLibraryCard(note))
             ) : (
               <p className="note-library-empty">{t("noteLibrary.empty")}</p>
             )}
