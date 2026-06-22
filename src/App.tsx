@@ -11,7 +11,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent,
   type ReactNode,
-  type WheelEvent,
+  type WheelEvent as ReactWheelEvent,
   useEffect,
   useId,
   useLayoutEffect,
@@ -7236,12 +7236,12 @@ function App() {
     setStorageError("");
   }
 
-  function handleDropboxDirectoryBackdropWheel(event: WheelEvent<HTMLDivElement>) {
+  function handleDropboxDirectoryBackdropWheel(event: ReactWheelEvent<HTMLDivElement>) {
     event.preventDefault();
     event.stopPropagation();
   }
 
-  function handleDropboxDirectoryListWheel(event: WheelEvent<HTMLDivElement>) {
+  function handleDropboxDirectoryListWheel(event: ReactWheelEvent<HTMLDivElement>) {
     event.stopPropagation();
   }
 
@@ -9708,6 +9708,116 @@ function App() {
     setExpandedLibraryNoteId(note.id);
   }
 
+  function normalizeWheelDelta(delta: number, deltaMode: number, pageSize: number) {
+    if (deltaMode === 1) return delta * 40;
+    if (deltaMode === 2) return delta * pageSize;
+    return delta;
+  }
+
+  function scrollElementByWheelDelta(
+    element: Element,
+    deltaX: number,
+    deltaY: number,
+  ) {
+    const scrollElement = element as HTMLElement;
+    const previousLeft = scrollElement.scrollLeft;
+    const previousTop = scrollElement.scrollTop;
+
+    scrollElement.scrollLeft += deltaX;
+    scrollElement.scrollTop += deltaY;
+
+    return scrollElement.scrollLeft !== previousLeft || scrollElement.scrollTop !== previousTop;
+  }
+
+  function scrollMainDocumentFromWheel(event: ReactWheelEvent<HTMLElement>) {
+    const editorContentFrame = document.querySelector<HTMLElement>(".editor-content-frame");
+    if (!editorContentFrame) return;
+
+    const editorContentRect = editorContentFrame.getBoundingClientRect();
+    if (!pointHitsRect(event.clientX, event.clientY, editorContentRect)) return;
+
+    const scrollDeltaY = normalizeWheelDelta(
+      event.deltaY,
+      event.deltaMode,
+      window.innerHeight,
+    );
+    const scrollDeltaX = normalizeWheelDelta(
+      event.deltaX,
+      event.deltaMode,
+      window.innerWidth,
+    );
+    if (scrollDeltaX === 0 && scrollDeltaY === 0) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    const previousWindowX = window.scrollX;
+    const previousWindowY = window.scrollY;
+    window.scrollBy({ left: scrollDeltaX, top: scrollDeltaY, behavior: "instant" });
+    if (window.scrollX !== previousWindowX || window.scrollY !== previousWindowY) {
+      return;
+    }
+
+    const scrollTargets = [
+      document.scrollingElement,
+      document.documentElement,
+      document.body,
+      document.querySelector(".editor-pane"),
+      document.querySelector(".editor-surface"),
+      document.querySelector(".editor-content-frame"),
+      document.querySelector(".cm-scroller"),
+      document.querySelector(".markdown-preview"),
+      document.querySelector(".milkdown-markdown-editor-shell"),
+    ].filter((target): target is Element => target instanceof Element);
+
+    for (const scrollTarget of scrollTargets) {
+      if (scrollElementByWheelDelta(scrollTarget, scrollDeltaX, scrollDeltaY)) {
+        return;
+      }
+    }
+  }
+
+  function handleNoteLibraryFocusBackdropWheel(event: ReactWheelEvent<HTMLDivElement>) {
+    if (!libraryNotePanelExpanded) return;
+
+    scrollMainDocumentFromWheel(event);
+  }
+
+  function handleLibraryNoteExpandedPanelWheel(event: ReactWheelEvent<HTMLElement>) {
+    const scrollTarget = event.currentTarget.classList.contains(
+      "note-library-expanded-panel__body-scroll",
+    )
+      ? event.currentTarget
+      : event.currentTarget.querySelector<HTMLElement>(
+          ".note-library-expanded-panel__body-scroll",
+        );
+    if (!scrollTarget) return;
+
+    const canScrollVertically = scrollTarget.scrollHeight > scrollTarget.clientHeight + 1;
+    const canScrollHorizontally = scrollTarget.scrollWidth > scrollTarget.clientWidth + 1;
+    if (!canScrollVertically && !canScrollHorizontally) return;
+
+    const scrollDeltaY = normalizeWheelDelta(
+      event.deltaY,
+      event.deltaMode,
+      scrollTarget.clientHeight,
+    );
+    const scrollDeltaX = normalizeWheelDelta(
+      event.deltaX,
+      event.deltaMode,
+      scrollTarget.clientWidth,
+    );
+
+    event.preventDefault();
+    event.stopPropagation();
+    if (canScrollHorizontally) {
+      scrollTarget.scrollLeft += scrollDeltaX;
+    }
+    if (canScrollVertically) {
+      scrollTarget.scrollTop += scrollDeltaY;
+    }
+  }
+
   function closeLibraryNoteExpandedPanel() {
     const noteId = expandedLibraryNoteId;
     setExpandedLibraryNoteId("");
@@ -9934,6 +10044,7 @@ function App() {
     directoryPaneOpen ? "" : "is-directory-pane-closed",
     !settingsViewOpen && noteModeEnabled && noteLibraryOpen ? "is-note-library-open" : "",
     !settingsViewOpen && noteLibraryFocusActive ? "is-note-library-focus-active" : "",
+    !settingsViewOpen && libraryNotePanelExpanded ? "is-note-library-expanded" : "",
     !settingsViewOpen && notePanelModalActive ? "is-note-panel-modal-active" : "",
     !settingsViewOpen && expandedNotePanelScrollLocked ? "is-note-panel-expanded" : "",
   ]
@@ -10012,6 +10123,15 @@ function App() {
       style={shellStyle}
       onMouseDownCapture={handleShellMouseDownCapture}
     >
+      {!settingsViewOpen && noteLibraryFocusActive ? (
+        <div
+          aria-hidden="true"
+          className={`note-library-focus-backdrop ${
+            libraryNotePanelExpanded ? "is-scroll-through" : ""
+          }`}
+          onWheel={handleNoteLibraryFocusBackdropWheel}
+        />
+      ) : null}
       <aside className="document-pane" aria-label={t("app.documents")}>
         <div className="pane-header">
           <div>
@@ -10674,6 +10794,7 @@ function App() {
           <section
             aria-label={t("selectionNote.view")}
             className="note-library-expanded-panel"
+            onWheel={handleLibraryNoteExpandedPanelWheel}
           >
             <div
               className="note-library-expanded-panel__card"
@@ -10697,7 +10818,10 @@ function App() {
                   </button>
                 </div>
               </div>
-              <div className="note-library-expanded-panel__body-scroll">
+              <div
+                className="note-library-expanded-panel__body-scroll"
+                onWheel={handleLibraryNoteExpandedPanelWheel}
+              >
                 <MarkdownPreviewContent
                   className="bottom-note-body note-library-expanded-panel__body"
                   emptyLabel={t("note.empty")}

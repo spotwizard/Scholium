@@ -183,12 +183,19 @@ button:disabled {
 }
 
 .scholium-shell.is-note-library-focus-active::after {
-  content: "";
+  content: none;
+}
+
+.note-library-focus-backdrop {
   position: fixed;
   inset: 0;
   z-index: 60;
   background: rgba(33, 37, 43, 0.32);
   pointer-events: auto;
+}
+
+.note-library-focus-backdrop.is-scroll-through {
+  pointer-events: none;
 }
 
 .document-pane,
@@ -1486,6 +1493,25 @@ button:disabled {
   background: var(--color-surface);
 }
 
+@media (min-width: 641px) {
+  .scholium-shell.is-note-library-expanded {
+    height: 100vh;
+    overflow: hidden;
+  }
+
+  .scholium-shell.is-note-library-expanded .editor-pane {
+    height: 100vh;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+
+  .scholium-shell.is-note-library-expanded .editor-grid,
+  .scholium-shell.is-note-library-expanded .editor-surface {
+    min-height: 100%;
+  }
+}
+
 .note-actions button {
   padding: 0 12px;
   font-size: 0.9rem;
@@ -2654,10 +2680,8 @@ button:disabled {
   overscroll-behavior: contain;
 }
 
-.note-library-card.is-focused
-  .note-library-card__body-shell[data-has-focused-overflow="false"]::after,
-.note-library-card:focus-within
-  .note-library-card__body-shell[data-has-focused-overflow="false"]::after {
+.note-library-card.is-focused .note-library-card__body-shell:not(.is-expanded)::after,
+.note-library-card:focus-within .note-library-card__body-shell:not(.is-expanded)::after {
   content: none;
 }
 
@@ -2678,6 +2702,7 @@ button:disabled {
   width: 50vw;
   max-width: none;
   height: 100vh;
+  min-height: 0;
   pointer-events: auto;
   animation: floating-note-sidebar-in 180ms ease-out both;
 }
@@ -2687,6 +2712,7 @@ button:disabled {
   display: grid;
   height: 100%;
   max-height: 100%;
+  min-height: 0;
   grid-template-rows: auto minmax(0, 1fr) auto;
   gap: 12px;
   overflow: hidden;
@@ -2744,10 +2770,16 @@ button:disabled {
 }
 
 .note-library-expanded-panel__body-scroll {
+  height: 100%;
+  max-height: 100%;
+  min-width: 0;
   min-height: 0;
+  overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding-right: 6px;
+  padding: 0 6px 0 8px;
+  scrollbar-gutter: stable;
+  -webkit-overflow-scrolling: touch;
 }
 
 .note-library-expanded-panel__body {
