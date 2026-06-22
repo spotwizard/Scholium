@@ -41,6 +41,8 @@ const milkdownAnnotationPluginKey = new PluginKey<DecorationSet>(
 const milkdownAnnotationFramePadding = 4;
 const milkdownAnnotationFrameHorizontalPadding = 12;
 const milkdownAnnotationLineJoinMaxGap = 20;
+const milkdownAnnotationLineEndTolerance = 2;
+const milkdownAnnotationFrameCornerRadius = "4px";
 const milkdownAnnotationClassPrefix = "scholium-milkdown-annotation-";
 const milkdownSelectionFallbackMs = 220;
 const annotationClickDelayMs = 500;
@@ -57,6 +59,7 @@ function milkdownAnnotationFrameHorizontalPaddingForKind(kind: "note" | "glossar
 type MilkdownCodeBlockApplyPreview = (value: null | string | HTMLElement) => void;
 
 type MilkdownAnnotationFrame = {
+  borderRadius: string;
   frameKey: string;
   isFocusTarget?: boolean;
   noteId: string;
@@ -69,7 +72,9 @@ type MilkdownAnnotationFrame = {
 };
 
 type MilkdownAnnotationRect = {
+  canExtendRight: boolean;
   left: number;
+  lineRight: number;
   top: number;
   right: number;
   bottom: number;
@@ -432,6 +437,52 @@ function measureMilkdownAnnotationFrames(
   const kindsByNoteId = new Map<string, "note" | "glossary">();
   const focusByNoteId = new Map<string, boolean>();
 
+  function annotationLineScope(annotation: HTMLElement) {
+    return (
+      annotation.closest<HTMLElement>(
+        "p, li, h1, h2, h3, h4, h5, h6, blockquote, td, th",
+      ) ?? annotation.parentElement
+    );
+  }
+
+  function annotationLineMetrics(annotation: HTMLElement, rect: DOMRect) {
+    const scope = annotationLineScope(annotation);
+    if (!scope) {
+      return {
+        canExtendRight: true,
+        lineRight: Math.min(rect.right, containerRect.right),
+      };
+    }
+
+    const range = document.createRange();
+    range.selectNodeContents(scope);
+    const rectMidY = (rect.top + rect.bottom) / 2;
+    const lineRects = Array.from(range.getClientRects()).filter(
+      (lineRect) =>
+        lineRect.width > 0 &&
+        lineRect.height > 0 &&
+        rectMidY >= lineRect.top - 1 &&
+        rectMidY <= lineRect.bottom + 1,
+    );
+
+    if (lineRects.length === 0) {
+      return {
+        canExtendRight: true,
+        lineRight: Math.min(rect.right, containerRect.right),
+      };
+    }
+
+    const lineRight = Math.min(
+      Math.max(...lineRects.map((lineRect) => lineRect.right)),
+      containerRect.right,
+    );
+
+    return {
+      canExtendRight: rect.right >= lineRight - milkdownAnnotationLineEndTolerance,
+      lineRight,
+    };
+  }
+
   function annotationListAdjustedRect(
     annotation: HTMLElement,
     rect: MilkdownAnnotationRect,
@@ -468,8 +519,16 @@ function measureMilkdownAnnotationFrames(
           const top = Math.max(rect.top, containerRect.top);
           const right = Math.min(rect.right, containerRect.right);
           const bottom = Math.min(rect.bottom, containerRect.bottom);
+          const lineMetrics = annotationLineMetrics(annotation, rect);
 
-          return { left, top, right, bottom };
+          return {
+            canExtendRight: lineMetrics.canExtendRight,
+            left,
+            lineRight: Math.min(lineMetrics.lineRight, containerRect.right),
+            top,
+            right,
+            bottom,
+          };
         })
         .filter((rect) => rect.right > rect.left && rect.bottom > rect.top);
       if (annotationRects.length === 0) return;
@@ -498,6 +557,57 @@ function measureMilkdownAnnotationFrames(
       const sortedRects = rects.sort(
         (left, right) => left.top - right.top || left.left - right.left,
       );
+      const extensionRightByRect = new Map<MilkdownAnnotationRect, number>();
+      const borderRadiusByRect = new Map<MilkdownAnnotationRect, string>();
+      let rectGroup: MilkdownAnnotationRect[] = [];
+
+      function flushRectGroup() {
+        if (rectGroup.length === 0) return;
+
+        const extendableLineRights = rectGroup
+          .filter((rect) => rect.canExtendRight)
+          .map((rect) => Math.max(rect.right, rect.lineRight));
+        if (extendableLineRights.length > 0) {
+          const targetRight = Math.max(...extendableLineRights);
+          rectGroup.forEach((rect) => {
+            extensionRightByRect.set(
+              rect,
+              rect.canExtendRight ? Math.max(rect.right, targetRight) : rect.right,
+            );
+          });
+        }
+
+        rectGroup.forEach((rect, groupIndex) => {
+          const isFirstRect = groupIndex === 0;
+          const isLastRect = groupIndex === rectGroup.length - 1;
+          borderRadiusByRect.set(
+            rect,
+            [
+              isFirstRect ? milkdownAnnotationFrameCornerRadius : "0",
+              isFirstRect ? milkdownAnnotationFrameCornerRadius : "0",
+              isLastRect ? milkdownAnnotationFrameCornerRadius : "0",
+              isLastRect ? milkdownAnnotationFrameCornerRadius : "0",
+            ].join(" "),
+          );
+        });
+        rectGroup = [];
+      }
+
+      if (kind !== "glossary") {
+        sortedRects.forEach((rect) => {
+          const previousRect = rectGroup[rectGroup.length - 1];
+          const lineGap = previousRect ? rect.top - previousRect.bottom : 0;
+          if (
+            previousRect &&
+            (lineGap < 0 || lineGap > milkdownAnnotationLineJoinMaxGap)
+          ) {
+            flushRectGroup();
+          }
+
+          rectGroup.push(rect);
+        });
+        flushRectGroup();
+      }
 
       return sortedRects.map((rect, rectIndex) => {
         const framePadding = milkdownAnnotationFramePaddingForKind(kind);
@@ -523,6 +633,7 @@ function measureMilkdownAnnotationFrames(
         }
 
         return {
+          borderRadius: borderRadiusByRect.get(rect) ?? milkdownAnnotationFrameCornerRadius,
           frameKey: `${kind}:${noteId}:milkdown:${rectIndex}`,
           isFocusTarget,
           noteId,
@@ -530,7 +641,11 @@ function measureMilkdownAnnotationFrames(
           tone,
           left: roundFrameValue(rect.left - containerRect.left - frameHorizontalPadding),
           top: roundFrameValue(Math.max(0, top - containerRect.top)),
-          width: roundFrameValue(rect.right - rect.left + frameHorizontalPadding * 2),
+          width: roundFrameValue(
+            (extensionRightByRect.get(rect) ?? rect.right) -
+              rect.left +
+              frameHorizontalPadding * 2,
+          ),
           height: roundFrameValue(bottom - top),
         };
       });
@@ -556,6 +671,7 @@ function milkdownAnnotationFramesAreEqual(
     return (
       leftFrame.frameKey === rightFrame.frameKey &&
       leftFrame.isFocusTarget === rightFrame.isFocusTarget &&
+      leftFrame.borderRadius === rightFrame.borderRadius &&
       leftFrame.noteId === rightFrame.noteId &&
       leftFrame.kind === rightFrame.kind &&
       leftFrame.tone === rightFrame.tone &&
@@ -1415,6 +1531,7 @@ export function MilkdownMarkdownEditor({
             data-note-tone={frame.tone}
             key={frame.frameKey}
             style={{
+              borderRadius: frame.borderRadius,
               height: frame.height,
               left: frame.left,
               top: frame.top,

@@ -1808,7 +1808,7 @@ button:disabled {
 .cm-annotation-frame {
   position: absolute;
   box-sizing: border-box;
-  border-radius: 4px;
+  border-radius: 0;
   background: var(--color-annotation-surface-soft);
 }
 
@@ -2038,7 +2038,7 @@ button:disabled {
 .preview-annotation-frame {
   position: absolute;
   box-sizing: border-box;
-  border-radius: 4px;
+  border-radius: 0;
   background: var(--color-annotation-surface);
 }
 
@@ -2089,7 +2089,7 @@ button:disabled {
   position: absolute;
   z-index: 0;
   box-sizing: border-box;
-  border-radius: 4px;
+  border-radius: 0;
   background: var(--color-annotation-surface);
 }
 
@@ -2207,6 +2207,20 @@ button:disabled {
   color: var(--color-text) !important;
   opacity: 1;
   filter: none;
+}
+
+.scholium-shell.is-note-library-focus-active
+  .cm-line:has(.cm-note-annotation.is-focus-target),
+.scholium-shell.is-note-library-focus-active
+  .markdown-preview
+  li:has(.preview-note-annotation.is-focus-target),
+.scholium-shell.is-note-library-focus-active
+  .milkdown-markdown-editor
+  .milkdown
+  .ProseMirror
+  li:has(.milkdown-note-annotation.is-focus-target) {
+  position: relative;
+  z-index: 65;
 }
 
 .scholium-shell.is-note-library-focus-active .cm-annotation-frame.is-focus-target,
@@ -2984,7 +2998,7 @@ button:disabled {
   grid-template-columns: 1fr;
   gap: 10px;
   overflow: visible;
-  padding: 12px 12px 14px;
+  padding: 12px 18px 14px;
   border: 1px solid var(--color-note-border);
   border-radius: 6px;
   color: var(--color-text);
@@ -3079,28 +3093,19 @@ button:disabled {
 
 .floating-note-card__body-shell {
   --floating-note-card-body-preview-height: calc(10 * 1.5em);
+  --floating-note-card-body-visible-height: var(--floating-note-card-body-preview-height);
   position: relative;
-  max-height: var(--floating-note-card-body-preview-height);
+  max-height: min(
+    var(--floating-note-card-body-visible-height),
+    var(--floating-note-card-body-preview-height)
+  );
   min-height: 0;
-  overflow: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .floating-note-card__body-shell[data-has-overflow="true"]:not(.is-expanded)::after {
-  content: "";
-  position: absolute;
-  right: 0;
-  bottom: 0;
-  left: 0;
-  z-index: 1;
-  height: 2.6em;
-  background: linear-gradient(
-    180deg,
-    color-mix(in srgb, var(--note-library-card-background) 0%, transparent) 0%,
-    color-mix(in srgb, var(--note-library-card-background) 24%, transparent) 32%,
-    color-mix(in srgb, var(--note-library-card-background) 78%, transparent) 78%,
-    var(--note-library-card-background) 100%
-  );
-  pointer-events: none;
+  content: none;
 }
 
 .floating-note-card__body-shell.is-expanded {

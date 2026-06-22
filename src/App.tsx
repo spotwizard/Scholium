@@ -284,6 +284,7 @@ type EditorMode = "edit" | "preview";
 type ActiveNoteMode = "view" | "edit";
 
 type PreviewAnnotationFrame = {
+  borderRadius: string;
   frameKey: string;
   isFocusTarget?: boolean;
   kind: AnnotationKind;
@@ -293,6 +294,15 @@ type PreviewAnnotationFrame = {
   top: number;
   width: number;
   height: number;
+};
+
+type PreviewAnnotationRect = {
+  bottom: number;
+  canExtendRight: boolean;
+  left: number;
+  lineRight: number;
+  right: number;
+  top: number;
 };
 
 type TextRangeRect = {
@@ -668,6 +678,8 @@ const markdownFilters = [
 const previewAnnotationFramePadding = 4;
 const previewAnnotationFrameHorizontalPadding = 12;
 const previewAnnotationLineJoinMaxGap = 20;
+const previewAnnotationLineEndTolerance = 2;
+const previewAnnotationFrameCornerRadius = "4px";
 const notePanelAnimationMs = 180;
 const selectionWarningMinimumVisibleMs = 1600;
 const selectionWarningAutoDismissMs = 2600;
@@ -2439,10 +2451,60 @@ function measurePreviewAnnotationFrames(container: HTMLDivElement): PreviewAnnot
   const containerRect = container.getBoundingClientRect();
   const frames: PreviewAnnotationFrame[] = [];
 
-  function annotationRectBounds(rect: DOMRect) {
+  function annotationLineScope(annotation: HTMLElement) {
+    return (
+      annotation.closest<HTMLElement>(
+        "p, li, h1, h2, h3, h4, h5, h6, blockquote, td, th",
+      ) ?? annotation.parentElement
+    );
+  }
+
+  function annotationLineMetrics(annotation: HTMLElement, rect: DOMRect) {
+    const scope = annotationLineScope(annotation);
+    if (!scope) {
+      return {
+        canExtendRight: true,
+        lineRight: Math.min(rect.right, containerRect.right),
+      };
+    }
+
+    const range = document.createRange();
+    range.selectNodeContents(scope);
+    const rectMidY = (rect.top + rect.bottom) / 2;
+    const lineRects = Array.from(range.getClientRects()).filter(
+      (lineRect) =>
+        lineRect.width > 0 &&
+        lineRect.height > 0 &&
+        rectMidY >= lineRect.top - 1 &&
+        rectMidY <= lineRect.bottom + 1,
+    );
+
+    if (lineRects.length === 0) {
+      return {
+        canExtendRight: true,
+        lineRight: Math.min(rect.right, containerRect.right),
+      };
+    }
+
+    const lineRight = Math.min(
+      Math.max(...lineRects.map((lineRect) => lineRect.right)),
+      containerRect.right,
+    );
+
+    return {
+      canExtendRight: rect.right >= lineRight - previewAnnotationLineEndTolerance,
+      lineRight,
+    };
+  }
+
+  function annotationRectBounds(annotation: HTMLElement, rect: DOMRect): PreviewAnnotationRect {
+    const lineMetrics = annotationLineMetrics(annotation, rect);
+
     return {
       bottom: rect.bottom,
+      canExtendRight: lineMetrics.canExtendRight,
       left: rect.left,
+      lineRight: lineMetrics.lineRight,
       right: rect.right,
       top: rect.top,
     };
@@ -2453,7 +2515,7 @@ function measurePreviewAnnotationFrames(container: HTMLDivElement): PreviewAnnot
     rect: DOMRect,
     kind: AnnotationKind,
   ) {
-    const baseRect = annotationRectBounds(rect);
+    const baseRect = annotationRectBounds(annotation, rect);
     if (kind === "glossary") {
       return baseRect;
     }
@@ -2483,12 +2545,14 @@ function measurePreviewAnnotationFrames(container: HTMLDivElement): PreviewAnnot
     isFocusTarget: boolean,
     kind: AnnotationKind,
     tone: AnnotationTone,
+    borderRadius: string,
     left: number,
     top: number,
     right: number,
     bottom: number,
   ): PreviewAnnotationFrame {
     return {
+      borderRadius,
       frameKey,
       isFocusTarget,
       kind,
@@ -2526,6 +2590,57 @@ function measurePreviewAnnotationFrames(container: HTMLDivElement): PreviewAnnot
       const sortedRects = annotationRects.sort(
         (left, right) => left.top - right.top || left.left - right.left,
       );
+      const extensionRightByRect = new Map<PreviewAnnotationRect, number>();
+      const borderRadiusByRect = new Map<PreviewAnnotationRect, string>();
+      let rectGroup: PreviewAnnotationRect[] = [];
+
+      function flushRectGroup() {
+        if (rectGroup.length === 0) return;
+
+        const extendableLineRights = rectGroup
+          .filter((rect) => rect.canExtendRight)
+          .map((rect) => Math.max(rect.right, rect.lineRight));
+        if (extendableLineRights.length > 0) {
+          const targetRight = Math.max(...extendableLineRights);
+          rectGroup.forEach((rect) => {
+            extensionRightByRect.set(
+              rect,
+              rect.canExtendRight ? Math.max(rect.right, targetRight) : rect.right,
+            );
+          });
+        }
+
+        rectGroup.forEach((rect, groupIndex) => {
+          const isFirstRect = groupIndex === 0;
+          const isLastRect = groupIndex === rectGroup.length - 1;
+          borderRadiusByRect.set(
+            rect,
+            [
+              isFirstRect ? previewAnnotationFrameCornerRadius : "0",
+              isFirstRect ? previewAnnotationFrameCornerRadius : "0",
+              isLastRect ? previewAnnotationFrameCornerRadius : "0",
+              isLastRect ? previewAnnotationFrameCornerRadius : "0",
+            ].join(" "),
+          );
+        });
+        rectGroup = [];
+      }
+
+      if (kind !== "glossary") {
+        sortedRects.forEach((rect) => {
+          const previousRect = rectGroup[rectGroup.length - 1];
+          const lineGap = previousRect ? rect.top - previousRect.bottom : 0;
+          if (
+            previousRect &&
+            (lineGap < 0 || lineGap > previewAnnotationLineJoinMaxGap)
+          ) {
+            flushRectGroup();
+          }
+
+          rectGroup.push(rect);
+        });
+        flushRectGroup();
+      }
 
       sortedRects.forEach((rect, rectIndex) => {
         const framePadding = previewAnnotationFramePaddingForKind(kind);
@@ -2557,9 +2672,10 @@ function measurePreviewAnnotationFrames(container: HTMLDivElement): PreviewAnnot
             isFocusTarget,
             kind,
             tone,
+            borderRadiusByRect.get(rect) ?? previewAnnotationFrameCornerRadius,
             rect.left - frameHorizontalPadding,
             top,
-            rect.right + frameHorizontalPadding,
+            (extensionRightByRect.get(rect) ?? rect.right) + frameHorizontalPadding,
             bottom,
           ),
         );
@@ -2588,6 +2704,7 @@ function arePreviewAnnotationFramesEqual(
     return (
       leftFrame.frameKey === rightFrame.frameKey &&
       leftFrame.isFocusTarget === rightFrame.isFocusTarget &&
+      leftFrame.borderRadius === rightFrame.borderRadius &&
       leftFrame.kind === rightFrame.kind &&
       leftFrame.noteId === rightFrame.noteId &&
       leftFrame.tone === rightFrame.tone &&
@@ -4177,6 +4294,7 @@ export function MarkdownPreview({
             data-note-tone={frame.tone}
             key={frame.frameKey}
             style={{
+              borderRadius: frame.borderRadius,
               height: frame.height,
               left: frame.left,
               top: frame.top,
@@ -4425,6 +4543,7 @@ function FloatingNotePreviewContent({
 }) {
   const contentRef = useRef<HTMLDivElement | null>(null);
   const [hasCollapsedOverflow, setHasCollapsedOverflow] = useState(false);
+  const [visibleHeight, setVisibleHeight] = useState(0);
 
   useLayoutEffect(() => {
     const contentElement = contentRef.current;
@@ -4444,8 +4563,14 @@ function FloatingNotePreviewContent({
           rawLineHeight === "normal"
             ? fontSize * 1.5
             : Number.parseFloat(rawLineHeight) || fontSize * 1.5;
-        const collapsedHeight = lineHeight * 10;
-        const nextOverflow = Math.ceil(measuredElement.scrollHeight) > collapsedHeight + 1;
+        const collapsedHeight = lineHeight * noteLibraryFocusedPreviewLineCount;
+        const measuredHeight = Math.ceil(measuredElement.scrollHeight);
+        const nextVisibleHeight = Math.ceil(Math.min(measuredHeight, collapsedHeight));
+        const nextOverflow = measuredHeight > collapsedHeight + 1;
+
+        setVisibleHeight((currentHeight) =>
+          currentHeight === nextVisibleHeight ? currentHeight : nextVisibleHeight,
+        );
 
         setHasCollapsedOverflow((currentOverflow) =>
           currentOverflow === nextOverflow ? currentOverflow : nextOverflow,
@@ -4464,10 +4589,18 @@ function FloatingNotePreviewContent({
     };
   }, [value]);
 
+  const bodyShellStyle =
+    visibleHeight > 0
+      ? ({
+          "--floating-note-card-body-visible-height": `${visibleHeight}px`,
+        } as CSSProperties)
+      : undefined;
+
   return (
     <div
       className={`floating-note-card__body-shell ${expanded ? "is-expanded" : ""}`}
       data-has-overflow={hasCollapsedOverflow ? "true" : "false"}
+      style={bodyShellStyle}
     >
       <div className="floating-note-card__body-measure" ref={contentRef}>
         <MarkdownPreviewContent

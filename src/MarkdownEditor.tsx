@@ -47,6 +47,7 @@ type MarkdownEditorProps = {
 };
 
 type EditorAnnotationFrame = {
+  borderRadius: string;
   frameKey: string;
   isFocusTarget?: boolean;
   noteId: string;
@@ -59,7 +60,9 @@ type EditorAnnotationFrame = {
 };
 
 type EditorAnnotationRect = {
+  canExtendRight: boolean;
   left: number;
+  lineRight: number;
   top: number;
   right: number;
   bottom: number;
@@ -74,6 +77,8 @@ const setAnnotationsEffect = StateEffect.define<TextAnnotation[]>();
 const editorAnnotationFramePadding = 4;
 const editorAnnotationFrameHorizontalPadding = 12;
 const editorAnnotationLineJoinMaxGap = 20;
+const editorAnnotationLineEndTolerance = 2;
+const editorAnnotationFrameCornerRadius = "4px";
 const annotationSelectionSuppressionMs = 1200;
 const annotationClickDelayMs = 500;
 
@@ -288,6 +293,44 @@ function measureEditorAnnotationFrames(container: HTMLDivElement): EditorAnnotat
   const kindsByNoteId = new Map<string, "note" | "glossary">();
   const focusByNoteId = new Map<string, boolean>();
 
+  function annotationLineMetrics(annotation: HTMLElement, rect: DOMRect) {
+    const scope = annotation.closest<HTMLElement>(".cm-line") ?? annotation.parentElement;
+    if (!scope) {
+      return {
+        canExtendRight: true,
+        lineRight: Math.min(rect.right, containerRect.right),
+      };
+    }
+
+    const range = document.createRange();
+    range.selectNodeContents(scope);
+    const rectMidY = (rect.top + rect.bottom) / 2;
+    const lineRects = Array.from(range.getClientRects()).filter(
+      (lineRect) =>
+        lineRect.width > 0 &&
+        lineRect.height > 0 &&
+        rectMidY >= lineRect.top - 1 &&
+        rectMidY <= lineRect.bottom + 1,
+    );
+
+    if (lineRects.length === 0) {
+      return {
+        canExtendRight: true,
+        lineRight: Math.min(rect.right, containerRect.right),
+      };
+    }
+
+    const lineRight = Math.min(
+      Math.max(...lineRects.map((lineRect) => lineRect.right)),
+      containerRect.right,
+    );
+
+    return {
+      canExtendRight: rect.right >= lineRight - editorAnnotationLineEndTolerance,
+      lineRight,
+    };
+  }
+
   container
     .querySelectorAll<HTMLElement>(".cm-note-annotation[data-note-id]")
     .forEach((annotation) => {
@@ -306,8 +349,16 @@ function measureEditorAnnotationFrames(container: HTMLDivElement): EditorAnnotat
           const top = Math.max(rect.top, containerRect.top);
           const right = Math.min(rect.right, containerRect.right);
           const bottom = Math.min(rect.bottom, containerRect.bottom);
+          const lineMetrics = annotationLineMetrics(annotation, rect);
 
-          return { left, top, right, bottom };
+          return {
+            canExtendRight: lineMetrics.canExtendRight,
+            left,
+            lineRight: Math.min(lineMetrics.lineRight, containerRect.right),
+            top,
+            right,
+            bottom,
+          };
         })
         .filter((rect) => rect.right > rect.left && rect.bottom > rect.top);
       if (annotationRects.length === 0) return;
@@ -323,6 +374,57 @@ function measureEditorAnnotationFrames(container: HTMLDivElement): EditorAnnotat
       const sortedRects = rects.sort(
         (left, right) => left.top - right.top || left.left - right.left,
       );
+      const extensionRightByRect = new Map<EditorAnnotationRect, number>();
+      const borderRadiusByRect = new Map<EditorAnnotationRect, string>();
+      let rectGroup: EditorAnnotationRect[] = [];
+
+      function flushRectGroup() {
+        if (rectGroup.length === 0) return;
+
+        const extendableLineRights = rectGroup
+          .filter((rect) => rect.canExtendRight)
+          .map((rect) => Math.max(rect.right, rect.lineRight));
+        if (extendableLineRights.length > 0) {
+          const targetRight = Math.max(...extendableLineRights);
+          rectGroup.forEach((rect) => {
+            extensionRightByRect.set(
+              rect,
+              rect.canExtendRight ? Math.max(rect.right, targetRight) : rect.right,
+            );
+          });
+        }
+
+        rectGroup.forEach((rect, groupIndex) => {
+          const isFirstRect = groupIndex === 0;
+          const isLastRect = groupIndex === rectGroup.length - 1;
+          borderRadiusByRect.set(
+            rect,
+            [
+              isFirstRect ? editorAnnotationFrameCornerRadius : "0",
+              isFirstRect ? editorAnnotationFrameCornerRadius : "0",
+              isLastRect ? editorAnnotationFrameCornerRadius : "0",
+              isLastRect ? editorAnnotationFrameCornerRadius : "0",
+            ].join(" "),
+          );
+        });
+        rectGroup = [];
+      }
+
+      if (kind !== "glossary") {
+        sortedRects.forEach((rect) => {
+          const previousRect = rectGroup[rectGroup.length - 1];
+          const lineGap = previousRect ? rect.top - previousRect.bottom : 0;
+          if (
+            previousRect &&
+            (lineGap < 0 || lineGap > editorAnnotationLineJoinMaxGap)
+          ) {
+            flushRectGroup();
+          }
+
+          rectGroup.push(rect);
+        });
+        flushRectGroup();
+      }
 
       return sortedRects.map((rect, rectIndex) => {
         const framePadding = editorAnnotationFramePaddingForKind(kind);
@@ -348,6 +450,7 @@ function measureEditorAnnotationFrames(container: HTMLDivElement): EditorAnnotat
         }
 
         return {
+          borderRadius: borderRadiusByRect.get(rect) ?? editorAnnotationFrameCornerRadius,
           frameKey: `${kind}:${noteId}:source:${rectIndex}`,
           isFocusTarget,
           noteId,
@@ -355,7 +458,11 @@ function measureEditorAnnotationFrames(container: HTMLDivElement): EditorAnnotat
           tone,
           left: roundEditorFrameValue(rect.left - containerRect.left - frameHorizontalPadding),
           top: roundEditorFrameValue(Math.max(0, top - containerRect.top)),
-          width: roundEditorFrameValue(rect.right - rect.left + frameHorizontalPadding * 2),
+          width: roundEditorFrameValue(
+            (extensionRightByRect.get(rect) ?? rect.right) -
+              rect.left +
+              frameHorizontalPadding * 2,
+          ),
           height: roundEditorFrameValue(bottom - top),
         };
       });
@@ -380,6 +487,7 @@ function areEditorAnnotationFramesEqual(
     return (
       leftFrame.frameKey === rightFrame.frameKey &&
       leftFrame.isFocusTarget === rightFrame.isFocusTarget &&
+      leftFrame.borderRadius === rightFrame.borderRadius &&
       leftFrame.noteId === rightFrame.noteId &&
       leftFrame.kind === rightFrame.kind &&
       leftFrame.tone === rightFrame.tone &&
@@ -957,6 +1065,7 @@ export function MarkdownEditor({
             data-note-tone={frame.tone}
             key={frame.frameKey}
             style={{
+              borderRadius: frame.borderRadius,
               height: frame.height,
               left: frame.left,
               top: frame.top,
