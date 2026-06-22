@@ -672,6 +672,7 @@ const notePanelAnimationMs = 180;
 const selectionWarningMinimumVisibleMs = 1600;
 const selectionWarningAutoDismissMs = 2600;
 const appDrivenSelectionClearGuardMs = 1200;
+const noteLibraryFocusedPreviewLineCount = 10;
 const autosaveDelayMs = 1000;
 const lastOpenedMarkdownPathStorageKey = "scholium:last-opened-markdown-path";
 const lastOpenedMarkdownRootDirectoryStorageKey =
@@ -4327,6 +4328,7 @@ function NoteLibraryPreviewContent({
   const contentRef = useRef<HTMLDivElement | null>(null);
   const [expandedHeight, setExpandedHeight] = useState(0);
   const [hasCollapsedOverflow, setHasCollapsedOverflow] = useState(false);
+  const [hasFocusedOverflow, setHasFocusedOverflow] = useState(false);
 
   useLayoutEffect(() => {
     const contentElement = contentRef.current;
@@ -4359,6 +4361,12 @@ function NoteLibraryPreviewContent({
 
           return currentOverflow === nextOverflow ? currentOverflow : nextOverflow;
         });
+        setHasFocusedOverflow((currentOverflow) => {
+          const focusedHeight = lineHeight * noteLibraryFocusedPreviewLineCount;
+          const nextOverflow = nextHeight > focusedHeight + 1;
+
+          return currentOverflow === nextOverflow ? currentOverflow : nextOverflow;
+        });
       });
     }
 
@@ -4380,6 +4388,7 @@ function NoteLibraryPreviewContent({
   return (
     <div
       className={`note-library-card__body-shell ${expanded ? "is-expanded" : ""}`}
+      data-has-focused-overflow={hasFocusedOverflow ? "true" : "false"}
       data-has-overflow={hasCollapsedOverflow ? "true" : "false"}
       style={bodyShellStyle}
     >
