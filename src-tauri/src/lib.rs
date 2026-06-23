@@ -1289,6 +1289,24 @@ fn write_location_store(
         .map_err(|error| format!("failed to write location store: {error}"))
 }
 
+fn recent_location_exists(location: &LocationEntry) -> bool {
+    let path = Path::new(&location.path);
+
+    match location.kind.as_str() {
+        "file" => path.is_file(),
+        "directory" => path.is_dir(),
+        _ => false,
+    }
+}
+
+fn prune_missing_recent_locations(store: &mut LocationStore) -> bool {
+    let original_count = store.recent.len();
+
+    store.recent.retain(recent_location_exists);
+
+    store.recent.len() != original_count
+}
+
 fn remember_recent_location_entry(
     app_handle: &tauri::AppHandle,
     entry: LocationEntry,
@@ -2503,7 +2521,14 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             set_runtime_dock_icon();
 
-            let location_store = read_location_store_from_disk(app.handle());
+            let mut location_store = read_location_store_from_disk(app.handle());
+            let pruned_recent_locations = prune_missing_recent_locations(&mut location_store);
+            if pruned_recent_locations {
+                if let Err(error) = write_location_store(app.handle(), &location_store) {
+                    eprintln!("{error}");
+                }
+            }
+
             if let Err(error) = replace_current_location_store(app.handle(), location_store)
                 .and_then(|_| refresh_app_menu(app.handle()))
             {
