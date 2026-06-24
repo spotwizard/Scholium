@@ -271,6 +271,10 @@ function renderMilkdownMermaidPreview(
     });
 }
 
+function renderMilkdownCodeBlockPreview(content: string) {
+  return `<pre class="milkdown-code-block-preview"><code>${escapeHtml(content)}</code></pre>`;
+}
+
 function appendTextMap(target: MilkdownTextMap, text: string, sourceStart: number | null) {
   target.text += text;
   for (let index = 0; index < text.length; index += 1) {
@@ -1564,7 +1568,10 @@ export function MilkdownMarkdownEditor({
             return renderMilkdownMermaidPreview(content, applyPreview);
           }
 
-          return previousConfig.renderPreview(language, content, applyPreview);
+          return (
+            previousConfig.renderPreview(language, content, applyPreview) ??
+            renderMilkdownCodeBlockPreview(content)
+          );
         },
       }));
 

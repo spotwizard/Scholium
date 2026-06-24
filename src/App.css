@@ -2167,6 +2167,15 @@ button:disabled {
 }
 
 .milkdown-markdown-editor .milkdown {
+  --scholium-preview-cjk-font: "PingFang TC", "Noto Sans TC", "Microsoft JhengHei",
+    "Heiti TC";
+  --crepe-font-default:
+    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    var(--scholium-preview-cjk-font), sans-serif;
+  --crepe-font-title:
+    "Noto Serif", Cambria, "Times New Roman", Times,
+    var(--scholium-preview-cjk-font), serif;
+
   min-height: inherit;
   background: transparent;
 }
@@ -2204,6 +2213,8 @@ button:disabled {
 
 .milkdown-markdown-editor .ProseMirror h2 {
   border-bottom: 1px solid var(--color-border);
+  padding-bottom: 0.26em;
+  margin-bottom: 0.42em;
 }
 
 .milkdown-markdown-editor .ProseMirror blockquote {
@@ -2220,6 +2231,73 @@ button:disabled {
 .milkdown-markdown-editor .ProseMirror pre {
   border-color: var(--color-border);
   background: var(--color-surface-soft);
+}
+
+.milkdown-markdown-editor .milkdown .milkdown-code-block {
+  overflow: visible;
+  margin: 0 0 1em;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 8px 12px 12px;
+  background: var(--color-surface-soft);
+}
+
+.milkdown-markdown-editor .milkdown .milkdown-code-block .codemirror-host.hidden {
+  display: none !important;
+}
+
+.milkdown-markdown-editor .milkdown .milkdown-code-block .tools {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  z-index: 2;
+  display: flex;
+  width: max-content;
+  justify-content: flex-end;
+  gap: 4px;
+  min-height: 0;
+  pointer-events: none;
+}
+
+.milkdown-markdown-editor .milkdown .milkdown-code-block .tools > * {
+  pointer-events: auto;
+}
+
+.milkdown-markdown-editor .milkdown .milkdown-code-block .tools .language-button {
+  margin-bottom: 0;
+}
+
+.milkdown-markdown-editor .milkdown .milkdown-code-block .preview-panel .preview {
+  overflow-x: auto;
+  text-align: left;
+}
+
+.milkdown-markdown-editor .milkdown .milkdown-code-block-preview {
+  overflow: visible;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  color: var(--color-preview-editor-text);
+  background: transparent;
+  font-family:
+    "SFMono-Regular", "Cascadia Code", "Roboto Mono", Consolas, "Liberation Mono",
+    monospace;
+  font-size: 0.9em;
+  line-height: 1.55;
+  text-align: left;
+  white-space: pre;
+}
+
+.milkdown-markdown-editor .milkdown .milkdown-code-block-preview code {
+  display: block;
+  overflow: visible;
+  padding: 0;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  line-height: inherit;
+  white-space: inherit;
 }
 
 .milkdown-note-annotation {
