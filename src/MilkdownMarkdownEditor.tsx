@@ -1,6 +1,7 @@
 import { Crepe, CrepeFeature } from "@milkdown/crepe";
 import { codeBlockConfig } from "@milkdown/kit/component/code-block";
 import { editorViewCtx, prosePluginsCtx } from "@milkdown/kit/core";
+import { hardbreakAttr, hardbreakSchema } from "@milkdown/kit/preset/commonmark";
 import type { Node as ProseMirrorNode } from "@milkdown/prose/model";
 import { Plugin, PluginKey } from "@milkdown/prose/state";
 import { Decoration, DecorationSet, type EditorView } from "@milkdown/prose/view";
@@ -46,6 +47,7 @@ const milkdownAnnotationFrameCornerRadius = "4px";
 const milkdownAnnotationClassPrefix = "scholium-milkdown-annotation-";
 const milkdownSelectionFallbackMs = 220;
 const annotationClickDelayMs = 500;
+const imeSelectionSuppressionMs = 350;
 let milkdownMermaidRenderIndex = 0;
 
 function milkdownAnnotationFramePaddingForKind(kind: "note" | "glossary") {
@@ -94,18 +96,127 @@ type MilkdownTextMap = {
 
 const markdownUnorderedListMarkerPattern = /^ {0,3}[-*+]\s+/;
 const markdownOrderedListMarkerPattern = /^ {0,3}\d+[.)]\s+/;
+const standaloneHtmlBreakPattern = /^<br\s*\/?>$/i;
 
 function normalizeSelectedText(text: string) {
   return text.replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
 }
 
+function isStandaloneSerializedBreakLine(line: string) {
+  return standaloneHtmlBreakPattern.test(line.trim());
+}
+
+function normalizeSerializedEmptyParagraphBreaks(markdown: string) {
+  const lines = markdown.replace(/\r\n/g, "\n").split("\n");
+  const normalizedLines: string[] = [];
+  let inFencedCodeBlock = false;
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] ?? "";
+
+    if (/^ {0,3}(```|~~~)/.test(line)) {
+      inFencedCodeBlock = !inFencedCodeBlock;
+      normalizedLines.push(line);
+      continue;
+    }
+
+    if (!inFencedCodeBlock && isStandaloneSerializedBreakLine(line)) {
+      normalizedLines.push("");
+
+      if (
+        normalizedLines.length >= 2 &&
+        !normalizedLines[normalizedLines.length - 2]?.trim() &&
+        !(lines[index + 1] ?? "").trim()
+      ) {
+        index += 1;
+      }
+
+      continue;
+    }
+
+    normalizedLines.push(line);
+  }
+
+  return normalizedLines.join("\n");
+}
+
+function normalizeSerializedHardBreaks(markdown: string) {
+  const lines = markdown.replace(/\r\n/g, "\n").split("\n");
+  const normalizedLines: string[] = [];
+  let inFencedCodeBlock = false;
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] ?? "";
+
+    if (/^ {0,3}(```|~~~)/.test(line)) {
+      inFencedCodeBlock = !inFencedCodeBlock;
+      normalizedLines.push(line);
+      continue;
+    }
+
+    if (!inFencedCodeBlock && index < lines.length - 1 && line.endsWith("\\")) {
+      normalizedLines.push(line.slice(0, -1));
+      continue;
+    }
+
+    normalizedLines.push(line);
+  }
+
+  return normalizedLines.join("\n");
+}
+
 function normalizeMarkdownForScholium(markdown: string) {
-  return markdown
+  return normalizeSerializedHardBreaks(normalizeSerializedEmptyParagraphBreaks(markdown))
     .replace(/^(\s*)\*\s+/gm, "$1- ")
     .replace(
       /^(\s*(?:[-+]|\d+[.)])\s+\S[^\n]*)\n\n(?=\s*(?:[-+]|\d+[.)])\s+\S)/gm,
       "$1\n",
     );
+}
+
+function encodeEmptyParagraphsForMilkdown(markdown: string) {
+  const lines = markdown.replace(/\r\n/g, "\n").split("\n");
+  const encodedLines: string[] = [];
+  let inFencedCodeBlock = false;
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] ?? "";
+
+    if (/^ {0,3}(```|~~~)/.test(line)) {
+      inFencedCodeBlock = !inFencedCodeBlock;
+      encodedLines.push(line);
+      continue;
+    }
+
+    if (!inFencedCodeBlock && !line.trim()) {
+      let blankEnd = index;
+      while (blankEnd < lines.length && !(lines[blankEnd] ?? "").trim()) {
+        blankEnd += 1;
+      }
+
+      const blankCount = blankEnd - index;
+      const hasPreviousContent = encodedLines.some((candidate) => candidate.trim());
+      const hasNextContent = lines.slice(blankEnd).some((candidate) => candidate.trim());
+
+      if (hasPreviousContent && hasNextContent) {
+        encodedLines.push("");
+        for (let blankIndex = 1; blankIndex < blankCount; blankIndex += 1) {
+          encodedLines.push("<br />", "");
+        }
+      } else {
+        for (let blankIndex = 0; blankIndex < blankCount; blankIndex += 1) {
+          encodedLines.push("");
+        }
+      }
+
+      index = blankEnd - 1;
+      continue;
+    }
+
+    encodedLines.push(line);
+  }
+
+  return encodedLines.join("\n");
 }
 
 function isMermaidLanguage(language: string) {
@@ -1038,6 +1149,8 @@ export function MilkdownMarkdownEditor({
   const selectionFallbackTimerRef = useRef(0);
   const annotationClickTimerRef = useRef(0);
   const mouseSelectionStartedRef = useRef(false);
+  const imeCompositionActiveRef = useRef(false);
+  const imeSelectionSuppressedUntilRef = useRef(0);
   const [editorRevision, setEditorRevision] = useState(0);
   const [annotationFrames, setAnnotationFrames] = useState<MilkdownAnnotationFrame[]>([]);
   const annotationSignature = useMemo(
@@ -1094,6 +1207,41 @@ export function MilkdownMarkdownEditor({
 
     const { from, to } = view.state.selection;
     return view.state.doc.textBetween(from, to, " ").trim();
+  }
+
+  function selectionPublishSuppressedByIme() {
+    return (
+      imeCompositionActiveRef.current ||
+      Date.now() < imeSelectionSuppressedUntilRef.current
+    );
+  }
+
+  function suppressSelectionPublishForIme() {
+    imeSelectionSuppressedUntilRef.current = Date.now() + imeSelectionSuppressionMs;
+    window.clearTimeout(selectionFallbackTimerRef.current);
+    window.cancelAnimationFrame(selectionFrameRef.current);
+    mouseSelectionStartedRef.current = false;
+  }
+
+  function handleImeCompositionStart() {
+    imeCompositionActiveRef.current = true;
+    suppressSelectionPublishForIme();
+    onSelectionChangeRef.current(null);
+  }
+
+  function handleImeCompositionEnd() {
+    imeCompositionActiveRef.current = false;
+    suppressSelectionPublishForIme();
+    onSelectionChangeRef.current(null);
+  }
+
+  function keyboardEventIsComposing(
+    event: KeyboardEvent | ReactKeyboardEvent<HTMLDivElement>,
+  ) {
+    const nativeIsComposing =
+      "nativeEvent" in event ? event.nativeEvent.isComposing : event.isComposing;
+
+    return nativeIsComposing || selectionPublishSuppressedByIme();
   }
 
   function clearQueuedAnnotationClick() {
@@ -1285,9 +1433,13 @@ export function MilkdownMarkdownEditor({
   }
 
   function publishSelectionAfterSelectionComplete() {
+    if (selectionPublishSuppressedByIme()) return;
+
     window.clearTimeout(selectionFallbackTimerRef.current);
     window.cancelAnimationFrame(selectionFrameRef.current);
     selectionFrameRef.current = window.requestAnimationFrame(() => {
+      if (selectionPublishSuppressedByIme()) return;
+
       const root = rootRef.current;
       const selection = window.getSelection();
       const anchor =
@@ -1302,8 +1454,11 @@ export function MilkdownMarkdownEditor({
   }
 
   function scheduleSelectionPublishFromDom() {
+    if (selectionPublishSuppressedByIme()) return;
+
     window.clearTimeout(selectionFallbackTimerRef.current);
     selectionFallbackTimerRef.current = window.setTimeout(() => {
+      if (selectionPublishSuppressedByIme()) return;
       if (mouseSelectionStartedRef.current) return;
 
       publishSelectionAfterSelectionComplete();
@@ -1316,12 +1471,14 @@ export function MilkdownMarkdownEditor({
 
     function handleSelectionPointerDown(event: MouseEvent | PointerEvent) {
       if (event.button !== 0) return;
+      if (selectionPublishSuppressedByIme()) return;
 
       mouseSelectionStartedRef.current = true;
     }
 
     function handleSelectionPointerUp(event: MouseEvent | PointerEvent) {
       if (event.button !== 0) return;
+      if (selectionPublishSuppressedByIme()) return;
 
       const currentRoot = rootRef.current;
       if (!currentRoot) return;
@@ -1346,6 +1503,8 @@ export function MilkdownMarkdownEditor({
 
     root.addEventListener("mousedown", handleSelectionPointerDown, true);
     root.addEventListener("pointerdown", handleSelectionPointerDown, true);
+    root.addEventListener("compositionstart", handleImeCompositionStart, true);
+    root.addEventListener("compositionend", handleImeCompositionEnd, true);
     window.addEventListener("mouseup", handleSelectionPointerUp, true);
     window.addEventListener("pointerup", handleSelectionPointerUp, true);
 
@@ -1354,6 +1513,8 @@ export function MilkdownMarkdownEditor({
       window.clearTimeout(selectionFallbackTimerRef.current);
       root.removeEventListener("mousedown", handleSelectionPointerDown, true);
       root.removeEventListener("pointerdown", handleSelectionPointerDown, true);
+      root.removeEventListener("compositionstart", handleImeCompositionStart, true);
+      root.removeEventListener("compositionend", handleImeCompositionEnd, true);
       window.removeEventListener("mouseup", handleSelectionPointerUp, true);
       window.removeEventListener("pointerup", handleSelectionPointerUp, true);
     };
@@ -1368,7 +1529,7 @@ export function MilkdownMarkdownEditor({
 
     const crepe = new Crepe({
       root,
-      defaultValue: currentMarkdownRef.current,
+      defaultValue: encodeEmptyParagraphsForMilkdown(currentMarkdownRef.current),
       features: {
         [CrepeFeature.AI]: false,
         [CrepeFeature.CodeMirror]: true,
@@ -1379,6 +1540,22 @@ export function MilkdownMarkdownEditor({
       },
     });
     crepe.editor.config((ctx) => {
+      ctx.update(hardbreakSchema.key, (previousSchema) => (schemaCtx) => {
+        const schema = previousSchema(schemaCtx);
+
+        return {
+          ...schema,
+          parseDOM: [
+            {
+              tag: "br[data-is-inline=\"true\"]",
+              getAttrs: () => ({ isInline: true }),
+            },
+            ...(schema.parseDOM ?? []),
+          ],
+          toDOM: (node) => ["br", schemaCtx.get(hardbreakAttr.key)(node)],
+        };
+      });
+
       ctx.update(codeBlockConfig.key, (previousConfig) => ({
         ...previousConfig,
         previewOnlyByDefault: true,
@@ -1419,6 +1596,11 @@ export function MilkdownMarkdownEditor({
       });
 
       listener.selectionUpdated(() => {
+        if (selectionPublishSuppressedByIme()) {
+          scheduleAnnotationFrameUpdate();
+          return;
+        }
+
         scheduleSelectionPublishFromDom();
         scheduleAnnotationFrameUpdate();
       });
@@ -1455,6 +1637,7 @@ export function MilkdownMarkdownEditor({
       !event.altKey &&
       !event.shiftKey;
     if (!isPlainEnter) return;
+    if (keyboardEventIsComposing(event)) return;
 
     const anchor = anchorFromCurrentSelection();
     if (!anchor) return;

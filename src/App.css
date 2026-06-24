@@ -1,6 +1,8 @@
 :root {
   --color-text: #202329;
   --color-heading: #111318;
+  --color-source-editor-text: #374151;
+  --color-preview-editor-text: #000000;
   --color-muted: #6b7280;
   --color-app-bg: #f6f7f9;
   --color-surface: #fcfcfd;
@@ -16,6 +18,9 @@
   --color-accent-soft: #eef0f3;
   --color-accent-softer: rgba(32, 35, 41, 0.06);
   --color-accent-selection: rgba(32, 35, 41, 0.18);
+  --color-editor-mode-active-bg: #252932;
+  --color-editor-mode-active-bg-strong: #111318;
+  --color-editor-mode-active-text: #ffffff;
   --color-directory-guide: rgba(107, 114, 128, 0.2);
   --color-directory-selected-bg: #555b66;
   --color-directory-selected-text: #ffffff;
@@ -55,6 +60,8 @@
 :root[data-theme="dark"] {
   --color-text: #d7dbe3;
   --color-heading: #f3f5f8;
+  --color-source-editor-text: #cbd5e1;
+  --color-preview-editor-text: #f8fafc;
   --color-muted: #9aa3b2;
   --color-app-bg: #15171b;
   --color-surface: #1c1f24;
@@ -70,6 +77,9 @@
   --color-accent-soft: #303640;
   --color-accent-softer: rgba(213, 217, 224, 0.08);
   --color-accent-selection: rgba(213, 217, 224, 0.22);
+  --color-editor-mode-active-bg: #eef1f5;
+  --color-editor-mode-active-bg-strong: #cbd5e1;
+  --color-editor-mode-active-text: #15171b;
   --color-directory-guide: rgba(154, 163, 178, 0.26);
   --color-directory-selected-bg: #596273;
   --color-directory-selected-text: #ffffff;
@@ -1602,6 +1612,60 @@ button:disabled {
   border-radius: 999px;
 }
 
+.editor-mode-toggle {
+  display: inline-flex;
+  flex: 0 0 auto;
+  width: 34px;
+  height: 30px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  padding: 0;
+  color: var(--color-muted);
+  background: transparent;
+  box-shadow: none;
+  transition:
+    border-color 120ms ease,
+    background 120ms ease,
+    color 120ms ease,
+    box-shadow 120ms ease;
+}
+
+.editor-mode-toggle:hover {
+  background: rgba(31, 41, 55, 0.08);
+}
+
+.editor-mode-toggle.is-active {
+  border-color: color-mix(in srgb, var(--color-editor-mode-active-bg) 82%, transparent);
+  color: var(--color-editor-mode-active-text);
+  background: linear-gradient(
+    180deg,
+    var(--color-editor-mode-active-bg) 0%,
+    var(--color-editor-mode-active-bg-strong) 100%
+  );
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    0 7px 16px rgba(32, 35, 41, 0.18);
+}
+
+.editor-mode-toggle.is-active:hover {
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--color-editor-mode-active-bg) 92%, white) 0%,
+    var(--color-editor-mode-active-bg-strong) 100%
+  );
+}
+
+.editor-mode-toggle__icon {
+  width: 15px;
+  height: 15px;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+}
+
 .note-mode-switch {
   display: inline-flex;
   flex: 0 0 auto;
@@ -1751,7 +1815,7 @@ button:disabled {
   position: relative;
   z-index: 1;
   min-height: 100%;
-  color: var(--color-text);
+  color: var(--color-source-editor-text);
   background: transparent;
 }
 
@@ -1825,7 +1889,7 @@ button:disabled {
   min-height: calc(100vh - var(--editor-content-gutter) * 2);
   overflow: auto;
   padding: 0;
-  color: var(--color-text);
+  color: var(--color-preview-editor-text);
   background: var(--color-surface);
   font-size: var(--settings-editor-font-size);
   line-height: var(--settings-editor-line-height);
@@ -1848,7 +1912,7 @@ button:disabled {
 .markdown-preview h5,
 .markdown-preview h6 {
   margin: 1.35em 0 0.5em;
-  color: var(--color-heading);
+  color: var(--color-preview-editor-text);
   font-weight: 760;
   letter-spacing: 0;
   line-height: 1.22;
@@ -2061,7 +2125,7 @@ button:disabled {
 .milkdown-markdown-editor-shell {
   position: relative;
   min-height: calc(100vh - var(--editor-content-gutter) * 2);
-  color: var(--color-text);
+  color: var(--color-preview-editor-text);
   background: var(--color-surface);
   font-size: var(--settings-editor-font-size);
   line-height: var(--settings-editor-line-height);
@@ -2134,7 +2198,7 @@ button:disabled {
 .milkdown-markdown-editor .ProseMirror h4,
 .milkdown-markdown-editor .ProseMirror h5,
 .milkdown-markdown-editor .ProseMirror h6 {
-  color: var(--color-heading);
+  color: var(--color-preview-editor-text);
   letter-spacing: 0;
 }
 
@@ -2204,7 +2268,7 @@ button:disabled {
 .scholium-shell.is-note-library-focus-active .milkdown-note-annotation.is-focus-target {
   position: relative;
   z-index: 65;
-  color: var(--color-text) !important;
+  color: inherit !important;
   opacity: 1;
   filter: none;
 }
@@ -2294,7 +2358,7 @@ button:disabled {
 .scholium-shell.is-note-panel-modal-active .milkdown-note-annotation.is-focus-target {
   position: relative;
   z-index: 87;
-  color: var(--color-text) !important;
+  color: inherit !important;
   border-radius: 2px;
   background: transparent;
   opacity: 1;
@@ -3918,7 +3982,7 @@ button:disabled {
     left: 10px;
     z-index: 82;
     display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(5, minmax(0, 1fr));
     gap: 4px;
     min-height: 58px;
     border: 1px solid rgba(31, 41, 55, 0.12);

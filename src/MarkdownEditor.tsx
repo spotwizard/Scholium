@@ -81,6 +81,7 @@ const editorAnnotationLineEndTolerance = 2;
 const editorAnnotationFrameCornerRadius = "4px";
 const annotationSelectionSuppressionMs = 1200;
 const annotationClickDelayMs = 500;
+const imeSelectionSuppressionMs = 350;
 
 function editorAnnotationFramePaddingForKind(kind: "note" | "glossary") {
   return kind === "glossary" ? 0 : editorAnnotationFramePadding;
@@ -544,6 +545,8 @@ export function MarkdownEditor({
   const annotationClickTimerRef = useRef(0);
   const mouseSelectionStartedRef = useRef(false);
   const annotationInteractionUntilRef = useRef(0);
+  const imeCompositionActiveRef = useRef(false);
+  const imeSelectionSuppressedUntilRef = useRef(0);
   const suppressNextChangeRef = useRef(false);
   const [annotationFrames, setAnnotationFrames] = useState<EditorAnnotationFrame[]>([]);
 
@@ -643,15 +646,43 @@ export function MarkdownEditor({
 
   function publishSelectionAfterMouseUp(view: EditorView) {
     if (Date.now() < annotationInteractionUntilRef.current) return;
+    if (selectionPublishSuppressedByIme()) return;
 
     window.cancelAnimationFrame(selectionFrameRef.current);
     selectionFrameRef.current = window.requestAnimationFrame(() => {
       if (Date.now() < annotationInteractionUntilRef.current) return;
+      if (selectionPublishSuppressedByIme()) return;
 
       const anchor = buildAnchorFromSelection(view);
       onSelectionChangeRef.current(anchor);
       selectionFrameRef.current = 0;
     });
+  }
+
+  function selectionPublishSuppressedByIme() {
+    return (
+      imeCompositionActiveRef.current ||
+      Date.now() < imeSelectionSuppressedUntilRef.current
+    );
+  }
+
+  function suppressSelectionPublishForIme() {
+    imeSelectionSuppressedUntilRef.current = Date.now() + imeSelectionSuppressionMs;
+    window.clearTimeout(selectionFallbackTimerRef.current);
+    window.cancelAnimationFrame(selectionFrameRef.current);
+    mouseSelectionStartedRef.current = false;
+  }
+
+  function handleImeCompositionStart() {
+    imeCompositionActiveRef.current = true;
+    suppressSelectionPublishForIme();
+    onSelectionChangeRef.current(null);
+  }
+
+  function handleImeCompositionEnd() {
+    imeCompositionActiveRef.current = false;
+    suppressSelectionPublishForIme();
+    onSelectionChangeRef.current(null);
   }
 
   function noteIdFromAnnotationTarget(target: EventTarget | null) {
@@ -823,6 +854,14 @@ export function MarkdownEditor({
         }
         return false;
       },
+      compositionstart() {
+        handleImeCompositionStart();
+        return false;
+      },
+      compositionend() {
+        handleImeCompositionEnd();
+        return false;
+      },
       mouseup(event, view) {
         if (event.button !== 0) return false;
 
@@ -926,6 +965,8 @@ export function MarkdownEditor({
           {
             key: "Enter",
             run(view) {
+              if (selectionPublishSuppressedByIme()) return false;
+
               const anchor = buildAnchorFromSelection(view);
               if (!anchor) return false;
 
@@ -1001,6 +1042,7 @@ export function MarkdownEditor({
           window.getSelection()?.removeAllRanges();
           return;
         }
+        if (selectionPublishSuppressedByIme()) return;
         if (mouseSelectionStartedRef.current) return;
         if (!browserSelectionBelongsToView(view, window.getSelection())) return;
 

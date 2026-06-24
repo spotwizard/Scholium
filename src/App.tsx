@@ -507,6 +507,15 @@ function MobileLibraryIcon() {
   );
 }
 
+function SourceModeIcon({ className = "editor-mode-toggle__icon" }: { className?: string }) {
+  return (
+    <svg aria-hidden="true" className={className} fill="none" viewBox="0 0 24 24">
+      <path d="m9 18-6-6 6-6" />
+      <path d="m15 6 6 6-6 6" />
+    </svg>
+  );
+}
+
 function MobileNewFileIcon() {
   return (
     <svg
@@ -1738,7 +1747,7 @@ function getParagraphTextMap(
     const line = lines[lineIndex] ?? "";
     const trimmed = line.trim();
     if (lineIndex > block.startLine) {
-      appendTextMapSeparator(textMap, " ");
+      appendTextMap(textMap, "\n", (lineStartOffsets[lineIndex] ?? 0) - 1);
     }
 
     appendInlineTextMap(
@@ -2869,7 +2878,7 @@ function parseMarkdownPreviewBlocks(markdown: string): MarkdownPreviewBlock[] {
       key,
       startLine,
       endLine: index - 1,
-      text: paragraphLines.join(" "),
+      text: paragraphLines.join("\n"),
     });
   }
 
@@ -10319,7 +10328,7 @@ function App() {
           transform: `translateY(-50%) rotate(${floatingNotePanelPosition.connector.angle}deg)`,
           width: floatingNotePanelPosition.connector.width,
         };
-  const editorReadOnly = notePanelModalActive || noteLibraryOpen;
+  const editorReadOnly = notePanelModalActive;
   const fileContextMenuActions: FileContextMenuAction[] = fileContextMenu
     ? (() => {
         const copyContentAction = {
@@ -10944,6 +10953,27 @@ function App() {
                 data-expanded={noteModeEnabled ? "true" : "false"}
               >
                 <button
+                  aria-label={`${t("toolbar.editorMode")}: ${
+                    editorMode === "edit" ? t("toolbar.sourceMode") : t("toolbar.previewMode")
+                  }`}
+                  aria-pressed={editorMode === "edit"}
+                  className={`editor-mode-toggle ${editorMode === "edit" ? "is-active" : ""}`}
+                  onClick={() =>
+                    setEditorMode((currentMode) =>
+                      currentMode === "preview" ? "edit" : "preview",
+                    )
+                  }
+                  title={
+                    editorMode === "edit"
+                      ? t("toolbar.previewMode.open")
+                      : t("toolbar.sourceMode.open")
+                  }
+                  type="button"
+                >
+                  <SourceModeIcon />
+                </button>
+                <span aria-hidden="true" className="editor-toolbar__divider" />
+                <button
                   aria-checked={noteModeEnabled}
                   aria-label={
                     noteModeEnabled ? t("toolbar.noteMode.close") : t("toolbar.noteMode.open")
@@ -11161,6 +11191,23 @@ function App() {
           >
             <MobileFilesIcon />
             <span>{t("app.documents")}</span>
+          </button>
+          <button
+            aria-label={`${t("toolbar.editorMode")}: ${
+              editorMode === "edit" ? t("toolbar.sourceMode") : t("toolbar.previewMode")
+            }`}
+            aria-pressed={editorMode === "edit"}
+            className={editorMode === "edit" ? "is-active" : ""}
+            disabled={!hasOpenDocument}
+            onClick={() =>
+              setEditorMode((currentMode) =>
+                currentMode === "preview" ? "edit" : "preview",
+              )
+            }
+            type="button"
+          >
+            <SourceModeIcon className="mobile-command-bar__icon" />
+            <span>{t("toolbar.sourceMode")}</span>
           </button>
           <button
             aria-checked={noteModeEnabled}
