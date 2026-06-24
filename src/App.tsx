@@ -9239,71 +9239,28 @@ function App() {
       return;
     }
 
-    const anchorIsGlossaryCandidate =
-      glossaryModeActive && isGlossarySelectionCandidate(anchor);
+    const now = Date.now();
 
-    if (Date.now() < selectionDismissedUntilRef.current) {
+    if (now < selectionDismissedUntilRef.current) {
       return;
+    }
+
+    if (now >= selectionWarningPreserveUntilRef.current) {
+      clearSelectionWarning();
     }
 
     if (
       pendingAnchor &&
-      pendingGlossaryTerm &&
-      textSelectionAnchorsMatch(anchor, pendingAnchor)
+      !pendingGlossaryTerm &&
+      !textSelectionAnchorsMatch(anchor, pendingAnchor)
     ) {
-      return;
-    }
-
-    if (selectionIsBlockedByExistingAnnotations(anchor)) {
-      clearSelectionWarning();
-      if (
-        pendingAnchor ||
-        activeNoteId ||
-        activeGlossaryBindingId ||
-        activeGlossaryTermId ||
-        notePanelHasContentRef.current
-      ) {
-        closeNotePanel();
-      }
-      return;
-    }
-
-    if (
-      !anchorIsGlossaryCandidate &&
-      !isSelectionCompleteMarkdownBlock(selectedDocument.body, anchor)
-    ) {
-      const anchorRect = currentSelectionAnchorRect();
       setPendingAnchor(null);
       setNoteDraft("");
       setPendingGlossaryTerm(null);
       setGlossaryDraft("");
-      if (notePanelHasContentRef.current) {
-        closeNotePanel();
-      }
-      showSelectionWarning(anchorRect);
-      return;
+      floatingNoteAnchorRectRef.current = null;
+      notePanelHasContentRef.current = false;
     }
-
-    if (isMobileViewport && !anchorIsGlossaryCandidate) {
-      selectionClearedByAppUntilRef.current =
-        Date.now() + appDrivenSelectionClearGuardMs;
-    }
-
-    clearNotePanelCloseTimer();
-    clearReturnToViewTimer();
-    clearSelectionWarning();
-    setIsNotePanelClosing(false);
-    floatingNoteAnchorRectRef.current = currentSelectionAnchorRect();
-    setPendingAnchor(anchor);
-    setPendingGlossaryTerm(null);
-    setActiveNoteId("");
-    setActiveGlossaryBindingId("");
-    setActiveGlossaryTermId("");
-    setActiveNoteMode("view");
-    setActiveGlossaryMode("view");
-    setNoteDraft("");
-    setGlossaryDraft("");
-    notePanelHasContentRef.current = isMobileViewport && !anchorIsGlossaryCandidate;
   }
 
   function selectionOverlapsActiveNote(anchor: TextSelectionAnchor) {
@@ -11035,6 +10992,7 @@ function App() {
                   key={selectedDocument.id}
                   noteModeEnabled={noteModeEnabled}
                   readOnly={editorReadOnly}
+                  toolbarEnabled={false}
                   value={selectedDocument.body}
                   onAnnotationClick={showAnnotationViewer}
                   onAnnotationDoubleClick={showAnnotationViewer}
