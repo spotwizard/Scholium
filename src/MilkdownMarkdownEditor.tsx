@@ -1,4 +1,5 @@
 import { Crepe, CrepeFeature } from "@milkdown/crepe";
+import { invoke } from "@tauri-apps/api/core";
 import { codeBlockConfig } from "@milkdown/kit/component/code-block";
 import { editorViewCtx, prosePluginsCtx } from "@milkdown/kit/core";
 import { hardbreakAttr, hardbreakSchema } from "@milkdown/kit/preset/commonmark";
@@ -26,6 +27,7 @@ import { loadScholiumMermaid } from "./mermaid";
 type MilkdownMarkdownEditorProps = {
   value: string;
   annotations: TextAnnotation[];
+  documentFilePath?: string | null;
   noteModeEnabled: boolean;
   readOnly?: boolean;
   toolbarEnabled?: boolean;
@@ -94,9 +96,27 @@ type MilkdownTextMap = {
   sourceOffsets: (number | null)[];
 };
 
+type MarkdownImageFileResult = {
+  path: string;
+  mimeType: string;
+  dataUrl: string;
+};
+
 const markdownUnorderedListMarkerPattern = /^ {0,3}[-*+]\s+/;
 const markdownOrderedListMarkerPattern = /^ {0,3}\d+[.)]\s+/;
 const standaloneHtmlBreakPattern = /^<br\s*\/?>$/i;
+const localImageHydratedSrcAttribute = "data-scholium-local-image-src";
+const localImageMarkdownPathAttribute = "data-scholium-local-markdown-path";
+const localImageResolvedPathAttribute = "data-scholium-local-image-path";
+const localImageLoadingAttribute = "data-scholium-local-image-loading";
+const localImageErrorAttribute = "data-scholium-local-image-error";
+
+function localMarkdownImageNeedsHydration(src: string) {
+  const trimmedSrc = src.trim();
+  if (!trimmedSrc) return false;
+
+  return !/^(https?:|data:|blob:|asset:|tauri:|ipc:|\/\/)/i.test(trimmedSrc);
+}
 
 function normalizeSelectedText(text: string) {
   return text.replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
@@ -1127,6 +1147,7 @@ function createAnnotationPlugin({
 export function MilkdownMarkdownEditor({
   value,
   annotations,
+  documentFilePath = null,
   noteModeEnabled,
   readOnly = false,
   toolbarEnabled = true,
@@ -1140,6 +1161,7 @@ export function MilkdownMarkdownEditor({
   const rootRef = useRef<HTMLDivElement | null>(null);
   const crepeRef = useRef<Crepe | null>(null);
   const annotationsRef = useRef(annotations);
+  const documentFilePathRef = useRef(documentFilePath);
   const noteModeEnabledRef = useRef(noteModeEnabled);
   const readOnlyRef = useRef(readOnly);
   const currentMarkdownRef = useRef(normalizeMarkdownForScholium(value));
@@ -1197,6 +1219,68 @@ export function MilkdownMarkdownEditor({
   function scheduleAnnotationFrameUpdate() {
     window.cancelAnimationFrame(animationFrameRef.current);
     animationFrameRef.current = window.requestAnimationFrame(updateAnnotationFrames);
+  }
+
+  function hydrateLocalMarkdownImages() {
+    const root = rootRef.current;
+    const markdownPath = documentFilePathRef.current?.trim();
+    if (!root || !markdownPath) return;
+
+    root.querySelectorAll<HTMLImageElement>("img[src]").forEach((image) => {
+      const originalSrc =
+        image.getAttribute(localImageHydratedSrcAttribute) ??
+        image.getAttribute("src") ??
+        "";
+      if (!localMarkdownImageNeedsHydration(originalSrc)) return;
+
+      const loadingKey = `${markdownPath}\n${originalSrc}`;
+      if (image.getAttribute(localImageLoadingAttribute) === loadingKey) return;
+      if (
+        image.getAttribute(localImageHydratedSrcAttribute) === originalSrc &&
+        image.getAttribute(localImageMarkdownPathAttribute) === markdownPath &&
+        image.getAttribute(localImageResolvedPathAttribute) &&
+        image.getAttribute("src")?.startsWith("data:")
+      ) {
+        return;
+      }
+
+      image.setAttribute(localImageHydratedSrcAttribute, originalSrc);
+      image.setAttribute(localImageMarkdownPathAttribute, markdownPath);
+      image.setAttribute(localImageLoadingAttribute, loadingKey);
+      image.removeAttribute(localImageErrorAttribute);
+
+      void invoke<MarkdownImageFileResult>("read_markdown_image_file", {
+        markdownPath,
+        imageSrc: originalSrc,
+      })
+        .then((result) => {
+          if (
+            image.getAttribute(localImageHydratedSrcAttribute) !== originalSrc ||
+            image.getAttribute(localImageMarkdownPathAttribute) !== markdownPath
+          ) {
+            return;
+          }
+
+          image.src = result.dataUrl;
+          image.setAttribute(localImageResolvedPathAttribute, result.path);
+          image.removeAttribute(localImageErrorAttribute);
+        })
+        .catch(() => {
+          if (
+            image.getAttribute(localImageHydratedSrcAttribute) !== originalSrc ||
+            image.getAttribute(localImageMarkdownPathAttribute) !== markdownPath
+          ) {
+            return;
+          }
+
+          image.setAttribute(localImageErrorAttribute, "true");
+        })
+        .finally(() => {
+          if (image.getAttribute(localImageLoadingAttribute) === loadingKey) {
+            image.removeAttribute(localImageLoadingAttribute);
+          }
+        });
+    });
   }
 
   function selectedMilkdownText() {
@@ -1312,6 +1396,11 @@ export function MilkdownMarkdownEditor({
   }, [annotations]);
 
   useEffect(() => {
+    documentFilePathRef.current = documentFilePath;
+    hydrateLocalMarkdownImages();
+  }, [documentFilePath]);
+
+  useEffect(() => {
     const crepe = crepeRef.current;
     if (!crepe) return;
 
@@ -1343,6 +1432,25 @@ export function MilkdownMarkdownEditor({
       window.cancelAnimationFrame(animationFrameRef.current);
       resizeObserver.disconnect();
       window.removeEventListener("resize", scheduleAnnotationFrameUpdate);
+    };
+  }, [editorRevision]);
+
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root) return;
+
+    hydrateLocalMarkdownImages();
+
+    const mutationObserver = new MutationObserver(hydrateLocalMarkdownImages);
+    mutationObserver.observe(root, {
+      attributeFilter: ["src"],
+      attributes: true,
+      childList: true,
+      subtree: true,
+    });
+
+    return () => {
+      mutationObserver.disconnect();
     };
   }, [editorRevision]);
 
@@ -1619,6 +1727,7 @@ export function MilkdownMarkdownEditor({
       .create()
       .then(() => {
         crepe.setReadonly(readOnlyRef.current);
+        hydrateLocalMarkdownImages();
         scheduleAnnotationFrameUpdate();
       })
       .catch((error: unknown) => {

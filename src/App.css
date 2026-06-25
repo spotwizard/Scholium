@@ -474,7 +474,16 @@ button:disabled {
   background: var(--color-directory-selected-bg);
 }
 
+.document-row.is-batch-selected:not(.is-selected) {
+  color: var(--color-heading);
+  background: color-mix(in srgb, var(--color-directory-selected-bg) 42%, transparent);
+}
+
 .document-row.is-selected .document-disclosure {
+  color: var(--color-directory-selected-text);
+}
+
+.document-row.is-batch-selected .document-disclosure {
   color: var(--color-directory-selected-text);
 }
 
@@ -482,8 +491,16 @@ button:disabled {
   background: color-mix(in srgb, var(--color-directory-selected-text) 82%, transparent);
 }
 
+.document-row.is-batch-selected::after {
+  background: color-mix(in srgb, var(--color-directory-selected-text) 54%, transparent);
+}
+
 .document-row.is-selected:hover {
   background: var(--color-directory-selected-bg);
+}
+
+.document-row.is-batch-selected:hover {
+  background: color-mix(in srgb, var(--color-directory-selected-bg) 58%, transparent);
 }
 
 .document-row.is-selected::before {
@@ -530,6 +547,11 @@ button:disabled {
   font-weight: 650;
 }
 
+.document-row.is-batch-selected .document-title {
+  color: var(--color-directory-selected-text);
+  font-weight: 650;
+}
+
 .document-row.file-search-result .document-title {
   display: grid;
   gap: 2px;
@@ -571,7 +593,7 @@ button:disabled {
 .file-context-menu {
   position: fixed;
   z-index: 80;
-  min-width: 180px;
+  min-width: 206px;
   padding: 6px;
   border: 1px solid var(--color-border);
   border-radius: 8px;
@@ -1981,6 +2003,22 @@ button:disabled {
 .markdown-preview pre code {
   padding: 0;
   background: transparent;
+}
+
+.markdown-preview img,
+.bottom-note-body img,
+.milkdown-markdown-editor .ProseMirror img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 0.35em 0 1em;
+}
+
+.milkdown-markdown-editor .ProseMirror img[data-scholium-local-image-error="true"] {
+  min-width: 160px;
+  min-height: 44px;
+  border: 1px dashed var(--color-danger-text);
+  border-radius: 6px;
 }
 
 .markdown-preview .mermaid-diagram,

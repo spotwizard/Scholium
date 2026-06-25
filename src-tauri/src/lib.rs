@@ -1,4 +1,7 @@
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use base64::{
+    engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
+    Engine as _,
+};
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -26,6 +29,7 @@ const MENU_FAVORITE_DIRECTORY_PREFIX: &str = "file:favorite-directory:";
 const MENU_RECENT_LOCATION_PREFIX: &str = "file:recent-location:";
 const MAX_RECENT_LOCATIONS: usize = 12;
 const MAX_FILE_SEARCH_RESULTS: usize = 200;
+const MAX_LOCAL_IMAGE_BYTES: u64 = 64 * 1024 * 1024;
 const NOTES_STORE_DIRECTORY: &str = "notes";
 const DEFAULT_APP_LANGUAGE: &str = "zh-Hant";
 const DROPBOX_OAUTH_REDIRECT_PORT: u16 = 53682;
@@ -225,6 +229,20 @@ struct SaveMarkdownFile {
 struct DeleteMarkdownFile {
     path: String,
     notes_path: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WritePdfFile {
+    path: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalImageFile {
+    path: String,
+    mime_type: String,
+    data_url: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -1393,6 +1411,95 @@ fn is_markdown_path(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+fn hex_digit_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn decode_url_path(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+
+    while index < bytes.len() {
+        if bytes[index] == b'%' && index + 2 < bytes.len() {
+            if let (Some(high), Some(low)) = (
+                hex_digit_value(bytes[index + 1]),
+                hex_digit_value(bytes[index + 2]),
+            ) {
+                decoded.push((high << 4) | low);
+                index += 3;
+                continue;
+            }
+        }
+
+        decoded.push(bytes[index]);
+        index += 1;
+    }
+
+    String::from_utf8_lossy(&decoded).to_string()
+}
+
+fn strip_local_url_suffix(src: &str) -> &str {
+    let query_index = src.find('?').unwrap_or(src.len());
+    let fragment_index = src.find('#').unwrap_or(src.len());
+    let end_index = query_index.min(fragment_index);
+
+    &src[..end_index]
+}
+
+fn local_image_mime_type(path: &Path) -> Option<&'static str> {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .and_then(|extension| match extension.to_lowercase().as_str() {
+            "png" => Some("image/png"),
+            "jpg" | "jpeg" => Some("image/jpeg"),
+            "gif" => Some("image/gif"),
+            "webp" => Some("image/webp"),
+            "bmp" => Some("image/bmp"),
+            "avif" => Some("image/avif"),
+            _ => None,
+        })
+}
+
+fn markdown_image_file_path(markdown_path: &Path, image_src: &str) -> Result<PathBuf, String> {
+    let trimmed_src = image_src.trim();
+    if trimmed_src.is_empty() {
+        return Err("image source is empty".to_string());
+    }
+
+    let local_src = strip_local_url_suffix(trimmed_src);
+    if local_src.is_empty() {
+        return Err("image source is empty".to_string());
+    }
+
+    if let Ok(url) = Url::parse(local_src) {
+        if url.scheme() != "file" {
+            return Err("image source is not a local file".to_string());
+        }
+
+        return url
+            .to_file_path()
+            .map_err(|_| "failed to resolve file image source".to_string());
+    }
+
+    let decoded_src = decode_url_path(local_src);
+    let image_path = PathBuf::from(decoded_src);
+    if image_path.is_absolute() {
+        return Ok(image_path);
+    }
+
+    let markdown_directory = markdown_path
+        .parent()
+        .ok_or_else(|| "Markdown file has no parent directory".to_string())?;
+
+    Ok(markdown_directory.join(image_path))
+}
+
 fn is_hidden_path(path: &Path) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
@@ -1649,6 +1756,43 @@ fn open_markdown_file_context(
 }
 
 #[tauri::command]
+fn read_markdown_image_file(
+    markdown_path: String,
+    image_src: String,
+) -> Result<LocalImageFile, String> {
+    let markdown_path = PathBuf::from(markdown_path);
+    if !markdown_path.is_file() {
+        return Err("selected Markdown path is not a file".to_string());
+    }
+    if !is_markdown_path(&markdown_path) {
+        return Err("selected file is not a Markdown file".to_string());
+    }
+
+    let image_path = markdown_image_file_path(&markdown_path, &image_src)?;
+    let mime_type = local_image_mime_type(&image_path)
+        .ok_or_else(|| "embedded file is not a supported image".to_string())?;
+    let metadata = fs::metadata(&image_path)
+        .map_err(|error| format!("failed to read embedded image metadata: {error}"))?;
+    if !metadata.is_file() {
+        return Err("embedded image path is not a file".to_string());
+    }
+    if metadata.len() > MAX_LOCAL_IMAGE_BYTES {
+        return Err("embedded image is too large".to_string());
+    }
+
+    let bytes =
+        fs::read(&image_path).map_err(|error| format!("failed to read embedded image: {error}"))?;
+    let resolved_path = fs::canonicalize(&image_path).unwrap_or(image_path);
+    let encoded = STANDARD.encode(bytes);
+
+    Ok(LocalImageFile {
+        path: resolved_path.to_string_lossy().to_string(),
+        mime_type: mime_type.to_string(),
+        data_url: format!("data:{mime_type};base64,{encoded}"),
+    })
+}
+
+#[tauri::command]
 fn open_markdown_directory(app: AppHandle, path: String) -> Result<OpenMarkdownDirectory, String> {
     let directory = PathBuf::from(path);
     if !directory.is_dir() {
@@ -1772,6 +1916,121 @@ fn delete_markdown_file(app: AppHandle, path: String) -> Result<DeleteMarkdownFi
         path: markdown_path.to_string_lossy().to_string(),
         notes_path: notes_path.to_string_lossy().to_string(),
     })
+}
+
+fn ensure_pdf_extension(mut path: PathBuf) -> PathBuf {
+    if !path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| extension.eq_ignore_ascii_case("pdf"))
+        .unwrap_or(false)
+    {
+        path.set_extension("pdf");
+    }
+
+    path
+}
+
+fn write_pdf_bytes(path: PathBuf, data_base64: String) -> Result<WritePdfFile, String> {
+    let path = ensure_pdf_extension(path);
+    let parent = path
+        .parent()
+        .ok_or_else(|| "PDF output path has no parent directory".to_string())?;
+    if !parent.is_dir() {
+        return Err("PDF output directory does not exist".to_string());
+    }
+
+    let bytes = STANDARD
+        .decode(data_base64.trim())
+        .map_err(|error| format!("failed to decode PDF data: {error}"))?;
+    if bytes.is_empty() {
+        return Err("PDF data is empty".to_string());
+    }
+
+    fs::write(&path, bytes).map_err(|error| format!("failed to write PDF file: {error}"))?;
+
+    Ok(WritePdfFile {
+        path: path.to_string_lossy().to_string(),
+    })
+}
+
+fn sanitize_pdf_file_name(file_name: &str) -> String {
+    let fallback = "Scholium.pdf";
+    let mut sanitized = file_name
+        .trim()
+        .chars()
+        .map(|character| {
+            if character.is_control()
+                || matches!(character, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|')
+            {
+                '_'
+            } else {
+                character
+            }
+        })
+        .collect::<String>();
+
+    while sanitized.ends_with('.') || sanitized.ends_with(' ') {
+        sanitized.pop();
+    }
+
+    if sanitized.is_empty() {
+        sanitized = fallback.to_string();
+    }
+    if !sanitized.to_lowercase().ends_with(".pdf") {
+        sanitized.push_str(".pdf");
+    }
+
+    sanitized
+}
+
+fn now_timestamp_millis() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0)
+}
+
+fn unique_pdf_path(directory: &Path, file_name: &str) -> PathBuf {
+    let sanitized_file_name = sanitize_pdf_file_name(file_name);
+    let requested_path = ensure_pdf_extension(directory.join(&sanitized_file_name));
+    if !requested_path.exists() {
+        return requested_path;
+    }
+
+    let requested_stem = requested_path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .filter(|stem| !stem.trim().is_empty())
+        .unwrap_or("Scholium");
+
+    for index in 2..10_000 {
+        let candidate = directory.join(format!("{requested_stem} {index}.pdf"));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+
+    directory.join(format!("{requested_stem} {}.pdf", now_timestamp_millis()))
+}
+
+#[tauri::command]
+fn write_pdf_file(path: String, data_base64: String) -> Result<WritePdfFile, String> {
+    write_pdf_bytes(PathBuf::from(path), data_base64)
+}
+
+#[tauri::command]
+fn write_pdf_file_to_directory(
+    directory: String,
+    file_name: String,
+    data_base64: String,
+) -> Result<WritePdfFile, String> {
+    let directory_path = PathBuf::from(directory);
+    if !directory_path.is_dir() {
+        return Err("PDF output directory does not exist".to_string());
+    }
+
+    write_pdf_bytes(unique_pdf_path(&directory_path, &file_name), data_base64)
 }
 
 #[tauri::command]
@@ -2432,6 +2691,7 @@ fn build_app_menu(app_handle: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wr
                     &new_file,
                     &open_file,
                     &open_folder,
+                    &PredefinedMenuItem::separator(app_handle)?,
                     &cloud,
                     &favorite_directories,
                     &recent_locations,
@@ -2604,9 +2864,12 @@ pub fn run() {
             open_markdown_directory,
             open_markdown_file,
             open_markdown_file_context,
+            read_markdown_image_file,
             search_markdown_files,
             duplicate_markdown_file,
             delete_markdown_file,
+            write_pdf_file,
+            write_pdf_file_to_directory,
             save_markdown_file,
             remember_recent_location,
             set_current_directory_location,
