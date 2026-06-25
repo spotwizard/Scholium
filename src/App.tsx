@@ -6115,6 +6115,12 @@ function App() {
   }, [expandedNotePanelScrollLocked]);
 
   useEffect(() => {
+    if (!expandedNotePanelScrollLocked || !directoryPaneOpen) return;
+
+    collapseDirectoryPaneForNoteExpansion();
+  }, [directoryPaneOpen, expandedNotePanelScrollLocked]);
+
+  useEffect(() => {
     if (noteModeEnabled) return;
 
     resetNoteModeInteractionState();
@@ -11494,6 +11500,23 @@ function App() {
     }
   }
 
+  function collapseDirectoryPaneForNoteExpansion() {
+    if (!directoryPaneOpen) return;
+
+    if (isMobileViewport) {
+      setDirectoryPaneOpen(false);
+      return;
+    }
+
+    const writtenValue = writeSetting("app.directoryPaneOpen", false) as boolean;
+    recordFullscreenDirectoryPaneManualValue(writtenValue);
+    setSettingsSnapshot((currentSettings) => ({
+      ...currentSettings,
+      "app.directoryPaneOpen": writtenValue,
+    }));
+    setDirectoryPaneOpen(writtenValue);
+  }
+
   function openNoteLibrary() {
     if (!annotationToolsAvailable) return;
 
@@ -11501,19 +11524,7 @@ function App() {
     setEditingLibraryNoteId("");
     setExpandedLibraryNoteId("");
     resetNoteModeInteractionState();
-    if (directoryPaneOpen) {
-      if (isMobileViewport) {
-        setDirectoryPaneOpen(false);
-      } else {
-        const writtenValue = writeSetting("app.directoryPaneOpen", false) as boolean;
-        recordFullscreenDirectoryPaneManualValue(writtenValue);
-        setSettingsSnapshot((currentSettings) => ({
-          ...currentSettings,
-          "app.directoryPaneOpen": writtenValue,
-        }));
-        setDirectoryPaneOpen(writtenValue);
-      }
-    }
+    collapseDirectoryPaneForNoteExpansion();
     setNoteLibraryOpen(true);
   }
 
