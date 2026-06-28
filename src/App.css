@@ -4299,7 +4299,7 @@ button:disabled {
 
   .editor-surface {
     min-height: 100svh;
-    padding: 22px 12px calc(var(--mobile-command-bar-height) + env(safe-area-inset-bottom) + 22px);
+    padding: 22px 10px calc(var(--mobile-command-bar-height) + env(safe-area-inset-bottom) + 22px);
   }
 
   .editor-content-frame {
@@ -4369,13 +4369,14 @@ button:disabled {
   .markdown-preview ol,
   .milkdown-markdown-editor .milkdown .ProseMirror ul,
   .milkdown-markdown-editor .milkdown .ProseMirror ol {
-    margin: 0 0 0.68em;
-    padding-left: 14px !important;
+    margin: 0 0 0.68em -18px;
+    padding-left: 1.18em !important;
   }
 
   .markdown-preview ol,
   .milkdown-markdown-editor .milkdown .ProseMirror ol {
-    padding-left: 18px !important;
+    margin-left: -8px;
+    padding-left: 1.34em !important;
   }
 
   .markdown-preview li + li,
@@ -4387,29 +4388,39 @@ button:disabled {
   .markdown-preview li > ol,
   .milkdown-markdown-editor .milkdown .ProseMirror li > ul,
   .milkdown-markdown-editor .milkdown .ProseMirror li > ol {
+    margin-left: -14px;
     margin-top: 0.16em;
     margin-bottom: 0.28em;
   }
 
   .markdown-preview li > ul,
   .milkdown-markdown-editor .milkdown .ProseMirror li > ul {
-    padding-left: 10px !important;
+    padding-left: 1.08em !important;
   }
 
   .markdown-preview li > ol,
   .milkdown-markdown-editor .milkdown .ProseMirror li > ol {
-    padding-left: 14px !important;
+    padding-left: 1.24em !important;
+  }
+
+  .milkdown-markdown-editor .milkdown .milkdown-list-item-block {
+    margin-left: -14px;
+    padding-left: 0;
+  }
+
+  .milkdown-markdown-editor .milkdown .milkdown-list-item-block .milkdown-list-item-block {
+    margin-left: -8px;
   }
 
   .milkdown-markdown-editor .milkdown .milkdown-list-item-block li {
-    gap: 2px;
-    column-gap: 2px;
+    gap: 8px;
+    column-gap: 8px;
   }
 
   .milkdown-markdown-editor .milkdown .milkdown-list-item-block li .label-wrapper,
   .milkdown-markdown-editor .milkdown .milkdown-list-item-block li .label-wrapper .label {
-    width: 12px;
-    min-width: 12px;
+    width: 22px;
+    min-width: 22px;
   }
 
   .milkdown-markdown-editor .milkdown .milkdown-list-item-block li .label-wrapper {
