@@ -4413,18 +4413,30 @@ button:disabled {
   }
 
   .milkdown-markdown-editor .milkdown .milkdown-list-item-block li {
-    gap: 8px;
-    column-gap: 8px;
+    gap: 5px;
+    column-gap: 5px;
   }
 
   .milkdown-markdown-editor .milkdown .milkdown-list-item-block li .label-wrapper,
   .milkdown-markdown-editor .milkdown .milkdown-list-item-block li .label-wrapper .label {
-    width: 22px;
+    height: var(--settings-editor-line-height-px) !important;
+    width: 22px !important;
     min-width: 22px;
+    padding: 0 !important;
   }
 
   .milkdown-markdown-editor .milkdown .milkdown-list-item-block li .label-wrapper {
+    align-items: center;
     justify-content: flex-end;
+    line-height: 1;
+  }
+
+  .milkdown-markdown-editor .milkdown .milkdown-list-item-block li .label-wrapper .label {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    line-height: 1;
+    transform: translateY(0.22em) !important;
   }
 
   .milkdown-markdown-editor .milkdown .milkdown-code-block {
