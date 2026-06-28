@@ -11,6 +11,7 @@ use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+#[cfg(desktop)]
 use tauri::menu::{AboutMetadata, Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::{AppHandle, Emitter, Manager};
 use url::Url;
@@ -442,7 +443,15 @@ fn dropbox_notes_markdown_path(dropbox_path: &str) -> PathBuf {
 fn read_document_notes(
     app: &AppHandle,
     markdown_path: &Path,
-) -> Result<(String, Vec<SelectionNote>, Vec<GlossaryTerm>, Vec<GlossaryBinding>), String> {
+) -> Result<
+    (
+        String,
+        Vec<SelectionNote>,
+        Vec<GlossaryTerm>,
+        Vec<GlossaryBinding>,
+    ),
+    String,
+> {
     let notes_path = notes_store_path(app, markdown_path)?;
     let notes_file = read_notes_file(app, markdown_path)?;
     let (notes, glossary_terms, glossary_bindings) = notes_file
@@ -852,8 +861,8 @@ async fn refresh_dropbox_access_token(
         .await
         .map_err(|error| format!("failed to refresh Dropbox token: {error}"))?;
 
-    let token_response = parse_dropbox_token_response(response, "failed to refresh Dropbox token")
-        .await?;
+    let token_response =
+        parse_dropbox_token_response(response, "failed to refresh Dropbox token").await?;
     let refreshed_tokens = DropboxTokenStore {
         app_key: tokens.app_key,
         access_token: token_response.access_token,
@@ -974,7 +983,11 @@ fn dropbox_child_path(parent_path: &str, file_name: &str) -> String {
     if normalized_parent_path.is_empty() {
         format!("/{file_name}")
     } else {
-        format!("{}/{}", normalized_parent_path.trim_end_matches('/'), file_name)
+        format!(
+            "{}/{}",
+            normalized_parent_path.trim_end_matches('/'),
+            file_name
+        )
     }
 }
 
@@ -1063,7 +1076,9 @@ async fn upload_dropbox_markdown_file(
         return Err("Dropbox authorization failed; reconnect Dropbox.".to_string());
     }
     if !response.status().is_success() {
-        return Err(dropbox_response_error(response, "failed to upload Dropbox Markdown file").await);
+        return Err(
+            dropbox_response_error(response, "failed to upload Dropbox Markdown file").await,
+        );
     }
 
     let metadata = response
@@ -1071,12 +1086,7 @@ async fn upload_dropbox_markdown_file(
         .await
         .map_err(|error| format!("failed to parse Dropbox upload response: {error}"))?;
 
-    dropbox_file_from_write_metadata(
-        app,
-        metadata,
-        body,
-        normalized_path,
-    )
+    dropbox_file_from_write_metadata(app, metadata, body, normalized_path)
 }
 
 async fn read_dropbox_list_page(
@@ -1961,7 +1971,10 @@ fn sanitize_pdf_file_name(file_name: &str) -> String {
         .chars()
         .map(|character| {
             if character.is_control()
-                || matches!(character, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|')
+                || matches!(
+                    character,
+                    '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|'
+                )
             {
                 '_'
             } else {
@@ -2492,7 +2505,9 @@ async fn delete_dropbox_markdown_file(
         return Err("Dropbox authorization failed; reconnect Dropbox.".to_string());
     }
     if !response.status().is_success() {
-        return Err(dropbox_response_error(response, "failed to delete Dropbox Markdown file").await);
+        return Err(
+            dropbox_response_error(response, "failed to delete Dropbox Markdown file").await,
+        );
     }
 
     let notes_markdown_path = dropbox_notes_markdown_path(&normalized_path);
@@ -2501,6 +2516,7 @@ async fn delete_dropbox_markdown_file(
     Ok(deleted_file)
 }
 
+#[cfg(desktop)]
 fn build_favorite_directories_submenu(
     app_handle: &tauri::AppHandle,
     store: &LocationStore,
@@ -2564,6 +2580,7 @@ fn build_favorite_directories_submenu(
     Ok(submenu)
 }
 
+#[cfg(desktop)]
 fn build_recent_locations_submenu(
     app_handle: &tauri::AppHandle,
     store: &LocationStore,
@@ -2611,6 +2628,7 @@ fn build_recent_locations_submenu(
     Ok(submenu)
 }
 
+#[cfg(desktop)]
 fn build_app_menu(app_handle: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let language = current_app_language(app_handle);
     let location_store = current_location_store(app_handle);
@@ -2735,6 +2753,7 @@ fn build_app_menu(app_handle: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wr
     )
 }
 
+#[cfg(desktop)]
 fn refresh_app_menu(app_handle: &tauri::AppHandle) -> Result<(), String> {
     let menu = build_app_menu(app_handle)
         .map_err(|error| format!("failed to rebuild app menu: {error}"))?;
@@ -2743,6 +2762,11 @@ fn refresh_app_menu(app_handle: &tauri::AppHandle) -> Result<(), String> {
         .set_menu(menu)
         .map(|_| ())
         .map_err(|error| format!("failed to set app menu: {error}"))
+}
+
+#[cfg(not(desktop))]
+fn refresh_app_menu(_app_handle: &tauri::AppHandle) -> Result<(), String> {
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
@@ -2774,7 +2798,7 @@ fn greet(name: &str) -> String {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .manage(LocationMenuState::default())
         .manage(DropboxState::default())
         .setup(|app| {
@@ -2801,62 +2825,65 @@ pub fn run() {
             }
 
             Ok(())
-        })
-        .menu(build_app_menu)
-        .on_menu_event(|app, event| {
-            let event_id = event.id().as_ref();
+        });
 
-            if event_id == MENU_NEW_FILE {
-                let _ = app.emit("menu:new-file", ());
-                let _ = app.emit("scholium-new-file", ());
-            } else if event_id == MENU_OPEN_SETTINGS {
-                let _ = app.emit("menu:open-settings", ());
-                let _ = app.emit("scholium-open-settings", ());
-            } else if event_id == MENU_OPEN_FILE {
-                let _ = app.emit("menu:open-file", ());
-                let _ = app.emit("scholium-open-file", ());
-            } else if event_id == MENU_OPEN_FOLDER {
-                let _ = app.emit("menu:open-folder", ());
-                let _ = app.emit("scholium-open-folder", ());
-            } else if event_id == MENU_CLOUD_DROPBOX {
-                let _ = app.emit("menu:open-dropbox", ());
-                let _ = app.emit("scholium-open-dropbox", ());
-            } else if event_id == MENU_ADD_CURRENT_DIRECTORY_TO_FAVORITES {
-                let current_directory = app
-                    .state::<LocationMenuState>()
-                    .current_directory
-                    .lock()
-                    .ok()
-                    .and_then(|current_directory| current_directory.clone());
+    #[cfg(desktop)]
+    let builder = builder.menu(build_app_menu).on_menu_event(|app, event| {
+        let event_id = event.id().as_ref();
 
-                if let Some(directory) = current_directory {
-                    let _ = remember_favorite_directory_entry(app, directory);
-                }
-            } else if event_id == MENU_CLEAR_FAVORITE_DIRECTORIES {
-                let _ = clear_favorite_directories(app);
-            } else if event_id == MENU_CLEAR_RECENT_LOCATIONS {
-                let _ = clear_recent_locations(app);
-            } else if event_id.starts_with(MENU_FAVORITE_DIRECTORY_PREFIX)
-                || event_id.starts_with(MENU_RECENT_LOCATION_PREFIX)
-            {
-                let store = current_location_store(app);
-                let location = indexed_location(
-                    &store.favorite_directories,
-                    event_id,
-                    MENU_FAVORITE_DIRECTORY_PREFIX,
-                )
-                .or_else(|| indexed_location(&store.recent, event_id, MENU_RECENT_LOCATION_PREFIX));
+        if event_id == MENU_NEW_FILE {
+            let _ = app.emit("menu:new-file", ());
+            let _ = app.emit("scholium-new-file", ());
+        } else if event_id == MENU_OPEN_SETTINGS {
+            let _ = app.emit("menu:open-settings", ());
+            let _ = app.emit("scholium-open-settings", ());
+        } else if event_id == MENU_OPEN_FILE {
+            let _ = app.emit("menu:open-file", ());
+            let _ = app.emit("scholium-open-file", ());
+        } else if event_id == MENU_OPEN_FOLDER {
+            let _ = app.emit("menu:open-folder", ());
+            let _ = app.emit("scholium-open-folder", ());
+        } else if event_id == MENU_CLOUD_DROPBOX {
+            let _ = app.emit("menu:open-dropbox", ());
+            let _ = app.emit("scholium-open-dropbox", ());
+        } else if event_id == MENU_ADD_CURRENT_DIRECTORY_TO_FAVORITES {
+            let current_directory = app
+                .state::<LocationMenuState>()
+                .current_directory
+                .lock()
+                .ok()
+                .and_then(|current_directory| current_directory.clone());
 
-                if let Some(location) = location {
-                    let payload = OpenLocationPayload {
-                        kind: location.kind.clone(),
-                        path: location.path.clone(),
-                    };
-                    let _ = app.emit("menu:open-location", &payload);
-                    let _ = app.emit("scholium-open-location", payload);
-                }
+            if let Some(directory) = current_directory {
+                let _ = remember_favorite_directory_entry(app, directory);
             }
-        })
+        } else if event_id == MENU_CLEAR_FAVORITE_DIRECTORIES {
+            let _ = clear_favorite_directories(app);
+        } else if event_id == MENU_CLEAR_RECENT_LOCATIONS {
+            let _ = clear_recent_locations(app);
+        } else if event_id.starts_with(MENU_FAVORITE_DIRECTORY_PREFIX)
+            || event_id.starts_with(MENU_RECENT_LOCATION_PREFIX)
+        {
+            let store = current_location_store(app);
+            let location = indexed_location(
+                &store.favorite_directories,
+                event_id,
+                MENU_FAVORITE_DIRECTORY_PREFIX,
+            )
+            .or_else(|| indexed_location(&store.recent, event_id, MENU_RECENT_LOCATION_PREFIX));
+
+            if let Some(location) = location {
+                let payload = OpenLocationPayload {
+                    kind: location.kind.clone(),
+                    path: location.path.clone(),
+                };
+                let _ = app.emit("menu:open-location", &payload);
+                let _ = app.emit("scholium-open-location", payload);
+            }
+        }
+    });
+
+    builder
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![

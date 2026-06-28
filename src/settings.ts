@@ -115,7 +115,7 @@ export const settingsDefinitions: SettingDefinition[] = [
     type: "select",
     labelKey: "settings.app.theme.label",
     descriptionKey: "settings.app.theme.description",
-    defaultValue: "system",
+    defaultValue: "light",
     options: [
       { labelKey: "settings.app.theme.option.system", value: "system" },
       { labelKey: "settings.app.theme.option.light", value: "light" },

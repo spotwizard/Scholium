@@ -1072,6 +1072,14 @@ function directoryTreeKey(entry: Pick<WorkspaceEntry, "path" | "source">) {
   return `${entry.source ?? "local"}:${entry.path}`;
 }
 
+function workspaceEntrySelectionKey(entry: WorkspaceEntry) {
+  return `${entry.kind}:${entry.source ?? "local"}:${entry.path}`;
+}
+
+function localFileSearchResultSelectionKey(result: SearchMarkdownFileResult) {
+  return `file-search:${result.path}`;
+}
+
 function workspaceEntriesFromOpenedDirectory(
   openedDirectory: OpenMarkdownDirectoryResult,
   depth: number,
@@ -5742,6 +5750,7 @@ function App() {
   const [selectedWorkspaceDocumentIds, setSelectedWorkspaceDocumentIds] = useState<Set<string>>(
     () => new Set(),
   );
+  const [mobileSelectedWorkspaceEntryKey, setMobileSelectedWorkspaceEntryKey] = useState("");
   const [notes, setNotes] = useState(notesSeed);
   const [glossaryTerms, setGlossaryTerms] = useState(glossaryTermsSeed);
   const [glossaryBindings, setGlossaryBindings] = useState(glossaryBindingsSeed);
@@ -6049,6 +6058,12 @@ function App() {
   const shouldShowSelectionConfirmation = Boolean(
     noteModeEnabled && pendingAnchor && isMobileViewport && !pendingAnchorIsGlossaryTerm,
   );
+  const pendingAnchorCanCreateNote = Boolean(
+    pendingAnchor &&
+      !pendingGlossaryTerm &&
+      !pendingAnchorIsGlossaryTerm &&
+      (pendingAnchorIsCompleteBlock || isMobileViewport),
+  );
   const notePanelHasContent = Boolean(
     noteModeEnabled &&
       (shouldShowSelectionConfirmation ||
@@ -6300,6 +6315,11 @@ function App() {
       mediaQuery.removeEventListener("change", updateMobileViewport);
     };
   }, []);
+
+  useEffect(() => {
+    if (isMobileViewport && directoryPaneOpen) return;
+    setMobileSelectedWorkspaceEntryKey("");
+  }, [directoryPaneOpen, isMobileViewport]);
 
   useEffect(() => {
     if (directoryPaneStartupSettingNormalizedRef.current) return;
@@ -6717,8 +6737,12 @@ function App() {
     const warningWidth = 260;
     const warningHeight = 44;
     const viewportMargin = 12;
+    const mobileBottomReservedHeight = window.matchMedia("(max-width: 640px)").matches ? 104 : 0;
     const maxLeft = Math.max(viewportMargin, window.innerWidth - warningWidth - viewportMargin);
-    const maxTop = Math.max(viewportMargin, window.innerHeight - warningHeight - viewportMargin);
+    const maxTop = Math.max(
+      viewportMargin,
+      window.innerHeight - warningHeight - viewportMargin - mobileBottomReservedHeight,
+    );
 
     if (!anchorRect) {
       return {
@@ -8144,6 +8168,7 @@ function App() {
     setExpandedDirectoryKeys(new Set());
     setLoadingDirectoryKeys(new Set());
     setSelectedWorkspaceDocumentIds(new Set());
+    setMobileSelectedWorkspaceEntryKey("");
     setSelectedDocumentId("");
     setSelectionWarningPosition(null);
     setPendingAnchor(null);
@@ -8284,6 +8309,7 @@ function App() {
     discardTransientEmptySelectionNote();
     discardTransientEmptyGlossary();
     setSelectedWorkspaceDocumentIds(new Set());
+    setMobileSelectedWorkspaceEntryKey("");
 
     const loadedFiles = openedDirectory.entries.flatMap((entry) =>
       entry.kind === "file" ? [entry.file] : [],
@@ -8525,11 +8551,6 @@ function App() {
         setDropboxDirectoryPicker(null);
         dropboxOpenAfterAuthRef.current = false;
         openSettingsView("cloud");
-        setStorageError(
-          configuredDropboxAppKey
-            ? t("dropbox.error.connectInSettings")
-            : t("dropbox.error.notConfigured"),
-        );
         return;
       }
       if (!status.connected && options.allowPendingConnection) {
@@ -8543,7 +8564,6 @@ function App() {
         setDropboxDirectoryPicker(null);
         setDropboxConnected(false);
         openSettingsView("cloud");
-        setStorageError(message);
         return;
       }
 
@@ -8830,8 +8850,21 @@ function App() {
       return;
     }
 
+    if (isMobileViewport && (entry.kind === "directory" || entry.kind === "file")) {
+      const entryKey = workspaceEntrySelectionKey(entry);
+      const entryIsCurrentDocument =
+        entry.kind === "file" && entry.documentId === selectedDocumentIdRef.current;
+
+      if (!entryIsCurrentDocument && mobileSelectedWorkspaceEntryKey !== entryKey) {
+        setSelectedWorkspaceDocumentIds(new Set());
+        setMobileSelectedWorkspaceEntryKey(entryKey);
+        return;
+      }
+    }
+
     if (entry.kind === "directory") {
       setSelectedWorkspaceDocumentIds(new Set());
+      setMobileSelectedWorkspaceEntryKey("");
       void toggleWorkspaceDirectory(entry);
       return;
     }
@@ -8844,6 +8877,7 @@ function App() {
     }
 
     setSelectedWorkspaceDocumentIds(new Set());
+    setMobileSelectedWorkspaceEntryKey("");
 
     if (entry.source === "dropbox") {
       const loadedDocument = documents.find((document) => document.id === entry.documentId);
@@ -8914,6 +8948,7 @@ function App() {
 
     const loadedDocument = documentsRef.current.find((document) => document.id === result.path);
     if (loadedDocument) {
+      setMobileSelectedWorkspaceEntryKey("");
       selectDocument(loadedDocument.id);
       setStorageError("");
       if (isMobileViewport) {
@@ -8929,6 +8964,7 @@ function App() {
         path: result.path,
       });
       mergeLoadedFilesIntoDocumentState([loaded]);
+      setMobileSelectedWorkspaceEntryKey("");
       setSelectedDocumentId(loaded.path);
       rememberLastOpenedMarkdownPath(loaded.path);
       setStorageError("");
@@ -9553,13 +9589,13 @@ function App() {
   ) {
     const fileName = fileNameFromPath(fileToDuplicate.filePath ?? fileToDuplicate.path);
     const duplicateSuffix = t("duplicate.suffix");
-    const fallbackName = `${fileToDuplicate.title || t("app.untitled")} ${duplicateSuffix}.md`;
+    const fallbackName = `${stripMarkdownExtension(fileToDuplicate.title || t("app.untitled"))} ${duplicateSuffix}`;
     if (!fileName) return fallbackName;
 
-    const extensionStart = fileName.lastIndexOf(".");
-    if (extensionStart <= 0) return `${fileName} ${duplicateSuffix}.md`;
+    const fileNameWithoutExtension = stripMarkdownExtension(fileName);
+    if (!fileNameWithoutExtension) return fallbackName;
 
-    return `${fileName.slice(0, extensionStart)} ${duplicateSuffix}${fileName.slice(extensionStart)}`;
+    return `${fileNameWithoutExtension} ${duplicateSuffix}`;
   }
 
   async function writeTextToClipboard(text: string) {
@@ -9945,6 +9981,7 @@ function App() {
       setStorageError(t("error.duplicateFileNameRequired"));
       return false;
     }
+    const targetFileName = ensureMarkdownExtension(trimmedFileName);
 
     setStorageError("");
 
@@ -9967,7 +10004,7 @@ function App() {
           "duplicate_dropbox_markdown_file",
           {
             path: dropboxPath,
-            fileName: trimmedFileName,
+            fileName: targetFileName,
           },
         );
         applyLoadedDropboxFile(loaded);
@@ -9982,7 +10019,7 @@ function App() {
 
       const loaded = await invoke<OpenMarkdownFileResult>("duplicate_markdown_file", {
         path: documentToDuplicate.filePath,
-        fileName: trimmedFileName,
+        fileName: targetFileName,
       });
       applyLoadedFiles([loaded], { sortEntries: true });
       setStorageError("");
@@ -10176,6 +10213,7 @@ function App() {
     discardTransientEmptyGlossary();
     setSelectedWorkspaceDocumentIds(new Set());
     setSelectedDocumentId(documentId);
+    setMobileSelectedWorkspaceEntryKey("");
     setSelectionWarningPosition(null);
     setPendingAnchor(null);
     setPendingGlossaryTerm(null);
@@ -10589,6 +10627,30 @@ function App() {
       floatingNoteAnchorRectRef.current = null;
       notePanelHasContentRef.current = false;
     }
+
+    if (isMobileViewport && !pendingGlossaryTerm) {
+      if (selectionShouldSuppressNewAnnotation(anchor)) {
+        return;
+      }
+
+      if (glossaryModeActive && isGlossarySelectionCandidate(anchor)) {
+        startGlossaryFlowForAnchor(anchor);
+        return;
+      }
+
+      const anchorRect = currentSelectionAnchorRect();
+      if (anchorRect) {
+        floatingNoteAnchorRectRef.current = anchorRect;
+      }
+      setSelectionWarningPosition(null);
+      setPendingAnchor(anchor);
+      setNoteDraft("");
+      setPendingGlossaryTerm(null);
+      setGlossaryDraft("");
+      setActiveNoteId("");
+      setActiveNoteMode("view");
+      notePanelHasContentRef.current = true;
+    }
   }
 
   function selectionOverlapsActiveNote(anchor: TextSelectionAnchor) {
@@ -10613,6 +10675,14 @@ function App() {
     return selectionOverlapsActiveNote(anchor) || selectionOverlapsActiveGlossary(anchor);
   }
 
+  function selectionShouldSuppressNewAnnotation(anchor: TextSelectionAnchor) {
+    if (isMobileViewport && !(glossaryModeActive && isGlossarySelectionCandidate(anchor))) {
+      return false;
+    }
+
+    return selectionIsBlockedByExistingAnnotations(anchor);
+  }
+
   function handleSelectionEnter(anchor: TextSelectionAnchor) {
     if (!hasOpenDocument) return false;
     if (
@@ -10625,7 +10695,7 @@ function App() {
       return false;
     }
 
-    if (selectionIsBlockedByExistingAnnotations(anchor)) {
+    if (selectionShouldSuppressNewAnnotation(anchor)) {
       if (!noteModeEnabled) {
         setNoteModeEnabled(true);
       }
@@ -10660,6 +10730,23 @@ function App() {
     if (noteLibraryOpen) {
       setNoteLibraryOpen(false);
     }
+
+    if (isMobileViewport) {
+      const anchorRect = currentSelectionAnchorRect();
+      if (anchorRect) {
+        floatingNoteAnchorRectRef.current = anchorRect;
+      }
+      setSelectionWarningPosition(null);
+      setPendingAnchor(anchor);
+      setNoteDraft("");
+      setPendingGlossaryTerm(null);
+      setGlossaryDraft("");
+      setActiveNoteId("");
+      setActiveNoteMode("view");
+      notePanelHasContentRef.current = true;
+      return true;
+    }
+
     setPendingAnchor(null);
     setNoteDraft("");
     setPendingGlossaryTerm(null);
@@ -11030,7 +11117,7 @@ function App() {
 
   function confirmPendingSelectionNote() {
     if (!noteModeEnabled) return;
-    if (!pendingAnchor || !pendingAnchorIsCompleteBlock) return;
+    if (!pendingAnchor || (!pendingAnchorIsCompleteBlock && !isMobileViewport)) return;
 
     confirmSelectionNoteForAnchor(pendingAnchor);
   }
@@ -11840,7 +11927,7 @@ function App() {
             onClick={toggleDirectoryPane}
             type="button"
           >
-            ×
+            {t("mobilePanel.done")}
           </button>
         </div>
 
@@ -11894,8 +11981,12 @@ function App() {
               ) : null}
               {!fileSearchPending && !fileSearchError
                 ? localFileSearchResults.map((result) => {
-                    const isSelected =
+                    const mobileSelectionKey = localFileSearchResultSelectionKey(result);
+                    const isCurrentDocument =
                       hasOpenDocument && localPathsMatch(result.path, selectedDocument.id);
+                    const isSelected =
+                      isCurrentDocument ||
+                      (isMobileViewport && mobileSelectedWorkspaceEntryKey === mobileSelectionKey);
 
                     return (
                       <button
@@ -11904,6 +11995,16 @@ function App() {
                         }`}
                         key={result.path}
                         onClick={() => {
+                          if (
+                            isMobileViewport &&
+                            !isCurrentDocument &&
+                            mobileSelectedWorkspaceEntryKey !== mobileSelectionKey
+                          ) {
+                            setMobileSelectedWorkspaceEntryKey(mobileSelectionKey);
+                            setSelectedWorkspaceDocumentIds(new Set());
+                            return;
+                          }
+
                           void openLocalFileSearchResult(result);
                         }}
                         title={result.relativePath}
@@ -11925,10 +12026,14 @@ function App() {
             </>
           ) : (
             visibleWorkspaceEntries.map((entry) => {
+              const mobileSelectionKey = workspaceEntrySelectionKey(entry);
+              const isMobileSelected =
+                isMobileViewport && mobileSelectedWorkspaceEntryKey === mobileSelectionKey;
               const isSelected =
                 hasOpenDocument &&
                 entry.kind === "file" &&
                 entry.documentId === selectedDocument.id;
+              const rowIsSelected = isSelected || isMobileSelected;
               const isBatchSelected =
                 entry.kind === "file" && selectedWorkspaceDocumentIds.has(entry.documentId);
               const isDirectory = entry.kind === "directory";
@@ -11945,7 +12050,7 @@ function App() {
                   aria-expanded={isDirectory ? isExpanded : undefined}
                   className={`document-row ${isDirectory ? "is-folder" : ""} ${
                     isExpanded ? "is-expanded" : ""
-                  } ${isLoading ? "is-loading" : ""} ${isSelected ? "is-selected" : ""} ${
+                  } ${isLoading ? "is-loading" : ""} ${rowIsSelected ? "is-selected" : ""} ${
                     isBatchSelected ? "is-batch-selected" : ""
                   }`}
                   key={entry.id}
@@ -11969,7 +12074,11 @@ function App() {
                   </span>
                   <DocumentGlyphIcon
                     kind={isDirectory ? "folder" : "file"}
-                    selected={isDirectory ? useSelectedFolderIcon : isSelected || isBatchSelected}
+                    selected={
+                      isDirectory
+                        ? useSelectedFolderIcon || isMobileSelected
+                        : isSelected || isMobileSelected || isBatchSelected
+                    }
                   />
                   <span className="document-title">{entry.title}</span>
                 </button>
@@ -12058,18 +12167,27 @@ function App() {
             </div>
             <label className="duplicate-file-dialog__field">
               <span>{t("duplicate.fileName")}</span>
-              <input
-                disabled={duplicateFileDialog.isSubmitting}
-                ref={duplicateFileInputRef}
-                type="text"
-                value={duplicateFileDialog.fileName}
-                onChange={(event) => {
-                  const nextFileName = event.target.value;
-                  setDuplicateFileDialog((currentDialog) =>
-                    currentDialog ? { ...currentDialog, fileName: nextFileName } : currentDialog,
-                  );
-                }}
-              />
+              <span className="duplicate-file-dialog__file-name-control">
+                <input
+                  aria-describedby="duplicate-file-dialog-extension"
+                  disabled={duplicateFileDialog.isSubmitting}
+                  ref={duplicateFileInputRef}
+                  type="text"
+                  value={duplicateFileDialog.fileName}
+                  onChange={(event) => {
+                    const nextFileName = stripMarkdownExtension(event.target.value);
+                    setDuplicateFileDialog((currentDialog) =>
+                      currentDialog ? { ...currentDialog, fileName: nextFileName } : currentDialog,
+                    );
+                  }}
+                />
+                <span
+                  className="duplicate-file-dialog__extension"
+                  id="duplicate-file-dialog-extension"
+                >
+                  .md
+                </span>
+              </span>
             </label>
             {storageError ? (
               <p className="duplicate-file-dialog__message" role="status">
@@ -12178,6 +12296,11 @@ function App() {
                           className="dropbox-directory-dialog__row-main"
                           disabled={dropboxDirectoryPicker.isOpening}
                           onClick={() => {
+                            if (isMobileViewport && isSelected) {
+                              void openSelectedDropboxDirectory(directory.path);
+                              return;
+                            }
+
                             setDropboxDirectoryPicker((currentPicker) =>
                               currentPicker
                                 ? { ...currentPicker, selectedPath: directory.path }
@@ -12561,6 +12684,12 @@ function App() {
         </nav>
       ) : null}
 
+      {!settingsViewOpen && storageError ? (
+        <p className="mobile-storage-status" role="status">
+          {storageError}
+        </p>
+      ) : null}
+
       {!settingsViewOpen && noteModeEnabled && selectionWarningPosition ? (
         <div className="selection-warning-popover" role="status" style={selectionWarningStyle}>
           {selectionWarningMessage}
@@ -12700,10 +12829,7 @@ function App() {
                 </div>
               ) : null}
 
-              {pendingAnchor &&
-              !pendingGlossaryTerm &&
-              !pendingAnchorIsGlossaryTerm &&
-              pendingAnchorIsCompleteBlock ? (
+              {pendingAnchorCanCreateNote ? (
                 <div className="selection-confirmation">
                   <p>{t("selection.note.prompt")}</p>
                   <div className="note-actions bottom-note-actions">
