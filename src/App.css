@@ -2444,6 +2444,112 @@ button:disabled {
   line-height: var(--settings-editor-line-height-px) !important;
 }
 
+.milkdown-markdown-editor .milkdown .milkdown-list-item-block {
+  --milkdown-list-marker-gap: 0.58em;
+  --milkdown-list-marker-width: 1.05em;
+  --milkdown-bullet-marker-width: 0.42em;
+  --milkdown-bullet-size: 0.34em;
+  --milkdown-marker-baseline-shift: 0.24em;
+  color: inherit;
+}
+
+.milkdown-markdown-editor .milkdown .milkdown-list-item-block > .list-item {
+  gap: var(--milkdown-list-marker-gap) !important;
+  column-gap: var(--milkdown-list-marker-gap) !important;
+}
+
+.milkdown-markdown-editor
+  .milkdown
+  .milkdown-list-item-block
+  > .list-item
+  > .label-wrapper {
+  display: inline-flex;
+  flex: 0 0 var(--milkdown-list-marker-width);
+  width: var(--milkdown-list-marker-width) !important;
+  min-width: var(--milkdown-list-marker-width);
+  height: var(--settings-editor-line-height-px) !important;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 0 !important;
+  color: currentColor;
+  line-height: var(--settings-editor-line-height-px);
+}
+
+.milkdown-markdown-editor
+  .milkdown
+  .milkdown-list-item-block
+  > .list-item
+  > .label-wrapper:has(.bullet) {
+  --milkdown-list-marker-width: var(--milkdown-bullet-marker-width);
+}
+
+.milkdown-markdown-editor
+  .milkdown
+  .milkdown-list-item-block
+  > .list-item
+  > .label-wrapper
+  .label {
+  display: inline-flex !important;
+  width: auto !important;
+  min-width: 0;
+  height: var(--settings-editor-line-height-px) !important;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 0 !important;
+  color: currentColor;
+  line-height: var(--settings-editor-line-height-px);
+  transform: none !important;
+  -webkit-text-fill-color: currentColor;
+}
+
+.milkdown-markdown-editor
+  .milkdown
+  .milkdown-list-item-block
+  > .list-item
+  > .label-wrapper
+  .label.bullet {
+  width: var(--milkdown-bullet-marker-width) !important;
+  font-size: inherit;
+}
+
+.milkdown-markdown-editor
+  .milkdown
+  .milkdown-list-item-block
+  > .list-item
+  > .label-wrapper
+  .label
+  .scholium-list-bullet {
+  display: block;
+  flex: 0 0 auto;
+  width: var(--milkdown-bullet-size);
+  height: var(--milkdown-bullet-size);
+  border-radius: 999px;
+  background: currentColor;
+  transform: translateY(var(--milkdown-marker-baseline-shift));
+}
+
+.milkdown-markdown-editor
+  .milkdown
+  .milkdown-list-item-block
+  > .list-item
+  > .label-wrapper
+  .label
+  .scholium-list-number {
+  display: block;
+  font: inherit;
+  line-height: inherit;
+  transform: translateY(var(--milkdown-marker-baseline-shift));
+}
+
+.milkdown-markdown-editor
+  .milkdown
+  .milkdown-list-item-block
+  > .list-item
+  > .children {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
 .milkdown-markdown-editor .ProseMirror > :first-child {
   margin-top: 0;
 }
@@ -3229,6 +3335,9 @@ button:disabled {
 
 .note-markdown-editor {
   --note-markdown-editor-min-height: 96px;
+  --note-content-font-size: 0.94rem;
+  --note-content-line-height: 1.5;
+  --note-markdown-editor-chrome-height: 22px;
   width: 100%;
   min-height: var(--note-markdown-editor-min-height);
   overflow: visible;
@@ -3238,7 +3347,8 @@ button:disabled {
   color: var(--color-text);
   background: rgba(255, 255, 255, 0.7);
   font: inherit;
-  line-height: 1.5;
+  font-size: var(--note-content-font-size);
+  line-height: var(--note-content-line-height);
 }
 
 .note-markdown-editor:focus-within {
@@ -3284,10 +3394,155 @@ button:disabled {
   padding: 10px 12px;
 }
 
+.note-markdown-editor .markdown-preview {
+  min-height: var(--note-markdown-editor-min-height);
+  overflow: visible;
+  padding: 10px 12px;
+  color: var(--color-text);
+  background: transparent;
+  font: inherit;
+  font-size: inherit;
+  line-height: inherit;
+}
+
+.note-markdown-editor .markdown-preview > :first-child {
+  margin-top: 0;
+}
+
+.note-markdown-editor .markdown-preview > :last-child {
+  margin-bottom: 0;
+}
+
+.note-markdown-editor .markdown-preview h1,
+.note-markdown-editor .markdown-preview h2,
+.note-markdown-editor .markdown-preview h3,
+.note-markdown-editor .markdown-preview h4,
+.note-markdown-editor .markdown-preview h5,
+.note-markdown-editor .markdown-preview h6 {
+  margin: 0.85em 0 0.32em;
+  color: var(--color-heading);
+  font-size: 1rem;
+  font-weight: 760;
+  letter-spacing: 0;
+  line-height: 1.25;
+}
+
+.note-markdown-editor .markdown-preview h1 {
+  font-size: 1.08rem;
+}
+
+.note-markdown-editor .markdown-preview h2 {
+  padding-bottom: 0.18em;
+  border-bottom: 1px solid rgba(32, 35, 41, 0.14);
+}
+
+.note-markdown-editor .markdown-preview p,
+.note-markdown-editor .markdown-preview ul,
+.note-markdown-editor .markdown-preview ol,
+.note-markdown-editor .markdown-preview blockquote,
+.note-markdown-editor .markdown-preview pre {
+  margin: 0 0 0.72em;
+}
+
+.note-markdown-editor .markdown-preview ul,
+.note-markdown-editor .markdown-preview ol {
+  --note-list-unified-marker-gap: 0.64em;
+  --note-list-marker-gap: var(--note-list-unified-marker-gap);
+  --note-list-marker-width: 0.42em;
+  --note-list-bullet-size: 0.34em;
+  list-style: none;
+  padding-left: 0;
+}
+
+.note-markdown-editor .markdown-preview ol {
+  --note-list-marker-width: 0.78em;
+  counter-reset: scholium-note-list;
+}
+
+.note-markdown-editor .markdown-preview li {
+  position: relative;
+  padding-left: calc(var(--note-list-marker-width) + var(--note-list-marker-gap));
+}
+
+.note-markdown-editor .markdown-preview ul > li::before,
+.note-markdown-editor .markdown-preview ol > li::before {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: var(--note-list-marker-width);
+  font-variant-numeric: tabular-nums;
+  line-height: inherit;
+  text-align: right;
+}
+
+.note-markdown-editor .markdown-preview ul > li::before {
+  content: "";
+  top: 0.75em;
+  left: calc(var(--note-list-marker-width) - var(--note-list-bullet-size));
+  width: var(--note-list-bullet-size);
+  height: var(--note-list-bullet-size);
+  border-radius: 999px;
+  background: currentColor;
+  transform: translateY(-50%);
+}
+
+.note-markdown-editor .markdown-preview ol > li {
+  counter-increment: scholium-note-list;
+}
+
+.note-markdown-editor .markdown-preview ol > li::before {
+  content: counter(scholium-note-list) ".";
+}
+
+.note-markdown-editor .markdown-preview li + li {
+  margin-top: 0.18em;
+}
+
+.note-markdown-editor .markdown-preview li > ul,
+.note-markdown-editor .markdown-preview li > ol {
+  --note-list-marker-gap: 0.52em;
+  margin: 0.18em 0 0.28em;
+}
+
+.note-markdown-editor .markdown-preview li > ul {
+  --note-list-marker-width: 0.38em;
+  --note-list-bullet-size: 0.28em;
+}
+
+.note-markdown-editor .markdown-preview li > ol {
+  --note-list-marker-width: 0.72em;
+  counter-reset: scholium-note-list;
+}
+
+.note-markdown-editor .markdown-preview blockquote {
+  padding: 0.1em 0 0.1em 0.72em;
+  border-left: 3px solid var(--color-note-border);
+  color: var(--color-muted);
+  background: transparent;
+}
+
+.note-markdown-editor .markdown-preview code {
+  border-radius: 4px;
+  padding: 0.08em 0.28em;
+  color: var(--color-accent-ink);
+  background: rgba(255, 255, 255, 0.58);
+  font-size: 0.88em;
+}
+
+.note-markdown-editor .markdown-preview pre {
+  overflow: auto;
+  border: 1px solid rgba(32, 35, 41, 0.14);
+  border-radius: 6px;
+  padding: 10px;
+  background: rgba(255, 255, 255, 0.5);
+  white-space: pre;
+}
+
 .note-markdown-editor .milkdown-markdown-editor .milkdown .ProseMirror {
   min-height: var(--note-markdown-editor-min-height);
   overflow: visible;
   padding: 10px 12px;
+  color: var(--color-text) !important;
   font-size: inherit !important;
   line-height: inherit !important;
 }
@@ -3299,6 +3554,71 @@ button:disabled {
   line-height: inherit !important;
 }
 
+.note-markdown-editor .milkdown-markdown-editor .ProseMirror > :first-child {
+  margin-top: 0;
+}
+
+.note-markdown-editor .milkdown-markdown-editor .ProseMirror > :last-child {
+  margin-bottom: 0;
+}
+
+.note-markdown-editor .milkdown-markdown-editor .ProseMirror h1,
+.note-markdown-editor .milkdown-markdown-editor .ProseMirror h2,
+.note-markdown-editor .milkdown-markdown-editor .ProseMirror h3,
+.note-markdown-editor .milkdown-markdown-editor .ProseMirror h4,
+.note-markdown-editor .milkdown-markdown-editor .ProseMirror h5,
+.note-markdown-editor .milkdown-markdown-editor .ProseMirror h6 {
+  margin: 0.85em 0 0.32em;
+  color: var(--color-heading);
+  font-size: 1rem;
+  font-weight: 760;
+  letter-spacing: 0;
+  line-height: 1.25;
+}
+
+.note-markdown-editor .milkdown-markdown-editor .ProseMirror h1 {
+  font-size: 1.08rem;
+}
+
+.note-markdown-editor .milkdown-markdown-editor .ProseMirror h2 {
+  padding-bottom: 0.18em;
+  border-bottom: 1px solid rgba(32, 35, 41, 0.14);
+  margin-bottom: 0.32em;
+}
+
+.note-markdown-editor .milkdown-markdown-editor .ProseMirror p {
+  margin: 0;
+}
+
+.note-markdown-editor .milkdown-markdown-editor .ProseMirror blockquote,
+.note-markdown-editor .milkdown-markdown-editor .ProseMirror pre {
+  margin: 0 0 0.72em;
+}
+
+.note-markdown-editor .milkdown-markdown-editor .ProseMirror blockquote {
+  padding: 0.1em 0 0.1em 0.72em;
+  border-left: 3px solid var(--color-note-border);
+  color: var(--color-muted);
+  background: transparent;
+}
+
+.note-markdown-editor .milkdown-markdown-editor .ProseMirror code {
+  border-radius: 4px;
+  padding: 0.08em 0.28em;
+  color: var(--color-accent-ink);
+  background: rgba(255, 255, 255, 0.58);
+  font-size: 0.88em;
+}
+
+.note-markdown-editor .milkdown-markdown-editor .ProseMirror pre,
+.note-markdown-editor .milkdown-markdown-editor .milkdown .milkdown-code-block {
+  overflow: auto;
+  border: 1px solid rgba(32, 35, 41, 0.14);
+  border-radius: 6px;
+  padding: 10px;
+  background: rgba(255, 255, 255, 0.5);
+}
+
 .note-markdown-editor .milkdown-markdown-editor .milkdown .milkdown-list-item-block {
   --note-list-unified-marker-gap: 0.64em;
   --note-editor-list-marker-gap: var(--note-list-unified-marker-gap);
@@ -3307,6 +3627,15 @@ button:disabled {
   --note-editor-bullet-size: 0.34em;
   --note-editor-marker-color: color-mix(in srgb, var(--color-muted) 78%, transparent);
   --note-editor-marker-baseline-shift: 0.24em;
+  margin: 0;
+}
+
+.note-markdown-editor
+  .milkdown-markdown-editor
+  .milkdown
+  .milkdown-list-item-block
+  + .milkdown-list-item-block {
+  margin-top: 0.18em;
 }
 
 .note-markdown-editor .milkdown-markdown-editor .milkdown .milkdown-list-item-block > .list-item {
@@ -3414,10 +3743,16 @@ button:disabled {
 
 .note-library-card__editor {
   --note-markdown-editor-min-height: 120px;
+  max-height: calc(10 * 1.5em + var(--note-markdown-editor-chrome-height));
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .floating-note-card__editor {
   --note-markdown-editor-min-height: 96px;
+  max-height: calc(10 * 1.5em + var(--note-markdown-editor-chrome-height));
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .note-library-empty {
@@ -3682,6 +4017,7 @@ button:disabled {
 
 .floating-note-panel.is-expanded-sidebar .floating-note-card__editor {
   --note-markdown-editor-min-height: 100%;
+  max-height: none;
   min-height: 0;
   overflow: hidden;
 }
@@ -3931,6 +4267,22 @@ button:disabled {
 
 .bottom-note-body li + li {
   margin-top: 0.18em;
+}
+
+.bottom-note-body li > ul,
+.bottom-note-body li > ol {
+  --note-list-marker-gap: 0.52em;
+  margin: 0.18em 0 0.28em;
+}
+
+.bottom-note-body li > ul {
+  --note-list-marker-width: 0.38em;
+  --note-list-bullet-size: 0.28em;
+}
+
+.bottom-note-body li > ol {
+  --note-list-marker-width: 0.72em;
+  counter-reset: scholium-note-list;
 }
 
 .bottom-note-body blockquote {
@@ -4696,6 +5048,37 @@ button:disabled {
     counter-reset: scholium-note-list;
   }
 
+  .note-markdown-editor .milkdown-markdown-editor .milkdown .ProseMirror,
+  .note-markdown-editor .milkdown-markdown-editor .milkdown .ProseMirror p,
+  .note-markdown-editor .milkdown-markdown-editor .milkdown .ProseMirror li,
+  .note-markdown-editor .milkdown-markdown-editor .milkdown .ProseMirror blockquote {
+    font-size: inherit !important;
+    line-height: inherit !important;
+  }
+
+  .note-markdown-editor .milkdown-markdown-editor .ProseMirror h1,
+  .note-markdown-editor .milkdown-markdown-editor .ProseMirror h2,
+  .note-markdown-editor .milkdown-markdown-editor .ProseMirror h3,
+  .note-markdown-editor .milkdown-markdown-editor .ProseMirror h4,
+  .note-markdown-editor .milkdown-markdown-editor .ProseMirror h5,
+  .note-markdown-editor .milkdown-markdown-editor .ProseMirror h6 {
+    margin: 0.85em 0 0.32em;
+    color: var(--color-heading);
+    font-size: 1rem;
+    font-weight: 760;
+    letter-spacing: 0;
+    line-height: 1.25;
+  }
+
+  .note-markdown-editor .milkdown-markdown-editor .ProseMirror h1 {
+    font-size: 1.08rem;
+  }
+
+  .note-markdown-editor .milkdown-markdown-editor .ProseMirror h2 {
+    padding-bottom: 0.18em;
+    margin-bottom: 0.32em;
+  }
+
   .note-markdown-editor .milkdown-markdown-editor .milkdown .ProseMirror ul,
   .note-markdown-editor .milkdown-markdown-editor .milkdown .ProseMirror ol {
     margin: 0 0 0.58em -10px;
@@ -4717,7 +5100,7 @@ button:disabled {
   .note-markdown-editor .milkdown-markdown-editor .milkdown .milkdown-list-item-block {
     --mobile-list-marker-gap: var(--note-editor-list-marker-gap);
     --mobile-list-marker-width: var(--note-editor-list-marker-width);
-    margin-left: -10px;
+    margin-left: 0;
   }
 
   .note-markdown-editor
@@ -4725,7 +5108,7 @@ button:disabled {
     .milkdown
     .milkdown-list-item-block
     .milkdown-list-item-block {
-    margin-left: -6px;
+    margin-left: 0;
   }
 
   .note-markdown-editor .milkdown-markdown-editor .milkdown .milkdown-list-item-block > .list-item,

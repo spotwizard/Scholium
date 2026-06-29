@@ -5,6 +5,7 @@ import { open as openDialog, save } from "@tauri-apps/plugin-dialog";
 import { openUrl as openExternalUrl } from "@tauri-apps/plugin-opener";
 import {
   createElement,
+  Fragment,
   type CSSProperties,
   type FocusEvent,
   type FormEvent,
@@ -49,8 +50,10 @@ import {
 } from "./settings";
 
 const unorderedListMarkerPattern = /^ {0,3}[-*+]\s+/;
+const markdownUnorderedListLinePattern = /^(\s*)[-*+]\s+(.*)$/;
 const typedUnorderedListMarkerPattern = /^[-*+]\s+(.*)$/;
 const orderedListMarkerPattern = /^ {0,3}\d+[.)]\s+/;
+const markdownOrderedListLinePattern = /^(\s*)\d+[.)]\s+(.*)$/;
 const typedOrderedListMarkerPattern = /^\d+[.)]\s+(.*)$/;
 const inlineBreakPattern = /<br\s*\/?>/gi;
 const emptyPreviewListItemText = "\u200b";
@@ -658,6 +661,20 @@ type BodyAnchorTransform = (
   nextBody: string,
 ) => TextSelectionAnchor;
 
+type MarkdownPreviewListKind = "unordered-list" | "ordered-list";
+
+type MarkdownPreviewListItem = {
+  children: MarkdownPreviewList[];
+  flatIndex: number;
+  key: string;
+  text: string;
+};
+
+type MarkdownPreviewList = {
+  kind: MarkdownPreviewListKind;
+  items: MarkdownPreviewListItem[];
+};
+
 type MarkdownPreviewBlock =
   | {
       kind: "heading";
@@ -691,11 +708,13 @@ type MarkdownPreviewBlock =
       text: string;
     }
   | {
-      kind: "unordered-list" | "ordered-list";
+      kind: MarkdownPreviewListKind;
       key: string;
       startLine: number;
       endLine: number;
       items: string[];
+      list: MarkdownPreviewList;
+      rawLines: string[];
     }
   | {
       kind: "rule";
@@ -2845,15 +2864,13 @@ function getListItemTextMap(
   const lineStartOffsets = getLineStartOffsets(markdown);
   const lineIndex = block.startLine + itemIndex;
   const line = lines[lineIndex] ?? "";
-  const marker =
-    block.kind === "unordered-list"
-      ? line.match(unorderedListMarkerPattern)?.[0] ?? ""
-      : line.match(orderedListMarkerPattern)?.[0] ?? "";
-  const text = line.slice(marker.length);
+  const listLine = parseMarkdownListLine(line);
+  const markerLength = listLine?.markerLength ?? 0;
+  const text = line.slice(markerLength);
 
   return previewTextMapFromInlineText(
     text,
-    (lineStartOffsets[lineIndex] ?? 0) + marker.length,
+    (lineStartOffsets[lineIndex] ?? 0) + markerLength,
   );
 }
 
@@ -3784,12 +3801,103 @@ function arePreviewAnnotationFramesEqual(
   });
 }
 
+type ParsedMarkdownListLine = {
+  indent: number;
+  kind: MarkdownPreviewListKind;
+  markerLength: number;
+  text: string;
+};
+
+function normalizedMarkdownIndent(rawIndent: string) {
+  return rawIndent.replace(/\t/g, "    ").length;
+}
+
+function parseMarkdownListLine(line: string): ParsedMarkdownListLine | null {
+  const unorderedMatch = line.match(markdownUnorderedListLinePattern);
+  if (unorderedMatch) {
+    return {
+      indent: normalizedMarkdownIndent(unorderedMatch[1]),
+      kind: "unordered-list",
+      markerLength: unorderedMatch[0].length - unorderedMatch[2].length,
+      text: unorderedMatch[2],
+    };
+  }
+
+  const orderedMatch = line.match(markdownOrderedListLinePattern);
+  if (orderedMatch) {
+    return {
+      indent: normalizedMarkdownIndent(orderedMatch[1]),
+      kind: "ordered-list",
+      markerLength: orderedMatch[0].length - orderedMatch[2].length,
+      text: orderedMatch[2],
+    };
+  }
+
+  return null;
+}
+
+function isMarkdownListLine(line: string) {
+  return parseMarkdownListLine(line) !== null;
+}
+
+function buildMarkdownPreviewList(rawLines: string[], blockKey: string): MarkdownPreviewList {
+  const parsedLines = rawLines
+    .map((line, flatIndex) => {
+      const parsedLine = parseMarkdownListLine(line);
+      return parsedLine ? { ...parsedLine, flatIndex } : null;
+    })
+    .filter((line): line is ParsedMarkdownListLine & { flatIndex: number } => Boolean(line));
+  const rootList: MarkdownPreviewList = {
+    kind: parsedLines[0]?.kind ?? "unordered-list",
+    items: [],
+  };
+  const rootIndent = parsedLines[0]?.indent ?? 0;
+  const stack: Array<{
+    indent: number;
+    lastItem: MarkdownPreviewListItem | null;
+    list: MarkdownPreviewList;
+  }> = [{ indent: rootIndent, lastItem: null, list: rootList }];
+
+  parsedLines.forEach((line) => {
+    while (stack.length > 1 && line.indent < stack[stack.length - 1].indent) {
+      stack.pop();
+    }
+
+    let current = stack[stack.length - 1];
+    if (line.indent > current.indent && current.lastItem) {
+      const childList: MarkdownPreviewList = { kind: line.kind, items: [] };
+      current.lastItem.children.push(childList);
+      current = { indent: line.indent, lastItem: null, list: childList };
+      stack.push(current);
+    } else if (line.indent === current.indent && line.kind !== current.list.kind) {
+      const parent = stack.length > 1 ? stack[stack.length - 2] : null;
+      if (parent?.lastItem) {
+        const siblingList: MarkdownPreviewList = { kind: line.kind, items: [] };
+        parent.lastItem.children.push(siblingList);
+        current = { indent: line.indent, lastItem: null, list: siblingList };
+        stack[stack.length - 1] = current;
+      }
+    }
+
+    const item: MarkdownPreviewListItem = {
+      children: [],
+      flatIndex: line.flatIndex,
+      key: `${blockKey}-item-${line.flatIndex}`,
+      text: line.text,
+    };
+    current.list.items.push(item);
+    current.lastItem = item;
+    stack[stack.length - 1] = current;
+  });
+
+  return rootList;
+}
+
 function isMarkdownBlockStart(line: string) {
   return (
     /^#{1,6}\s+/.test(line) ||
     /^>\s?/.test(line) ||
-    unorderedListMarkerPattern.test(line) ||
-    orderedListMarkerPattern.test(line) ||
+    isMarkdownListLine(line) ||
     /^```/.test(line) ||
     /^(-{3,}|\*{3,}|_{3,})$/.test(line.trim())
   );
@@ -3885,40 +3993,28 @@ function parseMarkdownPreviewBlocks(markdown: string): MarkdownPreviewBlock[] {
       continue;
     }
 
-    if (unorderedListMarkerPattern.test(line)) {
-      const items: string[] = [];
+    const listLine = parseMarkdownListLine(line);
+    if (listLine) {
+      const rawLines: string[] = [];
       const startLine = index;
 
-      while (index < lines.length && unorderedListMarkerPattern.test(lines[index])) {
-        items.push(lines[index].replace(unorderedListMarkerPattern, ""));
+      while (index < lines.length && isMarkdownListLine(lines[index])) {
+        rawLines.push(lines[index]);
         index += 1;
       }
 
+      const list = buildMarkdownPreviewList(rawLines, key);
+
       blocks.push({
-        kind: "unordered-list",
+        kind: listLine.kind,
         key,
         startLine,
         endLine: index - 1,
-        items,
-      });
-      continue;
-    }
-
-    if (orderedListMarkerPattern.test(line)) {
-      const items: string[] = [];
-      const startLine = index;
-
-      while (index < lines.length && orderedListMarkerPattern.test(lines[index])) {
-        items.push(lines[index].replace(orderedListMarkerPattern, ""));
-        index += 1;
-      }
-
-      blocks.push({
-        kind: "ordered-list",
-        key,
-        startLine,
-        endLine: index - 1,
-        items,
+        items: rawLines
+          .map((rawLine) => parseMarkdownListLine(rawLine)?.text ?? "")
+          .filter((_item, itemIndex) => itemIndex < rawLines.length),
+        list,
+        rawLines,
       });
       continue;
     }
@@ -4376,6 +4472,78 @@ function applyInlineMarkdownShortcutToValue(
   };
 }
 
+function renderEditablePreviewList(
+  list: MarkdownPreviewList,
+  block: Extract<MarkdownPreviewBlock, { kind: MarkdownPreviewListKind }>,
+  markdown: string,
+  annotations: TextRangeAnnotation[],
+  keyPrefix: string,
+  onAnnotationClick: (annotationId: string) => void,
+  onAnnotationDoubleClick: (annotationId: string) => void,
+): ReactNode {
+  const ListTag = list.kind === "unordered-list" ? "ul" : "ol";
+
+  return (
+    <ListTag>
+      {list.items.map((item) => {
+        const itemTextMap = getListItemTextMap(markdown, block, item.flatIndex);
+
+        return (
+          <li key={item.key}>
+            {item.text
+              ? renderPreviewInline(
+                  itemTextMap,
+                  `${keyPrefix}-item-${item.flatIndex}`,
+                  annotations,
+                  onAnnotationClick,
+                  onAnnotationDoubleClick,
+                )
+              : emptyPreviewListItemText}
+            {item.children.map((childList, childIndex) => (
+              <Fragment key={`${item.key}-child-list-${childIndex}`}>
+                {renderEditablePreviewList(
+                  childList,
+                  block,
+                  markdown,
+                  annotations,
+                  `${keyPrefix}-item-${item.flatIndex}-child-${childIndex}`,
+                  onAnnotationClick,
+                  onAnnotationDoubleClick,
+                )}
+              </Fragment>
+            ))}
+          </li>
+        );
+      })}
+    </ListTag>
+  );
+}
+
+function renderPreviewContentList(
+  list: MarkdownPreviewList,
+  keyPrefix: string,
+): ReactNode {
+  const ListTag = list.kind === "unordered-list" ? "ul" : "ol";
+
+  return (
+    <ListTag>
+      {list.items.map((item) => (
+        <li key={item.key}>
+          {renderInlineMarkdown(item.text, `${keyPrefix}-item-${item.flatIndex}`)}
+          {item.children.map((childList, childIndex) => (
+            <Fragment key={`${item.key}-child-list-${childIndex}`}>
+              {renderPreviewContentList(
+                childList,
+                `${keyPrefix}-item-${item.flatIndex}-child-${childIndex}`,
+              )}
+            </Fragment>
+          ))}
+        </li>
+      ))}
+    </ListTag>
+  );
+}
+
 function MarkdownPreviewBlockView({
   block,
   markdown,
@@ -4442,28 +4610,18 @@ function MarkdownPreviewBlockView({
   }
 
   if (block.kind === "unordered-list" || block.kind === "ordered-list") {
-    const ListTag = block.kind === "unordered-list" ? "ul" : "ol";
-
     return (
-      <ListTag {...blockProps} className="markdown-preview-editable" key={block.key}>
-        {block.items.map((item, itemIndex) => {
-          const itemTextMap = getListItemTextMap(markdown, block, itemIndex);
-
-          return (
-            <li key={`${block.key}-item-${itemIndex}`}>
-              {item
-                ? renderPreviewInline(
-                    itemTextMap,
-                    `${block.key}-item-${itemIndex}`,
-                    blockAnnotations,
-                    onAnnotationClick,
-                    onAnnotationDoubleClick,
-                  )
-                : emptyPreviewListItemText}
-            </li>
-          );
-        })}
-      </ListTag>
+      <div {...blockProps} className="markdown-preview-editable" key={block.key}>
+        {renderEditablePreviewList(
+          block.list,
+          block,
+          markdown,
+          annotations,
+          block.key,
+          onAnnotationClick,
+          onAnnotationDoubleClick,
+        )}
+      </div>
     );
   }
 
@@ -5409,17 +5567,7 @@ function MarkdownPreviewContentBlock({
   }
 
   if (block.kind === "unordered-list" || block.kind === "ordered-list") {
-    const ListTag = block.kind === "unordered-list" ? "ul" : "ol";
-
-    return (
-      <ListTag key={block.key}>
-        {block.items.map((item, itemIndex) => (
-          <li key={`${keyPrefix}-item-${itemIndex}`}>
-            {renderInlineMarkdown(item, `${keyPrefix}-item-${itemIndex}`)}
-          </li>
-        ))}
-      </ListTag>
-    );
+    return <Fragment key={block.key}>{renderPreviewContentList(block.list, keyPrefix)}</Fragment>;
   }
 
   if (block.kind === "code") {
@@ -5709,7 +5857,7 @@ function NoteMarkdownEditor({
 }) {
   const editorClassName = [
     "note-markdown-editor",
-    "note-markdown-editor--milkdown",
+    "note-markdown-editor--preview",
     readOnly ? "is-readonly" : "",
     className,
   ]
@@ -5727,15 +5875,14 @@ function NoteMarkdownEditor({
       onKeyDownCapture={onKeyDown}
       ref={editorRootRef}
     >
-      <MilkdownMarkdownEditor
+      <MarkdownPreview
         annotations={[]}
-        noteModeEnabled={false}
+        mermaidEmptyDefinitionLabel="Mermaid diagram is empty."
+        mermaidLoadingLabel="Rendering diagram..."
         readOnly={readOnly}
-        toolbarEnabled={false}
         value={value}
         onAnnotationClick={noopSelectionHandler}
-        onAnnotationDoubleClick={noopSelectionHandler}
-        onChange={onChange}
+        onChange={(nextValue) => onChange(nextValue)}
         onSelectionChange={noopSelectionHandler}
         onSelectionEnter={() => false}
       />
@@ -7051,7 +7198,7 @@ function App() {
   function focusMarkdownEditor(root: HTMLElement | null, remainingAttempts = 8) {
     window.requestAnimationFrame(() => {
       const editableElement = root?.querySelector<HTMLElement>(
-        ".cm-content[contenteditable='true'], .ProseMirror[contenteditable='true']",
+        ".cm-content[contenteditable='true'], .ProseMirror[contenteditable='true'], .markdown-preview[contenteditable='plaintext-only'], .markdown-preview[contenteditable='true']",
       );
       if (!editableElement) {
         if (remainingAttempts > 0) {
