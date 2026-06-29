@@ -1554,6 +1554,10 @@ export function MilkdownMarkdownEditor({
   }
 
   function publishSelectionAfterSelectionComplete() {
+    if (!noteModeEnabledRef.current) {
+      mouseSelectionStartedRef.current = false;
+      return;
+    }
     if (selectionPublishSuppressedByIme()) return;
 
     window.clearTimeout(selectionFallbackTimerRef.current);
@@ -1575,6 +1579,7 @@ export function MilkdownMarkdownEditor({
   }
 
   function scheduleSelectionPublishFromDom() {
+    if (!noteModeEnabledRef.current) return;
     if (selectionPublishSuppressedByIme()) return;
 
     window.clearTimeout(selectionFallbackTimerRef.current);
@@ -1592,6 +1597,7 @@ export function MilkdownMarkdownEditor({
 
     function handleSelectionPointerDown(event: MouseEvent | PointerEvent) {
       if (event.button !== 0) return;
+      if (!noteModeEnabledRef.current) return;
       if (selectionPublishSuppressedByIme()) return;
 
       mouseSelectionStartedRef.current = true;
@@ -1599,6 +1605,10 @@ export function MilkdownMarkdownEditor({
 
     function handleSelectionPointerUp(event: MouseEvent | PointerEvent) {
       if (event.button !== 0) return;
+      if (!noteModeEnabledRef.current) {
+        mouseSelectionStartedRef.current = false;
+        return;
+      }
       if (selectionPublishSuppressedByIme()) return;
 
       const currentRoot = rootRef.current;

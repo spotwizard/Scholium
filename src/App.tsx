@@ -749,6 +749,8 @@ const lastOpenedMarkdownPathStorageKey = "scholium:last-opened-markdown-path";
 const lastOpenedMarkdownRootDirectoryStorageKey =
   "scholium:last-opened-markdown-root-directory";
 const mobileViewportQuery = "(max-width: 640px)";
+const mobileSafeLayoutViewportQuery =
+  "((max-width: 640px) and (any-pointer: coarse)), ((max-width: 980px) and (max-height: 520px) and (any-pointer: coarse))";
 const dropboxDocumentIdPrefix = "dropbox:";
 const configuredDropboxAppKey = import.meta.env.VITE_DROPBOX_APP_KEY?.trim() ?? "";
 
@@ -3243,6 +3245,14 @@ function makePreviewAnchor(body: string, selectedText: string) {
   );
 }
 
+function recoverRenderableAnchor(body: string, anchor: TextSelectionAnchor): TextSelectionAnchor {
+  if (hasRenderableAnchor(anchor)) {
+    return refreshAnchor(body, anchor);
+  }
+
+  return makePreviewAnchor(body, anchor.selectedText) ?? refreshAnchor(body, anchor);
+}
+
 function getAnnotationsForPreviewBlock(
   markdown: string,
   block: MarkdownPreviewBlock,
@@ -4337,7 +4347,7 @@ function transformAnchorWithTextEdits(
     nextBody.length,
   );
 
-  return refreshAnchor(nextBody, {
+  return recoverRenderableAnchor(nextBody, {
     ...anchor,
     from: nextFrom,
     to: nextTo,
@@ -5739,6 +5749,9 @@ function App() {
   const [isMobileViewport, setIsMobileViewport] = useState(() =>
     window.matchMedia(mobileViewportQuery).matches,
   );
+  const [isMobileSafeLayoutViewport, setIsMobileSafeLayoutViewport] = useState(() =>
+    window.matchMedia(mobileSafeLayoutViewportQuery).matches,
+  );
   const [settingsSnapshot, setSettingsSnapshot] =
     useState<SettingsSnapshot>(readSettingsSnapshot);
   const appLanguage = settingsSnapshot["app.language"];
@@ -5954,7 +5967,7 @@ function App() {
       .map((annotation) => [annotation.id, annotation.tone ?? 0]),
   );
   const noteLibraryNotes = activeNotes
-    .filter((note) => selectionNoteHasContent(note) && hasRenderableAnchor(note.anchor))
+    .filter(selectionNoteHasContent)
     .slice()
     .sort((leftNote, rightNote) => {
       const positionDifference = leftNote.anchor.from - rightNote.anchor.from;
@@ -6253,16 +6266,20 @@ function App() {
 
   useEffect(() => {
     const mediaQuery = window.matchMedia(mobileViewportQuery);
+    const safeLayoutMediaQuery = window.matchMedia(mobileSafeLayoutViewportQuery);
 
     function updateMobileViewport() {
       setIsMobileViewport(mediaQuery.matches);
+      setIsMobileSafeLayoutViewport(safeLayoutMediaQuery.matches);
     }
 
     updateMobileViewport();
     mediaQuery.addEventListener("change", updateMobileViewport);
+    safeLayoutMediaQuery.addEventListener("change", updateMobileViewport);
 
     return () => {
       mediaQuery.removeEventListener("change", updateMobileViewport);
+      safeLayoutMediaQuery.removeEventListener("change", updateMobileViewport);
     };
   }, []);
 
@@ -7876,22 +7893,47 @@ function App() {
     return documentFromLoadedFileResult(loaded);
   }
 
+  function localLoadedNoteFromFile(
+    loadedFile: OpenMarkdownFileResult,
+    note: SelectionNote,
+  ): SelectionNote {
+    const anchorSourceText = note.anchor.selectedText || note.selectedText;
+    const anchor = recoverRenderableAnchor(loadedFile.body, {
+      ...note.anchor,
+      selectedText: anchorSourceText,
+    });
+
+    return {
+      ...note,
+      documentId: loadedFile.path,
+      selectedText: note.selectedText || anchor.selectedText,
+      anchor,
+    };
+  }
+
+  function localLoadedGlossaryBindingFromFile(
+    loadedFile: OpenMarkdownFileResult,
+    binding: GlossaryBinding,
+  ): GlossaryBinding {
+    return {
+      ...binding,
+      documentId: loadedFile.path,
+      anchor: recoverRenderableAnchor(loadedFile.body, binding.anchor),
+    };
+  }
+
   function mergeLoadedFilesIntoDocumentState(loadedFiles: OpenMarkdownFileResult[]) {
     if (loadedFiles.length === 0) return;
 
     const loadedDocuments = loadedFiles.map(documentFromLoadedFile);
     const loadedDocumentIds = new Set(loadedDocuments.map((document) => document.id));
     const loadedNotes = loadedFiles.flatMap((loadedFile) =>
-      loadedFile.notes.map((note) => ({
-        ...note,
-        documentId: loadedFile.path,
-      })),
+      loadedFile.notes.map((note) => localLoadedNoteFromFile(loadedFile, note)),
     );
     const loadedGlossaryBindings = loadedFiles.flatMap((loadedFile) =>
-      (loadedFile.glossaryBindings ?? []).map((binding) => ({
-        ...binding,
-        documentId: loadedFile.path,
-      })),
+      (loadedFile.glossaryBindings ?? []).map((binding) =>
+        localLoadedGlossaryBindingFromFile(loadedFile, binding),
+      ),
     );
     const loadedGlossaryTerms = loadedFiles.flatMap(
       (loadedFile) => loadedFile.glossaryTerms ?? [],
@@ -7957,16 +7999,12 @@ function App() {
     const loadedDocuments = loadedFiles.map(documentFromLoadedFile);
     const loadedDocumentIds = new Set(loadedDocuments.map((document) => document.id));
     const loadedNotes = loadedFiles.flatMap((loadedFile) =>
-      loadedFile.notes.map((note) => ({
-        ...note,
-        documentId: loadedFile.path,
-      })),
+      loadedFile.notes.map((note) => localLoadedNoteFromFile(loadedFile, note)),
     );
     const loadedGlossaryBindings = loadedFiles.flatMap((loadedFile) =>
-      (loadedFile.glossaryBindings ?? []).map((binding) => ({
-        ...binding,
-        documentId: loadedFile.path,
-      })),
+      (loadedFile.glossaryBindings ?? []).map((binding) =>
+        localLoadedGlossaryBindingFromFile(loadedFile, binding),
+      ),
     );
     const loadedGlossaryTerms = loadedFiles.flatMap(
       (loadedFile) => loadedFile.glossaryTerms ?? [],
@@ -8139,14 +8177,12 @@ function App() {
   function applyReloadedFile(loadedFile: OpenMarkdownFileResult) {
     const loadedDocument = documentFromLoadedFile(loadedFile);
     const documentId = loadedDocument.id;
-    const loadedNotes = loadedFile.notes.map((note) => ({
-      ...note,
-      documentId,
-    }));
-    const loadedGlossaryBindings = (loadedFile.glossaryBindings ?? []).map((binding) => ({
-      ...binding,
-      documentId,
-    }));
+    const loadedNotes = loadedFile.notes.map((note) =>
+      localLoadedNoteFromFile(loadedFile, note),
+    );
+    const loadedGlossaryBindings = (loadedFile.glossaryBindings ?? []).map((binding) =>
+      localLoadedGlossaryBindingFromFile(loadedFile, binding),
+    );
     const loadedGlossaryTerms = loadedFile.glossaryTerms ?? [];
 
     setDocuments((currentDocuments) =>
@@ -8213,16 +8249,12 @@ function App() {
     );
     const loadedDocuments = loadedFiles.map(documentFromLoadedFile);
     const loadedNotes = loadedFiles.flatMap((loadedFile) =>
-      loadedFile.notes.map((note) => ({
-        ...note,
-        documentId: loadedFile.path,
-      })),
+      loadedFile.notes.map((note) => localLoadedNoteFromFile(loadedFile, note)),
     );
     const loadedGlossaryBindings = loadedFiles.flatMap((loadedFile) =>
-      (loadedFile.glossaryBindings ?? []).map((binding) => ({
-        ...binding,
-        documentId: loadedFile.path,
-      })),
+      (loadedFile.glossaryBindings ?? []).map((binding) =>
+        localLoadedGlossaryBindingFromFile(loadedFile, binding),
+      ),
     );
     const loadedGlossaryTerms = loadedFiles.flatMap(
       (loadedFile) => loadedFile.glossaryTerms ?? [],
@@ -11537,6 +11569,7 @@ function App() {
 
   const shellClassName = [
     "scholium-shell",
+    isMobileSafeLayoutViewport ? "is-mobile-safe-layout" : "",
     directoryPaneOpen ? "" : "is-directory-pane-closed",
     !settingsViewOpen && noteModeEnabled && noteLibraryOpen ? "is-note-library-open" : "",
     !settingsViewOpen && noteLibraryFocusActive ? "is-note-library-focus-active" : "",

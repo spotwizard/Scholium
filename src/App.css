@@ -154,6 +154,19 @@ button:disabled {
   --note-library-width: var(--side-panel-body-width);
   --side-panel-transition-duration: 660ms;
   --side-panel-transition-easing: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --mobile-command-bar-height: 72px;
+  --mobile-status-bar-fallback: 0px;
+  --mobile-safe-area-top: max(env(safe-area-inset-top, 0px), var(--mobile-status-bar-fallback));
+  --mobile-safe-area-bottom: env(safe-area-inset-bottom, 0px);
+  --mobile-status-bar-protector-height: var(--mobile-safe-area-top);
+  --mobile-editor-top-padding: 14px;
+  --mobile-editor-bottom-padding: calc(
+    var(--mobile-command-bar-height) + var(--mobile-safe-area-bottom) + 22px
+  );
+  --mobile-editor-content-min-height: max(
+    320px,
+    calc(100svh - var(--mobile-editor-top-padding) - var(--mobile-editor-bottom-padding))
+  );
   position: relative;
   isolation: isolate;
   display: block;
@@ -163,6 +176,42 @@ button:disabled {
   background:
     linear-gradient(90deg, var(--color-accent-softer), transparent 34%),
     var(--color-app-bg);
+}
+
+.scholium-shell.is-mobile-safe-layout {
+  --mobile-status-bar-fallback: 48px;
+  min-height: calc(100svh - var(--mobile-status-bar-protector-height));
+  padding-top: var(--mobile-status-bar-protector-height);
+}
+
+.scholium-shell.is-mobile-safe-layout::before {
+  content: "";
+  position: fixed;
+  top: 0;
+  right: 0;
+  left: 0;
+  z-index: 120;
+  height: var(--mobile-status-bar-protector-height);
+  pointer-events: none;
+  background: var(--color-surface);
+}
+
+.scholium-shell.is-mobile-safe-layout .editor-pane {
+  min-height: calc(100svh - var(--mobile-status-bar-protector-height));
+}
+
+.scholium-shell.is-mobile-safe-layout .editor-surface {
+  min-height: calc(100svh - var(--mobile-status-bar-protector-height));
+  padding-top: 18px;
+}
+
+.scholium-shell.is-mobile-safe-layout .editor-content-frame,
+.scholium-shell.is-mobile-safe-layout .cm-scroller,
+.scholium-shell.is-mobile-safe-layout .cm-content,
+.scholium-shell.is-mobile-safe-layout .markdown-preview,
+.scholium-shell.is-mobile-safe-layout .markdown-editor-host,
+.scholium-shell.is-mobile-safe-layout .milkdown-markdown-editor-shell {
+  min-height: max(320px, calc(100svh - var(--mobile-status-bar-protector-height) - 36px));
 }
 
 .scholium-shell.is-directory-pane-closed {
@@ -4559,7 +4608,7 @@ button:disabled {
 @media (max-width: 640px) {
   .scholium-shell,
   .scholium-shell.is-note-library-open {
-    --mobile-command-bar-height: 72px;
+    --mobile-status-bar-fallback: 48px;
     --side-panel-reserved-width: 0px;
     --editor-content-width: 100%;
     --note-library-open-width: 100%;
@@ -4620,9 +4669,9 @@ button:disabled {
 
   .pane-header,
   .note-library-header {
-    min-height: 56px;
+    min-height: calc(56px + var(--mobile-safe-area-top));
     justify-content: space-between;
-    padding: 0 14px 0 18px;
+    padding: var(--mobile-safe-area-top) 14px 0 18px;
     background: var(--color-surface-raised);
   }
 
@@ -4746,9 +4795,11 @@ button:disabled {
     overflow-y: auto;
     overscroll-behavior: contain;
     scroll-padding-bottom: calc(
-      var(--mobile-command-bar-height) + env(safe-area-inset-bottom) + 24px
+      var(--mobile-command-bar-height) + var(--mobile-safe-area-bottom) + 24px
     );
-    padding-bottom: calc(var(--mobile-command-bar-height) + env(safe-area-inset-bottom) + 28px);
+    padding-bottom: calc(
+      var(--mobile-command-bar-height) + var(--mobile-safe-area-bottom) + 28px
+    );
   }
 
   .document-tree-root {
@@ -4802,7 +4853,7 @@ button:disabled {
   .mobile-storage-status {
     position: fixed;
     right: 14px;
-    bottom: calc(var(--mobile-command-bar-height) + env(safe-area-inset-bottom) + 18px);
+    bottom: calc(var(--mobile-command-bar-height) + var(--mobile-safe-area-bottom) + 18px);
     left: 14px;
     z-index: 84;
     display: block;
@@ -4832,22 +4883,18 @@ button:disabled {
 
   .editor-surface {
     min-height: 100svh;
-    padding: 22px 10px calc(var(--mobile-command-bar-height) + env(safe-area-inset-bottom) + 22px);
+    padding: var(--mobile-editor-top-padding) 10px var(--mobile-editor-bottom-padding);
   }
 
   .editor-content-frame {
-    min-height: calc(
-      100svh - var(--mobile-command-bar-height) - env(safe-area-inset-bottom) - 44px
-    );
+    min-height: var(--mobile-editor-content-min-height);
     margin-right: 0;
     margin-left: 0;
     padding-left: 0;
   }
 
   .empty-editor-state {
-    min-height: calc(
-      100svh - var(--mobile-command-bar-height) - env(safe-area-inset-bottom) - 44px
-    );
+    min-height: var(--mobile-editor-content-min-height);
     padding: 22px 4px;
   }
 
@@ -4856,9 +4903,7 @@ button:disabled {
   .markdown-preview,
   .markdown-editor-host,
   .milkdown-markdown-editor-shell {
-    min-height: calc(
-      100svh - var(--mobile-command-bar-height) - env(safe-area-inset-bottom) - 44px
-    );
+    min-height: var(--mobile-editor-content-min-height);
   }
 
   .markdown-preview,
@@ -5268,7 +5313,7 @@ button:disabled {
   .mobile-command-bar {
     position: fixed;
     right: 10px;
-    bottom: calc(8px + env(safe-area-inset-bottom));
+    bottom: calc(8px + var(--mobile-safe-area-bottom));
     left: 10px;
     z-index: 82;
     display: grid;
@@ -5389,5 +5434,12 @@ button:disabled {
     min-height: 36px;
     padding: 0 12px;
     font-size: 0.84rem;
+  }
+}
+
+@media (orientation: landscape) and (max-height: 520px) and (any-pointer: coarse) {
+  .scholium-shell.is-mobile-safe-layout,
+  .scholium-shell.is-mobile-safe-layout.is-note-library-open {
+    --mobile-status-bar-fallback: 36px;
   }
 }

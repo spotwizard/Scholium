@@ -645,6 +645,10 @@ export function MarkdownEditor({
   }
 
   function publishSelectionAfterMouseUp(view: EditorView) {
+    if (!noteModeEnabledRef.current) {
+      mouseSelectionStartedRef.current = false;
+      return;
+    }
     if (Date.now() < annotationInteractionUntilRef.current) return;
     if (selectionPublishSuppressedByIme()) return;
 
@@ -1036,6 +1040,7 @@ export function MarkdownEditor({
     }
 
     function handleDocumentSelectionChange() {
+      if (!noteModeEnabledRef.current) return;
       window.clearTimeout(selectionFallbackTimerRef.current);
       selectionFallbackTimerRef.current = window.setTimeout(() => {
         if (Date.now() < annotationInteractionUntilRef.current) {
