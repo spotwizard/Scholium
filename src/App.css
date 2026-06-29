@@ -3385,21 +3385,28 @@ button:disabled {
   --note-content-font-size: 0.94rem;
   --note-content-line-height: 1.5;
   --note-markdown-editor-chrome-height: 0px;
+  --note-edit-focus-ring-color: rgba(229, 188, 76, 0.72);
+  --note-edit-focus-ring-inline-padding: 14px;
+  position: relative;
   width: 100%;
   min-height: var(--note-markdown-editor-min-height);
   overflow: visible;
   resize: none;
   border: 0;
-  border-radius: 0;
+  border-radius: 6px;
+  outline: 1px solid transparent;
+  outline-offset: 0;
+  padding-inline: var(--note-edit-focus-ring-inline-padding);
   color: var(--color-text);
   background: transparent;
   font: inherit;
   font-size: var(--note-content-font-size);
   line-height: var(--note-content-line-height);
+  transition: outline-color 300ms ease;
 }
 
-.note-markdown-editor:focus-within {
-  box-shadow: none;
+.note-markdown-editor:not(.is-readonly):focus-within {
+  outline-color: var(--note-edit-focus-ring-color);
 }
 
 .note-markdown-editor.is-readonly {
