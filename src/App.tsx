@@ -1014,6 +1014,19 @@ function ensureMarkdownExtension(path: string) {
   return /\.(md|markdown|mdown)$/i.test(path) ? path : `${path}.md`;
 }
 
+function filePathInDirectory(directoryPath: string | null | undefined, fileName: string) {
+  const trimmedDirectoryPath = directoryPath?.trim() ?? "";
+  const trimmedFileName = fileName.trim();
+  if (!trimmedDirectoryPath || !trimmedFileName) return trimmedFileName;
+
+  const separator =
+    trimmedDirectoryPath.includes("\\") && !trimmedDirectoryPath.includes("/") ? "\\" : "/";
+  const directoryWithoutTrailingSeparators = trimmedDirectoryPath.replace(/[\\/]+$/, "");
+  if (!directoryWithoutTrailingSeparators) return `${separator}${trimmedFileName}`;
+
+  return `${directoryWithoutTrailingSeparators}${separator}${trimmedFileName}`;
+}
+
 function dropboxDocumentId(path: string) {
   return `${dropboxDocumentIdPrefix}${path || "/"}`;
 }
@@ -9319,8 +9332,12 @@ function App() {
         return;
       }
 
+      const defaultFileName = t("app.untitledFile");
       const selectedPath = await save({
-        defaultPath: t("app.untitledFile"),
+        defaultPath:
+          workspaceSource === "local" && workspaceRootPath
+            ? filePathInDirectory(workspaceRootPath, defaultFileName)
+            : defaultFileName,
         filters: markdownFilters,
       });
       if (!selectedPath) return;

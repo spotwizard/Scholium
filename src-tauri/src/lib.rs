@@ -2770,9 +2770,9 @@ fn refresh_app_menu(_app_handle: &tauri::AppHandle) -> Result<(), String> {
 }
 
 #[cfg(target_os = "macos")]
-fn set_runtime_dock_icon() {
+fn set_runtime_app_icon() {
     use objc2::{AllocAnyThread, MainThreadMarker};
-    use objc2_app_kit::{NSApplication, NSImage, NSImageView};
+    use objc2_app_kit::{NSApplication, NSImage};
     use objc2_foundation::NSData;
 
     let icon_bytes = include_bytes!("../icons/icon.png");
@@ -2782,11 +2782,6 @@ fn set_runtime_dock_icon() {
 
     if let Some(app_icon) = NSImage::initWithData(NSImage::alloc(), &data) {
         unsafe { app.setApplicationIconImage(Some(&app_icon)) };
-
-        let image_view = NSImageView::imageViewWithImage(&app_icon, mtm);
-        let dock_tile = app.dockTile();
-        dock_tile.setContentView(Some(&image_view));
-        dock_tile.display();
     }
 }
 
@@ -2803,7 +2798,7 @@ pub fn run() {
         .manage(DropboxState::default())
         .setup(|app| {
             #[cfg(target_os = "macos")]
-            set_runtime_dock_icon();
+            set_runtime_app_icon();
 
             let mut location_store = read_location_store_from_disk(app.handle());
             let pruned_recent_locations = prune_missing_recent_locations(&mut location_store);
