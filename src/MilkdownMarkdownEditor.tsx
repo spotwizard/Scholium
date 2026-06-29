@@ -37,6 +37,7 @@ type MilkdownMarkdownEditorProps = {
   onSelectionEnter: (anchor: TextSelectionAnchor) => boolean;
   onAnnotationClick: (noteId: string) => void;
   onAnnotationDoubleClick: (noteId: string) => void;
+  onFocusTargetAnnotationPress?: (noteId: string) => void;
 };
 
 const milkdownAnnotationPluginKey = new PluginKey<DecorationSet>(
@@ -50,6 +51,7 @@ const milkdownAnnotationFrameCornerRadius = "4px";
 const milkdownAnnotationClassPrefix = "scholium-milkdown-annotation-";
 const milkdownSelectionFallbackMs = 220;
 const annotationClickDelayMs = 500;
+const annotationFocusTargetPressSuppressionMs = annotationClickDelayMs + 350;
 const imeSelectionSuppressionMs = 350;
 const escapeListLabelHtml = (label: string) =>
   label
@@ -1082,7 +1084,7 @@ function buildAnnotationDecorations(
   return DecorationSet.create(doc, decorations);
 }
 
-function noteIdFromAnnotationTarget(
+function annotationSourceFromAnnotationTarget(
   target: EventTarget | null,
   annotations: TextAnnotation[],
 ) {
@@ -1100,7 +1102,7 @@ function noteIdFromAnnotationTarget(
     sources.sort(
       (left, right) =>
         milkdownAnnotationKindLayer(right.kind) - milkdownAnnotationKindLayer(left.kind),
-    )[0]?.noteId ?? null
+    )[0] ?? null
   );
 }
 
@@ -1109,11 +1111,13 @@ function createAnnotationPlugin({
   getMarkdown,
   onAnnotationClick,
   onAnnotationDoubleClick,
+  onFocusTargetAnnotationPress,
 }: {
   getAnnotations: () => TextAnnotation[];
   getMarkdown: () => string;
   onAnnotationClick: (noteId: string) => void;
   onAnnotationDoubleClick: (noteId: string) => void;
+  onFocusTargetAnnotationPress: (noteId: string) => boolean;
 }) {
   return new Plugin<DecorationSet>({
     key: milkdownAnnotationPluginKey,
@@ -1122,19 +1126,41 @@ function createAnnotationPlugin({
         return milkdownAnnotationPluginKey.getState(state) ?? DecorationSet.empty;
       },
       handleDOMEvents: {
-        click(_view, event) {
-          const noteId = noteIdFromAnnotationTarget(event.target, getAnnotations());
-          if (!noteId || !window.getSelection()?.isCollapsed) return false;
+        mousedown(_view, event) {
+          const source = annotationSourceFromAnnotationTarget(event.target, getAnnotations());
+          if (!source?.isFocusTarget) return false;
+          if (!onFocusTargetAnnotationPress(source.noteId)) return false;
 
           event.preventDefault();
-          onAnnotationClick(noteId);
+          event.stopPropagation();
+          return true;
+        },
+        pointerdown(_view, event) {
+          const source = annotationSourceFromAnnotationTarget(event.target, getAnnotations());
+          if (!source?.isFocusTarget) return false;
+          if (!onFocusTargetAnnotationPress(source.noteId)) return false;
+
+          event.preventDefault();
+          event.stopPropagation();
+          return true;
+        },
+        click(_view, event) {
+          const source = annotationSourceFromAnnotationTarget(event.target, getAnnotations());
+          if (!source || !window.getSelection()?.isCollapsed) return false;
+
+          event.preventDefault();
+          if (source.isFocusTarget && onFocusTargetAnnotationPress(source.noteId)) {
+            return true;
+          }
+
+          onAnnotationClick(source.noteId);
           return true;
         },
         dblclick(_view, event) {
-          const noteId = noteIdFromAnnotationTarget(event.target, getAnnotations());
-          if (!noteId) return false;
+          const source = annotationSourceFromAnnotationTarget(event.target, getAnnotations());
+          if (!source) return false;
 
-          onAnnotationDoubleClick(noteId);
+          onAnnotationDoubleClick(source.noteId);
           return false;
         },
       },
@@ -1165,6 +1191,7 @@ export function MilkdownMarkdownEditor({
   onSelectionEnter,
   onAnnotationClick,
   onAnnotationDoubleClick,
+  onFocusTargetAnnotationPress,
 }: MilkdownMarkdownEditorProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -1179,10 +1206,15 @@ export function MilkdownMarkdownEditor({
   const onSelectionEnterRef = useRef(onSelectionEnter);
   const onAnnotationClickRef = useRef(onAnnotationClick);
   const onAnnotationDoubleClickRef = useRef(onAnnotationDoubleClick);
+  const onFocusTargetAnnotationPressRef = useRef(onFocusTargetAnnotationPress);
   const animationFrameRef = useRef(0);
   const selectionFrameRef = useRef(0);
   const selectionFallbackTimerRef = useRef(0);
   const annotationClickTimerRef = useRef(0);
+  const suppressedFocusTargetAnnotationPressRef = useRef<{
+    noteId: string;
+    until: number;
+  } | null>(null);
   const mouseSelectionStartedRef = useRef(false);
   const imeCompositionActiveRef = useRef(false);
   const imeSelectionSuppressedUntilRef = useRef(0);
@@ -1346,10 +1378,51 @@ export function MilkdownMarkdownEditor({
     annotationClickTimerRef.current = 0;
   }
 
+  function annotationIsFocusTarget(noteId: string) {
+    return annotationsRef.current.some(
+      (annotation) => annotation.id === noteId && annotation.isFocusTarget,
+    );
+  }
+
+  function suppressFocusTargetAnnotationPress(noteId: string) {
+    suppressedFocusTargetAnnotationPressRef.current = {
+      noteId,
+      until: Date.now() + annotationFocusTargetPressSuppressionMs,
+    };
+  }
+
+  function focusTargetAnnotationPressIsSuppressed(noteId: string) {
+    const suppressedPress = suppressedFocusTargetAnnotationPressRef.current;
+    if (!suppressedPress) return false;
+
+    if (Date.now() > suppressedPress.until) {
+      suppressedFocusTargetAnnotationPressRef.current = null;
+      return false;
+    }
+
+    return suppressedPress.noteId === noteId;
+  }
+
+  function handleFocusTargetAnnotationPress(noteId: string) {
+    if (!annotationIsFocusTarget(noteId) && !focusTargetAnnotationPressIsSuppressed(noteId)) {
+      return false;
+    }
+
+    clearQueuedAnnotationClick();
+
+    if (!focusTargetAnnotationPressIsSuppressed(noteId)) {
+      suppressFocusTargetAnnotationPress(noteId);
+      onFocusTargetAnnotationPressRef.current?.(noteId);
+    }
+
+    return true;
+  }
+
   function queueAnnotationClick(noteId: string) {
     clearQueuedAnnotationClick();
     annotationClickTimerRef.current = window.setTimeout(() => {
       annotationClickTimerRef.current = 0;
+      if (focusTargetAnnotationPressIsSuppressed(noteId)) return;
       if (selectedMilkdownText()) return;
 
       onAnnotationClickRef.current(noteId);
@@ -1375,6 +1448,10 @@ export function MilkdownMarkdownEditor({
   useEffect(() => {
     onAnnotationDoubleClickRef.current = onAnnotationDoubleClick;
   }, [onAnnotationDoubleClick]);
+
+  useEffect(() => {
+    onFocusTargetAnnotationPressRef.current = onFocusTargetAnnotationPress;
+  }, [onFocusTargetAnnotationPress]);
 
   useEffect(() => {
     noteModeEnabledRef.current = noteModeEnabled;
@@ -1729,6 +1806,7 @@ export function MilkdownMarkdownEditor({
           getMarkdown: () => currentMarkdownRef.current,
           onAnnotationClick: queueAnnotationClick,
           onAnnotationDoubleClick: clearQueuedAnnotationClick,
+          onFocusTargetAnnotationPress: handleFocusTargetAnnotationPress,
         }),
       ]);
     });

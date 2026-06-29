@@ -44,6 +44,7 @@ type MarkdownEditorProps = {
   onSelectionEnter: (anchor: TextSelectionAnchor) => boolean;
   onAnnotationClick: (noteId: string) => void;
   onAnnotationDoubleClick: (noteId: string) => void;
+  onFocusTargetAnnotationPress?: (noteId: string) => void;
 };
 
 type EditorAnnotationFrame = {
@@ -81,6 +82,7 @@ const editorAnnotationLineEndTolerance = 2;
 const editorAnnotationFrameCornerRadius = "4px";
 const annotationSelectionSuppressionMs = 1200;
 const annotationClickDelayMs = 500;
+const annotationFocusTargetPressSuppressionMs = annotationClickDelayMs + 350;
 const imeSelectionSuppressionMs = 350;
 
 function editorAnnotationFramePaddingForKind(kind: "note" | "glossary") {
@@ -528,14 +530,17 @@ export function MarkdownEditor({
   onSelectionEnter,
   onAnnotationClick,
   onAnnotationDoubleClick,
+  onFocusTargetAnnotationPress,
 }: MarkdownEditorProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const viewRef = useRef<EditorView | null>(null);
+  const annotationsRef = useRef(annotations);
   const onChangeRef = useRef(onChange);
   const onSelectionChangeRef = useRef(onSelectionChange);
   const onSelectionEnterRef = useRef(onSelectionEnter);
   const onAnnotationClickRef = useRef(onAnnotationClick);
   const onAnnotationDoubleClickRef = useRef(onAnnotationDoubleClick);
+  const onFocusTargetAnnotationPressRef = useRef(onFocusTargetAnnotationPress);
   const noteModeEnabledRef = useRef(noteModeEnabled);
   const readOnlyRef = useRef(readOnly);
   const readOnlyCompartment = useMemo(() => new Compartment(), []);
@@ -543,6 +548,10 @@ export function MarkdownEditor({
   const selectionFrameRef = useRef(0);
   const selectionFallbackTimerRef = useRef(0);
   const annotationClickTimerRef = useRef(0);
+  const suppressedFocusTargetAnnotationPressRef = useRef<{
+    noteId: string;
+    until: number;
+  } | null>(null);
   const mouseSelectionStartedRef = useRef(false);
   const annotationInteractionUntilRef = useRef(0);
   const imeCompositionActiveRef = useRef(false);
@@ -589,6 +598,10 @@ export function MarkdownEditor({
   useEffect(() => {
     onAnnotationDoubleClickRef.current = onAnnotationDoubleClick;
   }, [onAnnotationDoubleClick]);
+
+  useEffect(() => {
+    onFocusTargetAnnotationPressRef.current = onFocusTargetAnnotationPress;
+  }, [onFocusTargetAnnotationPress]);
 
   useEffect(() => {
     noteModeEnabledRef.current = noteModeEnabled;
@@ -748,6 +761,46 @@ export function MarkdownEditor({
     return null;
   }
 
+  function annotationIsFocusTarget(noteId: string) {
+    return annotationsRef.current.some(
+      (annotation) => annotation.id === noteId && annotation.isFocusTarget,
+    );
+  }
+
+  function suppressFocusTargetAnnotationPress(noteId: string) {
+    suppressedFocusTargetAnnotationPressRef.current = {
+      noteId,
+      until: Date.now() + annotationFocusTargetPressSuppressionMs,
+    };
+  }
+
+  function focusTargetAnnotationPressIsSuppressed(noteId: string) {
+    const suppressedPress = suppressedFocusTargetAnnotationPressRef.current;
+    if (!suppressedPress) return false;
+
+    if (Date.now() > suppressedPress.until) {
+      suppressedFocusTargetAnnotationPressRef.current = null;
+      return false;
+    }
+
+    return suppressedPress.noteId === noteId;
+  }
+
+  function handleFocusTargetAnnotationPress(noteId: string) {
+    if (!annotationIsFocusTarget(noteId) && !focusTargetAnnotationPressIsSuppressed(noteId)) {
+      return false;
+    }
+
+    clearQueuedAnnotationClick();
+
+    if (!focusTargetAnnotationPressIsSuppressed(noteId)) {
+      suppressFocusTargetAnnotationPress(noteId);
+      onFocusTargetAnnotationPressRef.current?.(noteId);
+    }
+
+    return true;
+  }
+
   function suppressSelectionForAnnotationInteraction(
     view?: EditorView,
     event?: MouseEvent | PointerEvent,
@@ -781,6 +834,7 @@ export function MarkdownEditor({
     clearQueuedAnnotationClick();
     annotationClickTimerRef.current = window.setTimeout(() => {
       annotationClickTimerRef.current = 0;
+      if (focusTargetAnnotationPressIsSuppressed(noteId)) return;
       if (selectedEditorText()) return;
 
       onAnnotationClickRef.current(noteId);
@@ -848,12 +902,32 @@ export function MarkdownEditor({
     const annotationClickHandler = EditorView.domEventHandlers({
       mousedown(event) {
         if (event.button === 0) {
+          const noteId = noteModeEnabledRef.current
+            ? noteIdFromAnnotationPointerEvent(event)
+            : null;
+          if (noteId && handleFocusTargetAnnotationPress(noteId)) {
+            mouseSelectionStartedRef.current = false;
+            event.preventDefault();
+            event.stopPropagation();
+            return true;
+          }
+
           mouseSelectionStartedRef.current = true;
         }
         return false;
       },
       pointerdown(event) {
         if (event.button === 0) {
+          const noteId = noteModeEnabledRef.current
+            ? noteIdFromAnnotationPointerEvent(event)
+            : null;
+          if (noteId && handleFocusTargetAnnotationPress(noteId)) {
+            mouseSelectionStartedRef.current = false;
+            event.preventDefault();
+            event.stopPropagation();
+            return true;
+          }
+
           mouseSelectionStartedRef.current = true;
         }
         return false;
@@ -923,6 +997,8 @@ export function MarkdownEditor({
         event.preventDefault();
         if (event.detail >= 2) {
           clearQueuedAnnotationClick();
+        } else if (handleFocusTargetAnnotationPress(noteId)) {
+          return true;
         } else {
           queueAnnotationClick(noteId);
         }
@@ -1075,6 +1151,7 @@ export function MarkdownEditor({
   }, []);
 
   useEffect(() => {
+    annotationsRef.current = annotations;
     const view = viewRef.current;
     if (!view) return;
 

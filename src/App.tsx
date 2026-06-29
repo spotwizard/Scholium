@@ -11,6 +11,7 @@ import {
   type FormEvent,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent,
+  type PointerEvent as ReactPointerEvent,
   type ReactNode,
   type WheelEvent as ReactWheelEvent,
   useEffect,
@@ -56,6 +57,7 @@ const typedOrderedListMarkerPattern = /^\d+[.)]\s+(.*)$/;
 const inlineBreakPattern = /<br\s*\/?>/gi;
 const emptyPreviewListItemText = "\u200b";
 const annotationClickDelayMs = 500;
+const libraryAnnotationClickSuppressionMs = annotationClickDelayMs + 350;
 const pendingAnchorAnnotationId = "__scholium_pending_anchor__";
 
 type NoteStatus = "active" | "orphaned" | "deleted";
@@ -115,6 +117,15 @@ type OpenMarkdownFileResult = {
   notes: SelectionNote[];
   glossaryTerms?: GlossaryTerm[];
   glossaryBindings?: GlossaryBinding[];
+};
+
+type LibraryAnnotationPointerEvent = {
+  button: number;
+  clientX: number;
+  clientY: number;
+  preventDefault: () => void;
+  stopPropagation: () => void;
+  target: EventTarget | null;
 };
 
 type OpenDirectoryEntryResult =
@@ -5808,6 +5819,10 @@ function App() {
   const noteEditorPostCompositionGuardUntilRef = useRef(0);
   const noteEditModalActiveRef = useRef(false);
   const ignoreNextWorkspaceClickRef = useRef(false);
+  const suppressedLibraryAnnotationClickRef = useRef<{
+    noteId: string;
+    until: number;
+  } | null>(null);
   const noteDraftRef = useRef(noteDraft);
   const glossaryDraftRef = useRef(glossaryDraft);
   const transientSelectionNoteIdRef = useRef("");
@@ -7090,6 +7105,67 @@ function App() {
       noteElement?.dataset.noteId === activeNoteId ||
       noteElement?.dataset.noteId === `glossary:${activeGlossaryBindingId}`
     );
+  }
+
+  function pointHitsLibraryNoteRange(noteId: string, clientX: number, clientY: number) {
+    return Array.from(
+      document.querySelectorAll<HTMLElement>(
+        ".cm-note-annotation[data-note-id], .cm-annotation-frame[data-note-id], .preview-note-annotation[data-note-id], .preview-annotation-frame[data-note-id], .milkdown-note-annotation[data-note-id], .milkdown-annotation-frame[data-note-id]",
+      ),
+    ).some((element) => {
+      if (element.dataset.noteId !== noteId) return false;
+
+      return pointHitsAnyRect(clientX, clientY, Array.from(element.getClientRects()));
+    });
+  }
+
+  function eventHitsFocusedLibraryNoteRange(event: LibraryAnnotationPointerEvent) {
+    if (!focusedLibraryNoteId) return false;
+
+    const targetElement = elementFromEventTarget(event.target);
+    const noteElement = targetElement?.closest<HTMLElement>(
+      ".cm-note-annotation[data-note-id], .cm-annotation-frame[data-note-id], .preview-note-annotation[data-note-id], .preview-annotation-frame[data-note-id], .milkdown-note-annotation[data-note-id], .milkdown-annotation-frame[data-note-id]",
+    );
+
+    return (
+      noteElement?.dataset.noteId === focusedLibraryNoteId ||
+      pointHitsLibraryNoteRange(focusedLibraryNoteId, event.clientX, event.clientY)
+    );
+  }
+
+  function suppressNextLibraryAnnotationClick(noteId: string) {
+    suppressedLibraryAnnotationClickRef.current = {
+      noteId,
+      until: Date.now() + libraryAnnotationClickSuppressionMs,
+    };
+  }
+
+  function consumeSuppressedLibraryAnnotationClick(noteId: string) {
+    const suppressedClick = suppressedLibraryAnnotationClickRef.current;
+    if (!suppressedClick) return false;
+
+    if (Date.now() > suppressedClick.until) {
+      suppressedLibraryAnnotationClickRef.current = null;
+      return false;
+    }
+
+    if (suppressedClick.noteId !== noteId) return false;
+
+    suppressedLibraryAnnotationClickRef.current = null;
+    return true;
+  }
+
+  function suppressAndDismissFocusedLibraryAnnotationClick(
+    event: LibraryAnnotationPointerEvent,
+  ) {
+    if (event.button !== 0) return false;
+    if (!eventHitsFocusedLibraryNoteRange(event)) return false;
+
+    suppressNextLibraryAnnotationClick(focusedLibraryNoteId);
+    setFocusedLibraryNoteId("");
+    event.preventDefault();
+    event.stopPropagation();
+    return true;
   }
 
   function pointHitsActiveNoteRange(clientX: number, clientY: number) {
@@ -10864,9 +10940,40 @@ function App() {
     const note = noteLibraryNotes.find((candidate) => candidate.id === annotationId);
     if (!note) return false;
 
+    if (consumeSuppressedLibraryAnnotationClick(note.id)) {
+      return true;
+    }
+
+    if (focusedLibraryNoteId === note.id) {
+      suppressNextLibraryAnnotationClick(note.id);
+      setFocusedLibraryNoteId("");
+      return true;
+    }
+
     setFocusedLibraryNoteId(note.id);
     focusLibraryNoteCard(note.id);
     return true;
+  }
+
+  function dismissFocusTargetAnnotationFromEditor(annotationId: string) {
+    if (noteLibraryOpen && !annotationId.startsWith("glossary:")) {
+      suppressNextLibraryAnnotationClick(annotationId);
+      setFocusedLibraryNoteId("");
+      (document.activeElement as HTMLElement | null)?.blur();
+      return;
+    }
+
+    if (annotationId.startsWith("glossary:")) {
+      const bindingId = annotationId.slice("glossary:".length);
+      if (activeGlossaryBindingId === bindingId || notePanelHasContentRef.current) {
+        closeNotePanel();
+      }
+      return;
+    }
+
+    if (activeNoteId === annotationId || notePanelHasContentRef.current) {
+      closeNotePanel();
+    }
   }
 
   function updateGlossaryDefinition(termId: string, definition: string) {
@@ -11072,6 +11179,9 @@ function App() {
       return;
     }
 
+    if (focusedLibraryNoteId === noteId) {
+      suppressNextLibraryAnnotationClick(noteId);
+    }
     setFocusedLibraryNoteId((currentNoteId) =>
       currentNoteId === noteId ? "" : currentNoteId,
     );
@@ -11088,8 +11198,27 @@ function App() {
     if (target instanceof Element && target.closest(".note-library-card.is-focused")) {
       return;
     }
+    if (suppressAndDismissFocusedLibraryAnnotationClick(event)) {
+      return;
+    }
 
     setFocusedLibraryNoteId("");
+  }
+
+  function handleShellPointerDownCapture(event: ReactPointerEvent<HTMLElement>) {
+    if (!noteLibraryFocusActive || !focusedLibraryNoteId) return;
+    if (libraryNotePanelExpanded) return;
+
+    const target = event.target;
+    if (target instanceof Element && target.closest(".note-library-expanded-panel")) {
+      return;
+    }
+    if (target instanceof Element && target.closest(".note-library-card.is-focused")) {
+      return;
+    }
+    if (suppressAndDismissFocusedLibraryAnnotationClick(event)) {
+      return;
+    }
   }
 
   function updateLibraryNoteDraft(noteId: string, body: string) {
@@ -11651,6 +11780,7 @@ function App() {
       className={shellClassName}
       style={shellStyle}
       onMouseDownCapture={handleShellMouseDownCapture}
+      onPointerDownCapture={handleShellPointerDownCapture}
     >
       {!settingsViewOpen && noteLibraryFocusActive ? (
         <div
@@ -12213,6 +12343,7 @@ function App() {
                   onAnnotationClick={showAnnotationViewer}
                   onAnnotationDoubleClick={showAnnotationViewer}
                   onChange={updateSelectedDocumentBody}
+                  onFocusTargetAnnotationPress={dismissFocusTargetAnnotationFromEditor}
                   onSelectionChange={handleSelectionChange}
                   onSelectionEnter={handleSelectionEnter}
                 />
@@ -12225,6 +12356,7 @@ function App() {
                   onAnnotationClick={showAnnotationViewer}
                   onAnnotationDoubleClick={showAnnotationViewer}
                   onChange={updateSelectedDocumentBody}
+                  onFocusTargetAnnotationPress={dismissFocusTargetAnnotationFromEditor}
                   onSelectionChange={handleSelectionChange}
                   onSelectionEnter={handleSelectionEnter}
                 />
