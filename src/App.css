@@ -266,12 +266,18 @@ button:disabled {
 }
 
 .document-pane {
-  position: absolute;
+  position: fixed;
   top: 0;
+  bottom: 0;
   left: 0;
   z-index: 70;
   box-sizing: border-box;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
   width: var(--document-pane-width);
+  height: 100vh;
+  min-height: 0;
+  max-height: 100vh;
   border-right: 1px solid var(--color-border);
   background: var(--color-surface);
   overflow: visible;
@@ -402,7 +408,10 @@ button:disabled {
 
 .document-list {
   display: block;
+  min-height: 0;
   overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 4px 0 10px;
 }
 
@@ -1813,14 +1822,15 @@ button:disabled {
 
 .editor-grid {
   display: block;
-  min-height: 0;
+  min-height: 100vh;
+  background: var(--color-surface);
 }
 
 .editor-surface {
   position: relative;
   display: block;
   min-width: 0;
-  min-height: 0;
+  min-height: 100vh;
   padding: var(--editor-content-gutter) 0;
   background: var(--color-surface);
 }
@@ -4567,7 +4577,7 @@ button:disabled {
   }
 
   .editor-surface {
-    min-height: calc(460px + var(--editor-content-gutter) * 2);
+    min-height: max(100vh, calc(460px + var(--editor-content-gutter) * 2));
     border-right: 0;
     padding-top: 76px;
   }
