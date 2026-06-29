@@ -7815,6 +7815,10 @@ function App() {
       }
 
       if (noteEditModalActive) {
+        if (isAnnotationNavigationTab && targetIsInsideNoteMarkdownEditor(event.target)) {
+          return;
+        }
+
         if (
           isAnnotationNavigationTab &&
           focusAdjacentFloatingAnnotation(event.shiftKey ? -1 : 1)
@@ -11357,6 +11361,7 @@ function App() {
     if (event.key !== "Tab" || event.metaKey || event.ctrlKey || event.altKey) {
       return false;
     }
+    if (targetIsInsideNoteMarkdownEditor(event.target)) return false;
     if (noteLibraryNotes.length === 0) return false;
 
     event.preventDefault();

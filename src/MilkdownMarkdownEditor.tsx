@@ -1,6 +1,7 @@
 import { Crepe, CrepeFeature } from "@milkdown/crepe";
 import { invoke } from "@tauri-apps/api/core";
 import { codeBlockConfig } from "@milkdown/kit/component/code-block";
+import { listItemBlockConfig } from "@milkdown/kit/component/list-item-block";
 import { editorViewCtx, prosePluginsCtx } from "@milkdown/kit/core";
 import { hardbreakAttr, hardbreakSchema } from "@milkdown/kit/preset/commonmark";
 import type { Node as ProseMirrorNode } from "@milkdown/prose/model";
@@ -50,6 +51,14 @@ const milkdownAnnotationClassPrefix = "scholium-milkdown-annotation-";
 const milkdownSelectionFallbackMs = 220;
 const annotationClickDelayMs = 500;
 const imeSelectionSuppressionMs = 350;
+const escapeListLabelHtml = (label: string) =>
+  label
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+const scholiumBulletListLabel = '<span class="scholium-list-bullet" aria-hidden="true"></span>';
 let milkdownMermaidRenderIndex = 0;
 
 function milkdownAnnotationFramePaddingForKind(kind: "note" | "glossary") {
@@ -1680,6 +1689,21 @@ export function MilkdownMarkdownEditor({
             previousConfig.renderPreview(language, content, applyPreview) ??
             renderMilkdownCodeBlockPreview(content)
           );
+        },
+      }));
+
+      ctx.update(listItemBlockConfig.key, (previousConfig) => ({
+        ...previousConfig,
+        renderLabel: (props) => {
+          if (props.checked == null) {
+            if (props.listType === "bullet") {
+              return scholiumBulletListLabel;
+            }
+
+            return `<span class="scholium-list-number">${escapeListLabelHtml(props.label)}</span>`;
+          }
+
+          return previousConfig.renderLabel(props);
         },
       }));
 
