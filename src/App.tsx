@@ -49,10 +49,8 @@ import {
   type SettingsSnapshot,
 } from "./settings";
 
-const unorderedListMarkerPattern = /^ {0,3}[-*+]\s+/;
 const markdownUnorderedListLinePattern = /^(\s*)[-*+]\s+(.*)$/;
 const typedUnorderedListMarkerPattern = /^[-*+]\s+(.*)$/;
-const orderedListMarkerPattern = /^ {0,3}\d+[.)]\s+/;
 const markdownOrderedListLinePattern = /^(\s*)\d+[.)]\s+(.*)$/;
 const typedOrderedListMarkerPattern = /^\d+[.)]\s+(.*)$/;
 const inlineBreakPattern = /<br\s*\/?>/gi;
@@ -740,7 +738,6 @@ const notePanelAnimationMs = 180;
 const selectionWarningMinimumVisibleMs = 1600;
 const selectionWarningAutoDismissMs = 2600;
 const appDrivenSelectionClearGuardMs = 1200;
-const noteLibraryFocusedPreviewLineCount = 10;
 const autosaveDelayMs = 1000;
 const externalFileRefreshIntervalMs = 1500;
 const pdfCssPageWidth = 794;
@@ -5642,196 +5639,6 @@ function MarkdownPreviewContent({
   );
 }
 
-function NoteLibraryPreviewContent({
-  className,
-  emptyLabel,
-  expanded,
-  mermaidEmptyDefinitionLabel,
-  mermaidLoadingLabel,
-  onDoubleClick,
-  value,
-}: {
-  className: string;
-  emptyLabel: string;
-  expanded: boolean;
-  mermaidEmptyDefinitionLabel: string;
-  mermaidLoadingLabel: string;
-  onDoubleClick?: () => void;
-  value: string;
-}) {
-  const contentRef = useRef<HTMLDivElement | null>(null);
-  const [expandedHeight, setExpandedHeight] = useState(0);
-  const [hasCollapsedOverflow, setHasCollapsedOverflow] = useState(false);
-  const [hasFocusedOverflow, setHasFocusedOverflow] = useState(false);
-
-  useLayoutEffect(() => {
-    const contentElement = contentRef.current;
-    if (!contentElement) return;
-
-    const measuredElement = contentElement;
-    let measureFrame = 0;
-
-    function measureExpandedHeight() {
-      window.cancelAnimationFrame(measureFrame);
-      measureFrame = window.requestAnimationFrame(() => {
-        const previewBody = measuredElement.querySelector<HTMLElement>(
-          ".note-library-card__body",
-        );
-        const previewBodyStyle = previewBody ? window.getComputedStyle(previewBody) : null;
-        const fontSize = previewBodyStyle ? Number.parseFloat(previewBodyStyle.fontSize) : 0;
-        const rawLineHeight = previewBodyStyle?.lineHeight ?? "";
-        const lineHeight =
-          rawLineHeight === "normal"
-            ? fontSize * 1.5
-            : Number.parseFloat(rawLineHeight) || fontSize * 1.5;
-        const collapsedHeight = lineHeight * 2;
-        const nextHeight = Math.ceil(measuredElement.scrollHeight);
-
-        setExpandedHeight((currentHeight) =>
-          currentHeight === nextHeight ? currentHeight : nextHeight,
-        );
-        setHasCollapsedOverflow((currentOverflow) => {
-          const nextOverflow = nextHeight > collapsedHeight + 1;
-
-          return currentOverflow === nextOverflow ? currentOverflow : nextOverflow;
-        });
-        setHasFocusedOverflow((currentOverflow) => {
-          const focusedHeight = lineHeight * noteLibraryFocusedPreviewLineCount;
-          const nextOverflow = nextHeight > focusedHeight + 1;
-
-          return currentOverflow === nextOverflow ? currentOverflow : nextOverflow;
-        });
-      });
-    }
-
-    measureExpandedHeight();
-
-    const resizeObserver = new ResizeObserver(measureExpandedHeight);
-    resizeObserver.observe(measuredElement);
-
-    return () => {
-      window.cancelAnimationFrame(measureFrame);
-      resizeObserver.disconnect();
-    };
-  }, [value]);
-
-  const bodyShellStyle = {
-    "--note-library-card-body-expanded-height": `${expandedHeight}px`,
-  } as CSSProperties;
-
-  return (
-    <div
-      className={`note-library-card__body-shell ${expanded ? "is-expanded" : ""}`}
-      data-has-focused-overflow={hasFocusedOverflow ? "true" : "false"}
-      data-has-overflow={hasCollapsedOverflow ? "true" : "false"}
-      style={bodyShellStyle}
-    >
-      <div className="note-library-card__body-measure" ref={contentRef}>
-        <MarkdownPreviewContent
-          className={className}
-          emptyLabel={emptyLabel}
-          mermaidEmptyDefinitionLabel={mermaidEmptyDefinitionLabel}
-          mermaidLoadingLabel={mermaidLoadingLabel}
-          onDoubleClick={onDoubleClick}
-          value={value}
-        />
-      </div>
-    </div>
-  );
-}
-
-function FloatingNotePreviewContent({
-  className,
-  emptyLabel,
-  expanded,
-  mermaidEmptyDefinitionLabel,
-  mermaidLoadingLabel,
-  onDoubleClick,
-  value,
-}: {
-  className: string;
-  emptyLabel: string;
-  expanded: boolean;
-  mermaidEmptyDefinitionLabel: string;
-  mermaidLoadingLabel: string;
-  onDoubleClick?: () => void;
-  value: string;
-}) {
-  const contentRef = useRef<HTMLDivElement | null>(null);
-  const [hasCollapsedOverflow, setHasCollapsedOverflow] = useState(false);
-  const [visibleHeight, setVisibleHeight] = useState(0);
-
-  useLayoutEffect(() => {
-    const contentElement = contentRef.current;
-    if (!contentElement) return;
-
-    const measuredElement = contentElement;
-    let measureFrame = 0;
-
-    function measureCollapsedOverflow() {
-      window.cancelAnimationFrame(measureFrame);
-      measureFrame = window.requestAnimationFrame(() => {
-        const previewBody = measuredElement.querySelector<HTMLElement>(".bottom-note-body");
-        const previewBodyStyle = previewBody ? window.getComputedStyle(previewBody) : null;
-        const fontSize = previewBodyStyle ? Number.parseFloat(previewBodyStyle.fontSize) : 0;
-        const rawLineHeight = previewBodyStyle?.lineHeight ?? "";
-        const lineHeight =
-          rawLineHeight === "normal"
-            ? fontSize * 1.5
-            : Number.parseFloat(rawLineHeight) || fontSize * 1.5;
-        const collapsedHeight = lineHeight * noteLibraryFocusedPreviewLineCount;
-        const measuredHeight = Math.ceil(measuredElement.scrollHeight);
-        const nextVisibleHeight = Math.ceil(Math.min(measuredHeight, collapsedHeight));
-        const nextOverflow = measuredHeight > collapsedHeight + 1;
-
-        setVisibleHeight((currentHeight) =>
-          currentHeight === nextVisibleHeight ? currentHeight : nextVisibleHeight,
-        );
-
-        setHasCollapsedOverflow((currentOverflow) =>
-          currentOverflow === nextOverflow ? currentOverflow : nextOverflow,
-        );
-      });
-    }
-
-    measureCollapsedOverflow();
-
-    const resizeObserver = new ResizeObserver(measureCollapsedOverflow);
-    resizeObserver.observe(measuredElement);
-
-    return () => {
-      window.cancelAnimationFrame(measureFrame);
-      resizeObserver.disconnect();
-    };
-  }, [value]);
-
-  const bodyShellStyle =
-    visibleHeight > 0
-      ? ({
-          "--floating-note-card-body-visible-height": `${visibleHeight}px`,
-        } as CSSProperties)
-      : undefined;
-
-  return (
-    <div
-      className={`floating-note-card__body-shell ${expanded ? "is-expanded" : ""}`}
-      data-has-overflow={hasCollapsedOverflow ? "true" : "false"}
-      style={bodyShellStyle}
-    >
-      <div className="floating-note-card__body-measure" ref={contentRef}>
-        <MarkdownPreviewContent
-          className={className}
-          emptyLabel={emptyLabel}
-          mermaidEmptyDefinitionLabel={mermaidEmptyDefinitionLabel}
-          mermaidLoadingLabel={mermaidLoadingLabel}
-          onDoubleClick={onDoubleClick}
-          value={value}
-        />
-      </div>
-    </div>
-  );
-}
-
 function NoteMarkdownEditor({
   ariaLabel,
   className = "",
@@ -5929,7 +5736,6 @@ function App() {
   const [selectionWarningPosition, setSelectionWarningPosition] =
     useState<SelectionWarningPosition | null>(null);
   const [isNotePanelClosing, setIsNotePanelClosing] = useState(false);
-  const [isReturningToView, setIsReturningToView] = useState(false);
   const [isMobileViewport, setIsMobileViewport] = useState(() =>
     window.matchMedia(mobileViewportQuery).matches,
   );
@@ -5947,7 +5753,6 @@ function App() {
   const [windowIsFullscreen, setWindowIsFullscreen] = useState(false);
   const [noteLibraryOpen, setNoteLibraryOpen] = useState(false);
   const [focusedLibraryNoteId, setFocusedLibraryNoteId] = useState("");
-  const [editingLibraryNoteId, setEditingLibraryNoteId] = useState("");
   const [expandedLibraryNoteId, setExpandedLibraryNoteId] = useState("");
   const [dirtyDocumentStates, setDirtyDocumentStates] = useState<
     Record<string, DirtyDocumentState>
@@ -5971,7 +5776,6 @@ function App() {
   const settingsCloseButtonRef = useRef<HTMLButtonElement | null>(null);
   const duplicateFileInputRef = useRef<HTMLInputElement | null>(null);
   const noteEditorRootRef = useRef<HTMLDivElement | null>(null);
-  const libraryNoteEditorRootRef = useRef<HTMLDivElement | null>(null);
   const noteModeDefaultAppliedRef = useRef(noteModeEnabled);
   const returnToViewTimerRef = useRef(0);
   const notePanelCloseTimerRef = useRef(0);
@@ -6306,7 +6110,6 @@ function App() {
     directoryPaneOpenBeforeNoteLibraryRef.current = null;
     setNoteLibraryOpen(false);
     setFocusedLibraryNoteId("");
-    setEditingLibraryNoteId("");
   }, [noteModeEnabled]);
 
   useEffect(() => {
@@ -6346,13 +6149,7 @@ function App() {
     ) {
       setFocusedLibraryNoteId("");
     }
-    if (
-      editingLibraryNoteId &&
-      !noteLibraryNotes.some((note) => note.id === editingLibraryNoteId)
-    ) {
-      setEditingLibraryNoteId("");
-    }
-  }, [editingLibraryNoteId, focusedLibraryNoteId, noteLibrarySignature]);
+  }, [focusedLibraryNoteId, noteLibrarySignature]);
 
   useEffect(() => {
     if (
@@ -6366,7 +6163,6 @@ function App() {
   useEffect(() => {
     if (!noteLibraryOpen) {
       setFocusedLibraryNoteId("");
-      setEditingLibraryNoteId("");
       setExpandedLibraryNoteId("");
     }
   }, [noteLibraryOpen]);
@@ -6413,12 +6209,6 @@ function App() {
     noteLibrarySignature,
     selectedDocumentId,
   ]);
-
-  useEffect(() => {
-    if (!editingLibraryNoteId) return;
-
-    focusMarkdownEditor(libraryNoteEditorRootRef.current);
-  }, [editingLibraryNoteId, editorMode]);
 
   useEffect(() => {
     function recordPointerAnchorRect(event: PointerEvent | globalThis.MouseEvent) {
@@ -6710,44 +6500,6 @@ function App() {
       : target instanceof Node
         ? target.parentElement
         : null;
-  }
-
-  function elementFromNode(node: Node | null) {
-    return node instanceof HTMLElement ? node : node?.parentElement ?? null;
-  }
-
-  function noteEditorShouldKeepPlainEnter(event: ReactKeyboardEvent<HTMLElement>) {
-    if (
-      event.key !== "Enter" ||
-      event.metaKey ||
-      event.ctrlKey ||
-      event.altKey ||
-      event.shiftKey
-    ) {
-      return false;
-    }
-
-    const targetElement = elementFromEventTarget(event.target);
-    if (!targetElement) return false;
-
-    const noteEditorRoot = targetElement?.closest<HTMLElement>(".note-markdown-editor");
-    if (!noteEditorRoot) return false;
-
-    if (targetElement.closest("li")) return true;
-
-    const selection = window.getSelection();
-    const anchorElement =
-      selection && noteEditorRoot.contains(selection.anchorNode)
-        ? elementFromNode(selection.anchorNode)
-        : null;
-    if (anchorElement?.closest("li")) return true;
-
-    const currentSourceLine = anchorElement?.closest<HTMLElement>(".cm-line");
-    const currentSourceLineText = currentSourceLine?.textContent ?? "";
-    return (
-      unorderedListMarkerPattern.test(currentSourceLineText) ||
-      orderedListMarkerPattern.test(currentSourceLineText)
-    );
   }
 
   function targetIsInsideNoteMarkdownEditor(target: EventTarget | null) {
@@ -10386,7 +10138,6 @@ function App() {
   function clearReturnToViewTimer() {
     window.clearTimeout(returnToViewTimerRef.current);
     returnToViewTimerRef.current = 0;
-    setIsReturningToView(false);
   }
 
   function discardTransientEmptySelectionNote() {
@@ -10511,38 +10262,6 @@ function App() {
     }
   }
 
-  function returnActiveNoteToViewMode() {
-    if ((!activeNoteIsEditing && !activeGlossaryIsEditing) || isReturningToView) return;
-
-    if (
-      activeNote &&
-      !activeNote.body.trim() &&
-      !noteDraft.trim()
-    ) {
-      closeNotePanel();
-      return;
-    }
-
-    if (
-      activeGlossaryTerm &&
-      activeGlossaryTerm.id === transientGlossaryTermIdRef.current &&
-      !activeGlossaryTerm.definition.trim() &&
-      !glossaryDraft.trim()
-    ) {
-      closeNotePanel();
-      return;
-    }
-
-    setIsReturningToView(true);
-    window.clearTimeout(returnToViewTimerRef.current);
-    returnToViewTimerRef.current = window.setTimeout(() => {
-      setActiveNoteMode("view");
-      setActiveGlossaryMode("view");
-      setIsReturningToView(false);
-      returnToViewTimerRef.current = 0;
-    }, 1000);
-  }
-
   function resetNoteTextareaCompositionState() {
     noteEditorIsComposingRef.current = false;
     noteEditorEnterIgnoredDuringCompositionRef.current = false;
@@ -10613,48 +10332,11 @@ function App() {
   }
 
   function handleNoteEditorKeyDown(event: ReactKeyboardEvent<HTMLElement>) {
-    const isPlainEnter =
-      event.key === "Enter" &&
-      !event.metaKey &&
-      !event.ctrlKey &&
-      !event.altKey &&
-      !event.shiftKey;
-    const isDuringComposition =
-      event.nativeEvent.isComposing || noteEditorIsComposingRef.current;
-
-    if (isDuringComposition) {
-      if (isPlainEnter) {
-        noteEditorEnterIgnoredDuringCompositionRef.current = true;
-      }
-      return;
-    }
-
-    if (isPlainEnter && Date.now() <= noteEditorPostCompositionGuardUntilRef.current) {
-      event.preventDefault();
-      event.stopPropagation();
-      noteEditorPostCompositionGuardUntilRef.current = 0;
-      return;
-    }
-
     if (event.key === "Escape") {
       event.preventDefault();
       event.stopPropagation();
       closeNotePanel();
-      return;
     }
-
-    if (!isPlainEnter) return;
-    if (noteEditorShouldKeepPlainEnter(event)) return;
-
-    event.preventDefault();
-    event.stopPropagation();
-    const activeDraft = activeGlossaryIsEditing ? glossaryDraftRef.current : noteDraftRef.current;
-    if (!activeDraft.trim()) {
-      closeNotePanel();
-      return;
-    }
-
-    returnActiveNoteToViewMode();
   }
 
   function handleLibraryNoteEditorKeyDown(
@@ -10665,46 +10347,18 @@ function App() {
       return;
     }
 
-    const isPlainEnter =
-      event.key === "Enter" &&
-      !event.metaKey &&
-      !event.ctrlKey &&
-      !event.altKey &&
-      !event.shiftKey;
-    const isDuringComposition =
-      event.nativeEvent.isComposing || noteEditorIsComposingRef.current;
-
-    if (isDuringComposition) {
-      if (isPlainEnter) {
-        noteEditorEnterIgnoredDuringCompositionRef.current = true;
-      }
-      return;
-    }
-
-    if (isPlainEnter && Date.now() <= noteEditorPostCompositionGuardUntilRef.current) {
-      event.preventDefault();
-      event.stopPropagation();
-      noteEditorPostCompositionGuardUntilRef.current = 0;
-      return;
-    }
-
     if (event.key === "Escape") {
       event.preventDefault();
       event.stopPropagation();
-      setEditingLibraryNoteId((currentNoteId) =>
-        currentNoteId === noteId ? "" : currentNoteId,
-      );
-      return;
+      if (expandedLibraryNoteId === noteId) {
+        closeLibraryNoteExpandedPanel();
+      } else {
+        setFocusedLibraryNoteId((currentNoteId) =>
+          currentNoteId === noteId ? "" : currentNoteId,
+        );
+        (document.activeElement as HTMLElement | null)?.blur();
+      }
     }
-
-    if (!isPlainEnter) return;
-    if (noteEditorShouldKeepPlainEnter(event)) return;
-
-    event.preventDefault();
-    event.stopPropagation();
-    setEditingLibraryNoteId((currentNoteId) =>
-      currentNoteId === noteId ? "" : currentNoteId,
-    );
   }
 
   function handleSelectionChange(anchor: TextSelectionAnchor | null) {
@@ -10917,7 +10571,7 @@ function App() {
     floatingNoteAnchorRectRef.current = activeNoteAnchorRect(noteId);
     setPendingAnchor(null);
     setActiveNoteId(noteId);
-    setActiveNoteMode("view");
+    setActiveNoteMode("edit");
     setNoteDraft(note.body);
     notePanelHasContentRef.current = true;
   }
@@ -10984,25 +10638,6 @@ function App() {
     }
 
     return false;
-  }
-
-  function openNoteEditor(noteId: string) {
-    if (!noteModeEnabled) return;
-
-    const note = notes.find((candidate) => candidate.id === noteId && candidate.status !== "deleted");
-    if (!note || !selectionNoteHasContent(note)) return;
-
-    setSelectionWarningPosition(null);
-    clearNotePanelCloseTimer();
-    clearReturnToViewTimer();
-    setIsNotePanelClosing(false);
-    floatingNoteAnchorRectRef.current = activeNoteAnchorRect(noteId);
-    setPendingAnchor(null);
-    setActiveNoteId(noteId);
-    noteEditorShouldRefocusRef.current = true;
-    setActiveNoteMode("edit");
-    setNoteDraft(note.body);
-    notePanelHasContentRef.current = true;
   }
 
   function glossaryTermForAnchor(anchor: TextSelectionAnchor) {
@@ -11197,7 +10832,6 @@ function App() {
     const note = noteLibraryNotes.find((candidate) => candidate.id === annotationId);
     if (!note) return false;
 
-    setEditingLibraryNoteId("");
     setFocusedLibraryNoteId(note.id);
     focusLibraryNoteCard(note.id);
     return true;
@@ -11357,9 +10991,6 @@ function App() {
     if (focusedLibraryNoteId === noteId) {
       setFocusedLibraryNoteId("");
     }
-    if (editingLibraryNoteId === noteId) {
-      setEditingLibraryNoteId("");
-    }
     if (expandedLibraryNoteId === noteId) {
       setExpandedLibraryNoteId("");
     }
@@ -11412,9 +11043,6 @@ function App() {
     setFocusedLibraryNoteId((currentNoteId) =>
       currentNoteId === noteId ? "" : currentNoteId,
     );
-    setEditingLibraryNoteId((currentNoteId) =>
-      currentNoteId === noteId ? "" : currentNoteId,
-    );
   }
 
   function handleShellMouseDownCapture(event: MouseEvent<HTMLElement>) {
@@ -11430,42 +11058,6 @@ function App() {
     }
 
     setFocusedLibraryNoteId("");
-    setEditingLibraryNoteId("");
-  }
-
-  function startLibraryNoteEditor(noteId: string) {
-    const note = notes.find((candidate) => candidate.id === noteId && candidate.status !== "deleted");
-    if (!note || !selectionNoteHasContent(note)) return;
-
-    clearNotePanelCloseTimer();
-    clearReturnToViewTimer();
-    setSelectionWarningPosition(null);
-    setPendingAnchor(null);
-    setPendingGlossaryTerm(null);
-    setActiveNoteId("");
-    setActiveGlossaryBindingId("");
-    setActiveGlossaryTermId("");
-    setActiveNoteMode("view");
-    setActiveGlossaryMode("view");
-    setNoteDraft("");
-    setGlossaryDraft("");
-    setNotePanelExpanded(false);
-    setFloatingNotePanelPosition(null);
-    setIsNotePanelClosing(false);
-    notePanelHasContentRef.current = false;
-    floatingNoteAnchorRectRef.current = null;
-    setFocusedLibraryNoteId(noteId);
-    setEditingLibraryNoteId(noteId);
-    setExpandedLibraryNoteId("");
-  }
-
-  function toggleLibraryNoteEditor(noteId: string) {
-    if (editingLibraryNoteId === noteId) {
-      setEditingLibraryNoteId("");
-      return;
-    }
-
-    startLibraryNoteEditor(noteId);
   }
 
   function updateLibraryNoteDraft(noteId: string, body: string) {
@@ -11503,7 +11095,6 @@ function App() {
     const nextNoteId = nextIndex >= 0 ? noteLibraryNotes[nextIndex]?.id : "";
     if (!nextNoteId) return false;
 
-    setEditingLibraryNoteId("");
     setFocusedLibraryNoteId(nextNoteId);
     focusLibraryNoteCard(nextNoteId);
     return true;
@@ -11520,7 +11111,6 @@ function App() {
     const note = noteLibraryNotes.find((candidate) => candidate.id === noteId);
     if (!note) return;
 
-    setEditingLibraryNoteId("");
     setFocusedLibraryNoteId(note.id);
     setExpandedLibraryNoteId(note.id);
   }
@@ -11636,14 +11226,13 @@ function App() {
   }
 
   function renderNoteLibraryCard(note: SelectionNote) {
-    const isEditingLibraryNote = editingLibraryNoteId === note.id;
     const isFocusedLibraryNote = focusedLibraryNoteId === note.id;
 
     return (
       <article
         className={`note-library-card ${activeNoteId === note.id ? "is-active" : ""} ${
           isFocusedLibraryNote ? "is-focused" : ""
-        } ${isEditingLibraryNote ? "is-editing" : ""}`}
+        }`}
         data-note-id={note.id}
         data-note-tone={activeNoteToneById.get(note.id) ?? note.tone ?? 0}
         key={note.id}
@@ -11668,54 +11257,29 @@ function App() {
             <ExpandPanelIcon />
           </button>
         </div>
-        {isEditingLibraryNote ? (
-          <NoteMarkdownEditor
-            ariaLabel={t("note.edit")}
-            className="note-library-card__editor"
-            editorRootRef={(element) => {
-              libraryNoteEditorRootRef.current = element;
-            }}
-            value={note.body}
-            onChange={(value) => updateLibraryNoteDraft(note.id, value)}
-            onClick={(event) => event.stopPropagation()}
-            onCompositionStart={handleNoteEditorCompositionStart}
-            onCompositionEnd={handleNoteEditorCompositionEnd}
-            onKeyDown={(event) => handleLibraryNoteEditorKeyDown(note.id, event)}
-          />
-        ) : (
-          <NoteLibraryPreviewContent
-            className="bottom-note-body note-library-card__body"
-            emptyLabel={t("note.empty")}
-            expanded={false}
-            mermaidEmptyDefinitionLabel={t("mermaid.empty")}
-            mermaidLoadingLabel={t("mermaid.loading")}
-            onDoubleClick={() => startLibraryNoteEditor(note.id)}
-            value={note.body}
-          />
-        )}
+        <NoteMarkdownEditor
+          ariaLabel={t("note.edit")}
+          className="note-library-card__editor"
+          value={note.body}
+          onChange={(value) => updateLibraryNoteDraft(note.id, value)}
+          onClick={(event) => {
+            event.stopPropagation();
+            setFocusedLibraryNoteId(note.id);
+          }}
+          onCompositionStart={handleNoteEditorCompositionStart}
+          onCompositionEnd={handleNoteEditorCompositionEnd}
+          onKeyDown={(event) => handleLibraryNoteEditorKeyDown(note.id, event)}
+        />
         <div
           className="note-actions note-library-card__actions"
-          aria-hidden={!isFocusedLibraryNote && !isEditingLibraryNote}
+          aria-hidden={!isFocusedLibraryNote}
         >
-          <button
-            type="button"
-            aria-label={isEditingLibraryNote ? t("note.edit.done") : t("note.edit")}
-            aria-pressed={isEditingLibraryNote}
-            title={isEditingLibraryNote ? t("note.edit.done") : t("note.edit")}
-            tabIndex={isFocusedLibraryNote || isEditingLibraryNote ? 0 : -1}
-            onClick={(event) => {
-              event.stopPropagation();
-              toggleLibraryNoteEditor(note.id);
-            }}
-          >
-            <PencilIcon />
-          </button>
           <button
             className="is-danger"
             type="button"
             aria-label={t("note.delete")}
             title={t("note.delete")}
-            tabIndex={isFocusedLibraryNote || isEditingLibraryNote ? 0 : -1}
+            tabIndex={isFocusedLibraryNote ? 0 : -1}
             onClick={(event) => {
               event.stopPropagation();
               deleteNote(note.id);
@@ -11758,7 +11322,6 @@ function App() {
     if (!annotationToolsAvailable) return;
 
     setFocusedLibraryNoteId("");
-    setEditingLibraryNoteId("");
     setExpandedLibraryNoteId("");
     resetNoteModeInteractionState();
     collapseDirectoryPaneForNoteExpansion();
@@ -11769,7 +11332,6 @@ function App() {
     const { restoreDirectoryPane = true } = options;
 
     setFocusedLibraryNoteId("");
-    setEditingLibraryNoteId("");
     setExpandedLibraryNoteId("");
     void restoreDirectoryPane;
     directoryPaneOpenBeforeNoteLibraryRef.current = null;
@@ -12717,30 +12279,21 @@ function App() {
                 className="note-library-expanded-panel__body-scroll"
                 onWheel={handleLibraryNoteExpandedPanelWheel}
               >
-                <MarkdownPreviewContent
-                  className="bottom-note-body note-library-expanded-panel__body"
-                  emptyLabel={t("note.empty")}
-                  mermaidEmptyDefinitionLabel={t("mermaid.empty")}
-                  mermaidLoadingLabel={t("mermaid.loading")}
-                  onDoubleClick={() => {
-                    closeLibraryNoteExpandedPanel();
-                    startLibraryNoteEditor(expandedLibraryNote.id);
-                  }}
+                <NoteMarkdownEditor
+                  ariaLabel={t("note.edit")}
+                  className="note-library-expanded-panel__editor"
                   value={expandedLibraryNote.body}
+                  onChange={(value) =>
+                    updateLibraryNoteDraft(expandedLibraryNote.id, value)
+                  }
+                  onCompositionStart={handleNoteEditorCompositionStart}
+                  onCompositionEnd={handleNoteEditorCompositionEnd}
+                  onKeyDown={(event) =>
+                    handleLibraryNoteEditorKeyDown(expandedLibraryNote.id, event)
+                  }
                 />
               </div>
               <div className="note-actions note-library-expanded-panel__actions">
-                <button
-                  type="button"
-                  aria-label={t("note.edit")}
-                  title={t("note.edit")}
-                  onClick={() => {
-                    closeLibraryNoteExpandedPanel();
-                    startLibraryNoteEditor(expandedLibraryNote.id);
-                  }}
-                >
-                  <PencilIcon />
-                </button>
                 <button
                   className="is-danger"
                   type="button"
@@ -12996,19 +12549,18 @@ function App() {
                 </div>
               ) : null}
 
-              {!pendingAnchor && activeNoteIsEditing ? (
+              {!pendingAnchor && activeNote ? (
                 <NoteMarkdownEditor
                   ariaLabel={t("note.edit")}
                   className="floating-note-card__editor"
                   editorRootRef={(element) => {
                     noteEditorRootRef.current = element;
                   }}
-                  value={noteDraft}
+                  value={activeNote.body}
                   onChange={updateActiveNoteDraft}
                   onCompositionStart={handleNoteEditorCompositionStart}
                   onCompositionEnd={handleNoteEditorCompositionEnd}
                   onKeyDown={handleNoteEditorKeyDown}
-                  readOnly={isReturningToView}
                 />
               ) : null}
 
@@ -13024,21 +12576,12 @@ function App() {
                   onCompositionStart={handleNoteEditorCompositionStart}
                   onCompositionEnd={handleNoteEditorCompositionEnd}
                   onKeyDown={handleNoteEditorKeyDown}
-                  readOnly={isReturningToView}
                 />
               ) : null}
 
-              {!pendingAnchor && (activeNoteIsEditing || activeGlossaryIsEditing) && isReturningToView ? (
-                <div className="note-returning-status" role="status">
-                  <span className="note-returning-spinner" aria-hidden="true" />
-                  <span>{t("note.returningToView")}</span>
-                </div>
-              ) : null}
-
               {!pendingAnchor && activeGlossaryTerm && !activeGlossaryIsEditing ? (
-                <FloatingNotePreviewContent
+                <MarkdownPreviewContent
                   className="bottom-note-body"
-                  expanded={floatingNotePanelExpanded}
                   emptyLabel={t("glossary.emptyDefinition")}
                   mermaidEmptyDefinitionLabel={t("mermaid.empty")}
                   mermaidLoadingLabel={t("mermaid.loading")}
@@ -13071,28 +12614,8 @@ function App() {
                 </div>
               ) : null}
 
-              {!pendingAnchor && activeNote && !activeNoteIsEditing ? (
-                <FloatingNotePreviewContent
-                  className="bottom-note-body"
-                  expanded={floatingNotePanelExpanded}
-                  emptyLabel={t("note.empty")}
-                  mermaidEmptyDefinitionLabel={t("mermaid.empty")}
-                  mermaidLoadingLabel={t("mermaid.loading")}
-                  onDoubleClick={() => openNoteEditor(activeNote.id)}
-                  value={activeNote.body}
-                />
-              ) : null}
-
-              {!pendingAnchor && activeNote && !activeNoteIsEditing ? (
+              {!pendingAnchor && activeNote ? (
                 <div className="note-actions bottom-note-actions">
-                  <button
-                    type="button"
-                    aria-label={t("note.edit")}
-                    title={t("note.edit")}
-                    onClick={() => openNoteEditor(activeNote.id)}
-                  >
-                    <PencilIcon />
-                  </button>
                   <button
                     className="is-danger"
                     type="button"

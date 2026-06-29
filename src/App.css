@@ -3087,7 +3087,6 @@ button:disabled {
 }
 
 .note-library-card.is-focused .note-library-card__expand-button,
-.note-library-card.is-editing .note-library-card__expand-button,
 .note-library-card:focus-within .note-library-card__expand-button {
   opacity: 1;
   pointer-events: auto;
@@ -3139,7 +3138,6 @@ button:disabled {
 }
 
 .note-library-card.is-focused .note-library-card__actions,
-.note-library-card.is-editing .note-library-card__actions,
 .note-library-card:focus-within .note-library-card__actions {
   max-height: 26px;
   margin-top: 8px;
@@ -3253,7 +3251,7 @@ button:disabled {
   box-shadow:
     -18px 0 34px rgba(32, 35, 41, 0.16),
     inset 0 1px 0 rgba(255, 255, 255, 0.75);
-  padding: 16px 18px 18px;
+  padding: 16px 18px 18px 39px;
 }
 
 .note-library-expanded-panel__card[data-note-tone="1"] {
@@ -3337,28 +3335,27 @@ button:disabled {
   --note-markdown-editor-min-height: 96px;
   --note-content-font-size: 0.94rem;
   --note-content-line-height: 1.5;
-  --note-markdown-editor-chrome-height: 22px;
+  --note-markdown-editor-chrome-height: 0px;
   width: 100%;
   min-height: var(--note-markdown-editor-min-height);
   overflow: visible;
   resize: none;
-  border: 1px solid var(--color-border);
-  border-radius: 8px;
+  border: 0;
+  border-radius: 0;
   color: var(--color-text);
-  background: rgba(255, 255, 255, 0.7);
+  background: transparent;
   font: inherit;
   font-size: var(--note-content-font-size);
   line-height: var(--note-content-line-height);
 }
 
 .note-markdown-editor:focus-within {
-  border-color: rgba(32, 35, 41, 0.24);
-  box-shadow: inset 0 0 0 1px rgba(32, 35, 41, 0.08);
+  box-shadow: none;
 }
 
 .note-markdown-editor.is-readonly {
   color: var(--color-muted);
-  background: rgba(255, 255, 255, 0.54);
+  background: transparent;
   cursor: wait;
 }
 
@@ -3391,15 +3388,16 @@ button:disabled {
 }
 
 .note-markdown-editor .cm-content {
-  padding: 10px 12px;
+  padding: 0;
 }
 
 .note-markdown-editor .markdown-preview {
   min-height: var(--note-markdown-editor-min-height);
   overflow: visible;
-  padding: 10px 12px;
+  padding: 0;
   color: var(--color-text);
   background: transparent;
+  cursor: text;
   font: inherit;
   font-size: inherit;
   line-height: inherit;
@@ -3541,7 +3539,7 @@ button:disabled {
 .note-markdown-editor .milkdown-markdown-editor .milkdown .ProseMirror {
   min-height: var(--note-markdown-editor-min-height);
   overflow: visible;
-  padding: 10px 12px;
+  padding: 0;
   color: var(--color-text) !important;
   font-size: inherit !important;
   line-height: inherit !important;
@@ -3742,10 +3740,16 @@ button:disabled {
 }
 
 .note-library-card__editor {
-  --note-markdown-editor-min-height: 120px;
+  --note-markdown-editor-min-height: 0px;
   max-height: calc(10 * 1.5em + var(--note-markdown-editor-chrome-height));
   overflow-y: auto;
   overscroll-behavior: contain;
+}
+
+.note-library-expanded-panel__editor {
+  --note-markdown-editor-min-height: 100%;
+  min-height: 100%;
+  overflow: visible;
 }
 
 .floating-note-card__editor {
@@ -3878,7 +3882,7 @@ button:disabled {
   border-right: 0;
   border-bottom: 0;
   border-radius: 0;
-  padding: 16px 18px 18px;
+  padding: 16px 27px 18px;
   box-shadow:
     -18px 0 34px rgba(32, 35, 41, 0.16),
     inset 0 1px 0 rgba(255, 255, 255, 0.75);
@@ -4024,6 +4028,7 @@ button:disabled {
 
 .floating-note-panel.is-expanded-sidebar .floating-note-card__editor,
 .floating-note-panel.is-expanded-sidebar .floating-note-card__editor .markdown-editor-host,
+.floating-note-panel.is-expanded-sidebar .floating-note-card__editor .markdown-preview,
 .floating-note-panel.is-expanded-sidebar
   .floating-note-card__editor
   .milkdown-markdown-editor-shell,
@@ -4038,6 +4043,7 @@ button:disabled {
 }
 
 .floating-note-panel.is-expanded-sidebar .floating-note-card__editor .cm-scroller,
+.floating-note-panel.is-expanded-sidebar .floating-note-card__editor .markdown-preview,
 .floating-note-panel.is-expanded-sidebar
   .floating-note-card__editor
   .milkdown-markdown-editor
