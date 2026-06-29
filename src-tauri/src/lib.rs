@@ -2769,22 +2769,6 @@ fn refresh_app_menu(_app_handle: &tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
-fn set_runtime_app_icon() {
-    use objc2::{AllocAnyThread, MainThreadMarker};
-    use objc2_app_kit::{NSApplication, NSImage};
-    use objc2_foundation::NSData;
-
-    let icon_bytes = include_bytes!("../icons/icon.png");
-    let mtm = unsafe { MainThreadMarker::new_unchecked() };
-    let app = NSApplication::sharedApplication(mtm);
-    let data = NSData::with_bytes(icon_bytes);
-
-    if let Some(app_icon) = NSImage::initWithData(NSImage::alloc(), &data) {
-        unsafe { app.setApplicationIconImage(Some(&app_icon)) };
-    }
-}
-
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
 fn greet(name: &str) -> String {
@@ -2797,9 +2781,6 @@ pub fn run() {
         .manage(LocationMenuState::default())
         .manage(DropboxState::default())
         .setup(|app| {
-            #[cfg(target_os = "macos")]
-            set_runtime_app_icon();
-
             let mut location_store = read_location_store_from_disk(app.handle());
             let pruned_recent_locations = prune_missing_recent_locations(&mut location_store);
             if pruned_recent_locations {

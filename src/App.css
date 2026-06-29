@@ -136,6 +136,7 @@ button:disabled {
   --editor-content-width: 60%;
   --note-library-open-width: 34%;
   --note-library-content-gap: 24px;
+  --expanded-note-panel-width: 50vw;
   --document-pane-measured-width: 272px;
   --directory-bookmark-width: 43px;
   --side-panel-body-width: calc(var(--side-panel-reserved-width) - var(--directory-bookmark-width));
@@ -2715,6 +2716,8 @@ button:disabled {
 }
 
 .scholium-shell.is-note-panel-expanded {
+  --editor-content-offset: 0px;
+  --editor-content-end-offset: var(--expanded-note-panel-width);
   height: 100vh;
   overflow: hidden;
 }
@@ -3442,7 +3445,7 @@ button:disabled {
   right: 0;
   bottom: 0;
   left: auto;
-  width: 50vw;
+  width: var(--expanded-note-panel-width);
   max-width: none;
   height: 100vh;
   max-height: 100vh;

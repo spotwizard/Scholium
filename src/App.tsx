@@ -7151,7 +7151,11 @@ function App() {
     if (!notePanelHasContentRef.current || isNotePanelClosing) return;
 
     const nextFocusedElement = event.relatedTarget;
-    if (nextFocusedElement instanceof Node && event.currentTarget.contains(nextFocusedElement)) {
+    if (!(nextFocusedElement instanceof Node)) {
+      return;
+    }
+
+    if (event.currentTarget.contains(nextFocusedElement)) {
       return;
     }
 
@@ -7294,29 +7298,6 @@ function App() {
     noteEditModalActive,
     notePanelModalActive,
     notePanelHasContent,
-    pendingAnchor,
-  ]);
-
-  useEffect(() => {
-    if (!notePanelHasContent || isNotePanelClosing) return;
-
-    function handleWindowBlur() {
-      if (isMobileViewport && notePanelModalActive && pendingAnchor) return;
-
-      closeNotePanel();
-    }
-
-    window.addEventListener("blur", handleWindowBlur);
-
-    return () => {
-      window.removeEventListener("blur", handleWindowBlur);
-    };
-  }, [
-    closeNotePanel,
-    isMobileViewport,
-    isNotePanelClosing,
-    notePanelHasContent,
-    notePanelModalActive,
     pendingAnchor,
   ]);
 
