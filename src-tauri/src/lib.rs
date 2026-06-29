@@ -1,4 +1,7 @@
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use base64::{
+    engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
+    Engine as _,
+};
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -8,6 +11,7 @@ use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+#[cfg(desktop)]
 use tauri::menu::{AboutMetadata, Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::{AppHandle, Emitter, Manager};
 use url::Url;
@@ -26,6 +30,7 @@ const MENU_FAVORITE_DIRECTORY_PREFIX: &str = "file:favorite-directory:";
 const MENU_RECENT_LOCATION_PREFIX: &str = "file:recent-location:";
 const MAX_RECENT_LOCATIONS: usize = 12;
 const MAX_FILE_SEARCH_RESULTS: usize = 200;
+const MAX_LOCAL_IMAGE_BYTES: u64 = 64 * 1024 * 1024;
 const NOTES_STORE_DIRECTORY: &str = "notes";
 const DEFAULT_APP_LANGUAGE: &str = "zh-Hant";
 const DROPBOX_OAUTH_REDIRECT_PORT: u16 = 53682;
@@ -229,6 +234,20 @@ struct DeleteMarkdownFile {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct WritePdfFile {
+    path: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalImageFile {
+    path: String,
+    mime_type: String,
+    data_url: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct DropboxOAuthStatus {
     connected: bool,
 }
@@ -424,7 +443,15 @@ fn dropbox_notes_markdown_path(dropbox_path: &str) -> PathBuf {
 fn read_document_notes(
     app: &AppHandle,
     markdown_path: &Path,
-) -> Result<(String, Vec<SelectionNote>, Vec<GlossaryTerm>, Vec<GlossaryBinding>), String> {
+) -> Result<
+    (
+        String,
+        Vec<SelectionNote>,
+        Vec<GlossaryTerm>,
+        Vec<GlossaryBinding>,
+    ),
+    String,
+> {
     let notes_path = notes_store_path(app, markdown_path)?;
     let notes_file = read_notes_file(app, markdown_path)?;
     let (notes, glossary_terms, glossary_bindings) = notes_file
@@ -834,8 +861,8 @@ async fn refresh_dropbox_access_token(
         .await
         .map_err(|error| format!("failed to refresh Dropbox token: {error}"))?;
 
-    let token_response = parse_dropbox_token_response(response, "failed to refresh Dropbox token")
-        .await?;
+    let token_response =
+        parse_dropbox_token_response(response, "failed to refresh Dropbox token").await?;
     let refreshed_tokens = DropboxTokenStore {
         app_key: tokens.app_key,
         access_token: token_response.access_token,
@@ -956,7 +983,11 @@ fn dropbox_child_path(parent_path: &str, file_name: &str) -> String {
     if normalized_parent_path.is_empty() {
         format!("/{file_name}")
     } else {
-        format!("{}/{}", normalized_parent_path.trim_end_matches('/'), file_name)
+        format!(
+            "{}/{}",
+            normalized_parent_path.trim_end_matches('/'),
+            file_name
+        )
     }
 }
 
@@ -1045,7 +1076,9 @@ async fn upload_dropbox_markdown_file(
         return Err("Dropbox authorization failed; reconnect Dropbox.".to_string());
     }
     if !response.status().is_success() {
-        return Err(dropbox_response_error(response, "failed to upload Dropbox Markdown file").await);
+        return Err(
+            dropbox_response_error(response, "failed to upload Dropbox Markdown file").await,
+        );
     }
 
     let metadata = response
@@ -1053,12 +1086,7 @@ async fn upload_dropbox_markdown_file(
         .await
         .map_err(|error| format!("failed to parse Dropbox upload response: {error}"))?;
 
-    dropbox_file_from_write_metadata(
-        app,
-        metadata,
-        body,
-        normalized_path,
-    )
+    dropbox_file_from_write_metadata(app, metadata, body, normalized_path)
 }
 
 async fn read_dropbox_list_page(
@@ -1289,6 +1317,24 @@ fn write_location_store(
         .map_err(|error| format!("failed to write location store: {error}"))
 }
 
+fn recent_location_exists(location: &LocationEntry) -> bool {
+    let path = Path::new(&location.path);
+
+    match location.kind.as_str() {
+        "file" => path.is_file(),
+        "directory" => path.is_dir(),
+        _ => false,
+    }
+}
+
+fn prune_missing_recent_locations(store: &mut LocationStore) -> bool {
+    let original_count = store.recent.len();
+
+    store.recent.retain(recent_location_exists);
+
+    store.recent.len() != original_count
+}
+
 fn remember_recent_location_entry(
     app_handle: &tauri::AppHandle,
     entry: LocationEntry,
@@ -1373,6 +1419,95 @@ fn is_markdown_path(path: &Path) -> bool {
             )
         })
         .unwrap_or(false)
+}
+
+fn hex_digit_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn decode_url_path(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+
+    while index < bytes.len() {
+        if bytes[index] == b'%' && index + 2 < bytes.len() {
+            if let (Some(high), Some(low)) = (
+                hex_digit_value(bytes[index + 1]),
+                hex_digit_value(bytes[index + 2]),
+            ) {
+                decoded.push((high << 4) | low);
+                index += 3;
+                continue;
+            }
+        }
+
+        decoded.push(bytes[index]);
+        index += 1;
+    }
+
+    String::from_utf8_lossy(&decoded).to_string()
+}
+
+fn strip_local_url_suffix(src: &str) -> &str {
+    let query_index = src.find('?').unwrap_or(src.len());
+    let fragment_index = src.find('#').unwrap_or(src.len());
+    let end_index = query_index.min(fragment_index);
+
+    &src[..end_index]
+}
+
+fn local_image_mime_type(path: &Path) -> Option<&'static str> {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .and_then(|extension| match extension.to_lowercase().as_str() {
+            "png" => Some("image/png"),
+            "jpg" | "jpeg" => Some("image/jpeg"),
+            "gif" => Some("image/gif"),
+            "webp" => Some("image/webp"),
+            "bmp" => Some("image/bmp"),
+            "avif" => Some("image/avif"),
+            _ => None,
+        })
+}
+
+fn markdown_image_file_path(markdown_path: &Path, image_src: &str) -> Result<PathBuf, String> {
+    let trimmed_src = image_src.trim();
+    if trimmed_src.is_empty() {
+        return Err("image source is empty".to_string());
+    }
+
+    let local_src = strip_local_url_suffix(trimmed_src);
+    if local_src.is_empty() {
+        return Err("image source is empty".to_string());
+    }
+
+    if let Ok(url) = Url::parse(local_src) {
+        if url.scheme() != "file" {
+            return Err("image source is not a local file".to_string());
+        }
+
+        return url
+            .to_file_path()
+            .map_err(|_| "failed to resolve file image source".to_string());
+    }
+
+    let decoded_src = decode_url_path(local_src);
+    let image_path = PathBuf::from(decoded_src);
+    if image_path.is_absolute() {
+        return Ok(image_path);
+    }
+
+    let markdown_directory = markdown_path
+        .parent()
+        .ok_or_else(|| "Markdown file has no parent directory".to_string())?;
+
+    Ok(markdown_directory.join(image_path))
 }
 
 fn is_hidden_path(path: &Path) -> bool {
@@ -1631,6 +1766,43 @@ fn open_markdown_file_context(
 }
 
 #[tauri::command]
+fn read_markdown_image_file(
+    markdown_path: String,
+    image_src: String,
+) -> Result<LocalImageFile, String> {
+    let markdown_path = PathBuf::from(markdown_path);
+    if !markdown_path.is_file() {
+        return Err("selected Markdown path is not a file".to_string());
+    }
+    if !is_markdown_path(&markdown_path) {
+        return Err("selected file is not a Markdown file".to_string());
+    }
+
+    let image_path = markdown_image_file_path(&markdown_path, &image_src)?;
+    let mime_type = local_image_mime_type(&image_path)
+        .ok_or_else(|| "embedded file is not a supported image".to_string())?;
+    let metadata = fs::metadata(&image_path)
+        .map_err(|error| format!("failed to read embedded image metadata: {error}"))?;
+    if !metadata.is_file() {
+        return Err("embedded image path is not a file".to_string());
+    }
+    if metadata.len() > MAX_LOCAL_IMAGE_BYTES {
+        return Err("embedded image is too large".to_string());
+    }
+
+    let bytes =
+        fs::read(&image_path).map_err(|error| format!("failed to read embedded image: {error}"))?;
+    let resolved_path = fs::canonicalize(&image_path).unwrap_or(image_path);
+    let encoded = STANDARD.encode(bytes);
+
+    Ok(LocalImageFile {
+        path: resolved_path.to_string_lossy().to_string(),
+        mime_type: mime_type.to_string(),
+        data_url: format!("data:{mime_type};base64,{encoded}"),
+    })
+}
+
+#[tauri::command]
 fn open_markdown_directory(app: AppHandle, path: String) -> Result<OpenMarkdownDirectory, String> {
     let directory = PathBuf::from(path);
     if !directory.is_dir() {
@@ -1754,6 +1926,124 @@ fn delete_markdown_file(app: AppHandle, path: String) -> Result<DeleteMarkdownFi
         path: markdown_path.to_string_lossy().to_string(),
         notes_path: notes_path.to_string_lossy().to_string(),
     })
+}
+
+fn ensure_pdf_extension(mut path: PathBuf) -> PathBuf {
+    if !path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| extension.eq_ignore_ascii_case("pdf"))
+        .unwrap_or(false)
+    {
+        path.set_extension("pdf");
+    }
+
+    path
+}
+
+fn write_pdf_bytes(path: PathBuf, data_base64: String) -> Result<WritePdfFile, String> {
+    let path = ensure_pdf_extension(path);
+    let parent = path
+        .parent()
+        .ok_or_else(|| "PDF output path has no parent directory".to_string())?;
+    if !parent.is_dir() {
+        return Err("PDF output directory does not exist".to_string());
+    }
+
+    let bytes = STANDARD
+        .decode(data_base64.trim())
+        .map_err(|error| format!("failed to decode PDF data: {error}"))?;
+    if bytes.is_empty() {
+        return Err("PDF data is empty".to_string());
+    }
+
+    fs::write(&path, bytes).map_err(|error| format!("failed to write PDF file: {error}"))?;
+
+    Ok(WritePdfFile {
+        path: path.to_string_lossy().to_string(),
+    })
+}
+
+fn sanitize_pdf_file_name(file_name: &str) -> String {
+    let fallback = "Scholium.pdf";
+    let mut sanitized = file_name
+        .trim()
+        .chars()
+        .map(|character| {
+            if character.is_control()
+                || matches!(
+                    character,
+                    '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|'
+                )
+            {
+                '_'
+            } else {
+                character
+            }
+        })
+        .collect::<String>();
+
+    while sanitized.ends_with('.') || sanitized.ends_with(' ') {
+        sanitized.pop();
+    }
+
+    if sanitized.is_empty() {
+        sanitized = fallback.to_string();
+    }
+    if !sanitized.to_lowercase().ends_with(".pdf") {
+        sanitized.push_str(".pdf");
+    }
+
+    sanitized
+}
+
+fn now_timestamp_millis() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0)
+}
+
+fn unique_pdf_path(directory: &Path, file_name: &str) -> PathBuf {
+    let sanitized_file_name = sanitize_pdf_file_name(file_name);
+    let requested_path = ensure_pdf_extension(directory.join(&sanitized_file_name));
+    if !requested_path.exists() {
+        return requested_path;
+    }
+
+    let requested_stem = requested_path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .filter(|stem| !stem.trim().is_empty())
+        .unwrap_or("Scholium");
+
+    for index in 2..10_000 {
+        let candidate = directory.join(format!("{requested_stem} {index}.pdf"));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+
+    directory.join(format!("{requested_stem} {}.pdf", now_timestamp_millis()))
+}
+
+#[tauri::command]
+fn write_pdf_file(path: String, data_base64: String) -> Result<WritePdfFile, String> {
+    write_pdf_bytes(PathBuf::from(path), data_base64)
+}
+
+#[tauri::command]
+fn write_pdf_file_to_directory(
+    directory: String,
+    file_name: String,
+    data_base64: String,
+) -> Result<WritePdfFile, String> {
+    let directory_path = PathBuf::from(directory);
+    if !directory_path.is_dir() {
+        return Err("PDF output directory does not exist".to_string());
+    }
+
+    write_pdf_bytes(unique_pdf_path(&directory_path, &file_name), data_base64)
 }
 
 #[tauri::command]
@@ -2215,7 +2505,9 @@ async fn delete_dropbox_markdown_file(
         return Err("Dropbox authorization failed; reconnect Dropbox.".to_string());
     }
     if !response.status().is_success() {
-        return Err(dropbox_response_error(response, "failed to delete Dropbox Markdown file").await);
+        return Err(
+            dropbox_response_error(response, "failed to delete Dropbox Markdown file").await,
+        );
     }
 
     let notes_markdown_path = dropbox_notes_markdown_path(&normalized_path);
@@ -2224,6 +2516,7 @@ async fn delete_dropbox_markdown_file(
     Ok(deleted_file)
 }
 
+#[cfg(desktop)]
 fn build_favorite_directories_submenu(
     app_handle: &tauri::AppHandle,
     store: &LocationStore,
@@ -2287,6 +2580,7 @@ fn build_favorite_directories_submenu(
     Ok(submenu)
 }
 
+#[cfg(desktop)]
 fn build_recent_locations_submenu(
     app_handle: &tauri::AppHandle,
     store: &LocationStore,
@@ -2334,6 +2628,7 @@ fn build_recent_locations_submenu(
     Ok(submenu)
 }
 
+#[cfg(desktop)]
 fn build_app_menu(app_handle: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let language = current_app_language(app_handle);
     let location_store = current_location_store(app_handle);
@@ -2414,6 +2709,7 @@ fn build_app_menu(app_handle: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wr
                     &new_file,
                     &open_file,
                     &open_folder,
+                    &PredefinedMenuItem::separator(app_handle)?,
                     &cloud,
                     &favorite_directories,
                     &recent_locations,
@@ -2457,6 +2753,7 @@ fn build_app_menu(app_handle: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wr
     )
 }
 
+#[cfg(desktop)]
 fn refresh_app_menu(app_handle: &tauri::AppHandle) -> Result<(), String> {
     let menu = build_app_menu(app_handle)
         .map_err(|error| format!("failed to rebuild app menu: {error}"))?;
@@ -2467,25 +2764,9 @@ fn refresh_app_menu(app_handle: &tauri::AppHandle) -> Result<(), String> {
         .map_err(|error| format!("failed to set app menu: {error}"))
 }
 
-#[cfg(target_os = "macos")]
-fn set_runtime_dock_icon() {
-    use objc2::{AllocAnyThread, MainThreadMarker};
-    use objc2_app_kit::{NSApplication, NSImage, NSImageView};
-    use objc2_foundation::NSData;
-
-    let icon_bytes = include_bytes!("../icons/icon.png");
-    let mtm = unsafe { MainThreadMarker::new_unchecked() };
-    let app = NSApplication::sharedApplication(mtm);
-    let data = NSData::with_bytes(icon_bytes);
-
-    if let Some(app_icon) = NSImage::initWithData(NSImage::alloc(), &data) {
-        unsafe { app.setApplicationIconImage(Some(&app_icon)) };
-
-        let image_view = NSImageView::imageViewWithImage(&app_icon, mtm);
-        let dock_tile = app.dockTile();
-        dock_tile.setContentView(Some(&image_view));
-        dock_tile.display();
-    }
+#[cfg(not(desktop))]
+fn refresh_app_menu(_app_handle: &tauri::AppHandle) -> Result<(), String> {
+    Ok(())
 }
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
@@ -2496,14 +2777,18 @@ fn greet(name: &str) -> String {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .manage(LocationMenuState::default())
         .manage(DropboxState::default())
         .setup(|app| {
-            #[cfg(target_os = "macos")]
-            set_runtime_dock_icon();
+            let mut location_store = read_location_store_from_disk(app.handle());
+            let pruned_recent_locations = prune_missing_recent_locations(&mut location_store);
+            if pruned_recent_locations {
+                if let Err(error) = write_location_store(app.handle(), &location_store) {
+                    eprintln!("{error}");
+                }
+            }
 
-            let location_store = read_location_store_from_disk(app.handle());
             if let Err(error) = replace_current_location_store(app.handle(), location_store)
                 .and_then(|_| refresh_app_menu(app.handle()))
             {
@@ -2516,62 +2801,65 @@ pub fn run() {
             }
 
             Ok(())
-        })
-        .menu(build_app_menu)
-        .on_menu_event(|app, event| {
-            let event_id = event.id().as_ref();
+        });
 
-            if event_id == MENU_NEW_FILE {
-                let _ = app.emit("menu:new-file", ());
-                let _ = app.emit("scholium-new-file", ());
-            } else if event_id == MENU_OPEN_SETTINGS {
-                let _ = app.emit("menu:open-settings", ());
-                let _ = app.emit("scholium-open-settings", ());
-            } else if event_id == MENU_OPEN_FILE {
-                let _ = app.emit("menu:open-file", ());
-                let _ = app.emit("scholium-open-file", ());
-            } else if event_id == MENU_OPEN_FOLDER {
-                let _ = app.emit("menu:open-folder", ());
-                let _ = app.emit("scholium-open-folder", ());
-            } else if event_id == MENU_CLOUD_DROPBOX {
-                let _ = app.emit("menu:open-dropbox", ());
-                let _ = app.emit("scholium-open-dropbox", ());
-            } else if event_id == MENU_ADD_CURRENT_DIRECTORY_TO_FAVORITES {
-                let current_directory = app
-                    .state::<LocationMenuState>()
-                    .current_directory
-                    .lock()
-                    .ok()
-                    .and_then(|current_directory| current_directory.clone());
+    #[cfg(desktop)]
+    let builder = builder.menu(build_app_menu).on_menu_event(|app, event| {
+        let event_id = event.id().as_ref();
 
-                if let Some(directory) = current_directory {
-                    let _ = remember_favorite_directory_entry(app, directory);
-                }
-            } else if event_id == MENU_CLEAR_FAVORITE_DIRECTORIES {
-                let _ = clear_favorite_directories(app);
-            } else if event_id == MENU_CLEAR_RECENT_LOCATIONS {
-                let _ = clear_recent_locations(app);
-            } else if event_id.starts_with(MENU_FAVORITE_DIRECTORY_PREFIX)
-                || event_id.starts_with(MENU_RECENT_LOCATION_PREFIX)
-            {
-                let store = current_location_store(app);
-                let location = indexed_location(
-                    &store.favorite_directories,
-                    event_id,
-                    MENU_FAVORITE_DIRECTORY_PREFIX,
-                )
-                .or_else(|| indexed_location(&store.recent, event_id, MENU_RECENT_LOCATION_PREFIX));
+        if event_id == MENU_NEW_FILE {
+            let _ = app.emit("menu:new-file", ());
+            let _ = app.emit("scholium-new-file", ());
+        } else if event_id == MENU_OPEN_SETTINGS {
+            let _ = app.emit("menu:open-settings", ());
+            let _ = app.emit("scholium-open-settings", ());
+        } else if event_id == MENU_OPEN_FILE {
+            let _ = app.emit("menu:open-file", ());
+            let _ = app.emit("scholium-open-file", ());
+        } else if event_id == MENU_OPEN_FOLDER {
+            let _ = app.emit("menu:open-folder", ());
+            let _ = app.emit("scholium-open-folder", ());
+        } else if event_id == MENU_CLOUD_DROPBOX {
+            let _ = app.emit("menu:open-dropbox", ());
+            let _ = app.emit("scholium-open-dropbox", ());
+        } else if event_id == MENU_ADD_CURRENT_DIRECTORY_TO_FAVORITES {
+            let current_directory = app
+                .state::<LocationMenuState>()
+                .current_directory
+                .lock()
+                .ok()
+                .and_then(|current_directory| current_directory.clone());
 
-                if let Some(location) = location {
-                    let payload = OpenLocationPayload {
-                        kind: location.kind.clone(),
-                        path: location.path.clone(),
-                    };
-                    let _ = app.emit("menu:open-location", &payload);
-                    let _ = app.emit("scholium-open-location", payload);
-                }
+            if let Some(directory) = current_directory {
+                let _ = remember_favorite_directory_entry(app, directory);
             }
-        })
+        } else if event_id == MENU_CLEAR_FAVORITE_DIRECTORIES {
+            let _ = clear_favorite_directories(app);
+        } else if event_id == MENU_CLEAR_RECENT_LOCATIONS {
+            let _ = clear_recent_locations(app);
+        } else if event_id.starts_with(MENU_FAVORITE_DIRECTORY_PREFIX)
+            || event_id.starts_with(MENU_RECENT_LOCATION_PREFIX)
+        {
+            let store = current_location_store(app);
+            let location = indexed_location(
+                &store.favorite_directories,
+                event_id,
+                MENU_FAVORITE_DIRECTORY_PREFIX,
+            )
+            .or_else(|| indexed_location(&store.recent, event_id, MENU_RECENT_LOCATION_PREFIX));
+
+            if let Some(location) = location {
+                let payload = OpenLocationPayload {
+                    kind: location.kind.clone(),
+                    path: location.path.clone(),
+                };
+                let _ = app.emit("menu:open-location", &payload);
+                let _ = app.emit("scholium-open-location", payload);
+            }
+        }
+    });
+
+    builder
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
@@ -2579,9 +2867,12 @@ pub fn run() {
             open_markdown_directory,
             open_markdown_file,
             open_markdown_file_context,
+            read_markdown_image_file,
             search_markdown_files,
             duplicate_markdown_file,
             delete_markdown_file,
+            write_pdf_file,
+            write_pdf_file_to_directory,
             save_markdown_file,
             remember_recent_location,
             set_current_directory_location,
