@@ -4,8 +4,10 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open as openDialog, save } from "@tauri-apps/plugin-dialog";
 import { openUrl as openExternalUrl } from "@tauri-apps/plugin-opener";
 import {
+  type ChangeEvent,
   createElement,
   Fragment,
+  type CompositionEvent,
   type CSSProperties,
   type FocusEvent,
   type FormEvent,
@@ -289,6 +291,8 @@ type DirtyDocumentState = {
   body: boolean;
   notes: boolean;
 };
+
+type DirtyDocumentStates = Record<string, DirtyDocumentState>;
 
 const emptyDocument: MarkdownDocument = {
   id: "__empty__",
@@ -782,7 +786,7 @@ const notePanelAnimationMs = 180;
 const selectionWarningMinimumVisibleMs = 1600;
 const selectionWarningAutoDismissMs = 2600;
 const appDrivenSelectionClearGuardMs = 1200;
-const autosaveDelayMs = 1000;
+const autosaveDelayMs = 500;
 const externalFileRefreshIntervalMs = 1500;
 const pdfCssPageWidth = 794;
 const pdfCssPageHeight = 1123;
@@ -4893,6 +4897,7 @@ export function MarkdownPreview({
   value,
   annotations,
   allowSelectedTextEnterEdit = false,
+  commitOnInput = false,
   enableTabIndent = false,
   mermaidEmptyDefinitionLabel,
   mermaidLoadingLabel,
@@ -4905,6 +4910,7 @@ export function MarkdownPreview({
   value: string;
   annotations: TextRangeAnnotation[];
   allowSelectedTextEnterEdit?: boolean;
+  commitOnInput?: boolean;
   enableTabIndent?: boolean;
   mermaidEmptyDefinitionLabel: string;
   mermaidLoadingLabel: string;
@@ -4921,6 +4927,7 @@ export function MarkdownPreview({
   const blocks = parseMarkdownPreviewBlocks(value);
   const previewRef = useRef<HTMLDivElement | null>(null);
   const annotationClickTimerRef = useRef(0);
+  const inputCommitFrameRef = useRef(0);
   const previewUndoStackRef = useRef<string[]>([]);
   const previewRedoStackRef = useRef<string[]>([]);
   const [annotationFrames, setAnnotationFrames] = useState<PreviewAnnotationFrame[]>([]);
@@ -4928,6 +4935,7 @@ export function MarkdownPreview({
   useEffect(
     () => () => {
       window.clearTimeout(annotationClickTimerRef.current);
+      window.cancelAnimationFrame(inputCommitFrameRef.current);
     },
     [],
   );
@@ -5321,6 +5329,29 @@ export function MarkdownPreview({
     return { previousBlock, text, transientNodes };
   }
 
+  function looseRootPreviewText(previewElement: HTMLElement) {
+    if (blocks.length > 0) return null;
+
+    const looseNodes = Array.from(previewElement.childNodes).filter((node) => {
+      if (!(node instanceof HTMLElement)) return true;
+      if (node.classList.contains("preview-annotation-layer")) return false;
+      if (node.dataset.previewBlockKey || node.dataset.previewTransient === "true") {
+        return false;
+      }
+
+      return true;
+    });
+    if (looseNodes.length === 0) return null;
+
+    return looseNodes
+      .map(childNodeText)
+      .join("\n")
+      .replace(/\u200b/g, "")
+      .replace(/\u00a0/g, " ")
+      .replace(/\r/g, "")
+      .trimEnd();
+  }
+
   function insertMarkdownAfterBlock(
     previousBlock: MarkdownPreviewBlock | null,
     markdownBlock: string,
@@ -5577,9 +5608,28 @@ export function MarkdownPreview({
 
     const blockElement =
       previewBlockElementFromTarget(event.target) ?? previewBlockElementFromSelection();
-    if (!blockElement) return;
+    if (blockElement) {
+      markPreviewBlockChanged(blockElement);
+    }
 
-    markPreviewBlockChanged(blockElement);
+    if (!commitOnInput) return;
+    if ((event.nativeEvent as InputEvent).isComposing) return;
+
+    window.cancelAnimationFrame(inputCommitFrameRef.current);
+    inputCommitFrameRef.current = window.requestAnimationFrame(() => {
+      inputCommitFrameRef.current = 0;
+      commitPendingPreviewInput(event.currentTarget);
+    });
+  }
+
+  function handlePreviewCompositionEnd(event: CompositionEvent<HTMLDivElement>) {
+    if (readOnly || !commitOnInput) return;
+
+    window.cancelAnimationFrame(inputCommitFrameRef.current);
+    inputCommitFrameRef.current = window.requestAnimationFrame(() => {
+      inputCommitFrameRef.current = 0;
+      commitPendingPreviewInput(event.currentTarget);
+    });
   }
 
   function listItemElementFromSelection(blockElement: HTMLElement) {
@@ -5699,13 +5749,21 @@ export function MarkdownPreview({
       .split("\n")
       .map((line) => line.replace(/\r$/, ""));
     const typedMarkdownBlock = typedMarkdownBlockFromLines(lines);
-    if (!typedMarkdownBlock) return false;
+    const markdownBlock =
+      typedMarkdownBlock?.markdown ??
+      lines
+        .map((line) => line.trimEnd())
+        .join("\n")
+        .trim();
+    if (!markdownBlock) return false;
 
     const { nextValue, insertedBlockKey } = insertMarkdownAfterBlock(
       transientEdit.previousBlock,
       options.continueList
-        ? appendBlankListItemToTypedMarkdownBlock(typedMarkdownBlock)
-        : typedMarkdownBlock.markdown,
+        ? typedMarkdownBlock
+          ? appendBlankListItemToTypedMarkdownBlock(typedMarkdownBlock)
+          : `${markdownBlock}\n`
+        : markdownBlock,
     );
 
     if (nextValue === value) return false;
@@ -5713,6 +5771,24 @@ export function MarkdownPreview({
     clearTransientPreviewNodes(transientEdit.transientNodes);
     commitPreviewChange(nextValue);
     focusPreviewBlockEnd(insertedBlockKey);
+    return true;
+  }
+
+  function commitLooseRootPreviewText(previewElement: HTMLElement) {
+    const text = looseRootPreviewText(previewElement);
+    if (text === null) return false;
+
+    const lines = text.split("\n").map((line) => line.replace(/\r$/, ""));
+    const typedMarkdownBlock = typedMarkdownBlockFromLines(lines);
+    const nextValue =
+      typedMarkdownBlock?.markdown ??
+      lines
+        .map((line) => line.trimEnd())
+        .join("\n")
+        .trim();
+    if (nextValue === value) return false;
+
+    commitPreviewChange(nextValue);
     return true;
   }
 
@@ -5750,6 +5826,16 @@ export function MarkdownPreview({
     return true;
   }
 
+  function commitPendingPreviewInput(previewElement: HTMLElement) {
+    const committedRoot = commitRootTypedPreviewBlock(previewElement);
+    const committedEditedBlocks = commitEditedPreviewBlocks();
+    if (!committedRoot && !committedEditedBlocks) {
+      return commitLooseRootPreviewText(previewElement);
+    }
+
+    return true;
+  }
+
   function commitPreviewBlockMarkdown(block: MarkdownPreviewBlock, markdownBlock: string) {
     const nextValue = replaceMarkdownBlock(value, block, markdownBlock);
 
@@ -5763,8 +5849,9 @@ export function MarkdownPreview({
       return;
     }
 
-    commitRootTypedPreviewBlock(event.currentTarget);
-    commitEditedPreviewBlocks();
+    window.cancelAnimationFrame(inputCommitFrameRef.current);
+    inputCommitFrameRef.current = 0;
+    commitPendingPreviewInput(event.currentTarget);
   }
 
   function handlePreviewInlineShortcut(event: ReactKeyboardEvent<HTMLDivElement>) {
@@ -5834,6 +5921,7 @@ export function MarkdownPreview({
       !event.altKey &&
       !event.shiftKey;
     if (!isPlainEnter) return;
+    if (keyboardEventIsComposing(event)) return;
 
     const selection = window.getSelection();
     const selectedText = selection?.toString() ?? "";
@@ -5957,6 +6045,7 @@ export function MarkdownPreview({
       tabIndex={0}
       onBlur={handlePreviewBlur}
       onBeforeInput={handlePreviewBeforeInput}
+      onCompositionEnd={handlePreviewCompositionEnd}
       onInput={handlePreviewInput}
       onKeyDownCapture={handlePreviewKeyDown}
       onKeyUp={handlePreviewSelection}
@@ -6110,44 +6199,98 @@ function MarkdownPreviewContent({
   );
 }
 
-type CaretPositionDocument = Document & {
-  caretPositionFromPoint?: (
-    clientX: number,
-    clientY: number,
-  ) => { offsetNode: Node; offset: number } | null;
-  caretRangeFromPoint?: (clientX: number, clientY: number) => Range | null;
-};
+function keyboardEventIsComposing(event: KeyboardEvent | ReactKeyboardEvent<HTMLElement>) {
+  const nativeEvent =
+    "nativeEvent" in event
+      ? (event.nativeEvent as KeyboardEvent & { isComposing?: boolean })
+      : event;
 
-function caretRangeFromPoint(clientX: number, clientY: number) {
-  const caretDocument = document as CaretPositionDocument;
-
-  const caretPosition = caretDocument.caretPositionFromPoint?.(clientX, clientY);
-  if (caretPosition) {
-    const range = document.createRange();
-    range.setStart(caretPosition.offsetNode, caretPosition.offset);
-    range.collapse(true);
-    return range;
-  }
-
-  return caretDocument.caretRangeFromPoint?.(clientX, clientY) ?? null;
+  return Boolean(nativeEvent.isComposing || nativeEvent.keyCode === 229);
 }
 
-function focusEditableElementAtPoint(
-  editableElement: HTMLElement,
-  point: { clientX: number; clientY: number } | null,
+function ensureEmptyEditablePreviewLine(editableElement: HTMLElement) {
+  if (!editableElement.classList.contains("markdown-preview")) return null;
+
+  const existingInputTarget =
+    editableElement.querySelector<HTMLElement>("[data-preview-transient='true']") ??
+    editableElement.querySelector<HTMLElement>("[data-preview-block-key]");
+  if (existingInputTarget) return existingInputTarget;
+
+  const lineElement = document.createElement("div");
+  lineElement.className = "markdown-preview-editable";
+  lineElement.dataset.previewTransient = "true";
+  lineElement.dataset.previewPreviousBlockKey = "";
+  lineElement.append(document.createElement("br"));
+
+  const annotationLayer = editableElement.querySelector<HTMLElement>(
+    ".preview-annotation-layer",
+  );
+  editableElement.insertBefore(lineElement, annotationLayer);
+
+  return lineElement;
+}
+
+function textareaValueWithListContinuation(
+  value: string,
+  selectionStart: number,
+  selectionEnd: number,
 ) {
-  editableElement.focus({ preventScroll: true });
+  if (selectionStart !== selectionEnd) return null;
 
-  if (!point) return;
+  const lineStart = value.lastIndexOf("\n", selectionStart - 1) + 1;
+  const lineEndIndex = value.indexOf("\n", selectionStart);
+  const lineEnd = lineEndIndex >= 0 ? lineEndIndex : value.length;
+  const line = value.slice(lineStart, lineEnd);
+  const unorderedMatch = line.match(/^(\s*)([-*+])\s+(.*)$/);
+  const orderedMatch = line.match(/^(\s*)(\d+)([.)])\s+(.*)$/);
 
-  const range = caretRangeFromPoint(point.clientX, point.clientY);
-  if (!range || !editableElement.contains(range.startContainer)) return;
+  if (unorderedMatch) {
+    const [, indent, marker, itemText] = unorderedMatch;
+    if (!itemText.trim()) {
+      const nextValue = `${value.slice(0, lineStart)}${value.slice(lineEnd)}`;
+      return { value: nextValue, selectionStart: lineStart };
+    }
 
-  const selection = window.getSelection();
-  if (!selection) return;
+    const insertedText = `\n${indent}${marker} `;
+    return {
+      value: `${value.slice(0, selectionStart)}${insertedText}${value.slice(selectionEnd)}`,
+      selectionStart: selectionStart + insertedText.length,
+    };
+  }
 
-  selection.removeAllRanges();
-  selection.addRange(range);
+  if (orderedMatch) {
+    const [, indent, numberText, marker, itemText] = orderedMatch;
+    if (!itemText.trim()) {
+      const nextValue = `${value.slice(0, lineStart)}${value.slice(lineEnd)}`;
+      return { value: nextValue, selectionStart: lineStart };
+    }
+
+    const nextNumber = Number(numberText) + 1;
+    const insertedText = `\n${indent}${nextNumber}${marker} `;
+    return {
+      value: `${value.slice(0, selectionStart)}${insertedText}${value.slice(selectionEnd)}`,
+      selectionStart: selectionStart + insertedText.length,
+    };
+  }
+
+  return null;
+}
+
+function resizeNoteTextareaToContent(textarea: HTMLTextAreaElement) {
+  const computedStyle = window.getComputedStyle(textarea);
+  const parsedLineHeight = Number.parseFloat(computedStyle.lineHeight);
+  const parsedFontSize = Number.parseFloat(computedStyle.fontSize);
+  const lineHeight = Number.isFinite(parsedLineHeight)
+    ? parsedLineHeight
+    : (Number.isFinite(parsedFontSize) ? parsedFontSize : 16) * 1.5;
+  const maximumHeight = lineHeight * 10;
+
+  textarea.style.height = "auto";
+  const contentHeight = textarea.scrollHeight;
+  const nextHeight = Math.min(contentHeight, maximumHeight);
+
+  textarea.style.height = `${nextHeight}px`;
+  textarea.style.overflowY = contentHeight > maximumHeight + 1 ? "auto" : "hidden";
 }
 
 function NoteMarkdownEditor({
@@ -6180,6 +6323,7 @@ function NoteMarkdownEditor({
   value: string;
 }) {
   const rootRef = useRef<HTMLDivElement | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const pendingEditPointerRef = useRef<{ clientX: number; clientY: number } | null>(null);
   const isEditable = editing && !readOnly;
   const editorClassName = [
@@ -6191,21 +6335,27 @@ function NoteMarkdownEditor({
   ]
     .filter(Boolean)
     .join(" ");
-  const noopSelectionHandler = () => undefined;
-
   useLayoutEffect(() => {
     if (!isEditable) return;
 
     window.requestAnimationFrame(() => {
-      const editableElement = rootRef.current?.querySelector<HTMLElement>(
-        ".markdown-preview[contenteditable='true']",
-      );
-      if (!editableElement) return;
+      const textarea = textareaRef.current;
+      if (!textarea) return;
 
-      focusEditableElementAtPoint(editableElement, pendingEditPointerRef.current);
+      resizeNoteTextareaToContent(textarea);
+      textarea.focus({ preventScroll: true });
+      const selectionOffset = textarea.value.length;
+      textarea.setSelectionRange(selectionOffset, selectionOffset);
       pendingEditPointerRef.current = null;
     });
   }, [isEditable]);
+
+  useLayoutEffect(() => {
+    const textarea = textareaRef.current;
+    if (!isEditable || !textarea) return;
+
+    resizeNoteTextareaToContent(textarea);
+  }, [isEditable, value]);
 
   function setRootElement(element: HTMLDivElement | null) {
     rootRef.current = element;
@@ -6226,12 +6376,43 @@ function NoteMarkdownEditor({
     if (!isEditable) return;
 
     const nextFocusedElement = event.relatedTarget;
-    if (nextFocusedElement === null) return;
     if (nextFocusedElement instanceof Node && event.currentTarget.contains(nextFocusedElement)) {
       return;
     }
 
     onEditingBlur?.();
+  }
+
+  function handleTextareaChange(event: ChangeEvent<HTMLTextAreaElement>) {
+    onChange(event.currentTarget.value);
+  }
+
+  function handleTextareaKeyDown(event: ReactKeyboardEvent<HTMLTextAreaElement>) {
+    onKeyDown?.(event);
+    if (event.defaultPrevented) return;
+
+    const isPlainEnter =
+      event.key === "Enter" &&
+      !event.metaKey &&
+      !event.ctrlKey &&
+      !event.altKey &&
+      !event.shiftKey;
+    if (!isPlainEnter || keyboardEventIsComposing(event)) return;
+
+    const textarea = event.currentTarget;
+    const nextValue = textareaValueWithListContinuation(
+      textarea.value,
+      textarea.selectionStart,
+      textarea.selectionEnd,
+    );
+    if (!nextValue) return;
+
+    event.preventDefault();
+    onChange(nextValue.value);
+
+    window.requestAnimationFrame(() => {
+      textarea.setSelectionRange(nextValue.selectionStart, nextValue.selectionStart);
+    });
   }
 
   return (
@@ -6240,25 +6421,32 @@ function NoteMarkdownEditor({
       className={editorClassName}
       onBlur={handleBlur}
       onClick={onClick}
-      onCompositionEnd={onCompositionEnd}
-      onCompositionStart={onCompositionStart}
-      onKeyDownCapture={onKeyDown}
       onPointerDownCapture={handlePointerDownCapture}
       ref={setRootElement}
     >
-      <MarkdownPreview
-        annotations={[]}
-        allowSelectedTextEnterEdit
-        enableTabIndent
-        mermaidEmptyDefinitionLabel="Mermaid diagram is empty."
-        mermaidLoadingLabel="Rendering diagram..."
-        readOnly={!isEditable}
-        value={value}
-        onAnnotationClick={noopSelectionHandler}
-        onChange={(nextValue) => onChange(nextValue)}
-        onSelectionChange={noopSelectionHandler}
-        onSelectionEnter={() => false}
-      />
+      {isEditable ? (
+        <textarea
+          aria-label={ariaLabel}
+          className="note-markdown-editor__textarea"
+          ref={textareaRef}
+          rows={1}
+          spellCheck={false}
+          value={value}
+          onChange={handleTextareaChange}
+          onCompositionEnd={onCompositionEnd}
+          onCompositionStart={onCompositionStart}
+          onKeyDown={handleTextareaKeyDown}
+        />
+      ) : (
+        <MarkdownPreviewContent
+          className="note-markdown-editor__preview"
+          emptyLabel=""
+          mermaidEmptyDefinitionLabel="Mermaid diagram is empty."
+          mermaidLoadingLabel="Rendering diagram..."
+          onDoubleClick={readOnly ? undefined : onRequestEdit}
+          value={value}
+        />
+      )}
     </div>
   );
 }
@@ -7560,11 +7748,18 @@ function App() {
   }
 
   function moveEditableCaretToEnd(element: HTMLElement) {
+    if (element instanceof HTMLTextAreaElement) {
+      const selectionOffset = element.value.length;
+      element.setSelectionRange(selectionOffset, selectionOffset);
+      return;
+    }
+
+    const focusTarget = ensureEmptyEditablePreviewLine(element) ?? element;
     const selection = window.getSelection();
     if (!selection) return;
 
     const range = document.createRange();
-    range.selectNodeContents(element);
+    range.selectNodeContents(focusTarget);
     range.collapse(false);
     selection.removeAllRanges();
     selection.addRange(range);
@@ -7573,7 +7768,7 @@ function App() {
   function focusMarkdownEditor(root: HTMLElement | null, remainingAttempts = 8) {
     window.requestAnimationFrame(() => {
       const editableElement = root?.querySelector<HTMLElement>(
-        ".cm-content[contenteditable='true'], .ProseMirror[contenteditable='true'], .markdown-preview[contenteditable='true']",
+        ".note-markdown-editor__textarea, .cm-content[contenteditable='true'], .ProseMirror[contenteditable='true'], .markdown-preview[contenteditable='true']",
       );
       if (!editableElement) {
         if (remainingAttempts > 0) {
@@ -8585,23 +8780,58 @@ function App() {
     settingsViewOpen,
   ]);
 
-  function updateDocumentDirtyState(documentId: string, patch: Partial<DirtyDocumentState>) {
-    setDirtyDocumentStates((currentStates) => {
-      const currentState = currentStates[documentId] ?? { body: false, notes: false };
-      const nextState = {
-        ...currentState,
-        ...patch,
-      };
-      const nextStates = { ...currentStates };
-
-      if (hasDirtyState(nextState)) {
-        nextStates[documentId] = nextState;
-      } else {
-        delete nextStates[documentId];
-      }
-
-      return nextStates;
+  function dirtyBackedDocumentExists(states = dirtyDocumentStatesRef.current) {
+    return documentsRef.current.some((document) => {
+      const hasBackingFile = Boolean(document.filePath) || documentIsFromDropbox(document);
+      return hasBackingFile && hasDirtyState(states[document.id]);
     });
+  }
+
+  function scheduleAutosaveForDirtyDocuments(states = dirtyDocumentStatesRef.current) {
+    window.clearTimeout(autosaveTimerRef.current);
+
+    if (!nativeStorageAvailable) return;
+    if (!dirtyBackedDocumentExists(states)) return;
+
+    autosaveTimerRef.current = window.setTimeout(() => {
+      void saveDirtyDocuments();
+    }, autosaveDelayMs);
+  }
+
+  function flushDirtyDocumentsAfterCurrentEvent() {
+    if (!nativeStorageAvailable) return;
+
+    window.setTimeout(() => {
+      window.clearTimeout(autosaveTimerRef.current);
+      void saveDirtyDocuments();
+    }, 0);
+  }
+
+  function finishNoteEditorEditing(activeEditorKey: string) {
+    setActiveNoteEditorKey((currentKey) =>
+      currentKey === activeEditorKey ? "" : currentKey,
+    );
+    flushDirtyDocumentsAfterCurrentEvent();
+  }
+
+  function updateDocumentDirtyState(documentId: string, patch: Partial<DirtyDocumentState>) {
+    const currentStates = dirtyDocumentStatesRef.current;
+    const currentState = currentStates[documentId] ?? { body: false, notes: false };
+    const nextState = {
+      ...currentState,
+      ...patch,
+    };
+    const nextStates = { ...currentStates };
+
+    if (hasDirtyState(nextState)) {
+      nextStates[documentId] = nextState;
+    } else {
+      delete nextStates[documentId];
+    }
+
+    dirtyDocumentStatesRef.current = nextStates;
+    setDirtyDocumentStates(nextStates);
+    scheduleAutosaveForDirtyDocuments(nextStates);
   }
 
   function markDocumentBodyDirty(documentId: string, isDirty: boolean) {
@@ -8627,6 +8857,14 @@ function App() {
     }
 
     documentIds.forEach((documentId) => markDocumentNotesDirty(documentId));
+  }
+
+  function updateNotesState(updater: (currentNotes: SelectionNote[]) => SelectionNote[]) {
+    const nextNotes = updater(notesRef.current);
+
+    notesRef.current = nextNotes;
+    setNotes(nextNotes);
+    return nextNotes;
   }
 
   function markLoadedDocumentsClean(loadedDocuments: MarkdownDocument[]) {
@@ -10126,7 +10364,7 @@ function App() {
       ...currentBodies,
       [documentId]: savedBody,
     }));
-    setDirtyDocumentStates((currentStates) => {
+    const nextDirtyStatesFrom = (currentStates: DirtyDocumentStates) => {
       const currentDocument = documentsRef.current.find((document) => document.id === documentId);
       const currentSidecarFingerprint = sidecarFingerprint(
         notesForDocument(documentId),
@@ -10146,7 +10384,11 @@ function App() {
       }
 
       return nextStates;
-    });
+    };
+
+    const nextDirtyStates = nextDirtyStatesFrom(dirtyDocumentStatesRef.current);
+    dirtyDocumentStatesRef.current = nextDirtyStates;
+    setDirtyDocumentStates(nextDirtyStates);
   }
 
   async function saveDocumentToDisk(documentToSave: MarkdownDocument) {
@@ -11149,6 +11391,11 @@ function App() {
   }
 
   function handleNoteEditorKeyDown(event: ReactKeyboardEvent<HTMLElement>) {
+    if (event.key === "Enter" && keyboardEventIsComposing(event)) {
+      noteEditorEnterIgnoredDuringCompositionRef.current = true;
+      return;
+    }
+
     if (event.key === "Escape") {
       event.preventDefault();
       event.stopPropagation();
@@ -11341,7 +11588,7 @@ function App() {
       if (noteLibraryOpen) {
         setNoteLibraryOpen(false);
       }
-      createSelectionNoteForAnchor(anchor);
+      createSelectionNoteForAnchor(anchor, { startEditing: false });
       return true;
     }
 
@@ -11757,10 +12004,15 @@ function App() {
   function confirmSelectionNoteForAnchor(anchor: TextSelectionAnchor) {
     if (!noteModeEnabled) return;
 
-    createSelectionNoteForAnchor(anchor);
+    createSelectionNoteForAnchor(anchor, { startEditing: true });
   }
 
-  function createSelectionNoteForAnchor(anchor: TextSelectionAnchor) {
+  function createSelectionNoteForAnchor(
+    anchor: TextSelectionAnchor,
+    options: { startEditing?: boolean } = {},
+  ) {
+    const { startEditing = false } = options;
+
     discardTransientEmptySelectionNote();
     setSelectionWarningPosition(null);
 
@@ -11776,21 +12028,27 @@ function App() {
       deletedAt: null,
     };
 
-    setNotes((currentNotes) => [note, ...currentNotes]);
+    updateNotesState((currentNotes) => [note, ...currentNotes]);
     transientSelectionNoteIdRef.current = note.id;
-    noteEditorShouldRefocusRef.current = true;
+    noteEditorShouldRefocusRef.current = startEditing;
     clearReturnToViewTimer();
     setPendingAnchor(null);
     setActiveNoteId(note.id);
     setActiveNoteMode("view");
-    setActiveNoteEditorKey(noteEditorKey("floating", note.id));
+    setActiveNoteEditorKey(startEditing ? noteEditorKey("floating", note.id) : "");
     setNoteDraft("");
     setIsNotePanelClosing(false);
     notePanelHasContentRef.current = true;
   }
 
   function updateNoteBody(noteId: string, body: string) {
-    setNotes((currentNotes) =>
+    const noteDocumentId =
+      notesRef.current.find((note) => note.id === noteId)?.documentId ?? selectedDocument.id;
+    if (transientSelectionNoteIdRef.current === noteId && body.trim()) {
+      transientSelectionNoteIdRef.current = "";
+    }
+
+    updateNotesState((currentNotes) =>
       currentNotes.map((note) =>
         note.id === noteId
           ? {
@@ -11801,7 +12059,7 @@ function App() {
           : note,
       ),
     );
-    markDocumentNotesDirty();
+    markDocumentNotesDirty(noteDocumentId);
   }
 
   function updateActiveNoteDraft(body: string) {
@@ -11817,7 +12075,7 @@ function App() {
     if (transientSelectionNoteIdRef.current === noteId) {
       transientSelectionNoteIdRef.current = "";
     }
-    setNotes((currentNotes) =>
+    updateNotesState((currentNotes) =>
       currentNotes.map((note) =>
         note.id === noteId
           ? {
@@ -12146,9 +12404,7 @@ function App() {
           }}
           onCompositionStart={handleNoteEditorCompositionStart}
           onCompositionEnd={handleNoteEditorCompositionEnd}
-          onEditingBlur={() =>
-            setActiveNoteEditorKey((currentKey) => (currentKey === editorKey ? "" : currentKey))
-          }
+          onEditingBlur={() => finishNoteEditorEditing(editorKey)}
           onKeyDown={(event) => handleLibraryNoteEditorKeyDown(note.id, event)}
           onRequestEdit={() => {
             setFocusedLibraryNoteId(note.id);
@@ -13269,9 +13525,7 @@ function App() {
                   onCompositionStart={handleNoteEditorCompositionStart}
                   onCompositionEnd={handleNoteEditorCompositionEnd}
                   onEditingBlur={() =>
-                    setActiveNoteEditorKey((currentKey) =>
-                      currentKey === expandedLibraryNoteEditorKey ? "" : currentKey,
-                    )
+                    finishNoteEditorEditing(expandedLibraryNoteEditorKey)
                   }
                   onKeyDown={(event) =>
                     handleLibraryNoteEditorKeyDown(expandedLibraryNote.id, event)
@@ -13553,11 +13807,7 @@ function App() {
                       onCompositionStart={handleNoteEditorCompositionStart}
                       onCompositionEnd={handleNoteEditorCompositionEnd}
                       onEditingBlur={() =>
-                        setActiveNoteEditorKey((currentKey) =>
-                          currentKey === noteEditorKey("floating", activeNote.id)
-                            ? ""
-                            : currentKey,
-                        )
+                        finishNoteEditorEditing(noteEditorKey("floating", activeNote.id))
                       }
                       onKeyDown={handleNoteEditorKeyDown}
                       onRequestEdit={() =>

@@ -3244,10 +3244,8 @@ button:disabled {
 
 .note-library-list {
   box-sizing: border-box;
-  display: grid;
-  align-content: start;
+  display: block;
   align-self: stretch;
-  gap: 12px;
   min-height: 0;
   max-height: none;
   overflow-x: hidden;
@@ -3255,6 +3253,10 @@ button:disabled {
   overscroll-behavior: contain;
   padding: 14px 14px 28px;
   scroll-padding-bottom: 28px;
+}
+
+.note-library-card + .note-library-card {
+  margin-top: 12px;
 }
 
 .note-library-pane.is-focus-active .note-library-list {
@@ -3266,8 +3268,8 @@ button:disabled {
   --note-library-card-background: var(--color-note-surface);
   --note-editor-border-color: var(--color-note-border);
   position: relative;
-  display: grid;
-  gap: 10px;
+  display: block;
+  height: auto;
   border: 1px solid var(--color-note-border);
   border-radius: 6px;
   padding: 12px 12px 14px;
@@ -3305,6 +3307,7 @@ button:disabled {
   align-items: start;
   justify-content: space-between;
   gap: 10px;
+  margin-bottom: 10px;
 }
 
 .note-library-card__expand-button {
@@ -3361,6 +3364,7 @@ button:disabled {
 }
 
 .note-library-card__actions {
+  display: none;
   align-items: center;
   flex-wrap: nowrap;
   gap: 6px;
@@ -3381,6 +3385,7 @@ button:disabled {
 
 .note-library-card.is-focused .note-library-card__actions,
 .note-library-card:focus-within .note-library-card__actions {
+  display: flex;
   max-height: 26px;
   margin-top: 8px;
   opacity: 1;
@@ -3652,9 +3657,34 @@ button:disabled {
   padding: 0;
 }
 
-.note-markdown-editor .markdown-preview {
+.note-markdown-editor__textarea {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
   min-height: var(--note-markdown-editor-min-height);
-  overflow: visible;
+  max-height: var(--note-markdown-editor-max-height, none);
+  border: 0;
+  outline: 0;
+  resize: none;
+  overflow-y: hidden;
+  overscroll-behavior: contain;
+  padding: 0;
+  color: var(--color-text);
+  background: transparent;
+  font: inherit;
+  font-size: inherit;
+  line-height: inherit;
+}
+
+.note-markdown-editor__textarea::selection {
+  background: rgba(138, 36, 56, 0.24);
+}
+
+.note-markdown-editor :is(.markdown-preview, .note-markdown-editor__preview) {
+  min-height: var(--note-markdown-editor-min-height);
+  max-height: var(--note-markdown-editor-max-height, none);
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 0;
   color: var(--color-text);
   background: transparent;
@@ -3664,28 +3694,32 @@ button:disabled {
   line-height: inherit;
 }
 
-.note-markdown-editor.is-previewing .markdown-preview {
+.scholium-shell.is-mobile-safe-layout .note-markdown-editor :is(.markdown-preview, .note-markdown-editor__preview) {
+  min-height: var(--note-markdown-editor-min-height);
+}
+
+.note-markdown-editor.is-previewing :is(.markdown-preview, .note-markdown-editor__preview) {
   cursor: default;
 }
 
-.note-markdown-editor.is-editing .markdown-preview {
+.note-markdown-editor.is-editing :is(.markdown-preview, .note-markdown-editor__preview) {
   cursor: text;
 }
 
-.note-markdown-editor .markdown-preview > :first-child {
+.note-markdown-editor :is(.markdown-preview, .note-markdown-editor__preview) > :first-child {
   margin-top: 0;
 }
 
-.note-markdown-editor .markdown-preview > :last-child {
+.note-markdown-editor :is(.markdown-preview, .note-markdown-editor__preview) > :last-child {
   margin-bottom: 0;
 }
 
-.note-markdown-editor .markdown-preview h1,
-.note-markdown-editor .markdown-preview h2,
-.note-markdown-editor .markdown-preview h3,
-.note-markdown-editor .markdown-preview h4,
-.note-markdown-editor .markdown-preview h5,
-.note-markdown-editor .markdown-preview h6 {
+.note-markdown-editor :is(.markdown-preview, .note-markdown-editor__preview) h1,
+.note-markdown-editor :is(.markdown-preview, .note-markdown-editor__preview) h2,
+.note-markdown-editor :is(.markdown-preview, .note-markdown-editor__preview) h3,
+.note-markdown-editor :is(.markdown-preview, .note-markdown-editor__preview) h4,
+.note-markdown-editor :is(.markdown-preview, .note-markdown-editor__preview) h5,
+.note-markdown-editor :is(.markdown-preview, .note-markdown-editor__preview) h6 {
   margin: 0.85em 0 0.32em;
   color: var(--color-heading);
   font-size: 1rem;
@@ -3694,25 +3728,25 @@ button:disabled {
   line-height: 1.25;
 }
 
-.note-markdown-editor .markdown-preview h1 {
+.note-markdown-editor :is(.markdown-preview, .note-markdown-editor__preview) h1 {
   font-size: 1.08rem;
 }
 
-.note-markdown-editor .markdown-preview h2 {
+.note-markdown-editor :is(.markdown-preview, .note-markdown-editor__preview) h2 {
   padding-bottom: 0.18em;
   border-bottom: 1px solid rgba(32, 35, 41, 0.14);
 }
 
-.note-markdown-editor .markdown-preview p,
-.note-markdown-editor .markdown-preview ul,
-.note-markdown-editor .markdown-preview ol,
-.note-markdown-editor .markdown-preview blockquote,
-.note-markdown-editor .markdown-preview pre {
+.note-markdown-editor :is(.markdown-preview, .note-markdown-editor__preview) p,
+.note-markdown-editor :is(.markdown-preview, .note-markdown-editor__preview) ul,
+.note-markdown-editor :is(.markdown-preview, .note-markdown-editor__preview) ol,
+.note-markdown-editor :is(.markdown-preview, .note-markdown-editor__preview) blockquote,
+.note-markdown-editor :is(.markdown-preview, .note-markdown-editor__preview) pre {
   margin: 0 0 0.72em;
 }
 
-.note-markdown-editor .markdown-preview ul,
-.note-markdown-editor .markdown-preview ol {
+.note-markdown-editor :is(.markdown-preview, .note-markdown-editor__preview) ul,
+.note-markdown-editor :is(.markdown-preview, .note-markdown-editor__preview) ol {
   --note-list-unified-marker-gap: 0.64em;
   --note-list-marker-gap: var(--note-list-unified-marker-gap);
   --note-list-marker-width: 0.42em;
@@ -3721,18 +3755,18 @@ button:disabled {
   padding-left: 0;
 }
 
-.note-markdown-editor .markdown-preview ol {
+.note-markdown-editor :is(.markdown-preview, .note-markdown-editor__preview) ol {
   --note-list-marker-width: 0.78em;
   counter-reset: scholium-note-list;
 }
 
-.note-markdown-editor .markdown-preview li {
+.note-markdown-editor :is(.markdown-preview, .note-markdown-editor__preview) li {
   position: relative;
   padding-left: calc(var(--note-list-marker-width) + var(--note-list-marker-gap));
 }
 
-.note-markdown-editor .markdown-preview ul > li::before,
-.note-markdown-editor .markdown-preview ol > li::before {
+.note-markdown-editor :is(.markdown-preview, .note-markdown-editor__preview) ul > li::before,
+.note-markdown-editor :is(.markdown-preview, .note-markdown-editor__preview) ol > li::before {
   position: absolute;
   top: 0;
   left: 0;
@@ -3742,7 +3776,7 @@ button:disabled {
   text-align: right;
 }
 
-.note-markdown-editor .markdown-preview ul > li::before {
+.note-markdown-editor :is(.markdown-preview, .note-markdown-editor__preview) ul > li::before {
   content: "";
   top: 0.75em;
   left: calc(var(--note-list-marker-width) - var(--note-list-bullet-size));
@@ -3753,43 +3787,43 @@ button:disabled {
   transform: translateY(-50%);
 }
 
-.note-markdown-editor .markdown-preview ol > li {
+.note-markdown-editor :is(.markdown-preview, .note-markdown-editor__preview) ol > li {
   counter-increment: scholium-note-list;
 }
 
-.note-markdown-editor .markdown-preview ol > li::before {
+.note-markdown-editor :is(.markdown-preview, .note-markdown-editor__preview) ol > li::before {
   content: counter(scholium-note-list) ".";
 }
 
-.note-markdown-editor .markdown-preview li + li {
+.note-markdown-editor :is(.markdown-preview, .note-markdown-editor__preview) li + li {
   margin-top: 0.18em;
 }
 
-.note-markdown-editor .markdown-preview li > ul,
-.note-markdown-editor .markdown-preview li > ol {
+.note-markdown-editor :is(.markdown-preview, .note-markdown-editor__preview) li > ul,
+.note-markdown-editor :is(.markdown-preview, .note-markdown-editor__preview) li > ol {
   --note-list-marker-gap: 0.52em;
   margin: 0.18em 0 0.28em;
   padding-left: 1.15em;
 }
 
-.note-markdown-editor .markdown-preview li > ul {
+.note-markdown-editor :is(.markdown-preview, .note-markdown-editor__preview) li > ul {
   --note-list-marker-width: 0.38em;
   --note-list-bullet-size: 0.28em;
 }
 
-.note-markdown-editor .markdown-preview li > ol {
+.note-markdown-editor :is(.markdown-preview, .note-markdown-editor__preview) li > ol {
   --note-list-marker-width: 0.72em;
   counter-reset: scholium-note-list;
 }
 
-.note-markdown-editor .markdown-preview blockquote {
+.note-markdown-editor :is(.markdown-preview, .note-markdown-editor__preview) blockquote {
   padding: 0.1em 0 0.1em 0.72em;
   border-left: 3px solid var(--color-note-border);
   color: var(--color-muted);
   background: transparent;
 }
 
-.note-markdown-editor .markdown-preview code {
+.note-markdown-editor :is(.markdown-preview, .note-markdown-editor__preview) code {
   border-radius: 4px;
   padding: 0.08em 0.28em;
   color: var(--color-accent-ink);
@@ -3797,7 +3831,7 @@ button:disabled {
   font-size: 0.88em;
 }
 
-.note-markdown-editor .markdown-preview pre {
+.note-markdown-editor :is(.markdown-preview, .note-markdown-editor__preview) pre {
   overflow: auto;
   border: 1px solid rgba(32, 35, 41, 0.14);
   border-radius: 6px;
@@ -4011,9 +4045,13 @@ button:disabled {
 
 .note-library-card__editor {
   --note-markdown-editor-min-height: 0px;
-  max-height: calc(10 * 1.5em + var(--note-markdown-editor-chrome-height));
-  overflow-y: auto;
-  overscroll-behavior: contain;
+  --note-markdown-editor-max-height: calc(10 * 1.5em);
+  align-self: start;
+  display: block;
+  height: auto;
+  min-height: 0;
+  max-height: none;
+  overflow: visible;
 }
 
 .note-library-expanded-panel__editor {
@@ -4023,10 +4061,38 @@ button:disabled {
 }
 
 .floating-note-card__editor {
-  --note-markdown-editor-min-height: 96px;
-  max-height: calc(10 * 1.5em + var(--note-markdown-editor-chrome-height));
+  --note-markdown-editor-min-height: 0px;
+  --note-markdown-editor-max-height: calc(10 * 1.5em);
+  align-self: start;
+  height: auto;
+  min-height: 0;
+  max-height: calc(var(--note-markdown-editor-max-height) + var(--note-markdown-editor-chrome-height));
   overflow-y: auto;
   overscroll-behavior: contain;
+}
+
+.scholium-shell .note-library-card__editor .markdown-preview,
+.scholium-shell .note-library-card__editor .note-markdown-editor__preview,
+.scholium-shell .note-library-card__editor .note-markdown-editor__textarea,
+.scholium-shell .floating-note-card__editor .markdown-preview,
+.scholium-shell .floating-note-card__editor .note-markdown-editor__preview,
+.scholium-shell .floating-note-card__editor .note-markdown-editor__textarea,
+.scholium-shell.is-mobile-safe-layout .note-library-card__editor .markdown-preview,
+.scholium-shell.is-mobile-safe-layout .note-library-card__editor .note-markdown-editor__preview,
+.scholium-shell.is-mobile-safe-layout .note-library-card__editor .note-markdown-editor__textarea,
+.scholium-shell.is-mobile-safe-layout .floating-note-card__editor .markdown-preview,
+.scholium-shell.is-mobile-safe-layout .floating-note-card__editor .note-markdown-editor__preview,
+.scholium-shell.is-mobile-safe-layout .floating-note-card__editor .note-markdown-editor__textarea {
+  height: auto;
+  min-height: 0;
+}
+
+.scholium-shell .note-library-card__editor .note-markdown-editor__preview {
+  display: -webkit-box;
+  max-height: none;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 10;
 }
 
 .note-library-empty {
@@ -4302,6 +4368,7 @@ button:disabled {
 .floating-note-panel.is-expanded-sidebar .floating-note-card__editor,
 .floating-note-panel.is-expanded-sidebar .floating-note-card__editor .markdown-editor-host,
 .floating-note-panel.is-expanded-sidebar .floating-note-card__editor .markdown-preview,
+.floating-note-panel.is-expanded-sidebar .floating-note-card__editor .note-markdown-editor__textarea,
 .floating-note-panel.is-expanded-sidebar
   .floating-note-card__editor
   .milkdown-markdown-editor-shell,
@@ -5693,6 +5760,7 @@ button:disabled {
   }
 
   .note-library-card__actions {
+    display: flex;
     max-height: 34px;
     margin-top: 8px;
     transform: none;
