@@ -7093,12 +7093,10 @@ function App() {
     }
 
     updateFloatingNotePanelPosition();
-    document.addEventListener("scroll", updateFloatingNotePanelPosition, true);
     window.addEventListener("resize", updateFloatingNotePanelPosition);
 
     return () => {
       window.cancelAnimationFrame(floatingNotePanelPositionFrameRef.current);
-      document.removeEventListener("scroll", updateFloatingNotePanelPosition, true);
       window.removeEventListener("resize", updateFloatingNotePanelPosition);
     };
   }, [
@@ -7453,32 +7451,32 @@ function App() {
     return true;
   }
 
+  function shellRelativePointFromViewport(clientX: number, clientY: number) {
+    const shellRect = document
+      .querySelector<HTMLElement>(".scholium-shell")
+      ?.getBoundingClientRect();
+
+    return {
+      left: clientX - (shellRect?.left ?? 0),
+      top: clientY - (shellRect?.top ?? 0),
+    };
+  }
+
   function calculateFloatingNotePosition(
     anchorRect: TextRangeRect,
     cardRect: DOMRect,
   ): FloatingNotePosition {
     const viewportWidth = window.innerWidth;
-    const viewportHeight = window.innerHeight;
     const viewportMargin = 12;
-    const noteGap = 8;
     const cardWidth = Math.min(
       cardRect.width || 450,
       Math.max(180, viewportWidth - viewportMargin * 2),
     );
-    const cardHeight = cardRect.height || 260;
-    const belowRoom = viewportHeight - anchorRect.bottom - noteGap - viewportMargin;
-    const aboveRoom = anchorRect.top - noteGap - viewportMargin;
-    const preferredHeight = Math.min(cardHeight, 280);
-    const placement =
-      belowRoom >= preferredHeight || belowRoom >= aboveRoom ? "below" : "above";
-    const positionedHeight = cardHeight;
+    const placement = "below";
     const connectorAnchorGap = 6;
-    const panelAnchorY =
-      placement === "below"
-        ? anchorRect.bottom + connectorAnchorGap
-        : anchorRect.top - connectorAnchorGap;
+    const panelAnchorY = anchorRect.bottom + connectorAnchorGap;
     const targetX = anchorRect.targetX;
-    const targetY = placement === "below" ? anchorRect.targetBottom : anchorRect.targetTop;
+    const targetY = anchorRect.targetBottom;
     const preferredLeft = clampNumber(
       targetX - cardWidth / 2,
       viewportMargin,
@@ -7496,16 +7494,8 @@ function App() {
       minSourceX <= maxSourceX
         ? clampNumber(preferredSourceX, minSourceX, maxSourceX)
         : clampNumber(targetX, left, right);
-    const rawTop =
-      placement === "below"
-        ? panelAnchorY + verticalDistance
-        : panelAnchorY - positionedHeight - verticalDistance;
-    const maxFittingTop = viewportHeight - viewportMargin - positionedHeight;
-    const top =
-      maxFittingTop >= viewportMargin
-        ? clampNumber(rawTop, viewportMargin, maxFittingTop)
-        : viewportMargin;
-    const sourceY = placement === "below" ? top : top + positionedHeight;
+    const top = panelAnchorY + verticalDistance;
+    const sourceY = top;
     const connectorDeltaX = sourceX - targetX;
     const connectorDeltaY = sourceY - targetY;
     const connectorWidth = Math.max(
@@ -7514,17 +7504,19 @@ function App() {
     );
     const connectorAngle =
       Math.atan2(connectorDeltaY, connectorDeltaX) * (180 / Math.PI);
+    const panelPoint = shellRelativePointFromViewport(left, top);
+    const connectorPoint = shellRelativePointFromViewport(targetX, targetY);
 
     return {
       connector: {
         angle: Math.round(connectorAngle * 100) / 100,
-        left: Math.round(targetX),
-        top: Math.round(targetY),
+        left: Math.round(connectorPoint.left),
+        top: Math.round(connectorPoint.top),
         width: Math.round(connectorWidth),
       },
-      left: Math.round(left),
+      left: Math.round(panelPoint.left),
       placement,
-      top: Math.round(top),
+      top: Math.round(panelPoint.top),
     };
   }
 
@@ -7537,12 +7529,13 @@ function App() {
       maxFittingTop >= viewportMargin
         ? viewportHeight - viewportMargin - cardHeight
         : viewportMargin;
+    const panelPoint = shellRelativePointFromViewport(viewportMargin, top);
 
     return {
       connector: null,
-      left: viewportMargin,
+      left: Math.round(panelPoint.left),
       placement: "detached",
-      top: Math.round(top),
+      top: Math.round(panelPoint.top),
     };
   }
 

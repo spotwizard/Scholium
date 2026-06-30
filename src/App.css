@@ -4042,7 +4042,7 @@ button:disabled {
 }
 
 .floating-note-panel {
-  position: fixed;
+  position: absolute;
   z-index: 90;
   width: min(420px, calc(100vw - 24px));
   max-height: none;
@@ -4074,7 +4074,7 @@ button:disabled {
 }
 
 .floating-note-connector {
-  position: fixed;
+  position: absolute;
   z-index: 89;
   height: 2px;
   border-radius: 999px;
