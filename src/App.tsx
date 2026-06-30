@@ -30,6 +30,7 @@ import {
   type TextAnnotation,
   type TextSelectionAnchor,
 } from "./MarkdownEditor";
+import type { DocumentSearchState } from "./documentSearch";
 import { SettingsView } from "./SettingsView";
 import fileSelectedGlyphSvg from "./assets/file-selected-glyph.svg?raw";
 import fileGlyphSvg from "./assets/file-glyph.svg?raw";
@@ -51,11 +52,8 @@ import {
 } from "./settings";
 
 const markdownUnorderedListLinePattern = /^(\s*)[-*+]\s+(.*)$/;
-const typedUnorderedListMarkerPattern = /^[-*+]\s+(.*)$/;
 const markdownOrderedListLinePattern = /^(\s*)\d+[.)]\s+(.*)$/;
-const typedOrderedListMarkerPattern = /^\d+[.)]\s+(.*)$/;
 const inlineBreakPattern = /<br\s*\/?>/gi;
-const emptyPreviewListItemText = "\u200b";
 const annotationClickDelayMs = 500;
 const libraryAnnotationClickSuppressionMs = annotationClickDelayMs + 350;
 const pendingAnchorAnnotationId = "__scholium_pending_anchor__";
@@ -555,6 +553,40 @@ function SourceModeIcon({ className = "editor-mode-toggle__icon" }: { className?
   );
 }
 
+function SearchIcon({ className = "document-search__icon" }: { className?: string }) {
+  return (
+    <svg aria-hidden="true" className={className} fill="none" viewBox="0 0 24 24">
+      <circle cx="10.5" cy="10.5" r="5.5" />
+      <path d="m15 15 4.5 4.5" />
+    </svg>
+  );
+}
+
+function SearchPreviousIcon() {
+  return (
+    <svg aria-hidden="true" className="document-search__button-icon" fill="none" viewBox="0 0 24 24">
+      <path d="m7 14 5-5 5 5" />
+    </svg>
+  );
+}
+
+function SearchNextIcon() {
+  return (
+    <svg aria-hidden="true" className="document-search__button-icon" fill="none" viewBox="0 0 24 24">
+      <path d="m7 10 5 5 5-5" />
+    </svg>
+  );
+}
+
+function SearchCloseIcon() {
+  return (
+    <svg aria-hidden="true" className="document-search__button-icon" fill="none" viewBox="0 0 24 24">
+      <path d="M6 6l12 12" />
+      <path d="M18 6 6 18" />
+    </svg>
+  );
+}
+
 function MobileNewFileIcon() {
   return (
     <svg
@@ -744,6 +776,7 @@ const previewAnnotationFrameHorizontalPadding = 12;
 const previewAnnotationLineJoinMaxGap = 20;
 const previewAnnotationLineEndTolerance = 2;
 const previewAnnotationFrameCornerRadius = "4px";
+const annotationLayoutSettleDelaysMs = [80, 180, 360, 720];
 const noteLibraryFocusAlignmentRatio = 0.2;
 const notePanelAnimationMs = 180;
 const selectionWarningMinimumVisibleMs = 1600;
@@ -2637,6 +2670,24 @@ function getLineStartOffsets(markdown: string) {
   return offsets;
 }
 
+function getLineIndexAtSourcePosition(markdown: string, position: number) {
+  const lineStartOffsets = getLineStartOffsets(markdown);
+  const clampedPosition = clampNumber(position, 0, markdown.length);
+
+  for (let index = lineStartOffsets.length - 1; index >= 0; index -= 1) {
+    if (clampedPosition >= lineStartOffsets[index]) return index;
+  }
+
+  return 0;
+}
+
+function outdentMarkdownLine(line: string) {
+  if (line.startsWith("  ")) return line.slice(2);
+  if (line.startsWith(" ") || line.startsWith("\t")) return line.slice(1);
+
+  return line;
+}
+
 function getBlockRange(markdown: string, block: MarkdownPreviewBlock) {
   const lines = markdown.replace(/\r\n/g, "\n").split("\n");
   const lineStartOffsets = getLineStartOffsets(markdown);
@@ -3567,7 +3618,7 @@ function measurePreviewAnnotationFrames(container: HTMLDivElement): PreviewAnnot
     if (!scope) {
       return {
         canExtendRight: true,
-        lineRight: Math.min(rect.right, containerRect.right),
+        lineRight: rect.right,
       };
     }
 
@@ -3589,10 +3640,7 @@ function measurePreviewAnnotationFrames(container: HTMLDivElement): PreviewAnnot
       };
     }
 
-    const lineRight = Math.min(
-      Math.max(...lineRects.map((lineRect) => lineRect.right)),
-      containerRect.right,
-    );
+    const lineRight = Math.max(...lineRects.map((lineRect) => lineRect.right));
 
     return {
       canExtendRight: rect.right >= lineRight - previewAnnotationLineEndTolerance,
@@ -4103,54 +4151,86 @@ function markdownFromPreviewBlock(block: MarkdownPreviewBlock, text: string) {
   return lines.join("\n").trim();
 }
 
-function typedListItemsFromLines(
-  lines: string[],
-  markerPattern: RegExp,
-): string[] | null {
-  const items = lines.map((line) => {
-    const match = line.trimStart().match(markerPattern);
-
-    return match ? match[1].trim() : null;
-  });
-
-  if (!items.every((item): item is string => item !== null)) return null;
-  if (!items.some((item) => item.length > 0)) return null;
-
-  return items;
-}
-
 type TypedPreviewMarkdownBlock = {
-  kind: "unordered-list" | "ordered-list";
-  items: string[];
+  kind: "block" | "unordered-list" | "ordered-list";
+  items?: string[];
   markdown: string;
 };
 
-function typedMarkdownBlockFromLines(lines: string[]): TypedPreviewMarkdownBlock | null {
-  const contentLines = lines
-    .map((line) => line.replace(/\u200b/g, ""))
-    .map((line) => line.replace(/\u00a0/g, " "))
-    .filter((line) => line.trim());
-  if (contentLines.length === 0) return null;
+function simpleTypedListBlockFromLines(
+  lines: string[],
+  kind: MarkdownPreviewListKind,
+): TypedPreviewMarkdownBlock | null {
+  const parsedLines = lines.map((line) => parseMarkdownListLine(line));
+  if (!parsedLines.every((line): line is ParsedMarkdownListLine => Boolean(line))) return null;
+  if (!parsedLines.every((line) => line.kind === kind)) return null;
+  if (parsedLines.some((line) => line.indent > 0)) {
+    return { kind: "block", markdown: lines.join("\n") };
+  }
 
-  const unorderedItems = typedListItemsFromLines(
-    contentLines,
-    typedUnorderedListMarkerPattern,
-  );
-  if (unorderedItems) {
+  const items = parsedLines.map((line) => line.text.trim());
+  if (!items.some((item) => item.length > 0)) return null;
+
+  if (kind === "unordered-list") {
     return {
-      kind: "unordered-list",
-      items: unorderedItems,
-      markdown: unorderedItems.map((item) => `- ${item}`).join("\n"),
+      kind,
+      items,
+      markdown: items.map((item) => `- ${item}`).join("\n"),
     };
   }
 
-  const orderedItems = typedListItemsFromLines(contentLines, typedOrderedListMarkerPattern);
-  if (orderedItems) {
-    return {
-      kind: "ordered-list",
-      items: orderedItems,
-      markdown: orderedItems.map((item, index) => `${index + 1}. ${item}`).join("\n"),
-    };
+  return {
+    kind,
+    items,
+    markdown: items.map((item, index) => `${index + 1}. ${item}`).join("\n"),
+  };
+}
+
+function typedMarkdownBlockFromLines(lines: string[]): TypedPreviewMarkdownBlock | null {
+  const normalizedLines = lines
+    .map((line) => line.replace(/\u200b/g, ""))
+    .map((line) => line.replace(/\u00a0/g, " "))
+    .map((line) => line.replace(/\r$/, "").trimEnd());
+  const contentLines = normalizedLines.filter((line) => line.trim());
+  if (contentLines.length === 0) return null;
+
+  const unorderedBlock = simpleTypedListBlockFromLines(contentLines, "unordered-list");
+  if (unorderedBlock) return unorderedBlock;
+
+  const orderedBlock = simpleTypedListBlockFromLines(contentLines, "ordered-list");
+  if (orderedBlock) return orderedBlock;
+
+  if (contentLines.length === 1) {
+    const singleLine = contentLines[0].trim();
+    if (/^#{1,6}\s+\S/.test(singleLine)) {
+      return { kind: "block", markdown: singleLine };
+    }
+    if (/^(-{3,}|\*{3,}|_{3,})$/.test(singleLine)) {
+      return { kind: "block", markdown: singleLine };
+    }
+  }
+
+  if (contentLines.every((line) => /^>\s?/.test(line))) {
+    return { kind: "block", markdown: contentLines.join("\n") };
+  }
+
+  if (
+    contentLines.length >= 2 &&
+    contentLines[0].trim().startsWith("```") &&
+    contentLines[contentLines.length - 1].trim().startsWith("```")
+  ) {
+    return { kind: "block", markdown: contentLines.join("\n") };
+  }
+
+  if (
+    contentLines.length > 1 &&
+    contentLines.every((line) => {
+      const trimmedLine = line.trim();
+
+      return /^#{1,6}\s+\S/.test(trimmedLine) || /^(-{3,}|\*{3,}|_{3,})$/.test(trimmedLine);
+    })
+  ) {
+    return { kind: "block", markdown: contentLines.join("\n") };
   }
 
   return null;
@@ -4165,18 +4245,183 @@ function appendBlankListItemToTypedMarkdownBlock(block: TypedPreviewMarkdownBloc
     return `${block.markdown}\n- `;
   }
 
-  return `${block.markdown}\n${block.items.length + 1}. `;
-}
-
-function markdownFromPreviewListItems(
-  block: Extract<MarkdownPreviewBlock, { kind: "unordered-list" | "ordered-list" }>,
-  items: string[],
-) {
-  if (block.kind === "unordered-list") {
-    return items.map((item) => `- ${item}`).join("\n");
+  if (block.kind === "ordered-list") {
+    return `${block.markdown}\n${(block.items?.length ?? 0) + 1}. `;
   }
 
-  return items.map((item, index) => `${index + 1}. ${item}`).join("\n");
+  return `${block.markdown}\n`;
+}
+
+function directPreviewListItemText(item: HTMLLIElement) {
+  const text = Array.from(item.childNodes)
+    .filter(
+      (node) =>
+        !(
+          node instanceof HTMLElement &&
+          (node.tagName.toLowerCase() === "ul" || node.tagName.toLowerCase() === "ol")
+        ),
+    )
+    .map((node) => (node instanceof HTMLElement ? node.innerText : node.textContent ?? ""))
+    .join("");
+
+  return text.replace(/\u200b/g, "").replace(/\u00a0/g, " ").replace(/\r/g, "").trimEnd();
+}
+
+function normalizedPreviewListText(text: string) {
+  return text.replace(/\u200b/g, "").replace(/\u00a0/g, " ").replace(/\r/g, "");
+}
+
+function directPreviewListNodeText(node: Node): string {
+  if (
+    node instanceof HTMLElement &&
+    (node.tagName.toLowerCase() === "ul" || node.tagName.toLowerCase() === "ol")
+  ) {
+    return "";
+  }
+
+  return normalizedPreviewListText(
+    node instanceof HTMLElement ? node.innerText : node.textContent ?? "",
+  );
+}
+
+function directPreviewListNodeSelectionOffset(
+  node: Node,
+  targetNode: Node,
+  targetOffset: number,
+): { found: true; offset: number } | { found: false } {
+  if (
+    node instanceof HTMLElement &&
+    (node.tagName.toLowerCase() === "ul" || node.tagName.toLowerCase() === "ol")
+  ) {
+    return { found: false };
+  }
+
+  if (node === targetNode) {
+    if (node.nodeType === Node.TEXT_NODE) {
+      return {
+        found: true,
+        offset: normalizedPreviewListText((node.textContent ?? "").slice(0, targetOffset)).length,
+      };
+    }
+
+    let offset = 0;
+    Array.from(node.childNodes)
+      .slice(0, targetOffset)
+      .forEach((child) => {
+        offset += directPreviewListNodeText(child).length;
+      });
+
+    return { found: true, offset };
+  }
+
+  if (!node.contains(targetNode)) return { found: false };
+
+  let offset = 0;
+  for (const child of Array.from(node.childNodes)) {
+    const childOffset = directPreviewListNodeSelectionOffset(child, targetNode, targetOffset);
+    if (childOffset.found) return { found: true, offset: offset + childOffset.offset };
+
+    offset += directPreviewListNodeText(child).length;
+  }
+
+  return { found: false };
+}
+
+function directPreviewListItemSelectionOffset(item: HTMLLIElement, selection: Selection) {
+  if (!selection.isCollapsed || !selection.focusNode || !item.contains(selection.focusNode)) {
+    return null;
+  }
+
+  const focusElement =
+    selection.focusNode instanceof Element
+      ? selection.focusNode
+      : selection.focusNode.parentElement;
+  const focusedItem = focusElement?.closest<HTMLLIElement>("li") ?? null;
+  if (focusedItem !== item) return null;
+
+  let offset = 0;
+  for (const child of Array.from(item.childNodes)) {
+    const childOffset = directPreviewListNodeSelectionOffset(
+      child,
+      selection.focusNode,
+      selection.focusOffset,
+    );
+    if (childOffset.found) return offset + childOffset.offset;
+
+    offset += directPreviewListNodeText(child).length;
+  }
+
+  return directPreviewListItemText(item).length;
+}
+
+function markdownLinesFromPreviewListElement(
+  listElement: HTMLUListElement | HTMLOListElement,
+  options: { insertEmptyAfter?: HTMLLIElement } = {},
+  indent = 0,
+) {
+  const lines: string[] = [];
+  const ordered = listElement.tagName.toLowerCase() === "ol";
+  const indentText = " ".repeat(indent);
+  let itemNumber = 1;
+
+  Array.from(listElement.children).forEach((child) => {
+    if (!(child instanceof HTMLLIElement)) return;
+
+    const marker = ordered ? `${itemNumber}. ` : "- ";
+    lines.push(`${indentText}${marker}${directPreviewListItemText(child)}`);
+    itemNumber += 1;
+
+    Array.from(child.children).forEach((grandchild) => {
+      if (grandchild instanceof HTMLUListElement || grandchild instanceof HTMLOListElement) {
+        lines.push(
+          ...markdownLinesFromPreviewListElement(grandchild, options, indent + 2),
+        );
+      }
+    });
+
+    if (options.insertEmptyAfter === child) {
+      const emptyMarker = ordered ? `${itemNumber}. ` : "- ";
+      lines.push(`${indentText}${emptyMarker}`);
+      itemNumber += 1;
+    }
+  });
+
+  return lines;
+}
+
+function markdownFromPreviewListElement(
+  blockElement: HTMLElement,
+  options: { insertEmptyAfter?: HTMLLIElement } = {},
+) {
+  const listElement = Array.from(blockElement.children).find(
+    (child): child is HTMLUListElement | HTMLOListElement =>
+      child instanceof HTMLUListElement || child instanceof HTMLOListElement,
+  );
+
+  return listElement ? markdownLinesFromPreviewListElement(listElement, options).join("\n") : null;
+}
+
+function listContinuationLine(line: string) {
+  const parsedLine = parseMarkdownListLine(line);
+  if (!parsedLine) return null;
+
+  const unorderedMatch = line.match(/^(\s*)[-*+]\s+/);
+  if (unorderedMatch) return `${unorderedMatch[1]}- `;
+
+  const orderedMatch = line.match(/^(\s*)(\d+)([.)])\s+/);
+  if (orderedMatch) {
+    return `${orderedMatch[1]}${Number(orderedMatch[2]) + 1}${orderedMatch[3]} `;
+  }
+
+  return line.slice(0, parsedLine.markerLength);
+}
+
+function markdownFromEditedPreviewBlock(block: MarkdownPreviewBlock, element: HTMLElement) {
+  if (block.kind === "unordered-list" || block.kind === "ordered-list") {
+    return markdownFromPreviewListElement(element) ?? markdownFromPreviewBlock(block, element.innerText);
+  }
+
+  return markdownFromPreviewBlock(block, element.innerText);
 }
 
 function replaceMarkdownBlock(markdown: string, block: MarkdownPreviewBlock, nextBlock: string) {
@@ -4218,53 +4463,6 @@ function selectionOffsetsInElement(element: HTMLElement, selection: Selection) {
     from: leadingRange.toString().length,
     to: leadingRange.toString().length + range.toString().length,
   };
-}
-
-function focusEditableBlockEnd(blockKey: string) {
-  window.requestAnimationFrame(() => {
-    const blockElement = Array.from(
-      document.querySelectorAll<HTMLElement>("[data-preview-block-key]"),
-    ).find((element) => element.dataset.previewBlockKey === blockKey);
-
-    if (!blockElement) return;
-
-    blockElement.closest<HTMLElement>(".markdown-preview")?.focus();
-    const focusTarget =
-      blockElement.matches("ul, ol")
-        ? blockElement.querySelector<HTMLElement>("li:last-child") ?? blockElement
-        : blockElement;
-
-    const selection = window.getSelection();
-    if (!selection) return;
-
-    const range = document.createRange();
-    range.selectNodeContents(focusTarget);
-    range.collapse(false);
-    selection.removeAllRanges();
-    selection.addRange(range);
-  });
-}
-
-function focusEditableListItem(blockKey: string, itemIndex: number) {
-  window.requestAnimationFrame(() => {
-    const blockElement = Array.from(
-      document.querySelectorAll<HTMLElement>("[data-preview-block-key]"),
-    ).find((element) => element.dataset.previewBlockKey === blockKey);
-
-    const listItem = blockElement?.querySelectorAll<HTMLElement>("li")[itemIndex];
-    if (!listItem) return;
-
-    blockElement.closest<HTMLElement>(".markdown-preview")?.focus();
-
-    const selection = window.getSelection();
-    if (!selection) return;
-
-    const range = document.createRange();
-    range.selectNodeContents(listItem);
-    range.collapse(false);
-    selection.removeAllRanges();
-    selection.addRange(range);
-  });
 }
 
 function sourcePositionForPreviewTextOffset(textMap: PreviewTextMap, offset: number) {
@@ -4507,7 +4705,7 @@ function renderEditablePreviewList(
         const itemTextMap = getListItemTextMap(markdown, block, item.flatIndex);
 
         return (
-          <li key={item.key}>
+          <li data-preview-list-item-index={item.flatIndex} key={item.key}>
             {item.text
               ? renderPreviewInline(
                   itemTextMap,
@@ -4516,7 +4714,7 @@ function renderEditablePreviewList(
                   onAnnotationClick,
                   onAnnotationDoubleClick,
                 )
-              : emptyPreviewListItemText}
+              : <br />}
             {item.children.map((childList, childIndex) => (
               <Fragment key={`${item.key}-child-list-${childIndex}`}>
                 {renderEditablePreviewList(
@@ -4546,7 +4744,7 @@ function renderPreviewContentList(
   return (
     <ListTag>
       {list.items.map((item) => (
-        <li key={item.key}>
+        <li data-preview-list-item-index={item.flatIndex} key={item.key}>
           {renderInlineMarkdown(item.text, `${keyPrefix}-item-${item.flatIndex}`)}
           {item.children.map((childList, childIndex) => (
             <Fragment key={`${item.key}-child-list-${childIndex}`}>
@@ -4694,6 +4892,8 @@ function MarkdownPreviewBlockView({
 export function MarkdownPreview({
   value,
   annotations,
+  allowSelectedTextEnterEdit = false,
+  enableTabIndent = false,
   mermaidEmptyDefinitionLabel,
   mermaidLoadingLabel,
   readOnly,
@@ -4704,6 +4904,8 @@ export function MarkdownPreview({
 }: {
   value: string;
   annotations: TextRangeAnnotation[];
+  allowSelectedTextEnterEdit?: boolean;
+  enableTabIndent?: boolean;
   mermaidEmptyDefinitionLabel: string;
   mermaidLoadingLabel: string;
   readOnly?: boolean;
@@ -4731,10 +4933,13 @@ export function MarkdownPreview({
   );
 
   useLayoutEffect(() => {
+    if (allowSelectedTextEnterEdit) return;
+
     const previewElement = previewRef.current;
     if (!previewElement) return;
 
     let animationFrame = 0;
+    let annotationLayoutSettleTimers: number[] = [];
     const updateAnnotationFrames = () => {
       const nextFrames = measurePreviewAnnotationFrames(previewElement);
 
@@ -4746,17 +4951,43 @@ export function MarkdownPreview({
       window.cancelAnimationFrame(animationFrame);
       animationFrame = window.requestAnimationFrame(updateAnnotationFrames);
     };
+    const clearAnnotationLayoutSettleTimers = () => {
+      annotationLayoutSettleTimers.forEach((timer) => window.clearTimeout(timer));
+      annotationLayoutSettleTimers = [];
+    };
+    const scheduleSettledAnnotationFrameUpdate = () => {
+      scheduleAnnotationFrameUpdate();
+      clearAnnotationLayoutSettleTimers();
+      annotationLayoutSettleTimers = annotationLayoutSettleDelaysMs.map((delay) =>
+        window.setTimeout(scheduleAnnotationFrameUpdate, delay),
+      );
+    };
 
-    updateAnnotationFrames();
+    scheduleSettledAnnotationFrameUpdate();
 
-    const resizeObserver = new ResizeObserver(scheduleAnnotationFrameUpdate);
+    const editorContentFrame = previewElement.closest<HTMLElement>(".editor-content-frame");
+    const resizeObserver = new ResizeObserver(scheduleSettledAnnotationFrameUpdate);
     resizeObserver.observe(previewElement);
-    window.addEventListener("resize", scheduleAnnotationFrameUpdate);
+    if (editorContentFrame) {
+      resizeObserver.observe(editorContentFrame);
+      editorContentFrame.addEventListener("transitionend", scheduleSettledAnnotationFrameUpdate);
+      editorContentFrame.addEventListener("transitioncancel", scheduleSettledAnnotationFrameUpdate);
+    }
+    window.addEventListener("resize", scheduleSettledAnnotationFrameUpdate);
 
     return () => {
       window.cancelAnimationFrame(animationFrame);
+      clearAnnotationLayoutSettleTimers();
       resizeObserver.disconnect();
-      window.removeEventListener("resize", scheduleAnnotationFrameUpdate);
+      editorContentFrame?.removeEventListener(
+        "transitionend",
+        scheduleSettledAnnotationFrameUpdate,
+      );
+      editorContentFrame?.removeEventListener(
+        "transitioncancel",
+        scheduleSettledAnnotationFrameUpdate,
+      );
+      window.removeEventListener("resize", scheduleSettledAnnotationFrameUpdate);
     };
   }, [annotations, value]);
 
@@ -4909,6 +5140,59 @@ export function MarkdownPreview({
     if (!selection || selection.rangeCount === 0) return null;
 
     return previewBlockElementFromNode(selection.focusNode);
+  }
+
+  function focusPreviewBlockEnd(blockKey: string) {
+    window.requestAnimationFrame(() => {
+      const previewElement = previewRef.current;
+      const blockElement = Array.from(
+        previewElement?.querySelectorAll<HTMLElement>("[data-preview-block-key]") ?? [],
+      ).find((element) => element.dataset.previewBlockKey === blockKey);
+
+      if (!blockElement) return;
+
+      previewElement?.focus();
+      const focusTarget =
+        blockElement.matches("ul, ol")
+          ? blockElement.querySelector<HTMLElement>("li:last-child") ?? blockElement
+          : blockElement;
+
+      const selection = window.getSelection();
+      if (!selection) return;
+
+      const range = document.createRange();
+      range.selectNodeContents(focusTarget);
+      range.collapse(false);
+      selection.removeAllRanges();
+      selection.addRange(range);
+    });
+  }
+
+  function focusPreviewListItem(
+    blockKey: string,
+    itemIndex: number,
+    placement: "start" | "end" = "end",
+  ) {
+    window.requestAnimationFrame(() => {
+      const previewElement = previewRef.current;
+      const blockElement = Array.from(
+        previewElement?.querySelectorAll<HTMLElement>("[data-preview-block-key]") ?? [],
+      ).find((element) => element.dataset.previewBlockKey === blockKey);
+
+      const listItem = blockElement?.querySelectorAll<HTMLElement>("li")[itemIndex];
+      if (!listItem) return;
+
+      previewElement?.focus();
+
+      const selection = window.getSelection();
+      if (!selection) return;
+
+      const range = document.createRange();
+      range.selectNodeContents(listItem);
+      range.collapse(placement === "start");
+      selection.removeAllRanges();
+      selection.addRange(range);
+    });
   }
 
   function blockForPreviewElement(blockElement: HTMLElement) {
@@ -5096,6 +5380,157 @@ export function MarkdownPreview({
     return true;
   }
 
+  function commitPreviewListIndent(blockElement: HTMLElement) {
+    const block = blockForPreviewElement(blockElement);
+    if (!block || !blockIsList(block)) return false;
+
+    const listItem = listItemElementFromSelection(blockElement);
+    const flatIndex = Number(listItem?.dataset.previewListItemIndex ?? Number.NaN);
+    if (!listItem || !Number.isInteger(flatIndex) || flatIndex <= 0) return false;
+
+    const lines = value.replace(/\r\n/g, "\n").split("\n");
+    const lineIndex = block.startLine + flatIndex;
+    const line = lines[lineIndex] ?? "";
+    if (!parseMarkdownListLine(line)) return false;
+
+    lines[lineIndex] = `  ${line}`;
+    delete blockElement.dataset.edited;
+    commitPreviewChange(lines.join("\n"));
+    focusPreviewListItem(block.key, flatIndex);
+    return true;
+  }
+
+  function commitPreviewListOutdent(blockElement: HTMLElement) {
+    const block = blockForPreviewElement(blockElement);
+    if (!block || !blockIsList(block)) return false;
+
+    const listItem = listItemElementFromSelection(blockElement);
+    const flatIndex = Number(listItem?.dataset.previewListItemIndex ?? Number.NaN);
+    if (!listItem || !Number.isInteger(flatIndex)) return false;
+
+    const lines = value.replace(/\r\n/g, "\n").split("\n");
+    const lineIndex = block.startLine + flatIndex;
+    const line = lines[lineIndex] ?? "";
+    const listLine = parseMarkdownListLine(line);
+    if (!listLine || listLine.indent <= 0) return false;
+
+    lines[lineIndex] = outdentMarkdownLine(line);
+    delete blockElement.dataset.edited;
+    commitPreviewChange(lines.join("\n"));
+    focusPreviewListItem(block.key, flatIndex);
+    return true;
+  }
+
+  function sourceLineIndexFromPreviewSelection(
+    block: MarkdownPreviewBlock,
+    blockElement: HTMLElement,
+  ) {
+    const selection = window.getSelection();
+    if (!selection || !selection.isCollapsed) return null;
+
+    const offsets = selectionOffsetsInElement(blockElement, selection);
+    if (!offsets) return null;
+
+    const textMap = getPreviewBlockTextMap(value, block);
+    const sourcePosition = sourcePositionForPreviewTextOffset(textMap, offsets.from);
+    if (sourcePosition === null) return null;
+
+    return getLineIndexAtSourcePosition(value, sourcePosition);
+  }
+
+  function commitPreviewLineOutdent(blockElement: HTMLElement) {
+    const block = blockForPreviewElement(blockElement);
+    if (!block || blockIsList(block)) return false;
+
+    const lineIndex = sourceLineIndexFromPreviewSelection(block, blockElement);
+    if (lineIndex === null) return false;
+
+    const lines = value.replace(/\r\n/g, "\n").split("\n");
+    const line = lines[lineIndex] ?? "";
+    const nextLine = outdentMarkdownLine(line);
+    if (nextLine === line) return false;
+
+    lines[lineIndex] = nextLine;
+    delete blockElement.dataset.edited;
+    commitPreviewChange(lines.join("\n"));
+    focusPreviewBlockEnd(block.key);
+    return true;
+  }
+
+  function commitPreviewListItemRemoval(blockElement: HTMLElement, preferPrevious = true) {
+    const block = blockForPreviewElement(blockElement);
+    if (!block || !blockIsList(block)) return false;
+
+    const listItem = listItemElementFromSelection(blockElement);
+    const flatIndex = Number(listItem?.dataset.previewListItemIndex ?? Number.NaN);
+    if (!listItem || !Number.isInteger(flatIndex)) return false;
+    if (directPreviewListItemText(listItem).trim()) return false;
+
+    const lines = value.replace(/\r\n/g, "\n").split("\n");
+    const lineIndex = block.startLine + flatIndex;
+    if (!parseMarkdownListLine(lines[lineIndex] ?? "")) return false;
+
+    if (block.rawLines.length <= 1) {
+      lines[lineIndex] = "";
+    } else {
+      lines.splice(lineIndex, 1);
+    }
+
+    delete blockElement.dataset.edited;
+    commitPreviewChange(lines.join("\n"));
+
+    const remainingItemCount = Math.max(0, block.rawLines.length - 1);
+    if (remainingItemCount > 0) {
+      const nextFocusIndex = preferPrevious
+        ? Math.max(0, flatIndex - 1)
+        : Math.min(flatIndex, remainingItemCount - 1);
+      focusPreviewListItem(block.key, nextFocusIndex);
+    }
+
+    return true;
+  }
+
+  function handlePreviewListDelete(event: ReactKeyboardEvent<HTMLDivElement>) {
+    const isListDeleteKey =
+      (event.key === "Backspace" || event.key === "Delete") &&
+      !event.metaKey &&
+      !event.ctrlKey &&
+      !event.altKey &&
+      !event.shiftKey;
+    if (!isListDeleteKey) return false;
+
+    const blockElement = previewBlockElementFromSelection();
+    if (!blockElement) return false;
+    if (!commitPreviewListItemRemoval(blockElement, event.key === "Backspace")) return false;
+
+    event.preventDefault();
+    event.stopPropagation();
+    return true;
+  }
+
+  function handlePreviewTabIndent(event: ReactKeyboardEvent<HTMLDivElement>) {
+    if (event.key !== "Tab" || event.metaKey || event.ctrlKey || event.altKey) return false;
+    if (!enableTabIndent) return false;
+
+    if (event.shiftKey) {
+      event.preventDefault();
+      event.stopPropagation();
+      const blockElement = previewBlockElementFromSelection();
+      if (!blockElement) return true;
+
+      commitPreviewListOutdent(blockElement) || commitPreviewLineOutdent(blockElement);
+      return true;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    const blockElement = previewBlockElementFromSelection();
+    if (blockElement && commitPreviewListIndent(blockElement)) return true;
+
+    return insertPlainPreviewText("  ");
+  }
+
   function handlePreviewBeforeInput(event: FormEvent<HTMLDivElement>) {
     if (readOnly) {
       event.preventDefault();
@@ -5160,16 +5595,6 @@ export function MarkdownPreview({
     return listItem && blockElement.contains(listItem) ? listItem : null;
   }
 
-  function listItemsFromPreviewElement(blockElement: HTMLElement) {
-    return Array.from(blockElement.querySelectorAll<HTMLLIElement>("li")).map((item) =>
-      item.innerText
-        .replace(/\u200b/g, "")
-        .replace(/\u00a0/g, " ")
-        .replace(/\r/g, "")
-        .trimEnd(),
-    );
-  }
-
   function commitPreviewListEnter(blockElement: HTMLElement) {
     const block = blockForPreviewElement(blockElement);
     if (!block || !blockIsList(block)) return false;
@@ -5183,21 +5608,34 @@ export function MarkdownPreview({
     const listItems = Array.from(blockElement.querySelectorAll<HTMLLIElement>("li"));
     const itemIndex = listItems.indexOf(listItem);
     if (itemIndex < 0) return false;
+    const flatIndex = Number(listItem.dataset.previewListItemIndex ?? Number.NaN);
+    if (!Number.isInteger(flatIndex)) return false;
 
-    const items = listItemsFromPreviewElement(blockElement);
-    const currentItem = items[itemIndex] ?? "";
+    const currentItem = directPreviewListItemText(listItem);
+    const caretOffset = directPreviewListItemSelectionOffset(listItem, selection);
 
-    if (!currentItem.trim()) return false;
+    if (!currentItem.trim()) {
+      return commitPreviewListItemRemoval(blockElement, true);
+    }
 
-    const nextItems = [
-      ...items.slice(0, itemIndex + 1),
-      "",
-      ...items.slice(itemIndex + 1),
-    ];
+    const lines = value.replace(/\r\n/g, "\n").split("\n");
+    const lineIndex = block.startLine + flatIndex;
+    const currentLine = lines[lineIndex] ?? "";
+    const listLine = parseMarkdownListLine(currentLine);
+    const nextLine = listContinuationLine(currentLine);
+    if (!listLine || nextLine === null) return false;
 
+    const splitOffset = caretOffset === null
+      ? currentItem.length
+      : clampNumber(caretOffset, 0, currentItem.length);
+    const previousItemText = currentItem.slice(0, splitOffset).trimEnd();
+    const nextItemText = currentItem.slice(splitOffset).replace(/^\s+/, "");
+
+    lines[lineIndex] = `${currentLine.slice(0, listLine.markerLength)}${previousItemText}`;
+    lines.splice(lineIndex + 1, 0, `${nextLine}${nextItemText}`);
     delete blockElement.dataset.edited;
-    commitPreviewBlockMarkdown(block, markdownFromPreviewListItems(block, nextItems));
-    focusEditableListItem(block.key, itemIndex + 1);
+    commitPreviewChange(lines.join("\n"));
+    focusPreviewListItem(block.key, itemIndex + 1, nextItemText ? "start" : "end");
     return true;
   }
 
@@ -5241,7 +5679,7 @@ export function MarkdownPreview({
         ? appendBlankListItemToTypedMarkdownBlock(typedMarkdownBlock)
         : typedMarkdownBlock.markdown,
     );
-    focusEditableBlockEnd(block.key);
+    focusPreviewBlockEnd(block.key);
     return true;
   }
 
@@ -5274,7 +5712,7 @@ export function MarkdownPreview({
 
     clearTransientPreviewNodes(transientEdit.transientNodes);
     commitPreviewChange(nextValue);
-    focusEditableBlockEnd(insertedBlockKey);
+    focusPreviewBlockEnd(insertedBlockKey);
     return true;
   }
 
@@ -5301,7 +5739,7 @@ export function MarkdownPreview({
       nextValue = replaceMarkdownBlock(
         nextValue,
         block,
-        markdownFromPreviewBlock(block, element.innerText),
+        markdownFromEditedPreviewBlock(block, element),
       );
       delete element.dataset.edited;
     });
@@ -5360,6 +5798,16 @@ export function MarkdownPreview({
 
   function handlePreviewKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
     if (readOnly) {
+      if (
+        allowSelectedTextEnterEdit &&
+        event.key === "Tab" &&
+        !event.metaKey &&
+        !event.ctrlKey &&
+        !event.altKey
+      ) {
+        return;
+      }
+
       event.preventDefault();
       event.stopPropagation();
       return;
@@ -5374,6 +5822,8 @@ export function MarkdownPreview({
       return;
     }
 
+    if (handlePreviewTabIndent(event)) return;
+    if (handlePreviewListDelete(event)) return;
     if (handlePreviewInlineShortcut(event)) return;
     if (handlePreviewMarkdownShortcutSpace(event)) return;
 
@@ -5497,7 +5947,7 @@ export function MarkdownPreview({
   return (
     <div
       className="markdown-preview"
-      contentEditable={readOnly ? false : "plaintext-only"}
+      contentEditable={!readOnly}
       aria-readonly={readOnly || undefined}
       ref={previewRef}
       autoCapitalize="off"
@@ -5660,32 +6110,82 @@ function MarkdownPreviewContent({
   );
 }
 
+type CaretPositionDocument = Document & {
+  caretPositionFromPoint?: (
+    clientX: number,
+    clientY: number,
+  ) => { offsetNode: Node; offset: number } | null;
+  caretRangeFromPoint?: (clientX: number, clientY: number) => Range | null;
+};
+
+function caretRangeFromPoint(clientX: number, clientY: number) {
+  const caretDocument = document as CaretPositionDocument;
+
+  const caretPosition = caretDocument.caretPositionFromPoint?.(clientX, clientY);
+  if (caretPosition) {
+    const range = document.createRange();
+    range.setStart(caretPosition.offsetNode, caretPosition.offset);
+    range.collapse(true);
+    return range;
+  }
+
+  return caretDocument.caretRangeFromPoint?.(clientX, clientY) ?? null;
+}
+
+function focusEditableElementAtPoint(
+  editableElement: HTMLElement,
+  point: { clientX: number; clientY: number } | null,
+) {
+  editableElement.focus({ preventScroll: true });
+
+  if (!point) return;
+
+  const range = caretRangeFromPoint(point.clientX, point.clientY);
+  if (!range || !editableElement.contains(range.startContainer)) return;
+
+  const selection = window.getSelection();
+  if (!selection) return;
+
+  selection.removeAllRanges();
+  selection.addRange(range);
+}
+
 function NoteMarkdownEditor({
   ariaLabel,
   className = "",
+  editing = true,
   editorRootRef,
   onChange,
   onClick,
   onCompositionEnd,
   onCompositionStart,
+  onEditingBlur,
   onKeyDown,
+  onRequestEdit,
   readOnly = false,
   value,
 }: {
   ariaLabel: string;
   className?: string;
+  editing?: boolean;
   editorRootRef?: (element: HTMLDivElement | null) => void;
   onChange: (value: string) => void;
   onClick?: (event: MouseEvent<HTMLElement>) => void;
   onCompositionEnd?: () => void;
   onCompositionStart?: () => void;
+  onEditingBlur?: () => void;
   onKeyDown?: (event: ReactKeyboardEvent<HTMLElement>) => void;
+  onRequestEdit?: () => void;
   readOnly?: boolean;
   value: string;
 }) {
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const pendingEditPointerRef = useRef<{ clientX: number; clientY: number } | null>(null);
+  const isEditable = editing && !readOnly;
   const editorClassName = [
     "note-markdown-editor",
     "note-markdown-editor--preview",
+    isEditable ? "is-editing" : "is-previewing",
     readOnly ? "is-readonly" : "",
     className,
   ]
@@ -5693,21 +6193,66 @@ function NoteMarkdownEditor({
     .join(" ");
   const noopSelectionHandler = () => undefined;
 
+  useLayoutEffect(() => {
+    if (!isEditable) return;
+
+    window.requestAnimationFrame(() => {
+      const editableElement = rootRef.current?.querySelector<HTMLElement>(
+        ".markdown-preview[contenteditable='true']",
+      );
+      if (!editableElement) return;
+
+      focusEditableElementAtPoint(editableElement, pendingEditPointerRef.current);
+      pendingEditPointerRef.current = null;
+    });
+  }, [isEditable]);
+
+  function setRootElement(element: HTMLDivElement | null) {
+    rootRef.current = element;
+    editorRootRef?.(element);
+  }
+
+  function handlePointerDownCapture(event: ReactPointerEvent<HTMLDivElement>) {
+    if (event.button !== 0 || isEditable || readOnly) return;
+
+    pendingEditPointerRef.current = {
+      clientX: event.clientX,
+      clientY: event.clientY,
+    };
+    onRequestEdit?.();
+  }
+
+  function handleBlur(event: FocusEvent<HTMLDivElement>) {
+    if (!isEditable) return;
+
+    const nextFocusedElement = event.relatedTarget;
+    if (nextFocusedElement === null) return;
+    if (nextFocusedElement instanceof Node && event.currentTarget.contains(nextFocusedElement)) {
+      return;
+    }
+
+    onEditingBlur?.();
+  }
+
   return (
     <div
       aria-label={ariaLabel}
       className={editorClassName}
+      onBlur={handleBlur}
       onClick={onClick}
       onCompositionEnd={onCompositionEnd}
       onCompositionStart={onCompositionStart}
       onKeyDownCapture={onKeyDown}
-      ref={editorRootRef}
+      onPointerDownCapture={handlePointerDownCapture}
+      ref={setRootElement}
     >
       <MarkdownPreview
         annotations={[]}
+        allowSelectedTextEnterEdit
+        enableTabIndent
         mermaidEmptyDefinitionLabel="Mermaid diagram is empty."
         mermaidLoadingLabel="Rendering diagram..."
-        readOnly={readOnly}
+        readOnly={!isEditable}
         value={value}
         onAnnotationClick={noopSelectionHandler}
         onChange={(nextValue) => onChange(nextValue)}
@@ -5732,6 +6277,10 @@ function App() {
   >([]);
   const [fileSearchPending, setFileSearchPending] = useState(false);
   const [fileSearchError, setFileSearchError] = useState("");
+  const [documentSearchOpen, setDocumentSearchOpen] = useState(false);
+  const [documentSearchQuery, setDocumentSearchQuery] = useState("");
+  const [documentSearchActiveIndex, setDocumentSearchActiveIndex] = useState(0);
+  const [documentSearchMatchCount, setDocumentSearchMatchCount] = useState(0);
   const [expandedDirectoryKeys, setExpandedDirectoryKeys] = useState<Set<string>>(() => new Set());
   const [loadingDirectoryKeys, setLoadingDirectoryKeys] = useState<Set<string>>(() => new Set());
   const [selectedDocumentId, setSelectedDocumentId] = useState(documentsSeed[0].id);
@@ -5740,6 +6289,7 @@ function App() {
   );
   const [mobileSelectedWorkspaceEntryKey, setMobileSelectedWorkspaceEntryKey] = useState("");
   const [notes, setNotes] = useState(notesSeed);
+  const [activeNoteEditorKey, setActiveNoteEditorKey] = useState("");
   const [glossaryTerms, setGlossaryTerms] = useState(glossaryTermsSeed);
   const [glossaryBindings, setGlossaryBindings] = useState(glossaryBindingsSeed);
   const [pendingAnchor, setPendingAnchor] = useState<TextSelectionAnchor | null>(null);
@@ -5799,6 +6349,7 @@ function App() {
   const floatingNoteCardRef = useRef<HTMLDivElement | null>(null);
   const settingsCloseButtonRef = useRef<HTMLButtonElement | null>(null);
   const duplicateFileInputRef = useRef<HTMLInputElement | null>(null);
+  const documentSearchInputRef = useRef<HTMLInputElement | null>(null);
   const noteEditorRootRef = useRef<HTMLDivElement | null>(null);
   const noteModeDefaultAppliedRef = useRef(noteModeEnabled);
   const returnToViewTimerRef = useRef(0);
@@ -5899,6 +6450,24 @@ function App() {
     (binding) => binding.documentId === selectedDocument.id && binding.status !== "deleted",
   );
   const nativeStorageAvailable = hasNativeStorageAccess();
+  const documentSearchVisible = hasOpenDocument && !settingsViewOpen && (documentSearchOpen || isMobileViewport);
+  const activeDocumentSearchQuery = documentSearchVisible ? documentSearchQuery : "";
+  const documentSearchState = useMemo<DocumentSearchState>(
+    () => ({
+      activeIndex: documentSearchActiveIndex,
+      query: activeDocumentSearchQuery,
+    }),
+    [activeDocumentSearchQuery, documentSearchActiveIndex],
+  );
+  const documentSearchStatus =
+    documentSearchQuery.trim() && documentSearchVisible
+      ? documentSearchMatchCount > 0
+        ? t("documentSearch.count", {
+            current: Math.min(documentSearchActiveIndex + 1, documentSearchMatchCount),
+            total: documentSearchMatchCount,
+          })
+        : t("documentSearch.noResults")
+      : "";
   const activeNotes = documentNotes.filter(
     (note) =>
       note.status === "active" &&
@@ -5993,6 +6562,9 @@ function App() {
   const expandedLibraryNote = noteLibraryNotes.find(
     (note) => note.id === expandedLibraryNoteId,
   );
+  const expandedLibraryNoteEditorKey = expandedLibraryNote
+    ? noteEditorKey("expanded", expandedLibraryNote.id)
+    : "";
   const libraryNotePanelExpanded = Boolean(
     !settingsViewOpen && noteModeEnabled && noteLibraryOpen && expandedLibraryNote,
   );
@@ -6056,6 +6628,9 @@ function App() {
       !pendingAnchorIsGlossaryTerm &&
       (pendingAnchorIsCompleteBlock || isMobileViewport),
   );
+  function noteEditorKey(surface: "floating" | "library" | "expanded", noteId: string) {
+    return `${surface}:${noteId}`;
+  }
   const notePanelHasContent = Boolean(
     noteModeEnabled &&
       (shouldShowSelectionConfirmation ||
@@ -6081,6 +6656,23 @@ function App() {
           ? `pending:${pendingAnchor.from}:${pendingAnchor.to}`
           : "";
   noteEditModalActiveRef.current = notePanelModalActive;
+
+  useEffect(() => {
+    if (!activeNoteEditorKey) return;
+
+    function handleDocumentPointerDown(event: globalThis.PointerEvent) {
+      if (event.button !== 0) return;
+      if (targetIsInsideNoteMarkdownEditor(event.target)) return;
+
+      setActiveNoteEditorKey("");
+    }
+
+    document.addEventListener("pointerdown", handleDocumentPointerDown, true);
+
+    return () => {
+      document.removeEventListener("pointerdown", handleDocumentPointerDown, true);
+    };
+  }, [activeNoteEditorKey]);
 
   useEffect(() => {
     if (!notePanelModalActive || !pendingAnchor) return;
@@ -6538,6 +7130,12 @@ function App() {
     return Boolean(elementFromEventTarget(target)?.closest(".note-markdown-editor"));
   }
 
+  function targetIsInsideEditingNoteMarkdownEditor(target: EventTarget | null) {
+    return Boolean(
+      elementFromEventTarget(target)?.closest(".note-markdown-editor.is-editing"),
+    );
+  }
+
   function pointHitsRect(clientX: number, clientY: number, rect: DOMRect) {
     return (
       clientX >= rect.left &&
@@ -6982,7 +7580,7 @@ function App() {
   function focusMarkdownEditor(root: HTMLElement | null, remainingAttempts = 8) {
     window.requestAnimationFrame(() => {
       const editableElement = root?.querySelector<HTMLElement>(
-        ".cm-content[contenteditable='true'], .ProseMirror[contenteditable='true'], .markdown-preview[contenteditable='plaintext-only'], .markdown-preview[contenteditable='true']",
+        ".cm-content[contenteditable='true'], .ProseMirror[contenteditable='true'], .markdown-preview[contenteditable='true']",
       );
       if (!editableElement) {
         if (remainingAttempts > 0) {
@@ -7004,7 +7602,7 @@ function App() {
   function insertTextIntoActiveNoteEditor(text: string) {
     if (!text) return false;
 
-    if (activeNoteIsEditing && activeNote) {
+    if (activeNote) {
       const nextDraft = `${noteDraftRef.current}${text}`;
       setNoteDraft(nextDraft);
       updateNoteBody(activeNote.id, nextDraft);
@@ -7230,6 +7828,70 @@ function App() {
 
     return Boolean(
       targetElement?.closest("input, textarea, select, [contenteditable='true']"),
+    );
+  }
+
+  function focusDocumentSearchInput(selectText = false) {
+    window.requestAnimationFrame(() => {
+      const input = documentSearchInputRef.current;
+      if (!input) return;
+
+      input.focus();
+      if (selectText) {
+        input.select();
+      }
+    });
+  }
+
+  function openDocumentSearch(selectText = true) {
+    if (!hasOpenDocument || settingsViewOpen) return;
+
+    setDocumentSearchOpen(true);
+    focusDocumentSearchInput(selectText);
+  }
+
+  function closeDocumentSearch() {
+    setDocumentSearchOpen(false);
+  }
+
+  function clearDocumentSearch() {
+    setDocumentSearchQuery("");
+    setDocumentSearchActiveIndex(0);
+    setDocumentSearchMatchCount(0);
+    focusDocumentSearchInput(false);
+  }
+
+  function updateDocumentSearchQuery(value: string) {
+    setDocumentSearchQuery(value);
+    setDocumentSearchActiveIndex(0);
+  }
+
+  function moveDocumentSearch(delta: number) {
+    if (documentSearchMatchCount <= 0) return;
+
+    setDocumentSearchActiveIndex(
+      (currentIndex) =>
+        (currentIndex + delta + documentSearchMatchCount) % documentSearchMatchCount,
+    );
+  }
+
+  function handleDocumentSearchInputKeyDown(event: ReactKeyboardEvent<HTMLInputElement>) {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      moveDocumentSearch(event.shiftKey ? -1 : 1);
+      return;
+    }
+
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeDocumentSearch();
+    }
+  }
+
+  function handleDocumentSearchMatchCountChange(count: number) {
+    setDocumentSearchMatchCount(count);
+    setDocumentSearchActiveIndex((currentIndex) =>
+      count > 0 ? Math.min(currentIndex, count - 1) : 0,
     );
   }
 
@@ -7704,6 +8366,53 @@ function App() {
   }, [Boolean(dropboxDirectoryPicker)]);
 
   useEffect(() => {
+    if (!hasOpenDocument && documentSearchOpen) {
+      setDocumentSearchOpen(false);
+    }
+  }, [documentSearchOpen, hasOpenDocument]);
+
+  useEffect(() => {
+    function handleDocumentSearchShortcut(event: KeyboardEvent) {
+      const shortcutKey = event.key.toLowerCase();
+      const isFindShortcut =
+        shortcutKey === "f" &&
+        !event.altKey &&
+        !event.shiftKey &&
+        ((event.metaKey && !event.ctrlKey) || (event.ctrlKey && !event.metaKey));
+
+      if (isFindShortcut) {
+        if (!hasOpenDocument || settingsViewOpen || duplicateFileDialog || dropboxDirectoryPicker) {
+          return;
+        }
+
+        event.preventDefault();
+        event.stopPropagation();
+        openDocumentSearch(true);
+        return;
+      }
+
+      if (event.key !== "Escape" || !documentSearchOpen) return;
+      if (settingsViewOpen || duplicateFileDialog || dropboxDirectoryPicker) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+      closeDocumentSearch();
+    }
+
+    window.addEventListener("keydown", handleDocumentSearchShortcut, true);
+
+    return () => {
+      window.removeEventListener("keydown", handleDocumentSearchShortcut, true);
+    };
+  }, [
+    documentSearchOpen,
+    dropboxDirectoryPicker,
+    duplicateFileDialog,
+    hasOpenDocument,
+    settingsViewOpen,
+  ]);
+
+  useEffect(() => {
     function handleModeShortcut(event: KeyboardEvent) {
       const isAnnotationNavigationTab =
         event.key === "Tab" &&
@@ -7788,7 +8497,7 @@ function App() {
       }
 
       if (noteEditModalActive) {
-        if (isAnnotationNavigationTab && targetIsInsideNoteMarkdownEditor(event.target)) {
+        if (isAnnotationNavigationTab && targetIsInsideEditingNoteMarkdownEditor(event.target)) {
           return;
         }
 
@@ -7809,6 +8518,10 @@ function App() {
       }
 
       if (notePanelModalActive) {
+        if (isAnnotationNavigationTab && targetIsInsideEditingNoteMarkdownEditor(event.target)) {
+          return;
+        }
+
         if (
           isAnnotationNavigationTab &&
           focusAdjacentFloatingAnnotation(event.shiftKey ? -1 : 1)
@@ -10230,6 +10943,7 @@ function App() {
     setGlossaryDraft("");
     setStorageError("");
     setActiveNoteId("");
+    setActiveNoteEditorKey("");
     setActiveGlossaryBindingId("");
     setActiveGlossaryTermId("");
     setActiveNoteMode("view");
@@ -10388,6 +11102,7 @@ function App() {
     resetNoteTextareaCompositionState();
     setSelectionWarningPosition(null);
     setNotePanelExpanded(false);
+    setActiveNoteEditorKey("");
 
     if (!notePanelHasContentRef.current) {
       setPendingAnchor(null);
@@ -10417,6 +11132,7 @@ function App() {
       setActiveGlossaryMode("view");
       setNoteDraft("");
       setGlossaryDraft("");
+      setActiveNoteEditorKey("");
       setIsNotePanelClosing(false);
       floatingNoteAnchorRectRef.current = null;
       notePanelHasContentRef.current = false;
@@ -10679,7 +11395,8 @@ function App() {
     floatingNoteAnchorRectRef.current = activeNoteAnchorRect(noteId);
     setPendingAnchor(null);
     setActiveNoteId(noteId);
-    setActiveNoteMode("edit");
+    setActiveNoteMode("view");
+    setActiveNoteEditorKey("");
     setNoteDraft(note.body);
     notePanelHasContentRef.current = true;
   }
@@ -11072,7 +11789,8 @@ function App() {
     clearReturnToViewTimer();
     setPendingAnchor(null);
     setActiveNoteId(note.id);
-    setActiveNoteMode("edit");
+    setActiveNoteMode("view");
+    setActiveNoteEditorKey(noteEditorKey("floating", note.id));
     setNoteDraft("");
     setIsNotePanelClosing(false);
     notePanelHasContentRef.current = true;
@@ -11122,6 +11840,7 @@ function App() {
       setPendingAnchor(null);
       setActiveNoteId("");
       setActiveNoteMode("view");
+      setActiveNoteEditorKey("");
       setNoteDraft("");
       setNotePanelExpanded(false);
       setIsNotePanelClosing(false);
@@ -11130,6 +11849,9 @@ function App() {
     if (focusedLibraryNoteId === noteId) {
       setFocusedLibraryNoteId("");
     }
+    setActiveNoteEditorKey((currentKey) =>
+      currentKey.endsWith(`:${noteId}`) ? "" : currentKey,
+    );
     if (expandedLibraryNoteId === noteId) {
       setExpandedLibraryNoteId("");
     }
@@ -11242,7 +11964,7 @@ function App() {
     if (event.key !== "Tab" || event.metaKey || event.ctrlKey || event.altKey) {
       return false;
     }
-    if (targetIsInsideNoteMarkdownEditor(event.target)) return false;
+    if (targetIsInsideEditingNoteMarkdownEditor(event.target)) return false;
     if (noteLibraryNotes.length === 0) return false;
 
     event.preventDefault();
@@ -11388,6 +12110,7 @@ function App() {
 
   function renderNoteLibraryCard(note: SelectionNote) {
     const isFocusedLibraryNote = focusedLibraryNoteId === note.id;
+    const editorKey = noteEditorKey("library", note.id);
 
     return (
       <article
@@ -11421,6 +12144,7 @@ function App() {
         <NoteMarkdownEditor
           ariaLabel={t("note.edit")}
           className="note-library-card__editor"
+          editing={activeNoteEditorKey === editorKey}
           value={note.body}
           onChange={(value) => updateLibraryNoteDraft(note.id, value)}
           onClick={(event) => {
@@ -11429,7 +12153,14 @@ function App() {
           }}
           onCompositionStart={handleNoteEditorCompositionStart}
           onCompositionEnd={handleNoteEditorCompositionEnd}
+          onEditingBlur={() =>
+            setActiveNoteEditorKey((currentKey) => (currentKey === editorKey ? "" : currentKey))
+          }
           onKeyDown={(event) => handleLibraryNoteEditorKeyDown(note.id, event)}
+          onRequestEdit={() => {
+            setFocusedLibraryNoteId(note.id);
+            setActiveNoteEditorKey(editorKey);
+          }}
         />
         <div
           className="note-actions note-library-card__actions"
@@ -11456,6 +12187,9 @@ function App() {
   function closeLibraryNoteExpandedPanel() {
     const noteId = expandedLibraryNoteId;
     setExpandedLibraryNoteId("");
+    setActiveNoteEditorKey((currentKey) =>
+      currentKey === noteEditorKey("expanded", noteId) ? "" : currentKey,
+    );
     if (noteId) {
       setFocusedLibraryNoteId(noteId);
       focusLibraryNoteCard(noteId);
@@ -11484,6 +12218,7 @@ function App() {
 
     setFocusedLibraryNoteId("");
     setExpandedLibraryNoteId("");
+    setActiveNoteEditorKey("");
     resetNoteModeInteractionState();
     collapseDirectoryPaneForNoteExpansion();
     setNoteLibraryOpen(true);
@@ -11494,6 +12229,7 @@ function App() {
 
     setFocusedLibraryNoteId("");
     setExpandedLibraryNoteId("");
+    setActiveNoteEditorKey("");
     void restoreDirectoryPane;
     directoryPaneOpenBeforeNoteLibraryRef.current = null;
     setNoteLibraryOpen(false);
@@ -12248,6 +12984,87 @@ function App() {
       <section className="editor-pane" aria-label={t("app.markdownEditor")}>
         <div className="editor-grid">
           <div className="editor-surface" style={editorSurfaceStyle}>
+            {documentSearchVisible && isMobileViewport && documentSearchOpen ? (
+              <div
+                aria-hidden="true"
+                className="document-search-backdrop"
+                onClick={closeDocumentSearch}
+              />
+            ) : null}
+            {documentSearchVisible ? (
+              <form
+                aria-label={t("documentSearch.label")}
+                className="document-search"
+                data-expanded={documentSearchOpen ? "true" : "false"}
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  moveDocumentSearch(1);
+                }}
+              >
+                <label className="document-search__field">
+                  <SearchIcon />
+                  <input
+                    aria-label={t("documentSearch.label")}
+                    autoComplete="off"
+                    placeholder={t("documentSearch.placeholder")}
+                    ref={documentSearchInputRef}
+                    type="search"
+                    value={documentSearchQuery}
+                    onChange={(event) => updateDocumentSearchQuery(event.target.value)}
+                    onFocus={() => {
+                      if (isMobileViewport) {
+                        setDocumentSearchOpen(true);
+                      }
+                    }}
+                    onKeyDown={handleDocumentSearchInputKeyDown}
+                    onPointerDown={() => {
+                      if (isMobileViewport) {
+                        setDocumentSearchOpen(true);
+                      }
+                    }}
+                  />
+                  {documentSearchQuery ? (
+                    <button
+                      aria-label={t("documentSearch.clear")}
+                      className="document-search__clear"
+                      onClick={clearDocumentSearch}
+                      type="button"
+                    >
+                      <SearchCloseIcon />
+                    </button>
+                  ) : null}
+                </label>
+                <span className="document-search__status" role="status">
+                  {documentSearchStatus}
+                </span>
+                <button
+                  aria-label={t("documentSearch.previous")}
+                  className="document-search__button"
+                  disabled={documentSearchMatchCount <= 0}
+                  onClick={() => moveDocumentSearch(-1)}
+                  type="button"
+                >
+                  <SearchPreviousIcon />
+                </button>
+                <button
+                  aria-label={t("documentSearch.next")}
+                  className="document-search__button"
+                  disabled={documentSearchMatchCount <= 0}
+                  onClick={() => moveDocumentSearch(1)}
+                  type="button"
+                >
+                  <SearchNextIcon />
+                </button>
+                <button
+                  aria-label={t("documentSearch.close")}
+                  className="document-search__button"
+                  onClick={closeDocumentSearch}
+                  type="button"
+                >
+                  <SearchCloseIcon />
+                </button>
+              </form>
+            ) : null}
             {annotationToolsAvailable ? (
               <div
                 aria-label={t("app.editorTools")}
@@ -12338,12 +13155,14 @@ function App() {
                   key={selectedDocument.id}
                   noteModeEnabled={noteModeEnabled}
                   readOnly={editorReadOnly}
+                  search={documentSearchState}
                   toolbarEnabled={false}
                   value={selectedDocument.body}
                   onAnnotationClick={showAnnotationViewer}
                   onAnnotationDoubleClick={showAnnotationViewer}
                   onChange={updateSelectedDocumentBody}
                   onFocusTargetAnnotationPress={dismissFocusTargetAnnotationFromEditor}
+                  onSearchMatchCountChange={handleDocumentSearchMatchCountChange}
                   onSelectionChange={handleSelectionChange}
                   onSelectionEnter={handleSelectionEnter}
                 />
@@ -12352,11 +13171,13 @@ function App() {
                   annotations={annotations}
                   noteModeEnabled={noteModeEnabled}
                   readOnly={editorReadOnly}
+                  search={documentSearchState}
                   value={selectedDocument.body}
                   onAnnotationClick={showAnnotationViewer}
                   onAnnotationDoubleClick={showAnnotationViewer}
                   onChange={updateSelectedDocumentBody}
                   onFocusTargetAnnotationPress={dismissFocusTargetAnnotationFromEditor}
+                  onSearchMatchCountChange={handleDocumentSearchMatchCountChange}
                   onSelectionChange={handleSelectionChange}
                   onSelectionEnter={handleSelectionEnter}
                 />
@@ -12447,15 +13268,25 @@ function App() {
                 <NoteMarkdownEditor
                   ariaLabel={t("note.edit")}
                   className="note-library-expanded-panel__editor"
+                  editing={activeNoteEditorKey === expandedLibraryNoteEditorKey}
                   value={expandedLibraryNote.body}
                   onChange={(value) =>
                     updateLibraryNoteDraft(expandedLibraryNote.id, value)
                   }
                   onCompositionStart={handleNoteEditorCompositionStart}
                   onCompositionEnd={handleNoteEditorCompositionEnd}
+                  onEditingBlur={() =>
+                    setActiveNoteEditorKey((currentKey) =>
+                      currentKey === expandedLibraryNoteEditorKey ? "" : currentKey,
+                    )
+                  }
                   onKeyDown={(event) =>
                     handleLibraryNoteEditorKeyDown(expandedLibraryNote.id, event)
                   }
+                  onRequestEdit={() => {
+                    setFocusedLibraryNoteId(expandedLibraryNote.id);
+                    setActiveNoteEditorKey(expandedLibraryNoteEditorKey);
+                  }}
                 />
               </div>
               <div className="note-actions note-library-expanded-panel__actions">
@@ -12715,18 +13546,33 @@ function App() {
               ) : null}
 
               {!pendingAnchor && activeNote ? (
-                <NoteMarkdownEditor
-                  ariaLabel={t("note.edit")}
-                  className="floating-note-card__editor"
-                  editorRootRef={(element) => {
-                    noteEditorRootRef.current = element;
-                  }}
-                  value={activeNote.body}
-                  onChange={updateActiveNoteDraft}
-                  onCompositionStart={handleNoteEditorCompositionStart}
-                  onCompositionEnd={handleNoteEditorCompositionEnd}
-                  onKeyDown={handleNoteEditorKeyDown}
-                />
+                <div className="floating-note-card__body-shell">
+                  <div className="floating-note-card__body-measure">
+                    <NoteMarkdownEditor
+                      ariaLabel={t("note.edit")}
+                      className="floating-note-card__editor"
+                      editing={activeNoteEditorKey === noteEditorKey("floating", activeNote.id)}
+                      editorRootRef={(element) => {
+                        noteEditorRootRef.current = element;
+                      }}
+                      value={activeNote.body}
+                      onChange={updateActiveNoteDraft}
+                      onCompositionStart={handleNoteEditorCompositionStart}
+                      onCompositionEnd={handleNoteEditorCompositionEnd}
+                      onEditingBlur={() =>
+                        setActiveNoteEditorKey((currentKey) =>
+                          currentKey === noteEditorKey("floating", activeNote.id)
+                            ? ""
+                            : currentKey,
+                        )
+                      }
+                      onKeyDown={handleNoteEditorKeyDown}
+                      onRequestEdit={() =>
+                        setActiveNoteEditorKey(noteEditorKey("floating", activeNote.id))
+                      }
+                    />
+                  </div>
+                </div>
               ) : null}
 
               {!pendingAnchor && activeGlossaryIsEditing ? (

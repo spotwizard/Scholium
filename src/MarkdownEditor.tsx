@@ -9,6 +9,10 @@ import {
   keymap,
   ViewUpdate,
 } from "@codemirror/view";
+import {
+  findDocumentSearchMatches,
+  type DocumentSearchState,
+} from "./documentSearch";
 
 export type TextSelectionAnchor = {
   from: number;
@@ -39,6 +43,8 @@ type MarkdownEditorProps = {
   annotations: TextAnnotation[];
   noteModeEnabled: boolean;
   readOnly?: boolean;
+  search?: DocumentSearchState;
+  onSearchMatchCountChange?: (count: number) => void;
   onChange: (value: string, source: EditorChangeSource) => void;
   onSelectionChange: (anchor: TextSelectionAnchor | null) => void;
   onSelectionEnter: (anchor: TextSelectionAnchor) => boolean;
@@ -75,6 +81,7 @@ type EditorBrowserSelection = Selection & {
 };
 
 const setAnnotationsEffect = StateEffect.define<TextAnnotation[]>();
+const setSearchEffect = StateEffect.define<DocumentSearchState>();
 const editorAnnotationFramePadding = 4;
 const editorAnnotationFrameHorizontalPadding = 12;
 const editorAnnotationLineJoinMaxGap = 20;
@@ -84,6 +91,7 @@ const annotationSelectionSuppressionMs = 1200;
 const annotationClickDelayMs = 500;
 const annotationFocusTargetPressSuppressionMs = annotationClickDelayMs + 350;
 const imeSelectionSuppressionMs = 350;
+const annotationLayoutSettleDelaysMs = [80, 180, 360, 720];
 
 function editorAnnotationFramePaddingForKind(kind: "note" | "glossary") {
   return kind === "glossary" ? 0 : editorAnnotationFramePadding;
@@ -301,7 +309,7 @@ function measureEditorAnnotationFrames(container: HTMLDivElement): EditorAnnotat
     if (!scope) {
       return {
         canExtendRight: true,
-        lineRight: Math.min(rect.right, containerRect.right),
+        lineRight: rect.right,
       };
     }
 
@@ -323,10 +331,7 @@ function measureEditorAnnotationFrames(container: HTMLDivElement): EditorAnnotat
       };
     }
 
-    const lineRight = Math.min(
-      Math.max(...lineRects.map((lineRect) => lineRect.right)),
-      containerRect.right,
-    );
+    const lineRight = Math.max(...lineRects.map((lineRect) => lineRect.right));
 
     return {
       canExtendRight: rect.right >= lineRight - editorAnnotationLineEndTolerance,
@@ -350,14 +355,14 @@ function measureEditorAnnotationFrames(container: HTMLDivElement): EditorAnnotat
         .map((rect) => {
           const left = Math.max(rect.left, containerRect.left);
           const top = Math.max(rect.top, containerRect.top);
-          const right = Math.min(rect.right, containerRect.right);
+          const right = rect.right;
           const bottom = Math.min(rect.bottom, containerRect.bottom);
           const lineMetrics = annotationLineMetrics(annotation, rect);
 
           return {
             canExtendRight: lineMetrics.canExtendRight,
             left,
-            lineRight: Math.min(lineMetrics.lineRight, containerRect.right),
+            lineRight: lineMetrics.lineRight,
             top,
             right,
             bottom,
@@ -520,11 +525,46 @@ const annotationField = StateField.define<DecorationSet>({
   provide: (field) => EditorView.decorations.from(field),
 });
 
+function buildSearchDecorations(doc: string, search: DocumentSearchState) {
+  const ranges = findDocumentSearchMatches(doc, search.query).map((match, index) =>
+    Decoration.mark({
+      class: [
+        "cm-document-search-match",
+        index === search.activeIndex ? "is-active" : "",
+      ]
+        .filter(Boolean)
+        .join(" "),
+    }).range(match.from, match.to),
+  );
+
+  return Decoration.set(ranges, true);
+}
+
+const searchField = StateField.define<DecorationSet>({
+  create(state) {
+    return buildSearchDecorations(state.doc.toString(), { activeIndex: 0, query: "" });
+  },
+  update(decorations, transaction) {
+    let nextDecorations = decorations.map(transaction.changes);
+
+    for (const effect of transaction.effects) {
+      if (effect.is(setSearchEffect)) {
+        nextDecorations = buildSearchDecorations(transaction.newDoc.toString(), effect.value);
+      }
+    }
+
+    return nextDecorations;
+  },
+  provide: (field) => EditorView.decorations.from(field),
+});
+
 export function MarkdownEditor({
   value,
   annotations,
   noteModeEnabled,
   readOnly = false,
+  search = { activeIndex: 0, query: "" },
+  onSearchMatchCountChange,
   onChange,
   onSelectionChange,
   onSelectionEnter,
@@ -536,6 +576,7 @@ export function MarkdownEditor({
   const viewRef = useRef<EditorView | null>(null);
   const annotationsRef = useRef(annotations);
   const onChangeRef = useRef(onChange);
+  const onSearchMatchCountChangeRef = useRef(onSearchMatchCountChange);
   const onSelectionChangeRef = useRef(onSelectionChange);
   const onSelectionEnterRef = useRef(onSelectionEnter);
   const onAnnotationClickRef = useRef(onAnnotationClick);
@@ -545,6 +586,7 @@ export function MarkdownEditor({
   const readOnlyRef = useRef(readOnly);
   const readOnlyCompartment = useMemo(() => new Compartment(), []);
   const animationFrameRef = useRef(0);
+  const annotationLayoutSettleTimersRef = useRef<number[]>([]);
   const selectionFrameRef = useRef(0);
   const selectionFallbackTimerRef = useRef(0);
   const annotationClickTimerRef = useRef(0);
@@ -558,6 +600,11 @@ export function MarkdownEditor({
   const imeSelectionSuppressedUntilRef = useRef(0);
   const suppressNextChangeRef = useRef(false);
   const [annotationFrames, setAnnotationFrames] = useState<EditorAnnotationFrame[]>([]);
+  const searchMatchCount = useMemo(
+    () => findDocumentSearchMatches(value, search.query).length,
+    [search.query, value],
+  );
+  const searchSignature = `${search.query}\n${search.activeIndex}\n${searchMatchCount}`;
 
   const annotationSignature = useMemo(
     () =>
@@ -582,6 +629,10 @@ export function MarkdownEditor({
   useEffect(() => {
     onChangeRef.current = onChange;
   }, [onChange]);
+
+  useEffect(() => {
+    onSearchMatchCountChangeRef.current = onSearchMatchCountChange;
+  }, [onSearchMatchCountChange]);
 
   useEffect(() => {
     onSelectionChangeRef.current = onSelectionChange;
@@ -647,6 +698,19 @@ export function MarkdownEditor({
   function scheduleAnnotationFrameUpdate() {
     window.cancelAnimationFrame(animationFrameRef.current);
     animationFrameRef.current = window.requestAnimationFrame(updateAnnotationFrames);
+  }
+
+  function clearAnnotationLayoutSettleTimers() {
+    annotationLayoutSettleTimersRef.current.forEach((timer) => window.clearTimeout(timer));
+    annotationLayoutSettleTimersRef.current = [];
+  }
+
+  function scheduleSettledAnnotationFrameUpdate() {
+    scheduleAnnotationFrameUpdate();
+    clearAnnotationLayoutSettleTimers();
+    annotationLayoutSettleTimersRef.current = annotationLayoutSettleDelaysMs.map((delay) =>
+      window.setTimeout(scheduleAnnotationFrameUpdate, delay),
+    );
   }
 
   function collapseEditorSelection(view: EditorView, event?: MouseEvent | PointerEvent) {
@@ -854,21 +918,36 @@ export function MarkdownEditor({
     if (!container) return;
 
     const scroller = container.querySelector<HTMLElement>(".cm-scroller");
-    const resizeObserver = new ResizeObserver(scheduleAnnotationFrameUpdate);
+    const editorContentFrame = container.closest<HTMLElement>(".editor-content-frame");
+    const resizeObserver = new ResizeObserver(scheduleSettledAnnotationFrameUpdate);
 
     resizeObserver.observe(container);
+    if (editorContentFrame) {
+      resizeObserver.observe(editorContentFrame);
+      editorContentFrame.addEventListener("transitionend", scheduleSettledAnnotationFrameUpdate);
+      editorContentFrame.addEventListener("transitioncancel", scheduleSettledAnnotationFrameUpdate);
+    }
     if (scroller) {
       resizeObserver.observe(scroller);
       scroller.addEventListener("scroll", scheduleAnnotationFrameUpdate);
     }
-    window.addEventListener("resize", scheduleAnnotationFrameUpdate);
-    scheduleAnnotationFrameUpdate();
+    window.addEventListener("resize", scheduleSettledAnnotationFrameUpdate);
+    scheduleSettledAnnotationFrameUpdate();
 
     return () => {
       window.cancelAnimationFrame(animationFrameRef.current);
+      clearAnnotationLayoutSettleTimers();
       resizeObserver.disconnect();
+      editorContentFrame?.removeEventListener(
+        "transitionend",
+        scheduleSettledAnnotationFrameUpdate,
+      );
+      editorContentFrame?.removeEventListener(
+        "transitioncancel",
+        scheduleSettledAnnotationFrameUpdate,
+      );
       scroller?.removeEventListener("scroll", scheduleAnnotationFrameUpdate);
-      window.removeEventListener("resize", scheduleAnnotationFrameUpdate);
+      window.removeEventListener("resize", scheduleSettledAnnotationFrameUpdate);
     };
   }, []);
 
@@ -1025,6 +1104,7 @@ export function MarkdownEditor({
         history(),
         markdown(),
         annotationField,
+        searchField,
         updateListener,
         annotationClickHandler,
         readOnlyCompartment.of(editorReadOnlyExtensions(readOnly)),
@@ -1169,11 +1249,32 @@ export function MarkdownEditor({
   }, [value]);
 
   useEffect(() => {
+    onSearchMatchCountChangeRef.current?.(searchMatchCount);
+  }, [searchMatchCount]);
+
+  useEffect(() => {
     viewRef.current?.dispatch({
       effects: setAnnotationsEffect.of(annotations),
     });
     scheduleAnnotationFrameUpdate();
   }, [annotationSignature, annotations]);
+
+  useEffect(() => {
+    const view = viewRef.current;
+    if (!view) return;
+
+    view.dispatch({
+      effects: setSearchEffect.of(search),
+    });
+
+    const matches = findDocumentSearchMatches(view.state.doc.toString(), search.query);
+    const activeMatch = matches[search.activeIndex];
+    if (!activeMatch) return;
+
+    view.dispatch({
+      effects: EditorView.scrollIntoView(activeMatch.from, { y: "center" }),
+    });
+  }, [searchSignature, search]);
 
   return (
     <div className="markdown-editor-host" ref={containerRef}>
