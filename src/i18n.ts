@@ -74,6 +74,7 @@ const zhHantTranslations = {
   "duplicate.suffix": "副本",
   "file.copyContent": "複製內容",
   "file.delete": "刪除檔案",
+  "file.deleteWithCount": "刪除 {count} 個檔案",
   "pdfExport.action": "匯出 PDF",
   "pdfExport.actionWithCount": "匯出 {count} 份 PDF",
   "pdfExport.dialog.chooseFolder": "選擇 PDF 輸出資料夾",
@@ -198,7 +199,9 @@ const zhHantTranslations = {
   "error.duplicateNameNoFolders": "副本檔名不能包含資料夾路徑。",
   "error.couldNotReopenLastFile": "無法重新開啟上次的檔案：{message}",
   "confirm.deleteFile": "確定要刪除「{title}」嗎？\n\n這會刪除 Markdown 檔案與對應的 notes sidecar。",
+  "confirm.deleteFiles": "確定要刪除 {count} 個檔案嗎？\n\n這會刪除這些 Markdown 檔案與對應的 notes sidecar。",
   "confirm.deleteDropboxFile": "確定要刪除 Dropbox 上的「{title}」嗎？\n\n這會同步刪除雲端 Markdown 檔案。",
+  "confirm.deleteDropboxFiles": "確定要刪除 Dropbox 上的 {count} 個檔案嗎？\n\n這會同步刪除這些雲端 Markdown 檔案。",
 } as const;
 
 export type TranslationKey = keyof typeof zhHantTranslations;
@@ -277,6 +280,7 @@ const enTranslations: Record<TranslationKey, string> = {
   "duplicate.suffix": "Copy",
   "file.copyContent": "Copy content",
   "file.delete": "Delete file",
+  "file.deleteWithCount": "Delete {count} files",
   "pdfExport.action": "Export PDF",
   "pdfExport.actionWithCount": "Export {count} PDFs",
   "pdfExport.dialog.chooseFolder": "Choose PDF output folder",
@@ -401,7 +405,9 @@ const enTranslations: Record<TranslationKey, string> = {
   "error.duplicateNameNoFolders": "The duplicate file name cannot include folders.",
   "error.couldNotReopenLastFile": "Could not reopen last file: {message}",
   "confirm.deleteFile": "Delete “{title}”?\n\nThis will delete the Markdown file and its notes sidecar.",
+  "confirm.deleteFiles": "Delete {count} files?\n\nThis will delete these Markdown files and their notes sidecars.",
   "confirm.deleteDropboxFile": "Delete “{title}” from Dropbox?\n\nThis will sync the cloud Markdown deletion.",
+  "confirm.deleteDropboxFiles": "Delete {count} files from Dropbox?\n\nThis will sync these cloud Markdown deletions.",
 };
 
 const zhHansTranslations: Record<TranslationKey, string> = {
@@ -478,6 +484,7 @@ const zhHansTranslations: Record<TranslationKey, string> = {
   "duplicate.suffix": "副本",
   "file.copyContent": "复制内容",
   "file.delete": "删除文件",
+  "file.deleteWithCount": "删除 {count} 个文件",
   "pdfExport.action": "导出 PDF",
   "pdfExport.actionWithCount": "导出 {count} 份 PDF",
   "pdfExport.dialog.chooseFolder": "选择 PDF 输出目录",
@@ -602,7 +609,9 @@ const zhHansTranslations: Record<TranslationKey, string> = {
   "error.duplicateNameNoFolders": "副本文件名不能包含文件夹路径。",
   "error.couldNotReopenLastFile": "无法重新打开上次的文件：{message}",
   "confirm.deleteFile": "确定要删除“{title}”吗？\n\n这会删除 Markdown 文件与对应的 notes sidecar。",
+  "confirm.deleteFiles": "确定要删除 {count} 个文件吗？\n\n这会删除这些 Markdown 文件与对应的 notes sidecar。",
   "confirm.deleteDropboxFile": "确定要删除 Dropbox 上的“{title}”吗？\n\n这会同步删除云端 Markdown 文件。",
+  "confirm.deleteDropboxFiles": "确定要删除 Dropbox 上的 {count} 个文件吗？\n\n这会同步删除这些云端 Markdown 文件。",
 };
 
 const translations: Record<AppLanguage, Record<TranslationKey, string>> = {

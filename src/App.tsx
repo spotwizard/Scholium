@@ -360,6 +360,11 @@ type FileContextMenuState = FileActionTarget & {
   top: number;
 };
 
+type ResolvedFileActionTarget = FileActionTarget & {
+  document: MarkdownDocument | null;
+  isDropboxTarget: boolean;
+};
+
 type FileContextMenuAction = {
   id: string;
   label: string;
@@ -783,7 +788,6 @@ const previewAnnotationFrameCornerRadius = "4px";
 const annotationLayoutSettleDelaysMs = [80, 180, 360, 720];
 const noteLibraryFocusAlignmentRatio = 0.2;
 const notePanelAnimationMs = 180;
-const selectionWarningMinimumVisibleMs = 1600;
 const selectionWarningAutoDismissMs = 2600;
 const appDrivenSelectionClearGuardMs = 1200;
 const autosaveDelayMs = 500;
@@ -6573,6 +6577,7 @@ function App() {
   const autosaveRequestedWhileSavingRef = useRef(false);
   const externalFileRefreshInFlightRef = useRef(false);
   const documentsRef = useRef(documents);
+  const workspaceEntriesRef = useRef(workspaceEntries);
   const notesRef = useRef(notes);
   const glossaryTermsRef = useRef(glossaryTerms);
   const glossaryBindingsRef = useRef(glossaryBindings);
@@ -6595,6 +6600,7 @@ function App() {
   >(() => undefined);
 
   documentsRef.current = documents;
+  workspaceEntriesRef.current = workspaceEntries;
   notesRef.current = notes;
   glossaryTermsRef.current = glossaryTerms;
   glossaryBindingsRef.current = glossaryBindings;
@@ -6799,23 +6805,16 @@ function App() {
     tone: annotation.tone,
     to: annotation.anchor.to,
   }));
-  const pendingAnchorIsCompleteBlock = Boolean(
-    noteModeEnabled &&
-      pendingAnchor &&
-      isSelectionCompleteMarkdownBlock(selectedDocument.body, pendingAnchor),
-  );
   const activeNoteIsEditing = Boolean(activeNote && activeNoteMode === "edit");
   const activeGlossaryIsEditing = Boolean(activeGlossaryTerm && activeGlossaryMode === "edit");
   const noteEditModalActive = activeNoteIsEditing || activeGlossaryIsEditing;
-  const shouldShowSelectionConfirmation = Boolean(
-    noteModeEnabled && pendingAnchor && isMobileViewport && !pendingAnchorIsGlossaryTerm,
-  );
   const pendingAnchorCanCreateNote = Boolean(
-    pendingAnchor &&
+    noteModeEnabled &&
+      pendingAnchor &&
       !pendingGlossaryTerm &&
-      !pendingAnchorIsGlossaryTerm &&
-      (pendingAnchorIsCompleteBlock || isMobileViewport),
+      !pendingAnchorIsGlossaryTerm,
   );
+  const shouldShowSelectionConfirmation = pendingAnchorCanCreateNote;
   function noteEditorKey(surface: "floating" | "library" | "expanded", noteId: string) {
     return `${surface}:${noteId}`;
   }
@@ -7459,36 +7458,6 @@ function App() {
     ).flatMap((element) => Array.from(element.getClientRects()));
 
     return textAnchorRectFromClientRects(editorSelectionRects);
-  }
-
-  function selectionWarningPositionFromAnchor(anchorRect: TextRangeRect | null) {
-    const warningWidth = 260;
-    const warningHeight = 44;
-    const viewportMargin = 12;
-    const mobileBottomReservedHeight = window.matchMedia("(max-width: 640px)").matches ? 104 : 0;
-    const maxLeft = Math.max(viewportMargin, window.innerWidth - warningWidth - viewportMargin);
-    const maxTop = Math.max(
-      viewportMargin,
-      window.innerHeight - warningHeight - viewportMargin - mobileBottomReservedHeight,
-    );
-
-    if (!anchorRect) {
-      return {
-        left: Math.round(clampNumber(window.innerWidth / 2 - warningWidth / 2, viewportMargin, maxLeft)),
-        top: viewportMargin,
-      };
-    }
-
-    return {
-      left: Math.round(clampNumber(anchorRect.left, viewportMargin, maxLeft)),
-      top: Math.round(clampNumber(anchorRect.bottom + 8, viewportMargin, maxTop)),
-    };
-  }
-
-  function showSelectionWarning(anchorRect: TextRangeRect | null) {
-    selectionWarningPreserveUntilRef.current =
-      Date.now() + selectionWarningMinimumVisibleMs;
-    setSelectionWarningPosition(selectionWarningPositionFromAnchor(anchorRect));
   }
 
   function clearSelectionWarning() {
@@ -8684,6 +8653,22 @@ function App() {
         return;
       }
 
+      if (isPlainEnter && pendingAnchor && pendingAnchorIsGlossaryTerm) {
+        if (targetIsFormControl(event.target)) return;
+
+        event.preventDefault();
+        startPendingGlossaryFlow();
+        return;
+      }
+
+      if (isPlainEnter && pendingAnchorCanCreateNote) {
+        if (targetIsFormControl(event.target)) return;
+
+        event.preventDefault();
+        confirmPendingSelectionNote();
+        return;
+      }
+
       if (noteEditModalActive) {
         if (isAnnotationNavigationTab && targetIsInsideEditingNoteMarkdownEditor(event.target)) {
           return;
@@ -8725,22 +8710,6 @@ function App() {
         return;
       }
 
-      if (isPlainEnter && pendingAnchor && pendingAnchorIsGlossaryTerm) {
-        if (targetIsFormControl(event.target)) return;
-
-        event.preventDefault();
-        startPendingGlossaryFlow();
-        return;
-      }
-
-      if (isPlainEnter && pendingAnchor && pendingAnchorIsCompleteBlock) {
-        if (targetIsFormControl(event.target)) return;
-
-        event.preventDefault();
-        confirmPendingSelectionNote();
-        return;
-      }
-
       if (!event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
       if (event.key !== "/" && event.code !== "Slash") return;
 
@@ -8775,7 +8744,7 @@ function App() {
     noteModeEnabled,
     notePanelModalActive,
     pendingAnchor,
-    pendingAnchorIsCompleteBlock,
+    pendingAnchorCanCreateNote,
     pendingAnchorIsGlossaryTerm,
     settingsViewOpen,
   ]);
@@ -10578,11 +10547,14 @@ function App() {
     }
   }
 
-  function removeDocumentFromWorkspace(documentId: string) {
-    const nextDocuments = documentsRef.current.filter((document) => document.id !== documentId);
-    const nextNotes = notesRef.current.filter((note) => note.documentId !== documentId);
+  function removeDocumentsFromWorkspace(documentIds: Iterable<string>) {
+    const documentIdSet = new Set(documentIds);
+    if (documentIdSet.size === 0) return;
+
+    const nextDocuments = documentsRef.current.filter((document) => !documentIdSet.has(document.id));
+    const nextNotes = notesRef.current.filter((note) => !documentIdSet.has(note.documentId));
     const nextGlossaryBindings = glossaryBindingsRef.current.filter(
-      (binding) => binding.documentId !== documentId,
+      (binding) => !documentIdSet.has(binding.documentId),
     );
     const remainingGlossaryTermIds = new Set(
       nextGlossaryBindings
@@ -10593,7 +10565,9 @@ function App() {
       remainingGlossaryTermIds.has(term.id),
     );
     const nextDirtyDocumentStates = { ...dirtyDocumentStatesRef.current };
-    delete nextDirtyDocumentStates[documentId];
+    documentIdSet.forEach((documentId) => {
+      delete nextDirtyDocumentStates[documentId];
+    });
 
     documentsRef.current = nextDocuments;
     notesRef.current = nextNotes;
@@ -10604,19 +10578,25 @@ function App() {
     clearNotePanelCloseTimer();
     clearReturnToViewTimer();
     resetNoteTextareaCompositionState();
-    setDocuments(nextDocuments);
-    setWorkspaceEntries((currentEntries) =>
-      currentEntries.filter((entry) => entry.kind !== "file" || entry.documentId !== documentId),
+    const nextWorkspaceEntries = workspaceEntriesRef.current.filter(
+      (entry) => entry.kind !== "file" || !documentIdSet.has(entry.documentId),
     );
+    workspaceEntriesRef.current = nextWorkspaceEntries;
+    setDocuments(nextDocuments);
+    setWorkspaceEntries(nextWorkspaceEntries);
     setNotes(nextNotes);
     setGlossaryBindings(nextGlossaryBindings);
     setGlossaryTerms(nextGlossaryTerms);
     setDirtyDocumentStates(nextDirtyDocumentStates);
     setSavedDocumentBodies((currentBodies) => {
       const nextBodies = { ...currentBodies };
-      delete nextBodies[documentId];
+      documentIdSet.forEach((documentId) => {
+        delete nextBodies[documentId];
+      });
       return nextBodies;
     });
+    setSelectedWorkspaceDocumentIds(new Set());
+    setMobileSelectedWorkspaceEntryKey("");
     setSelectionWarningPosition(null);
     setPendingAnchor(null);
     setPendingGlossaryTerm(null);
@@ -10633,9 +10613,11 @@ function App() {
     setIsNotePanelClosing(false);
     notePanelHasContentRef.current = false;
 
-    if (selectedDocumentId === documentId) {
+    if (documentIdSet.has(selectedDocumentIdRef.current)) {
       const nextSelectedDocument = nextDocuments[0] ?? null;
-      setSelectedDocumentId(nextSelectedDocument?.id ?? "");
+      const nextSelectedDocumentId = nextSelectedDocument?.id ?? "";
+      selectedDocumentIdRef.current = nextSelectedDocumentId;
+      setSelectedDocumentId(nextSelectedDocumentId);
       if (nextSelectedDocument?.filePath) {
         rememberLastOpenedMarkdownPath(nextSelectedDocument.filePath);
       } else {
@@ -11054,7 +11036,72 @@ function App() {
     }
   }
 
-  async function deleteDocumentFile(target: FileActionTarget) {
+  function fileActionTargetsForDocumentIds(
+    documentIds: string[],
+    fallbackTarget?: FileActionTarget,
+  ): ResolvedFileActionTarget[] {
+    const documentsById = new Map(documentsRef.current.map((document) => [document.id, document]));
+    const workspaceFileEntriesById = new Map(
+      workspaceEntriesRef.current
+        .filter(
+          (entry): entry is Extract<WorkspaceEntry, { kind: "file" }> => entry.kind === "file",
+        )
+        .map((entry) => [entry.documentId, entry]),
+    );
+    const targets: ResolvedFileActionTarget[] = [];
+    const seenDocumentIds = new Set<string>();
+
+    documentIds.forEach((documentId) => {
+      if (seenDocumentIds.has(documentId)) return;
+      seenDocumentIds.add(documentId);
+
+      const documentToDelete = documentsById.get(documentId) ?? null;
+      const workspaceEntry = workspaceFileEntriesById.get(documentId);
+      const fallback = fallbackTarget?.documentId === documentId ? fallbackTarget : null;
+      const isDropboxTarget =
+        workspaceEntry?.source === "dropbox" ||
+        fallback?.source === "dropbox" ||
+        (documentToDelete ? documentIsFromDropbox(documentToDelete) : false);
+      const path = documentToDelete?.path ?? workspaceEntry?.path ?? fallback?.path ?? "";
+      const title = documentToDelete?.title ?? workspaceEntry?.title ?? fallback?.title ?? path;
+
+      targets.push({
+        documentId,
+        document: documentToDelete,
+        isDropboxTarget,
+        path,
+        title,
+        source: isDropboxTarget ? "dropbox" : (workspaceEntry?.source ?? fallback?.source),
+      });
+    });
+
+    return targets;
+  }
+
+  async function deleteResolvedDocumentFile(target: ResolvedFileActionTarget) {
+    if (target.isDropboxTarget) {
+      const dropboxPath = target.document?.path ?? target.path;
+      if (!dropboxPath) {
+        throw new Error(t("error.notBackedByMarkdownFile"));
+      }
+
+      await invoke<OpenDropboxMarkdownFileResult>("delete_dropbox_markdown_file", {
+        path: dropboxPath,
+      });
+      return;
+    }
+
+    const localPath = target.document?.filePath ?? target.path;
+    if (!localPath) {
+      throw new Error(t("error.notBackedByMarkdownFile"));
+    }
+
+    await invoke<DeleteMarkdownFileResult>("delete_markdown_file", {
+      path: localPath,
+    });
+  }
+
+  async function deleteDocumentFiles(documentIds: string[], fallbackTarget?: FileActionTarget) {
     if (!nativeStorageAvailable) {
       setStorageError(t("error.nativeRuntimeRequired"));
       return;
@@ -11065,56 +11112,46 @@ function App() {
       return;
     }
 
-    const documentToDelete = documentsRef.current.find(
-      (document) => document.id === target.documentId,
-    );
-    const isDropboxTarget =
-      target.source === "dropbox" ||
-      (documentToDelete ? documentIsFromDropbox(documentToDelete) : false);
-    const path = documentToDelete?.path ?? target.path;
-    const title = documentToDelete?.title ?? target.title;
+    const targets = fileActionTargetsForDocumentIds(documentIds, fallbackTarget);
+    if (targets.length === 0) {
+      setStorageError(t("error.notBackedByMarkdownFile"));
+      return;
+    }
 
-    if (!documentToDelete && !isDropboxTarget) {
-      setStorageError(t("error.notBackedByMarkdownFile"));
-      return;
-    }
-    if (!isDropboxTarget && !documentToDelete?.filePath) {
-      setStorageError(t("error.notBackedByMarkdownFile"));
-      return;
-    }
+    const hasDropboxTarget = targets.some((target) => target.isDropboxTarget);
+    const firstTarget = targets[0];
+    const deleteConfirmationKey =
+      targets.length > 1
+        ? hasDropboxTarget
+          ? "confirm.deleteDropboxFiles"
+          : "confirm.deleteFiles"
+        : firstTarget.isDropboxTarget
+          ? "confirm.deleteDropboxFile"
+          : "confirm.deleteFile";
 
     setFileContextMenu(null);
 
-    const deleteConfirmationKey = isDropboxTarget
-      ? "confirm.deleteDropboxFile"
-      : "confirm.deleteFile";
     const confirmed = window.confirm(
       t(deleteConfirmationKey, {
-        title,
+        count: targets.length,
+        title: firstTarget.title,
       }),
     );
     if (!confirmed) return;
 
     setStorageError(t("status.deletingFile"));
 
+    const deletedDocumentIds: string[] = [];
     try {
-      if (isDropboxTarget) {
-        await invoke<OpenDropboxMarkdownFileResult>("delete_dropbox_markdown_file", {
-          path,
-        });
-      } else {
-        if (!documentToDelete?.filePath) {
-          setStorageError(t("error.notBackedByMarkdownFile"));
-          return;
-        }
-
-        await invoke<DeleteMarkdownFileResult>("delete_markdown_file", {
-          path: documentToDelete.filePath,
-        });
+      for (const target of targets) {
+        await deleteResolvedDocumentFile(target);
+        deletedDocumentIds.push(target.documentId);
       }
-      removeDocumentFromWorkspace(target.documentId);
+
+      removeDocumentsFromWorkspace(deletedDocumentIds);
       setStorageError("");
     } catch (error) {
+      removeDocumentsFromWorkspace(deletedDocumentIds);
       setStorageError(error instanceof Error ? error.message : String(error));
     }
   }
@@ -11290,7 +11327,7 @@ function App() {
 
   function resetGlossaryModeInteractionState() {
     const pendingAnchorIsNoteCandidate = Boolean(
-      pendingAnchor && isSelectionCompleteMarkdownBlock(selectedDocument.body, pendingAnchor),
+      pendingAnchor && !pendingGlossaryTerm && !pendingAnchorIsGlossaryTerm,
     );
     const keepNotePanelOpen = Boolean(activeNoteId || pendingAnchorIsNoteCandidate);
 
@@ -11425,6 +11462,22 @@ function App() {
     }
   }
 
+  function openSelectionNoteConfirmation(anchor: TextSelectionAnchor) {
+    const anchorRect = currentSelectionAnchorRect();
+    if (anchorRect) {
+      floatingNoteAnchorRectRef.current = anchorRect;
+    }
+
+    setSelectionWarningPosition(null);
+    setPendingAnchor(anchor);
+    setNoteDraft("");
+    setPendingGlossaryTerm(null);
+    setGlossaryDraft("");
+    setActiveNoteId("");
+    setActiveNoteMode("view");
+    notePanelHasContentRef.current = true;
+  }
+
   function handleSelectionChange(anchor: TextSelectionAnchor | null) {
     if (!noteModeEnabled) {
       return;
@@ -11505,23 +11558,16 @@ function App() {
         return;
       }
 
-      const anchorRect = currentSelectionAnchorRect();
-      if (anchorRect) {
-        floatingNoteAnchorRectRef.current = anchorRect;
-      }
-      setSelectionWarningPosition(null);
-      setPendingAnchor(anchor);
-      setNoteDraft("");
-      setPendingGlossaryTerm(null);
-      setGlossaryDraft("");
-      setActiveNoteId("");
-      setActiveNoteMode("view");
-      notePanelHasContentRef.current = true;
+      openSelectionNoteConfirmation(anchor);
     }
   }
 
   function selectionOverlapsActiveNote(anchor: TextSelectionAnchor) {
     return activeNotes.some((note) => selectionOverlapsNote(anchor, note));
+  }
+
+  function activeNoteOverlappingSelection(anchor: TextSelectionAnchor) {
+    return activeNotes.find((note) => selectionOverlapsNote(anchor, note)) ?? null;
   }
 
   function selectionOverlapsActiveGlossary(anchor: TextSelectionAnchor) {
@@ -11531,6 +11577,19 @@ function App() {
       (glossaryTermIdsWithContent.has(binding.termId) ||
         editableGlossaryBindingIds.has(binding.id)) &&
       selectionOverlapsGlossaryBinding(anchor, binding),
+    );
+  }
+
+  function activeGlossaryBindingOverlappingSelection(anchor: TextSelectionAnchor) {
+    if (!glossaryModeActive) return null;
+
+    return (
+      documentGlossaryBindings.find(
+        (binding) =>
+          (glossaryTermIdsWithContent.has(binding.termId) ||
+            editableGlossaryBindingIds.has(binding.id)) &&
+          selectionOverlapsGlossaryBinding(anchor, binding),
+      ) ?? null
     );
   }
 
@@ -11548,6 +11607,67 @@ function App() {
     }
 
     return selectionIsBlockedByExistingAnnotations(anchor);
+  }
+
+  function openSelectionNoteViewer(note: SelectionNote) {
+    setSelectionWarningPosition(null);
+    clearNotePanelCloseTimer();
+    clearReturnToViewTimer();
+    setIsNotePanelClosing(false);
+    floatingNoteAnchorRectRef.current =
+      activeNoteAnchorRect(note.id) ?? currentSelectionAnchorRect();
+    setPendingAnchor(null);
+    setPendingGlossaryTerm(null);
+    setActiveGlossaryBindingId("");
+    setActiveGlossaryTermId("");
+    setActiveGlossaryMode("view");
+    setActiveNoteId(note.id);
+    setActiveNoteMode("view");
+    setActiveNoteEditorKey(selectionNoteHasContent(note) ? "" : noteEditorKey("floating", note.id));
+    setNoteDraft(note.body);
+    notePanelHasContentRef.current = true;
+  }
+
+  function openGlossaryBindingPanel(binding: GlossaryBinding) {
+    if (!glossaryModeActive) return false;
+
+    const term = glossaryTerms.find((candidate) => candidate.id === binding.termId);
+    if (!term) return false;
+
+    const termHasContent = glossaryTermHasContent(term);
+    setSelectionWarningPosition(null);
+    clearNotePanelCloseTimer();
+    clearReturnToViewTimer();
+    setIsNotePanelClosing(false);
+    floatingNoteAnchorRectRef.current =
+      activeGlossaryAnchorRect(binding.id) ?? currentSelectionAnchorRect();
+    setPendingAnchor(null);
+    setPendingGlossaryTerm(null);
+    setActiveNoteId("");
+    setActiveNoteMode("view");
+    setActiveNoteEditorKey("");
+    setActiveGlossaryBindingId(binding.id);
+    setActiveGlossaryTermId(term.id);
+    setActiveGlossaryMode(termHasContent ? "view" : "edit");
+    setGlossaryDraft(term.definition);
+    noteEditorShouldRefocusRef.current = !termHasContent;
+    notePanelHasContentRef.current = true;
+    return true;
+  }
+
+  function openExistingAnnotationForSelection(anchor: TextSelectionAnchor) {
+    const overlappingNote = activeNoteOverlappingSelection(anchor);
+    if (overlappingNote) {
+      openSelectionNoteViewer(overlappingNote);
+      return true;
+    }
+
+    const overlappingGlossaryBinding = activeGlossaryBindingOverlappingSelection(anchor);
+    if (overlappingGlossaryBinding) {
+      return openGlossaryBindingPanel(overlappingGlossaryBinding);
+    }
+
+    return false;
   }
 
   function handleSelectionEnter(anchor: TextSelectionAnchor) {
@@ -11569,6 +11689,7 @@ function App() {
       if (noteLibraryOpen) {
         setNoteLibraryOpen(false);
       }
+      openExistingAnnotationForSelection(anchor);
       return true;
     }
 
@@ -11588,37 +11709,20 @@ function App() {
       if (noteLibraryOpen) {
         setNoteLibraryOpen(false);
       }
-      createSelectionNoteForAnchor(anchor, { startEditing: false });
+      openSelectionNoteConfirmation(anchor);
       return true;
     }
 
-    if (!noteModeEnabled) return false;
+    if (!noteModeEnabled) {
+      setNoteModeEnabled(true);
+      setGlossaryModeEnabled(false);
+    }
 
     if (noteLibraryOpen) {
       setNoteLibraryOpen(false);
     }
 
-    if (isMobileViewport) {
-      const anchorRect = currentSelectionAnchorRect();
-      if (anchorRect) {
-        floatingNoteAnchorRectRef.current = anchorRect;
-      }
-      setSelectionWarningPosition(null);
-      setPendingAnchor(anchor);
-      setNoteDraft("");
-      setPendingGlossaryTerm(null);
-      setGlossaryDraft("");
-      setActiveNoteId("");
-      setActiveNoteMode("view");
-      notePanelHasContentRef.current = true;
-      return true;
-    }
-
-    setPendingAnchor(null);
-    setNoteDraft("");
-    setPendingGlossaryTerm(null);
-    setGlossaryDraft("");
-    showSelectionWarning(currentSelectionAnchorRect());
+    openSelectionNoteConfirmation(anchor);
     return true;
   }
 
@@ -11996,7 +12100,7 @@ function App() {
 
   function confirmPendingSelectionNote() {
     if (!noteModeEnabled) return;
-    if (!pendingAnchor || (!pendingAnchorIsCompleteBlock && !isMobileViewport)) return;
+    if (!pendingAnchorCanCreateNote || !pendingAnchor) return;
 
     confirmSelectionNoteForAnchor(pendingAnchor);
   }
@@ -12588,9 +12692,21 @@ function App() {
             void copyDocumentContent(fileContextMenu);
           },
         };
+        const deleteFileAction = {
+          id: "delete",
+          label:
+            exportDocumentCount > 1
+              ? t("file.deleteWithCount", { count: exportDocumentCount })
+              : t("file.delete"),
+          icon: <TrashIcon />,
+          tone: "danger" as const,
+          onSelect: () => {
+            void deleteDocumentFiles(fileContextMenu.exportDocumentIds, fileContextMenu);
+          },
+        };
 
         if (exportDocumentCount > 1) {
-          return [exportPdfAction];
+          return [exportPdfAction, deleteFileAction];
         }
 
         return [
@@ -12604,15 +12720,7 @@ function App() {
             },
           },
           copyContentAction,
-          {
-            id: "delete",
-            label: t("file.delete"),
-            icon: <TrashIcon />,
-            tone: "danger",
-            onSelect: () => {
-              void deleteDocumentFile(fileContextMenu);
-            },
-          },
+          deleteFileAction,
         ];
       })()
     : [];

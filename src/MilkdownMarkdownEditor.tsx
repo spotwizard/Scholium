@@ -909,6 +909,32 @@ function nonCollapsedSelectionInRoot(
   return selectionBelongsToRoot(root, selection);
 }
 
+function selectionVisuallyOverlapsRoot(root: HTMLElement, selection: Selection | null) {
+  if (!selection || selection.isCollapsed || selection.rangeCount === 0) return false;
+
+  const rootRect = root.getBoundingClientRect();
+  if (rootRect.width <= 0 || rootRect.height <= 0) return false;
+
+  for (let index = 0; index < selection.rangeCount; index += 1) {
+    const range = selection.getRangeAt(index);
+    const rects = Array.from(range.getClientRects());
+
+    for (const rect of rects) {
+      const overlaps =
+        rect.width > 0 &&
+        rect.height > 0 &&
+        rect.right >= rootRect.left &&
+        rect.left <= rootRect.right &&
+        rect.bottom >= rootRect.top &&
+        rect.top <= rootRect.bottom;
+
+      if (overlaps) return true;
+    }
+  }
+
+  return false;
+}
+
 function buildNormalizedVisibleTextIndex(doc: ProseMirrorNode) {
   const chars: string[] = [];
   const positions: number[] = [];
@@ -1751,6 +1777,15 @@ export function MilkdownMarkdownEditor({
     const root = rootRef.current;
     const selection = window.getSelection();
     if (!root || !nonCollapsedSelectionInRoot(root, selection)) {
+      const selectedText = selection?.toString() ?? "";
+      if (
+        root &&
+        selectedText.trim() &&
+        selectionVisuallyOverlapsRoot(root, selection)
+      ) {
+        return buildAnchor(currentMarkdownRef.current, selectedText);
+      }
+
       return anchorFromEditorSelection();
     }
 
@@ -2069,7 +2104,10 @@ export function MilkdownMarkdownEditor({
       const selection = window.getSelection();
       const activeElement = document.activeElement;
       const editorHasFocus = activeElement instanceof Node && root.contains(activeElement);
-      if (!selectionBelongsToRoot(root, selection) && !editorHasFocus) return;
+      const selectionIsInEditor =
+        selectionBelongsToRoot(root, selection) ||
+        selectionVisuallyOverlapsRoot(root, selection);
+      if (!selectionIsInEditor && !editorHasFocus) return;
 
       handleSelectionEnterKeyDown(event);
     }
