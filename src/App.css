@@ -1881,9 +1881,112 @@ button:disabled {
 }
 
 .editor-content-frame > .empty-editor-state,
+.editor-content-frame > .document-tags,
 .editor-content-frame > .markdown-editor-host,
 .editor-content-frame > .milkdown-markdown-editor-shell {
   width: 100%;
+}
+
+.document-tags {
+  margin: 0 0 18px;
+}
+
+.document-tags__chips {
+  display: flex;
+  min-height: 32px;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.document-tag-chip {
+  display: inline-flex;
+  max-width: min(220px, 100%);
+  min-height: 28px;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  padding: 0 5px 0 11px;
+  color: var(--color-heading);
+  background: color-mix(in srgb, var(--color-surface-soft) 84%, var(--color-surface-raised));
+  box-shadow: var(--shadow-low);
+  font-size: 0.78rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.document-tag-chip__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.document-tag-chip__remove {
+  display: inline-grid;
+  width: 20px;
+  min-width: 20px;
+  height: 20px;
+  place-items: center;
+  border: 0;
+  border-radius: 999px;
+  padding: 0;
+  color: var(--color-muted);
+  background: transparent;
+  box-shadow: none;
+  font-size: 0.88rem;
+  font-weight: 760;
+  line-height: 1;
+}
+
+.document-tag-chip__remove:hover,
+.document-tag-chip__remove:focus-visible {
+  color: var(--color-heading);
+  background: color-mix(in srgb, var(--color-surface-raised) 76%, transparent);
+  outline: none;
+}
+
+.document-tag-chip__remove:disabled {
+  color: color-mix(in srgb, var(--color-muted) 44%, transparent);
+  cursor: not-allowed;
+}
+
+.document-tags__form {
+  display: inline-flex;
+  min-width: min(168px, 100%);
+}
+
+.document-tags__form input {
+  width: 168px;
+  max-width: 100%;
+  height: 30px;
+  border: 1px dashed var(--color-border);
+  border-radius: 999px;
+  padding: 0 12px;
+  color: var(--color-heading);
+  background: transparent;
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 650;
+  line-height: 1;
+  outline: none;
+}
+
+.document-tags__form input::placeholder {
+  color: var(--color-muted);
+}
+
+.document-tags__form input:focus {
+  border-color: var(--color-accent);
+  background: var(--color-surface-raised);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-accent) 14%, transparent);
+}
+
+.document-tags__form input:disabled {
+  color: var(--color-muted);
+  background: color-mix(in srgb, var(--color-surface-soft) 70%, transparent);
+  cursor: not-allowed;
 }
 
 .scholium-shell.has-document-tabs .editor-content-frame {
@@ -5688,6 +5791,30 @@ button:disabled {
 
   .document-tab__title {
     font-size: 0.76rem;
+  }
+
+  .document-tags {
+    margin-bottom: 14px;
+  }
+
+  .document-tags__chips {
+    gap: 7px;
+  }
+
+  .document-tag-chip {
+    max-width: 100%;
+    min-height: 30px;
+    font-size: 0.8rem;
+  }
+
+  .document-tags__form {
+    min-width: min(150px, 100%);
+  }
+
+  .document-tags__form input {
+    width: min(150px, 100%);
+    height: 32px;
+    font-size: 16px;
   }
 
   .editor-content-frame {

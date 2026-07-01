@@ -43,8 +43,11 @@ import expandIconSvg from "./assets/expand.svg?raw";
 import { appLanguageHtmlLang, createTranslator } from "./i18n";
 import { loadScholiumMermaid } from "./mermaid";
 import {
+  markdownHasMalformedFrontmatter,
   markdownFrontmatterBodyStartLine,
+  readMarkdownTags,
   stripMarkdownFrontmatter,
+  writeMarkdownTags,
 } from "./markdownFrontmatter";
 import {
   readSettingsSnapshot,
@@ -6503,6 +6506,7 @@ function App() {
   const [documentSearchQuery, setDocumentSearchQuery] = useState("");
   const [documentSearchActiveIndex, setDocumentSearchActiveIndex] = useState(0);
   const [documentSearchMatchCount, setDocumentSearchMatchCount] = useState(0);
+  const [tagDraft, setTagDraft] = useState("");
   const [expandedDirectoryKeys, setExpandedDirectoryKeys] = useState<Set<string>>(() => new Set());
   const [loadingDirectoryKeys, setLoadingDirectoryKeys] = useState<Set<string>>(() => new Set());
   const [selectedDocumentId, setSelectedDocumentId] = useState(documentsSeed[0].id);
@@ -6691,6 +6695,10 @@ function App() {
   const activeDocument = documents.find((document) => document.id === selectedDocumentId);
   const hasOpenDocument = Boolean(activeDocument);
   const selectedDocument = activeDocument ?? emptyDocument;
+  const selectedDocumentTags = useMemo(
+    () => (hasOpenDocument ? readMarkdownTags(selectedDocument.body) : []),
+    [hasOpenDocument, selectedDocument.body],
+  );
   const documentsById = new Map(documents.map((document) => [document.id, document]));
   const openDocumentTabs = openDocumentTabIds
     .map((documentId) => documentsById.get(documentId))
@@ -8702,6 +8710,10 @@ function App() {
       document.documentElement.style.overflow = previousDocumentOverflow;
     };
   }, [Boolean(dropboxDirectoryPicker)]);
+
+  useEffect(() => {
+    setTagDraft("");
+  }, [selectedDocument.id]);
 
   useEffect(() => {
     if (!hasOpenDocument && documentSearchOpen) {
@@ -11622,6 +11634,48 @@ function App() {
     }
   }
 
+  function normalizeTagInput(value: string) {
+    return value.replace(/\s+/g, " ").trim();
+  }
+
+  function tagDedupeKey(value: string) {
+    return normalizeTagInput(value).toLocaleLowerCase();
+  }
+
+  function updateSelectedDocumentTags(nextTags: string[]) {
+    if (!hasOpenDocument) return;
+
+    if (markdownHasMalformedFrontmatter(selectedDocument.body)) {
+      setStorageError(t("tags.error.invalidFrontmatter"));
+      return;
+    }
+
+    const nextBody = writeMarkdownTags(selectedDocument.body, nextTags);
+    if (nextBody === selectedDocument.body) return;
+
+    updateSelectedDocumentBody(nextBody, "user");
+    setStorageError("");
+  }
+
+  function submitSelectedDocumentTag(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const nextTag = normalizeTagInput(tagDraft);
+    if (!nextTag) return;
+
+    const existingTagKeys = new Set(selectedDocumentTags.map(tagDedupeKey));
+    setTagDraft("");
+    if (existingTagKeys.has(tagDedupeKey(nextTag))) return;
+
+    updateSelectedDocumentTags([...selectedDocumentTags, nextTag]);
+  }
+
+  function removeSelectedDocumentTag(tagToRemove: string) {
+    const removedTagKey = tagDedupeKey(tagToRemove);
+    updateSelectedDocumentTags(
+      selectedDocumentTags.filter((tag) => tagDedupeKey(tag) !== removedTagKey),
+    );
+  }
+
   function updateSelectedDocumentBody(
     body: string,
     source: EditorChangeSource,
@@ -14071,28 +14125,59 @@ function App() {
               </div>
             ) : null}
             <div className="editor-content-frame">
-            {!hasOpenDocument ? (
-              <div className="empty-editor-state">
-                <h2>
-                  {workspaceHasMarkdownFileEntries
-                    ? t("emptyDocumentSelection.title")
-                    : t("emptyDirectory.title")}
-                </h2>
-                <p>
-                  {workspaceHasMarkdownFileEntries
-                    ? t("emptyDocumentSelection.description")
-                    : t("emptyDirectory.description")}
-                </p>
-                <div className="mobile-empty-actions" aria-label={t("mobileSource.label")}>
-                  {mobileSourceActions.map((action) => (
-                    <button key={action.id} onClick={action.onSelect} type="button">
-                      {action.icon}
-                      <span>{action.label}</span>
-                    </button>
-                  ))}
+              {hasOpenDocument ? (
+                <section className="document-tags" aria-label={t("tags.label")}>
+                  <div className="document-tags__chips">
+                    {selectedDocumentTags.map((tag) => (
+                      <span className="document-tag-chip" key={tag}>
+                        <span className="document-tag-chip__label">{tag}</span>
+                        <button
+                          aria-label={t("tags.remove", { tag })}
+                          className="document-tag-chip__remove"
+                          disabled={editorReadOnly}
+                          onClick={() => removeSelectedDocumentTag(tag)}
+                          title={t("tags.remove", { tag })}
+                          type="button"
+                        >
+                          ×
+                        </button>
+                      </span>
+                    ))}
+                    <form className="document-tags__form" onSubmit={submitSelectedDocumentTag}>
+                      <input
+                        aria-label={t("tags.add")}
+                        disabled={editorReadOnly}
+                        placeholder={t("tags.placeholder")}
+                        type="text"
+                        value={tagDraft}
+                        onChange={(event) => setTagDraft(event.currentTarget.value)}
+                      />
+                    </form>
+                  </div>
+                </section>
+              ) : null}
+              {!hasOpenDocument ? (
+                <div className="empty-editor-state">
+                  <h2>
+                    {workspaceHasMarkdownFileEntries
+                      ? t("emptyDocumentSelection.title")
+                      : t("emptyDirectory.title")}
+                  </h2>
+                  <p>
+                    {workspaceHasMarkdownFileEntries
+                      ? t("emptyDocumentSelection.description")
+                      : t("emptyDirectory.description")}
+                  </p>
+                  <div className="mobile-empty-actions" aria-label={t("mobileSource.label")}>
+                    {mobileSourceActions.map((action) => (
+                      <button key={action.id} onClick={action.onSelect} type="button">
+                        {action.icon}
+                        <span>{action.label}</span>
+                      </button>
+                    ))}
+                  </div>
                 </div>
-              </div>
-            ) : editorMode === "preview" ? (
+              ) : editorMode === "preview" ? (
                 <MilkdownMarkdownEditor
                   annotations={annotations}
                   documentFilePath={selectedDocument.filePath}
@@ -14110,7 +14195,7 @@ function App() {
                   onSelectionChange={handleSelectionChange}
                   onSelectionEnter={handleSelectionEnter}
                 />
-            ) : (
+              ) : (
                 <MarkdownEditor
                   annotations={annotations}
                   noteModeEnabled={noteModeEnabled}
@@ -14125,7 +14210,7 @@ function App() {
                   onSelectionChange={handleSelectionChange}
                   onSelectionEnter={handleSelectionEnter}
                 />
-            )}
+              )}
             </div>
           </div>
         </div>
