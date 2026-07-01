@@ -43,6 +43,10 @@ import expandIconSvg from "./assets/expand.svg?raw";
 import { appLanguageHtmlLang, createTranslator } from "./i18n";
 import { loadScholiumMermaid } from "./mermaid";
 import {
+  markdownFrontmatterBodyStartLine,
+  stripMarkdownFrontmatter,
+} from "./markdownFrontmatter";
+import {
   readSettingsSnapshot,
   resetSetting,
   resetSettings,
@@ -3985,9 +3989,10 @@ function parseCodeFenceInfo(line: string) {
 }
 
 function parseMarkdownPreviewBlocks(markdown: string): MarkdownPreviewBlock[] {
-  const lines = markdown.replace(/\r\n/g, "\n").split("\n");
+  const normalizedMarkdown = markdown.replace(/\r\n/g, "\n");
+  const lines = normalizedMarkdown.split("\n");
   const blocks: MarkdownPreviewBlock[] = [];
-  let index = 0;
+  let index = markdownFrontmatterBodyStartLine(normalizedMarkdown);
 
   while (index < lines.length) {
     const line = lines[index];
@@ -6180,7 +6185,7 @@ function MarkdownPreviewContent({
   onDoubleClick?: () => void;
   value: string;
 }) {
-  const isEmpty = !value.trim();
+  const isEmpty = !stripMarkdownFrontmatter(value).trim();
   const blocks = isEmpty ? [] : parseMarkdownPreviewBlocks(value);
 
   return (

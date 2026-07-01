@@ -4,19 +4,20 @@
   --color-source-editor-text: #374151;
   --color-preview-editor-text: #000000;
   --color-muted: #6b7280;
-  --color-app-bg: #f6f7f9;
-  --color-surface: #fcfcfd;
-  --color-surface-soft: #f3f4f6;
+  --color-app-bg: #f6f0e6;
+  --color-surface: #fffdf8;
+  --color-surface-soft: #f8efe3;
   --color-surface-raised: #ffffff;
-  --color-border: #dce0e6;
-  --color-border-soft: #e7e9ee;
-  --color-selected-border: #cfd4dc;
-  --color-selected-surface: #e4e7ec;
+  --color-document-pane-bg: var(--color-surface-soft);
+  --color-border: #e7dcca;
+  --color-border-soft: #efe6d8;
+  --color-selected-border: #dccbb3;
+  --color-selected-surface: #f0e3cf;
   --color-accent: #2f333b;
   --color-accent-strong: #171a20;
   --color-accent-ink: #252932;
-  --color-accent-soft: #eef0f3;
-  --color-accent-softer: rgba(32, 35, 41, 0.06);
+  --color-accent-soft: #f4ebdc;
+  --color-accent-softer: rgba(114, 88, 52, 0.06);
   --color-accent-selection: rgba(32, 35, 41, 0.18);
   --color-document-search-match: rgba(251, 205, 74, 0.48);
   --color-document-search-active: rgba(246, 174, 45, 0.72);
@@ -70,6 +71,7 @@
   --color-surface: #1c1f24;
   --color-surface-soft: #262a31;
   --color-surface-raised: #202329;
+  --color-document-pane-bg: var(--color-surface);
   --color-border: #3a404a;
   --color-border-soft: #303640;
   --color-selected-border: #4a5260;
@@ -285,7 +287,7 @@ button:disabled {
   min-height: 0;
   max-height: 100vh;
   border-right: 1px solid var(--color-border);
-  background: var(--color-surface);
+  background: var(--color-document-pane-bg);
   overflow: visible;
   pointer-events: auto;
   transform: translateX(0);
@@ -354,7 +356,7 @@ button:disabled {
   display: block;
   border-bottom: 1px solid var(--color-border);
   padding: 8px 12px;
-  background: var(--color-surface);
+  background: var(--color-document-pane-bg);
 }
 
 .file-search input {
@@ -4935,6 +4937,7 @@ button:disabled {
   .document-pane {
     display: grid;
     grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+    background: var(--color-document-pane-bg);
     transform: translateX(-100%);
   }
 

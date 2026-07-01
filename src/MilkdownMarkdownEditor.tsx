@@ -28,6 +28,12 @@ import {
   normalizeDocumentSearchQuery,
   type DocumentSearchState,
 } from "./documentSearch";
+import {
+  fullSourceOffsetFromFrontmatterBodyOffset,
+  mergeMarkdownFrontmatter,
+  splitMarkdownFrontmatter,
+  stripMarkdownFrontmatter,
+} from "./markdownFrontmatter";
 import { loadScholiumMermaid } from "./mermaid";
 
 type MilkdownMarkdownEditorProps = {
@@ -891,6 +897,36 @@ function buildAnchor(
   return makeAnchorFromSourceRange(markdown, sourceRange.from, sourceRange.to);
 }
 
+function editorMarkdownFromFullSource(markdown: string) {
+  return stripMarkdownFrontmatter(markdown);
+}
+
+function sourceAnchorFromEditorAnchor(markdown: string, anchor: TextSelectionAnchor | null) {
+  if (!anchor) return null;
+
+  const from = fullSourceOffsetFromFrontmatterBodyOffset(markdown, anchor.from);
+  const to = fullSourceOffsetFromFrontmatterBodyOffset(markdown, anchor.to);
+  return makeAnchorFromSourceRange(markdown, from, to);
+}
+
+function annotationForEditorSource(annotation: TextAnnotation, markdown: string) {
+  const frontmatter = splitMarkdownFrontmatter(markdown);
+  if (!frontmatter) return annotation;
+  if (annotation.to <= frontmatter.bodyStart) return null;
+
+  return {
+    ...annotation,
+    from: Math.max(0, annotation.from - frontmatter.bodyStart),
+    to: Math.max(0, annotation.to - frontmatter.bodyStart),
+  };
+}
+
+function annotationsForEditorSource(annotations: TextAnnotation[], markdown: string) {
+  return annotations
+    .map((annotation) => annotationForEditorSource(annotation, markdown))
+    .filter((annotation): annotation is TextAnnotation => Boolean(annotation));
+}
+
 function selectionBelongsToRoot(root: HTMLElement, selection: Selection | null) {
   return Boolean(
     selection &&
@@ -1299,12 +1335,16 @@ export function MilkdownMarkdownEditor({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const crepeRef = useRef<Crepe | null>(null);
+  const currentMarkdownRef = useRef(normalizeMarkdownForScholium(value));
+  const editorMarkdownRef = useRef(editorMarkdownFromFullSource(currentMarkdownRef.current));
   const annotationsRef = useRef(annotations);
+  const editorAnnotationsRef = useRef(
+    annotationsForEditorSource(annotations, currentMarkdownRef.current),
+  );
   const searchRef = useRef(search);
   const documentFilePathRef = useRef(documentFilePath);
   const noteModeEnabledRef = useRef(noteModeEnabled);
   const readOnlyRef = useRef(readOnly);
-  const currentMarkdownRef = useRef(normalizeMarkdownForScholium(value));
   const onChangeRef = useRef(onChange);
   const onSearchMatchCountChangeRef = useRef(onSearchMatchCountChange);
   const onSelectionChangeRef = useRef(onSelectionChange);
@@ -1356,7 +1396,7 @@ export function MilkdownMarkdownEditor({
       return;
     }
 
-    const nextFrames = measureMilkdownAnnotationFrames(container, annotationsRef.current);
+    const nextFrames = measureMilkdownAnnotationFrames(container, editorAnnotationsRef.current);
     setAnnotationFrames((currentFrames) =>
       milkdownAnnotationFramesAreEqual(currentFrames, nextFrames)
         ? currentFrames
@@ -1602,6 +1642,10 @@ export function MilkdownMarkdownEditor({
 
   useEffect(() => {
     annotationsRef.current = annotations;
+    editorAnnotationsRef.current = annotationsForEditorSource(
+      annotations,
+      currentMarkdownRef.current,
+    );
     scheduleAnnotationFrameUpdate();
   }, [annotations]);
 
@@ -1689,6 +1733,11 @@ export function MilkdownMarkdownEditor({
     if (normalizedValue === currentMarkdownRef.current) return;
 
     currentMarkdownRef.current = normalizedValue;
+    editorMarkdownRef.current = editorMarkdownFromFullSource(normalizedValue);
+    editorAnnotationsRef.current = annotationsForEditorSource(
+      annotationsRef.current,
+      normalizedValue,
+    );
     setEditorRevision((revision) => revision + 1);
   }, [value]);
 
@@ -1744,10 +1793,13 @@ export function MilkdownMarkdownEditor({
 
     const { from, to } = view.state.selection;
     const selectedText = view.state.doc.textBetween(from, to, " ");
-    return buildAnchor(
+    return sourceAnchorFromEditorAnchor(
       currentMarkdownRef.current,
-      selectedText,
-      visibleTextIndexFromProsePosition(view.state.doc, from),
+      buildAnchor(
+        editorMarkdownRef.current,
+        selectedText,
+        visibleTextIndexFromProsePosition(view.state.doc, from),
+      ),
     );
   }
 
@@ -1763,10 +1815,13 @@ export function MilkdownMarkdownEditor({
       if (from === to) return null;
 
       const selectedText = view.state.doc.textBetween(from, to, " ");
-      return buildAnchor(
+      return sourceAnchorFromEditorAnchor(
         currentMarkdownRef.current,
-        selectedText,
-        visibleTextIndexFromProsePosition(view.state.doc, from),
+        buildAnchor(
+          editorMarkdownRef.current,
+          selectedText,
+          visibleTextIndexFromProsePosition(view.state.doc, from),
+        ),
       );
     } catch {
       return null;
@@ -1783,7 +1838,10 @@ export function MilkdownMarkdownEditor({
         selectedText.trim() &&
         selectionVisuallyOverlapsRoot(root, selection)
       ) {
-        return buildAnchor(currentMarkdownRef.current, selectedText);
+        return sourceAnchorFromEditorAnchor(
+          currentMarkdownRef.current,
+          buildAnchor(editorMarkdownRef.current, selectedText),
+        );
       }
 
       return anchorFromEditorSelection();
@@ -1808,7 +1866,10 @@ export function MilkdownMarkdownEditor({
     }
 
     return (
-      buildAnchor(currentMarkdownRef.current, selection.toString(), approximateVisibleStart) ??
+      sourceAnchorFromEditorAnchor(
+        currentMarkdownRef.current,
+        buildAnchor(editorMarkdownRef.current, selection.toString(), approximateVisibleStart),
+      ) ??
       anchorFromEditorSelection()
     );
   }
@@ -1920,7 +1981,7 @@ export function MilkdownMarkdownEditor({
 
     const crepe = new Crepe({
       root,
-      defaultValue: encodeEmptyParagraphsForMilkdown(currentMarkdownRef.current),
+      defaultValue: encodeEmptyParagraphsForMilkdown(editorMarkdownRef.current),
       features: {
         [CrepeFeature.AI]: false,
         [CrepeFeature.CodeMirror]: true,
@@ -1985,8 +2046,8 @@ export function MilkdownMarkdownEditor({
           },
         }),
         createAnnotationPlugin({
-          getAnnotations: () => annotationsRef.current,
-          getMarkdown: () => currentMarkdownRef.current,
+          getAnnotations: () => editorAnnotationsRef.current,
+          getMarkdown: () => editorMarkdownRef.current,
           onAnnotationClick: queueAnnotationClick,
           onAnnotationDoubleClick: clearQueuedAnnotationClick,
           onFocusTargetAnnotationPress: handleFocusTargetAnnotationPress,
@@ -1999,11 +2060,20 @@ export function MilkdownMarkdownEditor({
 
     crepe.on((listener) => {
       listener.markdownUpdated((_ctx, markdown) => {
-        const normalizedMarkdown = normalizeMarkdownForScholium(markdown);
+        const normalizedEditorMarkdown = normalizeMarkdownForScholium(markdown);
+        const normalizedMarkdown = mergeMarkdownFrontmatter(
+          currentMarkdownRef.current,
+          normalizedEditorMarkdown,
+        );
         if (disposed || normalizedMarkdown === currentMarkdownRef.current) return;
         if (readOnlyRef.current) return;
 
         currentMarkdownRef.current = normalizedMarkdown;
+        editorMarkdownRef.current = normalizedEditorMarkdown;
+        editorAnnotationsRef.current = annotationsForEditorSource(
+          annotationsRef.current,
+          normalizedMarkdown,
+        );
         onChangeRef.current(normalizedMarkdown, "user");
         scheduleAnnotationFrameUpdate();
         dispatchSearchUpdate();
