@@ -5,10 +5,13 @@ use base64::{
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::fs;
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
+#[cfg(desktop)]
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 #[cfg(desktop)]
@@ -16,6 +19,8 @@ use tauri::menu::{AboutMetadata, Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::{AppHandle, Emitter, Manager};
 use url::Url;
 
+#[cfg(desktop)]
+const MENU_NEW_WINDOW: &str = "file:new-window";
 const MENU_NEW_FILE: &str = "file:new-file";
 const MENU_OPEN_FILE: &str = "file:open-file";
 const MENU_OPEN_FOLDER: &str = "file:open-folder";
@@ -46,6 +51,8 @@ const DROPBOX_COPY_URL: &str = "https://api.dropboxapi.com/2/files/copy_v2";
 const DROPBOX_DELETE_URL: &str = "https://api.dropboxapi.com/2/files/delete_v2";
 const DROPBOX_REQUIRED_SCOPES: &str =
     "files.metadata.read files.content.read files.metadata.write files.content.write";
+#[cfg(desktop)]
+static NEW_WINDOW_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -65,7 +72,7 @@ struct LocationStore {
 }
 
 struct LocationMenuState {
-    current_directory: Mutex<Option<LocationEntry>>,
+    current_directories: Mutex<HashMap<String, LocationEntry>>,
     language: Mutex<String>,
     store: Mutex<LocationStore>,
 }
@@ -73,7 +80,7 @@ struct LocationMenuState {
 impl Default for LocationMenuState {
     fn default() -> Self {
         Self {
-            current_directory: Mutex::new(None),
+            current_directories: Mutex::new(HashMap::new()),
             language: Mutex::new(DEFAULT_APP_LANGUAGE.to_string()),
             store: Mutex::new(LocationStore::default()),
         }
@@ -1165,6 +1172,7 @@ fn menu_text(language: &str, key: &str) -> &'static str {
         ("en", "recentLocations") => "Recent",
         ("en", "noRecentLocations") => "No recent items",
         ("en", "clearItems") => "Clear Items",
+        ("en", "newWindow") => "New Window",
         ("en", "newFile") => "New File",
         ("en", "openFile") => "Open File",
         ("en", "openFolder") => "Open Folder",
@@ -1185,6 +1193,7 @@ fn menu_text(language: &str, key: &str) -> &'static str {
         ("zh-Hans", "recentLocations") => "最近打开",
         ("zh-Hans", "noRecentLocations") => "尚无最近打开项目",
         ("zh-Hans", "clearItems") => "清除项目",
+        ("zh-Hans", "newWindow") => "新增窗口",
         ("zh-Hans", "newFile") => "新增文件",
         ("zh-Hans", "openFile") => "打开文件",
         ("zh-Hans", "openFolder") => "打开目录",
@@ -1205,6 +1214,7 @@ fn menu_text(language: &str, key: &str) -> &'static str {
         (_, "recentLocations") => "最近開啟",
         (_, "noRecentLocations") => "尚無最近開啟項目",
         (_, "clearItems") => "清除項目",
+        (_, "newWindow") => "新增視窗",
         (_, "newFile") => "新增檔案",
         (_, "openFile") => "開啟檔案",
         (_, "openFolder") => "開啟目錄",
@@ -1218,6 +1228,100 @@ fn menu_text(language: &str, key: &str) -> &'static str {
         (_, "helpMenu") => "說明",
         _ => "",
     }
+}
+
+#[cfg(desktop)]
+fn next_scholium_window_label(app_handle: &tauri::AppHandle) -> String {
+    loop {
+        let sequence = NEW_WINDOW_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let label = format!("scholium-window-{sequence}");
+
+        if app_handle.get_webview_window(&label).is_none() {
+            return label;
+        }
+    }
+}
+
+#[cfg(desktop)]
+fn create_new_scholium_window(
+    app_handle: &tauri::AppHandle,
+    start_fullscreen: bool,
+) -> Result<String, String> {
+    let label = next_scholium_window_label(app_handle);
+    let mut window_config = app_handle
+        .config()
+        .app
+        .windows
+        .first()
+        .cloned()
+        .ok_or_else(|| "missing base window configuration".to_string())?;
+
+    window_config.label = label.clone();
+
+    let window = tauri::WebviewWindowBuilder::from_config(app_handle, &window_config)
+        .map_err(|error| format!("failed to prepare new window: {error}"))?
+        .fullscreen(start_fullscreen)
+        .focused(true)
+        .build()
+        .map_err(|error| format!("failed to create new window: {error}"))?;
+
+    window
+        .set_focus()
+        .map_err(|error| format!("failed to focus new window: {error}"))?;
+
+    Ok(label)
+}
+
+#[cfg(desktop)]
+fn target_window_is_fullscreen(app_handle: &tauri::AppHandle) -> bool {
+    target_webview_window_label(app_handle)
+        .and_then(|label| app_handle.get_webview_window(&label))
+        .and_then(|window| window.is_fullscreen().ok())
+        .unwrap_or(false)
+}
+
+#[cfg(desktop)]
+fn target_webview_window_label(app_handle: &tauri::AppHandle) -> Option<String> {
+    let webview_windows = app_handle.webview_windows();
+
+    webview_windows
+        .iter()
+        .find_map(|(label, window)| match window.is_focused() {
+            Ok(true) => Some(label.clone()),
+            _ => None,
+        })
+        .or_else(|| webview_windows.keys().next().cloned())
+}
+
+#[cfg(desktop)]
+fn emit_to_target_webview_window<S>(
+    app_handle: &tauri::AppHandle,
+    event: &str,
+    payload: S,
+) -> Result<(), String>
+where
+    S: Serialize + Clone,
+{
+    let Some(label) = target_webview_window_label(app_handle) else {
+        return Ok(());
+    };
+
+    app_handle
+        .emit_to(label, event, payload)
+        .map_err(|error| format!("failed to emit menu event: {error}"))
+}
+
+#[cfg(desktop)]
+fn current_directory_for_target_window(app_handle: &tauri::AppHandle) -> Option<LocationEntry> {
+    let target_label = target_webview_window_label(app_handle);
+    let state = app_handle.state::<LocationMenuState>();
+    let current_directories = state.current_directories.lock().ok()?;
+
+    if let Some(label) = target_label {
+        return current_directories.get(&label).cloned();
+    }
+
+    current_directories.values().next().cloned()
 }
 
 fn sanitize_location_entry(
@@ -2062,6 +2166,7 @@ fn remember_recent_location(
 #[tauri::command]
 fn set_current_directory_location(
     app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
     path: String,
     title: String,
 ) -> Result<(), String> {
@@ -2071,10 +2176,10 @@ fn set_current_directory_location(
 
     {
         let mut current_directory = state
-            .current_directory
+            .current_directories
             .lock()
             .map_err(|_| "failed to lock current directory state".to_string())?;
-        *current_directory = Some(entry);
+        current_directory.insert(window.label().to_string(), entry);
     }
 
     refresh_app_menu(&app)
@@ -2522,12 +2627,7 @@ fn build_favorite_directories_submenu(
     store: &LocationStore,
     language: &str,
 ) -> tauri::Result<Submenu<tauri::Wry>> {
-    let state = app_handle.state::<LocationMenuState>();
-    let has_current_directory = state
-        .current_directory
-        .lock()
-        .map(|current_directory| current_directory.is_some())
-        .unwrap_or(false);
+    let has_current_directory = current_directory_for_target_window(app_handle).is_some();
     let submenu = Submenu::with_id(
         app_handle,
         MENU_FAVORITE_DIRECTORIES,
@@ -2637,6 +2737,13 @@ fn build_app_menu(app_handle: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wr
         version: Some(app_handle.package_info().version.to_string()),
         ..Default::default()
     };
+    let new_window = MenuItem::with_id(
+        app_handle,
+        MENU_NEW_WINDOW,
+        menu_text(&language, "newWindow"),
+        true,
+        Some("CmdOrCtrl+Shift+N"),
+    )?;
     let new_file = MenuItem::with_id(
         app_handle,
         MENU_NEW_FILE,
@@ -2706,6 +2813,7 @@ fn build_app_menu(app_handle: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wr
                 menu_text(&language, "fileMenu"),
                 true,
                 &[
+                    &new_window,
                     &new_file,
                     &open_file,
                     &open_folder,
@@ -2770,6 +2878,25 @@ fn refresh_app_menu(_app_handle: &tauri::AppHandle) -> Result<(), String> {
 }
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
+#[cfg(desktop)]
+#[tauri::command]
+async fn create_new_window(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> Result<String, String> {
+    let start_fullscreen = window
+        .is_fullscreen()
+        .map_err(|error| format!("failed to read current window fullscreen state: {error}"))?;
+
+    create_new_scholium_window(&app, start_fullscreen)
+}
+
+#[cfg(mobile)]
+#[tauri::command]
+async fn create_new_window(_app: tauri::AppHandle) -> Result<String, String> {
+    Err("New windows are only available on desktop.".to_string())
+}
+
 #[tauri::command]
 fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
@@ -2807,30 +2934,31 @@ pub fn run() {
     let builder = builder.menu(build_app_menu).on_menu_event(|app, event| {
         let event_id = event.id().as_ref();
 
-        if event_id == MENU_NEW_FILE {
-            let _ = app.emit("menu:new-file", ());
-            let _ = app.emit("scholium-new-file", ());
+        if event_id == MENU_NEW_WINDOW {
+            let app_handle = app.clone();
+            let start_fullscreen = target_window_is_fullscreen(app);
+            std::thread::spawn(move || {
+                if let Err(error) = create_new_scholium_window(&app_handle, start_fullscreen) {
+                    eprintln!("{error}");
+                }
+            });
+        } else if event_id == MENU_NEW_FILE {
+            let _ = emit_to_target_webview_window(app, "menu:new-file", ());
+            let _ = emit_to_target_webview_window(app, "scholium-new-file", ());
         } else if event_id == MENU_OPEN_SETTINGS {
-            let _ = app.emit("menu:open-settings", ());
-            let _ = app.emit("scholium-open-settings", ());
+            let _ = emit_to_target_webview_window(app, "menu:open-settings", ());
+            let _ = emit_to_target_webview_window(app, "scholium-open-settings", ());
         } else if event_id == MENU_OPEN_FILE {
-            let _ = app.emit("menu:open-file", ());
-            let _ = app.emit("scholium-open-file", ());
+            let _ = emit_to_target_webview_window(app, "menu:open-file", ());
+            let _ = emit_to_target_webview_window(app, "scholium-open-file", ());
         } else if event_id == MENU_OPEN_FOLDER {
-            let _ = app.emit("menu:open-folder", ());
-            let _ = app.emit("scholium-open-folder", ());
+            let _ = emit_to_target_webview_window(app, "menu:open-folder", ());
+            let _ = emit_to_target_webview_window(app, "scholium-open-folder", ());
         } else if event_id == MENU_CLOUD_DROPBOX {
-            let _ = app.emit("menu:open-dropbox", ());
-            let _ = app.emit("scholium-open-dropbox", ());
+            let _ = emit_to_target_webview_window(app, "menu:open-dropbox", ());
+            let _ = emit_to_target_webview_window(app, "scholium-open-dropbox", ());
         } else if event_id == MENU_ADD_CURRENT_DIRECTORY_TO_FAVORITES {
-            let current_directory = app
-                .state::<LocationMenuState>()
-                .current_directory
-                .lock()
-                .ok()
-                .and_then(|current_directory| current_directory.clone());
-
-            if let Some(directory) = current_directory {
+            if let Some(directory) = current_directory_for_target_window(app) {
                 let _ = remember_favorite_directory_entry(app, directory);
             }
         } else if event_id == MENU_CLEAR_FAVORITE_DIRECTORIES {
@@ -2853,8 +2981,8 @@ pub fn run() {
                     kind: location.kind.clone(),
                     path: location.path.clone(),
                 };
-                let _ = app.emit("menu:open-location", &payload);
-                let _ = app.emit("scholium-open-location", payload);
+                let _ = emit_to_target_webview_window(app, "menu:open-location", &payload);
+                let _ = emit_to_target_webview_window(app, "scholium-open-location", payload);
             }
         }
     });
@@ -2863,6 +2991,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
+            create_new_window,
             greet,
             open_markdown_directory,
             open_markdown_file,
