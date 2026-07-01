@@ -310,6 +310,12 @@ const emptyDocument: MarkdownDocument = {
 
 type EditorMode = "edit" | "preview";
 type ActiveNoteMode = "view" | "edit";
+type DocumentTabBehavior = "replace" | "add" | "none";
+
+type DocumentModeState = {
+  noteModeEnabled: boolean;
+  glossaryModeEnabled: boolean;
+};
 
 type PreviewAnnotationFrame = {
   borderRadius: string;
@@ -442,6 +448,21 @@ function CopyIcon() {
     >
       <path d="M8 8h10v12H8z" />
       <path d="M6 16H4V4h10v2" />
+    </svg>
+  );
+}
+
+function OpenTabIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      className="note-action-icon"
+      fill="none"
+      viewBox="0 0 24 24"
+    >
+      <path d="M4 6.5h6l2 2h8v9H4z" />
+      <path d="M8 13h8" />
+      <path d="M12 9v8" />
     </svg>
   );
 }
@@ -6485,6 +6506,15 @@ function App() {
   const [expandedDirectoryKeys, setExpandedDirectoryKeys] = useState<Set<string>>(() => new Set());
   const [loadingDirectoryKeys, setLoadingDirectoryKeys] = useState<Set<string>>(() => new Set());
   const [selectedDocumentId, setSelectedDocumentId] = useState(documentsSeed[0].id);
+  const [openDocumentTabIds, setOpenDocumentTabIds] = useState<string[]>(() =>
+    documentsSeed[0]?.id ? [documentsSeed[0].id] : [],
+  );
+  const [documentTabIndicatorStyle, setDocumentTabIndicatorStyle] =
+    useState<CSSProperties>(() => ({
+      opacity: 0,
+      transform: "translate3d(0px, -50%, 0)",
+      width: 0,
+    }));
   const [selectedWorkspaceDocumentIds, setSelectedWorkspaceDocumentIds] = useState<Set<string>>(
     () => new Set(),
   );
@@ -6520,10 +6550,22 @@ function App() {
   const noteModeEnabledByDefault = settingsSnapshot["app.noteModeEnabledByDefault"];
   const t = createTranslator(appLanguage);
   const [editorMode, setEditorMode] = useState<EditorMode>("preview");
-  const [noteModeEnabled, setNoteModeEnabled] = useState(
-    () => noteModeEnabledByDefault && documentsSeed.length > 0,
-  );
+  const initialNoteModeEnabled =
+    noteModeEnabledByDefault && documentsSeed.length > 0;
+  const [noteModeEnabled, setNoteModeEnabled] = useState(initialNoteModeEnabled);
   const [glossaryModeEnabled, setGlossaryModeEnabled] = useState(false);
+  const [documentModeStates, setDocumentModeStates] = useState<
+    Record<string, DocumentModeState>
+  >(() =>
+    documentsSeed[0]?.id
+      ? {
+          [documentsSeed[0].id]: {
+            noteModeEnabled: initialNoteModeEnabled,
+            glossaryModeEnabled: false,
+          },
+        }
+      : {},
+  );
   const [directoryPaneOpen, setDirectoryPaneOpen] = useState(false);
   const [windowIsFullscreen, setWindowIsFullscreen] = useState(false);
   const [noteLibraryOpen, setNoteLibraryOpen] = useState(false);
@@ -6594,6 +6636,12 @@ function App() {
   const dirtyDocumentStatesRef = useRef(dirtyDocumentStates);
   const savedDocumentBodiesRef = useRef(savedDocumentBodies);
   const selectedDocumentIdRef = useRef(selectedDocumentId);
+  const openDocumentTabIdsRef = useRef(openDocumentTabIds);
+  const documentTabsScrollerRef = useRef<HTMLDivElement | null>(null);
+  const documentTabPointerActivationRef = useRef("");
+  const noteModeEnabledRef = useRef(noteModeEnabled);
+  const glossaryModeEnabledRef = useRef(glossaryModeEnabled);
+  const documentModeStatesRef = useRef(documentModeStates);
   const notePanelHasContentRef = useRef(false);
   const selectionWarningPreserveUntilRef = useRef(0);
   const selectionDismissedUntilRef = useRef(0);
@@ -6617,6 +6665,10 @@ function App() {
   dirtyDocumentStatesRef.current = dirtyDocumentStates;
   savedDocumentBodiesRef.current = savedDocumentBodies;
   selectedDocumentIdRef.current = selectedDocumentId;
+  openDocumentTabIdsRef.current = openDocumentTabIds;
+  noteModeEnabledRef.current = noteModeEnabled;
+  glossaryModeEnabledRef.current = glossaryModeEnabled;
+  documentModeStatesRef.current = documentModeStates;
   noteDraftRef.current = noteDraft;
   glossaryDraftRef.current = glossaryDraft;
   openSettingsHandlerRef.current = openSettingsView;
@@ -6636,11 +6688,13 @@ function App() {
     void completeDropboxOAuth(payload);
   };
 
-  const hasOpenDocument = documents.length > 0;
-  const selectedDocument =
-    documents.find((document) => document.id === selectedDocumentId) ??
-    documents[0] ??
-    emptyDocument;
+  const activeDocument = documents.find((document) => document.id === selectedDocumentId);
+  const hasOpenDocument = Boolean(activeDocument);
+  const selectedDocument = activeDocument ?? emptyDocument;
+  const documentsById = new Map(documents.map((document) => [document.id, document]));
+  const openDocumentTabs = openDocumentTabIds
+    .map((documentId) => documentsById.get(documentId))
+    .filter((document): document is MarkdownDocument => Boolean(document));
   const annotationToolsAvailable = hasOpenDocument;
   const workspaceHasMarkdownFileEntries = workspaceEntries.some(
     (entry) => entry.kind === "file",
@@ -6661,6 +6715,60 @@ function App() {
     isMobileViewport && documentSearchTransitionPhase !== "open";
   const mobileDocumentSearchPanelVisible =
     isMobileViewport && documentSearchTransitionPhase !== "closed";
+  const documentTabsVisible = !settingsViewOpen && openDocumentTabs.length > 1;
+
+  useLayoutEffect(() => {
+    if (!documentTabsVisible) {
+      setDocumentTabIndicatorStyle({
+        opacity: 0,
+        transform: "translate3d(0px, -50%, 0)",
+        width: 0,
+      });
+      return;
+    }
+
+    const scroller = documentTabsScrollerRef.current;
+    if (!scroller) return;
+
+    let frameId = 0;
+    const syncActiveIndicator = () => {
+      window.cancelAnimationFrame(frameId);
+      frameId = window.requestAnimationFrame(() => {
+        const activeTab = scroller.querySelector<HTMLElement>(".document-tab.is-active");
+
+        if (!activeTab) {
+          setDocumentTabIndicatorStyle({
+            opacity: 0,
+            transform: "translate3d(0px, -50%, 0)",
+            width: 0,
+          });
+          return;
+        }
+
+        setDocumentTabIndicatorStyle({
+          opacity: 1,
+          transform: `translate3d(${activeTab.offsetLeft}px, -50%, 0)`,
+          width: activeTab.offsetWidth,
+        });
+      });
+    };
+
+    syncActiveIndicator();
+
+    const resizeObserver = new ResizeObserver(syncActiveIndicator);
+    resizeObserver.observe(scroller);
+    scroller
+      .querySelectorAll<HTMLElement>(".document-tab")
+      .forEach((tab) => resizeObserver.observe(tab));
+    window.addEventListener("resize", syncActiveIndicator);
+
+    return () => {
+      window.cancelAnimationFrame(frameId);
+      resizeObserver.disconnect();
+      window.removeEventListener("resize", syncActiveIndicator);
+    };
+  }, [documentTabsVisible, openDocumentTabs.length, selectedDocument.id]);
+
   const activeDocumentSearchQuery = documentSearchVisible ? documentSearchQuery : "";
   const documentSearchState = useMemo<DocumentSearchState>(
     () => ({
@@ -6923,6 +7031,13 @@ function App() {
   }, [directoryPaneOpen, expandedNotePanelScrollLocked]);
 
   useEffect(() => {
+    setDocumentModeState(selectedDocumentId, {
+      noteModeEnabled,
+      glossaryModeEnabled,
+    });
+  }, [glossaryModeEnabled, noteModeEnabled, selectedDocumentId]);
+
+  useEffect(() => {
     if (noteModeEnabled) return;
 
     resetNoteModeInteractionState();
@@ -6946,11 +7061,19 @@ function App() {
       return;
     }
 
+    if (documentModeStatesRef.current[selectedDocumentId]) {
+      noteModeDefaultAppliedRef.current = noteModeEnabled;
+      return;
+    }
+
     if (noteModeDefaultAppliedRef.current) return;
 
     noteModeDefaultAppliedRef.current = true;
-    setNoteModeEnabled(true);
-  }, [hasOpenDocument, noteModeEnabledByDefault]);
+    setActiveDocumentModeState({
+      noteModeEnabled: true,
+      glossaryModeEnabled: false,
+    });
+  }, [hasOpenDocument, noteModeEnabled, noteModeEnabledByDefault, selectedDocumentId]);
 
   useEffect(() => {
     if (hasOpenDocument) return;
@@ -8662,8 +8785,10 @@ function App() {
           if (noteModeEnabled) {
             toggleGlossaryMode();
           } else {
-            setNoteModeEnabled(true);
-            setGlossaryModeEnabled(true);
+            setActiveDocumentModeState({
+              noteModeEnabled: true,
+              glossaryModeEnabled: true,
+            });
             setNoteLibraryOpen(false);
           }
           return;
@@ -8676,7 +8801,10 @@ function App() {
           if (noteModeEnabled) {
             toggleNoteLibrary();
           } else {
-            setNoteModeEnabled(true);
+            setActiveDocumentModeState({
+              noteModeEnabled: true,
+              glossaryModeEnabled,
+            });
             openNoteLibrary();
           }
           return;
@@ -8940,6 +9068,189 @@ function App() {
     setFileSearchError("");
   }
 
+  function normalizeDocumentModeState(modeState: DocumentModeState): DocumentModeState {
+    return {
+      noteModeEnabled: modeState.noteModeEnabled,
+      glossaryModeEnabled: modeState.noteModeEnabled
+        ? modeState.glossaryModeEnabled
+        : false,
+    };
+  }
+
+  function defaultDocumentModeState(documentId: string): DocumentModeState {
+    return {
+      noteModeEnabled: Boolean(documentId) && noteModeEnabledByDefault,
+      glossaryModeEnabled: false,
+    };
+  }
+
+  function documentModeStateForDocument(documentId: string): DocumentModeState {
+    return normalizeDocumentModeState(
+      documentModeStatesRef.current[documentId] ??
+        defaultDocumentModeState(documentId),
+    );
+  }
+
+  function setDocumentModeState(
+    documentId: string,
+    modeState: DocumentModeState,
+  ) {
+    if (!documentId) return;
+
+    const normalizedModeState = normalizeDocumentModeState(modeState);
+    const currentModeState = documentModeStatesRef.current[documentId];
+    if (
+      currentModeState?.noteModeEnabled === normalizedModeState.noteModeEnabled &&
+      currentModeState?.glossaryModeEnabled === normalizedModeState.glossaryModeEnabled
+    ) {
+      return;
+    }
+
+    const nextModeStates = {
+      ...documentModeStatesRef.current,
+      [documentId]: normalizedModeState,
+    };
+    documentModeStatesRef.current = nextModeStates;
+    setDocumentModeStates(nextModeStates);
+  }
+
+  function saveCurrentDocumentModeState(documentId = selectedDocumentIdRef.current) {
+    setDocumentModeState(documentId, {
+      noteModeEnabled: noteModeEnabledRef.current,
+      glossaryModeEnabled: glossaryModeEnabledRef.current,
+    });
+  }
+
+  function applyDocumentModeState(modeState: DocumentModeState) {
+    const normalizedModeState = normalizeDocumentModeState(modeState);
+
+    noteModeEnabledRef.current = normalizedModeState.noteModeEnabled;
+    glossaryModeEnabledRef.current = normalizedModeState.glossaryModeEnabled;
+    setNoteModeEnabled(normalizedModeState.noteModeEnabled);
+    setGlossaryModeEnabled(normalizedModeState.glossaryModeEnabled);
+  }
+
+  function setActiveDocumentModeState(modeState: DocumentModeState) {
+    applyDocumentModeState(modeState);
+    setDocumentModeState(selectedDocumentIdRef.current, modeState);
+  }
+
+  function restoreDocumentModeState(documentId: string) {
+    applyDocumentModeState(documentModeStateForDocument(documentId));
+  }
+
+  function setActiveDocumentId(documentId: string) {
+    const previousDocumentId = selectedDocumentIdRef.current;
+
+    if (previousDocumentId && previousDocumentId !== documentId) {
+      saveCurrentDocumentModeState(previousDocumentId);
+    }
+
+    selectedDocumentIdRef.current = documentId;
+    setSelectedDocumentId(documentId);
+    restoreDocumentModeState(documentId);
+  }
+
+  function availableDocumentTabIds(
+    documentIds: string[],
+    sourceDocuments = documentsRef.current,
+  ) {
+    const availableDocumentIds = new Set(sourceDocuments.map((document) => document.id));
+    const nextIds: string[] = [];
+    const seenIds = new Set<string>();
+
+    documentIds.forEach((documentId) => {
+      if (!availableDocumentIds.has(documentId) || seenIds.has(documentId)) return;
+
+      nextIds.push(documentId);
+      seenIds.add(documentId);
+    });
+
+    return nextIds;
+  }
+
+  function resetDocumentTabs(documentId: string) {
+    setOpenDocumentTabIds(documentId ? [documentId] : []);
+  }
+
+  function addDocumentTab(documentId: string) {
+    setOpenDocumentTabIds((currentIds) =>
+      availableDocumentTabIds([...currentIds, documentId]),
+    );
+  }
+
+  function replaceActiveDocumentTab(documentId: string) {
+    setOpenDocumentTabIds((currentIds) => {
+      if (currentIds.includes(documentId)) {
+        return currentIds;
+      }
+
+      const activeIndex = currentIds.indexOf(selectedDocumentIdRef.current);
+      if (activeIndex < 0) {
+        return availableDocumentTabIds(currentIds.length > 0 ? [documentId, ...currentIds] : [documentId]);
+      }
+
+      const nextIds = [...currentIds];
+      nextIds[activeIndex] = documentId;
+      return availableDocumentTabIds(nextIds);
+    });
+  }
+
+  function applyDocumentTabBehavior(documentId: string, behavior: DocumentTabBehavior) {
+    if (!documentId || behavior === "none") return;
+
+    if (behavior === "add") {
+      addDocumentTab(documentId);
+      return;
+    }
+
+    replaceActiveDocumentTab(documentId);
+  }
+
+  function clearActiveDocumentSelection() {
+    discardTransientEmptySelectionNote();
+    discardTransientEmptyGlossary();
+    setSelectedWorkspaceDocumentIds(new Set());
+    setActiveDocumentId("");
+    setMobileSelectedWorkspaceEntryKey("");
+    setSelectionWarningPosition(null);
+    setPendingAnchor(null);
+    setPendingGlossaryTerm(null);
+    setNoteDraft("");
+    setGlossaryDraft("");
+    setStorageError("");
+    setActiveNoteId("");
+    setActiveNoteEditorKey("");
+    setActiveGlossaryBindingId("");
+    setActiveGlossaryTermId("");
+    setActiveNoteMode("view");
+    setActiveGlossaryMode("view");
+    clearReturnToViewTimer();
+  }
+
+  function closeDocumentTab(documentId: string, event?: MouseEvent<HTMLButtonElement>) {
+    event?.preventDefault();
+    event?.stopPropagation();
+
+    const currentIds = openDocumentTabIdsRef.current;
+    const closedIndex = currentIds.indexOf(documentId);
+    if (closedIndex < 0) return;
+
+    const nextIds = currentIds.filter((currentId) => currentId !== documentId);
+    openDocumentTabIdsRef.current = nextIds;
+    setOpenDocumentTabIds(nextIds);
+
+    if (documentId !== selectedDocumentIdRef.current) return;
+
+    if (nextIds.length === 0) {
+      clearActiveDocumentSelection();
+      return;
+    }
+
+    const nextIndex = Math.min(closedIndex, nextIds.length - 1);
+    selectDocument(nextIds[nextIndex], { tabBehavior: "none" });
+  }
+
   function documentFromLoadedFile(loaded: OpenMarkdownFileResult): MarkdownDocument {
     return documentFromLoadedFileResult(loaded);
   }
@@ -8989,11 +9300,13 @@ function App() {
     const loadedGlossaryTerms = loadedFiles.flatMap(
       (loadedFile) => loadedFile.glossaryTerms ?? [],
     );
-
-    setDocuments((currentDocuments) => [
+    const nextDocuments = [
       ...loadedDocuments,
-      ...currentDocuments.filter((document) => !loadedDocumentIds.has(document.id)),
-    ]);
+      ...documentsRef.current.filter((document) => !loadedDocumentIds.has(document.id)),
+    ];
+
+    documentsRef.current = nextDocuments;
+    setDocuments(nextDocuments);
     setNotes((currentNotes) => [
       ...loadedNotes,
       ...currentNotes.filter((note) => !loadedDocumentIds.has(note.documentId)),
@@ -9061,11 +9374,13 @@ function App() {
       (loadedFile) => loadedFile.glossaryTerms ?? [],
     );
     const firstDocument = loadedDocuments[0];
-
-    setDocuments((currentDocuments) => [
+    const nextDocuments = [
       ...loadedDocuments,
-      ...currentDocuments.filter((document) => !loadedDocumentIds.has(document.id)),
-    ]);
+      ...documentsRef.current.filter((document) => !loadedDocumentIds.has(document.id)),
+    ];
+
+    documentsRef.current = nextDocuments;
+    setDocuments(nextDocuments);
     setWorkspaceEntries((currentEntries) => {
       const parentEntries = currentEntries.filter((entry) => entry.kind === "parent-directory");
       const otherEntries = currentEntries.filter(
@@ -9094,7 +9409,8 @@ function App() {
       ...currentBindings.filter((binding) => !loadedDocumentIds.has(binding.documentId)),
     ]);
     setGlossaryTerms((currentTerms) => mergeGlossaryTerms(loadedGlossaryTerms, currentTerms));
-    setSelectedDocumentId(firstDocument.id);
+    setActiveDocumentId(firstDocument.id);
+    resetDocumentTabs(firstDocument.id);
     setSelectionWarningPosition(null);
     setPendingAnchor(null);
     setPendingGlossaryTerm(null);
@@ -9155,7 +9471,8 @@ function App() {
     setLoadingDirectoryKeys(new Set());
     setSelectedWorkspaceDocumentIds(new Set());
     setMobileSelectedWorkspaceEntryKey("");
-    setSelectedDocumentId("");
+    setActiveDocumentId("");
+    resetDocumentTabs("");
     setSelectionWarningPosition(null);
     setPendingAnchor(null);
     setPendingGlossaryTerm(null);
@@ -9178,7 +9495,10 @@ function App() {
     }
   }
 
-  function applyLoadedDropboxFile(loadedFile: OpenDropboxMarkdownFileResult) {
+  function applyLoadedDropboxFile(
+    loadedFile: OpenDropboxMarkdownFileResult,
+    options: { tabBehavior?: DocumentTabBehavior } = {},
+  ) {
     const loadedDocument = documentFromDropboxFile(loadedFile);
     const documentId = loadedDocument.id;
     const loadedNotes = loadedFile.notes.map((note) => ({
@@ -9190,11 +9510,13 @@ function App() {
       documentId,
     }));
     const loadedGlossaryTerms = loadedFile.glossaryTerms ?? [];
-
-    setDocuments((currentDocuments) => [
+    const nextDocuments = [
       loadedDocument,
-      ...currentDocuments.filter((document) => document.id !== documentId),
-    ]);
+      ...documentsRef.current.filter((document) => document.id !== documentId),
+    ];
+
+    documentsRef.current = nextDocuments;
+    setDocuments(nextDocuments);
     setWorkspaceEntries((currentEntries) => {
       const fileEntry = workspaceEntryFromDocument(loadedDocument);
 
@@ -9209,7 +9531,8 @@ function App() {
       ...currentBindings.filter((binding) => binding.documentId !== documentId),
     ]);
     setGlossaryTerms((currentTerms) => mergeGlossaryTerms(loadedGlossaryTerms, currentTerms));
-    setSelectedDocumentId(documentId);
+    setActiveDocumentId(documentId);
+    applyDocumentTabBehavior(documentId, options.tabBehavior ?? "replace");
     setSelectionWarningPosition(null);
     setPendingAnchor(null);
     setPendingGlossaryTerm(null);
@@ -9338,12 +9661,14 @@ function App() {
     rememberLastOpenedMarkdownRootDirectoryPath(openedDirectory.path);
 
     if (documentToSelect) {
-      setSelectedDocumentId(documentToSelect.id);
+      setActiveDocumentId(documentToSelect.id);
+      resetDocumentTabs(documentToSelect.id);
       if (options.rememberSelection !== false) {
         rememberLastOpenedMarkdownPath(documentToSelect.filePath);
       }
     } else {
-      setSelectedDocumentId("");
+      setActiveDocumentId("");
+      resetDocumentTabs("");
       if (options.rememberSelection !== false) {
         forgetLastOpenedMarkdownPath();
       }
@@ -9447,7 +9772,8 @@ function App() {
     mergeLoadedFilesIntoDocumentState(loadedDescendantFiles);
     setWorkspaceEntries(nextEntries);
     setExpandedDirectoryKeys(nextExpandedDirectoryKeys);
-    setSelectedDocumentId(selectedFile.path);
+    setActiveDocumentId(selectedFile.path);
+    resetDocumentTabs(selectedFile.path);
     rememberLastOpenedMarkdownPath(selectedFile.path);
   }
 
@@ -9471,7 +9797,7 @@ function App() {
 
   async function openDropboxMarkdownFilePath(
     path: string,
-    options: { allowPendingConnection?: boolean } = {},
+    options: { allowPendingConnection?: boolean; tabBehavior?: DocumentTabBehavior } = {},
   ) {
     if (!nativeStorageAvailable) {
       setStorageError(t("error.nativeRuntimeRequired"));
@@ -9488,7 +9814,7 @@ function App() {
       const loaded = await invoke<OpenDropboxMarkdownFileResult>("open_dropbox_markdown_file", {
         path,
       });
-      applyLoadedDropboxFile(loaded);
+      applyLoadedDropboxFile(loaded, { tabBehavior: options.tabBehavior });
       setStorageError("");
     } catch (error) {
       setStorageError(error instanceof Error ? error.message : String(error));
@@ -9920,6 +10246,58 @@ function App() {
     });
   }
 
+  async function openFileInNewTab(target: FileActionTarget) {
+    setFileContextMenu(null);
+
+    const loadedDocument = documentsRef.current.find(
+      (document) => document.id === target.documentId,
+    );
+
+    if (loadedDocument) {
+      selectDocument(loadedDocument.id, { tabBehavior: "add" });
+      if (isMobileViewport) {
+        setDirectoryPaneOpen(false);
+      }
+      return;
+    }
+
+    if (target.source === "dropbox" || isDropboxDocumentId(target.documentId)) {
+      await openDropboxMarkdownFilePath(target.path, { tabBehavior: "add" });
+      if (isMobileViewport) {
+        setDirectoryPaneOpen(false);
+      }
+      return;
+    }
+
+    if (!nativeStorageAvailable) {
+      setStorageError(t("error.nativeRuntimeRequired"));
+      return;
+    }
+
+    setStorageError(t("status.openingFile"));
+
+    try {
+      const loaded = await invoke<OpenMarkdownFileResult>("open_markdown_file", {
+        path: target.path,
+      });
+      const nextDocument = documentFromLoadedFile(loaded);
+
+      documentsRef.current = [
+        nextDocument,
+        ...documentsRef.current.filter((document) => document.id !== nextDocument.id),
+      ];
+      mergeLoadedFilesIntoDocumentState([loaded]);
+      selectDocument(nextDocument.id, { tabBehavior: "add" });
+      rememberLastOpenedMarkdownPath(nextDocument.filePath);
+      setStorageError("");
+      if (isMobileViewport) {
+        setDirectoryPaneOpen(false);
+      }
+    } catch (error) {
+      setStorageError(error instanceof Error ? error.message : String(error));
+    }
+  }
+
   async function openLocalFileSearchResult(result: SearchMarkdownFileResult) {
     if (!nativeStorageAvailable) {
       setStorageError(t("error.nativeRuntimeRequired"));
@@ -9945,7 +10323,8 @@ function App() {
       });
       mergeLoadedFilesIntoDocumentState([loaded]);
       setMobileSelectedWorkspaceEntryKey("");
-      setSelectedDocumentId(loaded.path);
+      setActiveDocumentId(loaded.path);
+      replaceActiveDocumentTab(loaded.path);
       rememberLastOpenedMarkdownPath(loaded.path);
       setStorageError("");
       if (isMobileViewport) {
@@ -10627,15 +11006,46 @@ function App() {
       remainingGlossaryTermIds.has(term.id),
     );
     const nextDirtyDocumentStates = { ...dirtyDocumentStatesRef.current };
+    const nextDocumentModeStates = { ...documentModeStatesRef.current };
     documentIdSet.forEach((documentId) => {
       delete nextDirtyDocumentStates[documentId];
+      delete nextDocumentModeStates[documentId];
     });
+    let nextOpenDocumentTabIds = openDocumentTabIdsRef.current.filter(
+      (documentId) => !documentIdSet.has(documentId),
+    );
+
+    if (documentIdSet.has(selectedDocumentIdRef.current)) {
+      const nextSelectedDocument =
+        nextOpenDocumentTabIds
+          .map((documentId) => nextDocuments.find((document) => document.id === documentId))
+          .find((document): document is MarkdownDocument => Boolean(document)) ??
+        nextDocuments[0] ??
+        null;
+      const nextSelectedDocumentId = nextSelectedDocument?.id ?? "";
+
+      if (
+        nextSelectedDocumentId &&
+        !nextOpenDocumentTabIds.includes(nextSelectedDocumentId)
+      ) {
+        nextOpenDocumentTabIds = [nextSelectedDocumentId];
+      }
+
+      setActiveDocumentId(nextSelectedDocumentId);
+      if (nextSelectedDocument?.filePath) {
+        rememberLastOpenedMarkdownPath(nextSelectedDocument.filePath);
+      } else {
+        forgetLastOpenedMarkdownPath();
+      }
+    }
 
     documentsRef.current = nextDocuments;
     notesRef.current = nextNotes;
     glossaryBindingsRef.current = nextGlossaryBindings;
     glossaryTermsRef.current = nextGlossaryTerms;
     dirtyDocumentStatesRef.current = nextDirtyDocumentStates;
+    documentModeStatesRef.current = nextDocumentModeStates;
+    openDocumentTabIdsRef.current = nextOpenDocumentTabIds;
 
     clearNotePanelCloseTimer();
     clearReturnToViewTimer();
@@ -10650,6 +11060,8 @@ function App() {
     setGlossaryBindings(nextGlossaryBindings);
     setGlossaryTerms(nextGlossaryTerms);
     setDirtyDocumentStates(nextDirtyDocumentStates);
+    setDocumentModeStates(nextDocumentModeStates);
+    setOpenDocumentTabIds(nextOpenDocumentTabIds);
     setSavedDocumentBodies((currentBodies) => {
       const nextBodies = { ...currentBodies };
       documentIdSet.forEach((documentId) => {
@@ -10674,18 +11086,6 @@ function App() {
     setFloatingNotePanelPosition(null);
     setIsNotePanelClosing(false);
     notePanelHasContentRef.current = false;
-
-    if (documentIdSet.has(selectedDocumentIdRef.current)) {
-      const nextSelectedDocument = nextDocuments[0] ?? null;
-      const nextSelectedDocumentId = nextSelectedDocument?.id ?? "";
-      selectedDocumentIdRef.current = nextSelectedDocumentId;
-      setSelectedDocumentId(nextSelectedDocumentId);
-      if (nextSelectedDocument?.filePath) {
-        rememberLastOpenedMarkdownPath(nextSelectedDocument.filePath);
-      } else {
-        forgetLastOpenedMarkdownPath();
-      }
-    }
   }
 
   function openSettingsView(category: SettingCategory = "app") {
@@ -10719,7 +11119,10 @@ function App() {
     if (key === "app.noteModeEnabledByDefault" && typeof value === "boolean") {
       const shouldEnableNoteMode = value && documentsRef.current.length > 0;
       noteModeDefaultAppliedRef.current = shouldEnableNoteMode;
-      setNoteModeEnabled(shouldEnableNoteMode);
+      setActiveDocumentModeState({
+        noteModeEnabled: shouldEnableNoteMode,
+        glossaryModeEnabled: false,
+      });
       return;
     }
 
@@ -10789,7 +11192,8 @@ function App() {
     setExpandedDirectoryKeys(new Set());
     setLoadingDirectoryKeys(new Set());
     setSelectedWorkspaceDocumentIds(new Set());
-    setSelectedDocumentId(documentsSeed[0]?.id ?? "");
+    setActiveDocumentId(documentsSeed[0]?.id ?? "");
+    resetDocumentTabs(documentsSeed[0]?.id ?? "");
     setSelectionWarningPosition(null);
     setPendingAnchor(null);
     setPendingGlossaryTerm(null);
@@ -11261,14 +11665,19 @@ function App() {
     markDocumentBodyDirty(documentId, !(source === "undo" && body === savedBody));
   }
 
-  function selectDocument(documentId: string) {
-    const nextDocument = documents.find((document) => document.id === documentId);
+  function selectDocument(
+    documentId: string,
+    options: { tabBehavior?: DocumentTabBehavior } = {},
+  ) {
+    const nextDocument = documentsRef.current.find((document) => document.id === documentId);
     if (!nextDocument) return;
 
+    window.getSelection()?.removeAllRanges();
     discardTransientEmptySelectionNote();
     discardTransientEmptyGlossary();
+    applyDocumentTabBehavior(documentId, options.tabBehavior ?? "replace");
     setSelectedWorkspaceDocumentIds(new Set());
-    setSelectedDocumentId(documentId);
+    setActiveDocumentId(documentId);
     setMobileSelectedWorkspaceEntryKey("");
     setSelectionWarningPosition(null);
     setPendingAnchor(null);
@@ -11284,6 +11693,27 @@ function App() {
     setActiveGlossaryMode("view");
     clearReturnToViewTimer();
     rememberLastOpenedMarkdownPath(nextDocument.filePath);
+  }
+
+  function handleDocumentTabPointerDown(
+    documentId: string,
+    event: ReactPointerEvent<HTMLButtonElement>,
+  ) {
+    if (event.button !== 0) return;
+    if (event.pointerType === "touch") return;
+
+    documentTabPointerActivationRef.current = documentId;
+    window.getSelection()?.removeAllRanges();
+    selectDocument(documentId, { tabBehavior: "none" });
+  }
+
+  function handleDocumentTabClick(documentId: string) {
+    if (documentTabPointerActivationRef.current === documentId) {
+      documentTabPointerActivationRef.current = "";
+      return;
+    }
+
+    selectDocument(documentId, { tabBehavior: "none" });
   }
 
   function clearNotePanelCloseTimer() {
@@ -11746,7 +12176,10 @@ function App() {
 
     if (selectionShouldSuppressNewAnnotation(anchor)) {
       if (!noteModeEnabled) {
-        setNoteModeEnabled(true);
+        setActiveDocumentModeState({
+          noteModeEnabled: true,
+          glossaryModeEnabled,
+        });
       }
       if (noteLibraryOpen) {
         setNoteLibraryOpen(false);
@@ -11765,8 +12198,10 @@ function App() {
 
     if (isSelectionCompleteMarkdownBlock(selectedDocument.body, anchor)) {
       if (!noteModeEnabled) {
-        setNoteModeEnabled(true);
-        setGlossaryModeEnabled(false);
+        setActiveDocumentModeState({
+          noteModeEnabled: true,
+          glossaryModeEnabled: false,
+        });
       }
       if (noteLibraryOpen) {
         setNoteLibraryOpen(false);
@@ -11776,8 +12211,10 @@ function App() {
     }
 
     if (!noteModeEnabled) {
-      setNoteModeEnabled(true);
-      setGlossaryModeEnabled(false);
+      setActiveDocumentModeState({
+        noteModeEnabled: true,
+        glossaryModeEnabled: false,
+      });
     }
 
     if (noteLibraryOpen) {
@@ -12281,10 +12718,12 @@ function App() {
     const nextNoteModeEnabled = !noteModeEnabled;
     if (!nextNoteModeEnabled) {
       resetNoteModeInteractionState();
-      setGlossaryModeEnabled(false);
     }
 
-    setNoteModeEnabled(nextNoteModeEnabled);
+    setActiveDocumentModeState({
+      noteModeEnabled: nextNoteModeEnabled,
+      glossaryModeEnabled: nextNoteModeEnabled ? glossaryModeEnabled : false,
+    });
   }
 
   function toggleGlossaryMode() {
@@ -12296,7 +12735,10 @@ function App() {
       resetGlossaryModeInteractionState();
     }
 
-    setGlossaryModeEnabled(nextGlossaryModeEnabled);
+    setActiveDocumentModeState({
+      noteModeEnabled: true,
+      glossaryModeEnabled: nextGlossaryModeEnabled,
+    });
   }
 
   function handleNoteLibraryCardBlur(
@@ -12766,12 +13208,21 @@ function App() {
             void deleteDocumentFiles(fileContextMenu.exportDocumentIds, fileContextMenu);
           },
         };
+        const openInNewTabAction = {
+          id: "open-new-tab",
+          label: t("file.openInNewTab"),
+          icon: <OpenTabIcon />,
+          onSelect: () => {
+            void openFileInNewTab(fileContextMenu);
+          },
+        };
 
         if (exportDocumentCount > 1) {
           return [exportPdfAction, deleteFileAction];
         }
 
         return [
+          openInNewTabAction,
           exportPdfAction,
           {
             id: "duplicate",
@@ -12860,6 +13311,7 @@ function App() {
     !settingsViewOpen && libraryNotePanelExpanded ? "is-note-library-expanded" : "",
     !settingsViewOpen && notePanelModalActive ? "is-note-panel-modal-active" : "",
     !settingsViewOpen && expandedNotePanelScrollLocked ? "is-note-panel-expanded" : "",
+    documentTabsVisible ? "has-document-tabs" : "",
   ]
     .filter(Boolean)
     .join(" ");
@@ -12945,6 +13397,63 @@ function App() {
           }`}
           onWheel={handleNoteLibraryFocusBackdropWheel}
         />
+      ) : null}
+      {documentTabsVisible ? (
+        <nav className="document-tabs" aria-label={t("documentTabs.label")}>
+          <div
+            className="document-tabs__scroller"
+            ref={documentTabsScrollerRef}
+            role="tablist"
+          >
+            <span
+              aria-hidden="true"
+              className="document-tabs__active-indicator"
+              style={documentTabIndicatorStyle}
+            />
+            {openDocumentTabs.map((document) => {
+              const tabActive = document.id === selectedDocument.id;
+
+              return (
+                <div
+                  className={`document-tab ${tabActive ? "is-active" : ""}`}
+                  key={document.id}
+                >
+                  <button
+                    aria-selected={tabActive}
+                    className="document-tab__main"
+                    onClick={() => handleDocumentTabClick(document.id)}
+                    onPointerDown={(event) =>
+                      handleDocumentTabPointerDown(document.id, event)
+                    }
+                    role="tab"
+                    title={document.title}
+                    type="button"
+                  >
+                    <span className="document-tab__title">{document.title}</span>
+                  </button>
+                  <button
+                    aria-label={`${t("documentTab.close")}: ${document.title}`}
+                    className="document-tab__close"
+                    onClick={(event) => closeDocumentTab(document.id, event)}
+                    title={t("documentTab.close")}
+                    type="button"
+                  >
+                    <SearchCloseIcon />
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+          <button
+            aria-label={t("mobileSource.newFile")}
+            className="document-tabs__new-button"
+            onClick={newMarkdownFile}
+            title={t("mobileSource.newFile")}
+            type="button"
+          >
+            +
+          </button>
+        </nav>
       ) : null}
       <aside className="document-pane" aria-label={t("app.documents")}>
         <div className="pane-header">
