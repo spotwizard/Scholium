@@ -792,6 +792,7 @@ const previewAnnotationFrameCornerRadius = "4px";
 const annotationLayoutSettleDelaysMs = [80, 180, 360, 720];
 const noteLibraryFocusAlignmentRatio = 0.2;
 const notePanelAnimationMs = 180;
+const documentSearchMobileTransitionMs = 280;
 const selectionWarningAutoDismissMs = 2600;
 const appDrivenSelectionClearGuardMs = 1200;
 const autosaveDelayMs = 500;
@@ -6475,6 +6476,9 @@ function App() {
   const [fileSearchPending, setFileSearchPending] = useState(false);
   const [fileSearchError, setFileSearchError] = useState("");
   const [documentSearchOpen, setDocumentSearchOpen] = useState(false);
+  const [documentSearchTransitionPhase, setDocumentSearchTransitionPhase] = useState<
+    "closed" | "opening" | "open" | "closing"
+  >("closed");
   const [documentSearchQuery, setDocumentSearchQuery] = useState("");
   const [documentSearchActiveIndex, setDocumentSearchActiveIndex] = useState(0);
   const [documentSearchMatchCount, setDocumentSearchMatchCount] = useState(0);
@@ -6547,6 +6551,7 @@ function App() {
   const settingsCloseButtonRef = useRef<HTMLButtonElement | null>(null);
   const duplicateFileInputRef = useRef<HTMLInputElement | null>(null);
   const documentSearchInputRef = useRef<HTMLInputElement | null>(null);
+  const documentSearchTransitionTimerRef = useRef(0);
   const noteEditorRootRef = useRef<HTMLDivElement | null>(null);
   const noteModeDefaultAppliedRef = useRef(noteModeEnabled);
   const returnToViewTimerRef = useRef(0);
@@ -6650,6 +6655,12 @@ function App() {
   );
   const nativeStorageAvailable = hasNativeStorageAccess();
   const documentSearchVisible = hasOpenDocument && !settingsViewOpen && (documentSearchOpen || isMobileViewport);
+  const mobileDocumentSearchTransitionActive =
+    isMobileViewport && documentSearchTransitionPhase !== "closed";
+  const mobileDocumentSearchTriggerVisible =
+    isMobileViewport && documentSearchTransitionPhase !== "open";
+  const mobileDocumentSearchPanelVisible =
+    isMobileViewport && documentSearchTransitionPhase !== "closed";
   const activeDocumentSearchQuery = documentSearchVisible ? documentSearchQuery : "";
   const documentSearchState = useMemo<DocumentSearchState>(
     () => ({
@@ -7041,6 +7052,7 @@ function App() {
   useEffect(
     () => () => {
       window.clearTimeout(returnToViewTimerRef.current);
+      window.clearTimeout(documentSearchTransitionTimerRef.current);
     },
     [],
   );
@@ -7721,6 +7733,13 @@ function App() {
     return Boolean(panel && target instanceof Node && panel.contains(target));
   }
 
+  function targetIsInsideDocumentSearch(target: EventTarget | null) {
+    const targetElement = elementFromEventTarget(target);
+    return Boolean(
+      targetElement?.closest(".document-search, .document-search__mobile-trigger"),
+    );
+  }
+
   function moveEditableCaretToEnd(element: HTMLElement) {
     if (element instanceof HTMLTextAreaElement) {
       const selectionOffset = element.value.length;
@@ -7787,6 +7806,7 @@ function App() {
 
   function redirectOutsideNoteEditKeyboardEvent(event: KeyboardEvent) {
     if (targetIsInsideNotePanel(event.target)) return false;
+    if (targetIsInsideDocumentSearch(event.target)) return false;
     if (event.metaKey || event.ctrlKey || event.altKey) return false;
     if (event.key.length !== 1 || event.isComposing) return false;
 
@@ -7799,6 +7819,7 @@ function App() {
 
   function redirectOutsideNoteEditInputEvent(event: Event) {
     if (targetIsInsideNotePanel(event.target)) return false;
+    if (targetIsInsideDocumentSearch(event.target)) return false;
 
     if (event instanceof InputEvent && event.data) {
       if (!insertTextIntoActiveNoteEditor(event.data)) return false;
@@ -8005,15 +8026,43 @@ function App() {
     });
   }
 
+  function clearDocumentSearchTransitionTimer() {
+    window.clearTimeout(documentSearchTransitionTimerRef.current);
+    documentSearchTransitionTimerRef.current = 0;
+  }
+
   function openDocumentSearch(selectText = true) {
     if (!hasOpenDocument || settingsViewOpen) return;
 
+    clearDocumentSearchTransitionTimer();
     setDocumentSearchOpen(true);
+
+    if (isMobileViewport) {
+      setDocumentSearchTransitionPhase("opening");
+      documentSearchTransitionTimerRef.current = window.setTimeout(() => {
+        setDocumentSearchTransitionPhase("open");
+        focusDocumentSearchInput(selectText);
+      }, documentSearchMobileTransitionMs);
+      return;
+    }
+
+    setDocumentSearchTransitionPhase("open");
     focusDocumentSearchInput(selectText);
   }
 
   function closeDocumentSearch() {
+    clearDocumentSearchTransitionTimer();
     setDocumentSearchOpen(false);
+
+    if (isMobileViewport) {
+      setDocumentSearchTransitionPhase("closing");
+      documentSearchTransitionTimerRef.current = window.setTimeout(() => {
+        setDocumentSearchTransitionPhase("closed");
+      }, documentSearchMobileTransitionMs);
+      return;
+    }
+
+    setDocumentSearchTransitionPhase("closed");
   }
 
   function clearDocumentSearch() {
@@ -8064,6 +8113,7 @@ function App() {
       if (event.button !== 0) return;
       if (notePanelModalActive) {
         if (targetIsInsideNotePanel(event.target)) return;
+        if (targetIsInsideDocumentSearch(event.target)) return;
 
         handleNotePanelOutsideModalInteraction(event);
         return;
@@ -8077,6 +8127,7 @@ function App() {
       if (event.button !== 0) return;
       if (notePanelModalActive) {
         if (targetIsInsideNotePanel(event.target)) return;
+        if (targetIsInsideDocumentSearch(event.target)) return;
 
         handleNotePanelOutsideModalInteraction(event);
         return;
@@ -8089,6 +8140,7 @@ function App() {
     function handleDocumentFocusIn(event: Event) {
       if (notePanelModalActive) {
         if (targetIsInsideNotePanel(event.target)) return;
+        if (targetIsInsideDocumentSearch(event.target)) return;
 
         handleNotePanelOutsideModalInteraction(event);
         return;
@@ -8124,6 +8176,7 @@ function App() {
 
     function blockOutsideEditableEvent(event: Event) {
       if (targetIsInsideNotePanel(event.target)) return;
+      if (targetIsInsideDocumentSearch(event.target)) return;
       if (redirectOutsideNoteEditInputEvent(event)) return;
 
       blockNoteEditBackdropInteraction(event);
@@ -8529,7 +8582,9 @@ function App() {
 
   useEffect(() => {
     if (!hasOpenDocument && documentSearchOpen) {
+      clearDocumentSearchTransitionTimer();
       setDocumentSearchOpen(false);
+      setDocumentSearchTransitionPhase("closed");
     }
   }, [documentSearchOpen, hasOpenDocument]);
 
@@ -8675,6 +8730,7 @@ function App() {
       }
 
       if (noteEditModalActive) {
+        if (targetIsInsideDocumentSearch(event.target)) return;
         if (isAnnotationNavigationTab && targetIsInsideEditingNoteMarkdownEditor(event.target)) {
           return;
         }
@@ -8696,6 +8752,7 @@ function App() {
       }
 
       if (notePanelModalActive) {
+        if (targetIsInsideDocumentSearch(event.target)) return;
         if (isAnnotationNavigationTab && targetIsInsideEditingNoteMarkdownEditor(event.target)) {
           return;
         }
@@ -13346,18 +13403,34 @@ function App() {
       <section className="editor-pane" aria-label={t("app.markdownEditor")}>
         <div className="editor-grid">
           <div className="editor-surface" style={editorSurfaceStyle}>
-            {documentSearchVisible && isMobileViewport && documentSearchOpen ? (
+            {documentSearchVisible && mobileDocumentSearchTransitionActive ? (
               <div
                 aria-hidden="true"
                 className="document-search-backdrop"
+                data-transition={documentSearchTransitionPhase}
                 onClick={closeDocumentSearch}
               />
             ) : null}
-            {documentSearchVisible ? (
+            {documentSearchVisible && mobileDocumentSearchTriggerVisible ? (
+              <button
+                aria-label={t("documentSearch.label")}
+                className="document-search__mobile-trigger"
+                data-has-query={documentSearchQuery.trim() ? "true" : "false"}
+                data-transition={documentSearchTransitionPhase}
+                onClick={() => openDocumentSearch(false)}
+                type="button"
+              >
+                <SearchIcon className="document-search__mobile-trigger-icon" />
+                <span>{t("documentSearch.trigger")}</span>
+              </button>
+            ) : null}
+            {documentSearchVisible && (!isMobileViewport || mobileDocumentSearchPanelVisible) ? (
               <form
                 aria-label={t("documentSearch.label")}
                 className="document-search"
-                data-expanded={documentSearchOpen ? "true" : "false"}
+                data-has-query={documentSearchQuery.trim() ? "true" : "false"}
+                data-expanded={isMobileViewport ? "true" : documentSearchOpen ? "true" : "false"}
+                data-transition={isMobileViewport ? documentSearchTransitionPhase : undefined}
                 onSubmit={(event) => {
                   event.preventDefault();
                   moveDocumentSearch(1);
@@ -13374,14 +13447,14 @@ function App() {
                     value={documentSearchQuery}
                     onChange={(event) => updateDocumentSearchQuery(event.target.value)}
                     onFocus={() => {
-                      if (isMobileViewport) {
-                        setDocumentSearchOpen(true);
+                      if (isMobileViewport && documentSearchTransitionPhase === "closed") {
+                        openDocumentSearch(false);
                       }
                     }}
                     onKeyDown={handleDocumentSearchInputKeyDown}
                     onPointerDown={() => {
-                      if (isMobileViewport) {
-                        setDocumentSearchOpen(true);
+                      if (isMobileViewport && documentSearchTransitionPhase === "closed") {
+                        openDocumentSearch(false);
                       }
                     }}
                   />
