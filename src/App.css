@@ -3354,6 +3354,47 @@ button:disabled {
   margin-bottom: 0;
 }
 
+.milkdown-markdown-editor .milkdown .milkdown-code-block .tools .preview-toggle-button {
+  display: none;
+}
+
+.milkdown-markdown-editor .milkdown .milkdown-code-block .codemirror-host,
+.milkdown-markdown-editor .milkdown .milkdown-code-block .cm-editor,
+.milkdown-markdown-editor .milkdown .milkdown-code-block .cm-scroller,
+.milkdown-markdown-editor .milkdown .milkdown-code-block .cm-content {
+  min-height: 0;
+  background: transparent;
+}
+
+.milkdown-markdown-editor .milkdown .milkdown-code-block .cm-editor {
+  color: var(--color-preview-editor-text);
+}
+
+.milkdown-markdown-editor .milkdown .milkdown-code-block .cm-scroller {
+  overflow: visible;
+  font-family: inherit;
+  font-size: inherit;
+  line-height: inherit;
+}
+
+.milkdown-markdown-editor .milkdown .milkdown-code-block .cm-content {
+  padding: 0;
+  caret-color: var(--color-accent);
+}
+
+.milkdown-markdown-editor .milkdown .milkdown-code-block .cm-line {
+  padding: 0;
+}
+
+.milkdown-markdown-editor .milkdown .milkdown-code-block .cm-gutters,
+.milkdown-markdown-editor .milkdown .milkdown-code-block .cm-activeLineGutter {
+  display: none;
+}
+
+.milkdown-markdown-editor .milkdown .milkdown-code-block .cm-activeLine {
+  background: transparent;
+}
+
 .milkdown-markdown-editor .milkdown .milkdown-code-block .preview-panel .preview {
   overflow-x: auto;
   text-align: left;
