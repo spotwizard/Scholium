@@ -853,7 +853,10 @@ async fn refresh_dropbox_access_token(
         .refresh_token
         .clone()
         .ok_or_else(|| "Dropbox session expired; reconnect Dropbox.".to_string())?;
-    let response = reqwest::Client::new()
+    let response = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .map_err(|error| format!("failed to prepare Dropbox token refresh: {error}"))?
         .post(DROPBOX_OAUTH_TOKEN_URL)
         .header(
             "Content-Type",
@@ -2164,6 +2167,19 @@ fn remember_recent_location(
 }
 
 #[tauri::command]
+fn saved_locations(app: tauri::AppHandle) -> Result<LocationStore, String> {
+    let mut store = current_location_store(&app);
+
+    if prune_missing_recent_locations(&mut store) {
+        replace_current_location_store(&app, store.clone())?;
+        write_location_store(&app, &store)?;
+        refresh_app_menu(&app)?;
+    }
+
+    Ok(store)
+}
+
+#[tauri::command]
 fn set_current_directory_location(
     app: tauri::AppHandle,
     window: tauri::WebviewWindow,
@@ -2338,6 +2354,46 @@ fn disconnect_dropbox(app: tauri::AppHandle) -> Result<DropboxOAuthStatus, Strin
     remove_dropbox_tokens(&app)?;
 
     Ok(DropboxOAuthStatus { connected: false })
+}
+
+#[tauri::command]
+async fn check_dropbox_connection(app: tauri::AppHandle) -> Result<DropboxOAuthStatus, String> {
+    let access_token = dropbox_access_token(&app).await?;
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .map_err(|error| format!("failed to prepare Dropbox connection check: {error}"))?;
+    let response = client
+        .post(DROPBOX_LIST_FOLDER_URL)
+        .bearer_auth(access_token)
+        .json(&serde_json::json!({
+            "path": "",
+            "recursive": false,
+            "include_media_info": false,
+            "include_deleted": false,
+            "include_has_explicit_shared_members": false,
+            "include_mounted_folders": true,
+            "include_non_downloadable_files": true,
+            "limit": 1
+        }))
+        .send()
+        .await
+        .map_err(|error| {
+            if error.is_timeout() {
+                "Dropbox connection timed out.".to_string()
+            } else {
+                format!("failed to check Dropbox connection: {error}")
+            }
+        })?;
+
+    if response.status() == StatusCode::UNAUTHORIZED {
+        return Err("Dropbox authorization failed; reconnect Dropbox.".to_string());
+    }
+    if !response.status().is_success() {
+        return Err(dropbox_response_error(response, "failed to check Dropbox connection").await);
+    }
+
+    Ok(DropboxOAuthStatus { connected: true })
 }
 
 #[tauri::command]
@@ -3004,12 +3060,14 @@ pub fn run() {
             write_pdf_file_to_directory,
             save_markdown_file,
             remember_recent_location,
+            saved_locations,
             set_current_directory_location,
             set_app_language,
             dropbox_oauth_status,
             start_dropbox_oauth,
             complete_dropbox_oauth,
             disconnect_dropbox,
+            check_dropbox_connection,
             list_dropbox_markdown_directory,
             open_dropbox_markdown_file,
             save_dropbox_markdown_file,

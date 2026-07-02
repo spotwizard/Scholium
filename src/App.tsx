@@ -224,9 +224,25 @@ type NativeLocation = {
   title: string;
 };
 
+type SavedLocationsResult = {
+  recent: NativeLocation[];
+  favoriteDirectories: NativeLocation[];
+};
+
+type LastOpenedDropboxWorkspaceState = {
+  workspacePath: string;
+  filePath: string;
+  updatedAt: number;
+};
+
 type OpenLocationEventPayload = {
   kind: NativeLocationKind;
   path: string;
+};
+
+const emptySavedLocations: SavedLocationsResult = {
+  recent: [],
+  favoriteDirectories: [],
 };
 
 type DropboxOAuthStatusResult = {
@@ -829,6 +845,7 @@ const pdfRenderScale = 2;
 const lastOpenedMarkdownPathStorageKey = "scholium:last-opened-markdown-path";
 const lastOpenedMarkdownRootDirectoryStorageKey =
   "scholium:last-opened-markdown-root-directory";
+const lastOpenedDropboxWorkspaceStorageKey = "scholium:last-opened-dropbox-workspace";
 const mobileViewportQuery = "(max-width: 640px)";
 const mobileSafeLayoutViewportQuery =
   "((max-width: 640px) and (any-pointer: coarse)), ((max-width: 980px) and (max-height: 520px) and (any-pointer: coarse))";
@@ -1188,10 +1205,6 @@ function workspaceEntrySelectionKey(entry: WorkspaceEntry) {
   return `${entry.kind}:${entry.source ?? "local"}:${entry.path}`;
 }
 
-function localFileSearchResultSelectionKey(result: SearchMarkdownFileResult) {
-  return `file-search:${result.path}`;
-}
-
 function workspaceEntriesFromOpenedDirectory(
   openedDirectory: OpenMarkdownDirectoryResult,
   depth: number,
@@ -1535,6 +1548,7 @@ function rememberLastOpenedMarkdownPath(path: string | null | undefined) {
 
   try {
     window.localStorage.setItem(lastOpenedMarkdownPathStorageKey, path);
+    forgetLastOpenedDropboxWorkspace();
   } catch {
     // Remembering the last file is best-effort only.
   }
@@ -1553,6 +1567,7 @@ function rememberLastOpenedMarkdownRootDirectoryPath(path: string | null | undef
 
   try {
     window.localStorage.setItem(lastOpenedMarkdownRootDirectoryStorageKey, path);
+    forgetLastOpenedDropboxWorkspace();
   } catch {
     // Remembering the last root directory is best-effort only.
   }
@@ -1564,6 +1579,77 @@ function forgetLastOpenedMarkdownRootDirectoryPath() {
   } catch {
     // Remembering the last root directory is best-effort only.
   }
+}
+
+function readLastOpenedDropboxWorkspace() {
+  try {
+    const rawValue = window.localStorage.getItem(lastOpenedDropboxWorkspaceStorageKey);
+    if (!rawValue) return null;
+
+    const parsedValue = JSON.parse(rawValue) as Partial<LastOpenedDropboxWorkspaceState>;
+    if (
+      typeof parsedValue.workspacePath !== "string" ||
+      typeof parsedValue.filePath !== "string"
+    ) {
+      return null;
+    }
+
+    return {
+      workspacePath: parsedValue.workspacePath.trim(),
+      filePath: parsedValue.filePath.trim(),
+      updatedAt:
+        typeof parsedValue.updatedAt === "number" && Number.isFinite(parsedValue.updatedAt)
+          ? parsedValue.updatedAt
+          : 0,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function rememberLastOpenedDropboxWorkspace(
+  workspacePath: string | null | undefined,
+  filePath: string | null | undefined = "",
+) {
+  const nextState: LastOpenedDropboxWorkspaceState = {
+    workspacePath: workspacePath?.trim() ?? "",
+    filePath: filePath?.trim() ?? "",
+    updatedAt: Date.now(),
+  };
+
+  try {
+    window.localStorage.setItem(
+      lastOpenedDropboxWorkspaceStorageKey,
+      JSON.stringify(nextState),
+    );
+    forgetLastOpenedMarkdownPath();
+    forgetLastOpenedMarkdownRootDirectoryPath();
+  } catch {
+    // Remembering the last Dropbox workspace is best-effort only.
+  }
+}
+
+function forgetLastOpenedDropboxWorkspace() {
+  try {
+    window.localStorage.removeItem(lastOpenedDropboxWorkspaceStorageKey);
+  } catch {
+    // Remembering the last Dropbox workspace is best-effort only.
+  }
+}
+
+function browserAppearsOffline() {
+  return typeof navigator !== "undefined" && "onLine" in navigator && navigator.onLine === false;
+}
+
+function dropboxParentDirectoryPath(path: string | null | undefined) {
+  const normalizedPath = path?.trim() ?? "";
+  if (!normalizedPath) return "";
+
+  const trimmedPath = normalizedPath.replace(/^\/+|\/+$/g, "");
+  if (!trimmedPath.includes("/")) return "";
+
+  const parentPath = trimmedPath.split("/").slice(0, -1).join("/");
+  return parentPath ? `/${parentPath}` : "";
 }
 
 function parentDirectoryPath(path: string | null | undefined) {
@@ -6523,6 +6609,8 @@ function App() {
     () => new Set(),
   );
   const [mobileSelectedWorkspaceEntryKey, setMobileSelectedWorkspaceEntryKey] = useState("");
+  const [savedLocations, setSavedLocations] =
+    useState<SavedLocationsResult>(emptySavedLocations);
   const [notes, setNotes] = useState(notesSeed);
   const [activeNoteEditorKey, setActiveNoteEditorKey] = useState("");
   const [glossaryTerms, setGlossaryTerms] = useState(glossaryTermsSeed);
@@ -8406,6 +8494,16 @@ function App() {
   }, [appLanguage, nativeStorageAvailable]);
 
   useEffect(() => {
+    if (!nativeStorageAvailable) {
+      setSavedLocations(emptySavedLocations);
+      return;
+    }
+    if (!isMobileViewport || !directoryPaneOpen) return;
+
+    void refreshSavedLocations();
+  }, [directoryPaneOpen, isMobileViewport, nativeStorageAvailable]);
+
+  useEffect(() => {
     const query = fileSearchQuery.trim();
     const canSearchLocalWorkspace =
       Boolean(query) &&
@@ -8567,6 +8665,12 @@ function App() {
     lastOpenedFileRestoreAttemptedRef.current = true;
     if (!settingsSnapshot["app.restoreLastOpenedFile"]) return;
 
+    const lastOpenedDropboxWorkspace = readLastOpenedDropboxWorkspace();
+    if (isMobileViewport && lastOpenedDropboxWorkspace) {
+      void restoreLastOpenedDropboxWorkspace(lastOpenedDropboxWorkspace);
+      return;
+    }
+
     const lastOpenedPath = readLastOpenedMarkdownPath();
     const lastOpenedRootDirectoryPath = readLastOpenedMarkdownRootDirectoryPath();
     if (!lastOpenedPath && !lastOpenedRootDirectoryPath) return;
@@ -8616,7 +8720,7 @@ function App() {
     }
 
     restoreFromSelectedFileParent();
-  }, [nativeStorageAvailable, settingsSnapshot]);
+  }, [isMobileViewport, nativeStorageAvailable, settingsSnapshot]);
 
   useEffect(() => {
     if (!nativeStorageAvailable) return;
@@ -9060,9 +9164,13 @@ function App() {
   function rememberNativeRecentLocation(location: NativeLocation) {
     if (!nativeStorageAvailable) return;
 
-    void invoke("remember_recent_location", location).catch((error) => {
-      setStorageError(error instanceof Error ? error.message : String(error));
-    });
+    void invoke("remember_recent_location", location)
+      .then(() => {
+        void refreshSavedLocations();
+      })
+      .catch((error) => {
+        setStorageError(error instanceof Error ? error.message : String(error));
+      });
   }
 
   function setNativeCurrentDirectory(path: string, title: string) {
@@ -9071,6 +9179,23 @@ function App() {
     void invoke("set_current_directory_location", { path, title }).catch((error) => {
       setStorageError(error instanceof Error ? error.message : String(error));
     });
+  }
+
+  async function refreshSavedLocations() {
+    if (!nativeStorageAvailable) {
+      setSavedLocations(emptySavedLocations);
+      return;
+    }
+
+    try {
+      const nextSavedLocations = await invoke<SavedLocationsResult>("saved_locations");
+      setSavedLocations({
+        recent: nextSavedLocations.recent ?? [],
+        favoriteDirectories: nextSavedLocations.favoriteDirectories ?? [],
+      });
+    } catch (error) {
+      setStorageError(error instanceof Error ? error.message : String(error));
+    }
   }
 
   function resetFileSearch() {
@@ -9497,8 +9622,7 @@ function App() {
     setActiveGlossaryMode("view");
     setDirtyDocumentStates({});
     setSavedDocumentBodies({});
-    forgetLastOpenedMarkdownPath();
-    forgetLastOpenedMarkdownRootDirectoryPath();
+    rememberLastOpenedDropboxWorkspace(openedDirectory.path, "");
 
     if (nextEntries.length === 0) {
       setStorageError(t("dropbox.emptyFolder"));
@@ -9556,8 +9680,12 @@ function App() {
     setActiveNoteMode("view");
     setActiveGlossaryMode("view");
     markLoadedDocumentsClean([loadedDocument]);
-    forgetLastOpenedMarkdownPath();
-    forgetLastOpenedMarkdownRootDirectoryPath();
+    rememberLastOpenedDropboxWorkspace(
+      workspaceRootPath ??
+        readLastOpenedDropboxWorkspace()?.workspacePath ??
+        dropboxParentDirectoryPath(loadedDocument.path),
+      loadedDocument.path,
+    );
   }
 
   function applyReloadedFile(loadedFile: OpenMarkdownFileResult) {
@@ -9670,6 +9798,7 @@ function App() {
     setNoteDraft("");
     setGlossaryDraft("");
     markLoadedDocumentsClean(loadedDocuments);
+    forgetLastOpenedDropboxWorkspace();
     rememberLastOpenedMarkdownRootDirectoryPath(openedDirectory.path);
 
     if (documentToSelect) {
@@ -9789,6 +9918,122 @@ function App() {
     rememberLastOpenedMarkdownPath(selectedFile.path);
   }
 
+  function dropboxErrorIsConnectionTimeout(message: string) {
+    const normalizedMessage = message.toLowerCase();
+    return normalizedMessage.includes("timed out") || normalizedMessage.includes("timeout");
+  }
+
+  function dropboxErrorIsDisconnected(message: string) {
+    const normalizedMessage = message.toLowerCase();
+    return normalizedMessage.includes("not connected") || normalizedMessage.includes("reconnect");
+  }
+
+  async function checkDropboxRestoreConnection() {
+    if (browserAppearsOffline()) {
+      setStorageError(t("dropbox.error.offline"));
+      return false;
+    }
+
+    try {
+      const status = await invoke<DropboxOAuthStatusResult>("check_dropbox_connection");
+      setDropboxConnected(status.connected);
+      if (!status.connected) {
+        setStorageError(t("dropbox.error.restoreNeedsAuthorization"));
+        return false;
+      }
+
+      return true;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (dropboxErrorNeedsAuthorization(message) || dropboxErrorIsDisconnected(message)) {
+        setDropboxConnected(false);
+        setStorageError(t("dropbox.error.restoreNeedsAuthorization"));
+        return false;
+      }
+      if (dropboxErrorIsConnectionTimeout(message)) {
+        setStorageError(t("dropbox.error.restoreTimeout"));
+        return false;
+      }
+
+      setStorageError(
+        t("dropbox.error.couldNotRestore", {
+          message,
+        }),
+      );
+      return false;
+    }
+  }
+
+  async function restoreLastOpenedDropboxWorkspace(
+    restoreState: LastOpenedDropboxWorkspaceState,
+  ) {
+    setStorageError(t("dropbox.status.restoringLastFile"));
+
+    const canReachDropbox = await checkDropboxRestoreConnection();
+    if (!canReachDropbox) return;
+
+    let openedDirectory: OpenDropboxMarkdownDirectoryResult | null = null;
+
+    try {
+      openedDirectory = await invoke<OpenDropboxMarkdownDirectoryResult>(
+        "list_dropbox_markdown_directory",
+        { path: restoreState.workspacePath },
+      );
+      applyOpenedDropboxDirectory(openedDirectory);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (dropboxErrorNeedsAuthorization(message) || dropboxErrorIsDisconnected(message)) {
+        setDropboxConnected(false);
+        setStorageError(t("dropbox.error.restoreNeedsAuthorization"));
+        return;
+      }
+      if (dropboxErrorIsConnectionTimeout(message)) {
+        setStorageError(t("dropbox.error.restoreTimeout"));
+        return;
+      }
+
+      forgetLastOpenedDropboxWorkspace();
+      setStorageError(
+        t("dropbox.error.couldNotRestore", {
+          message,
+        }),
+      );
+      return;
+    }
+
+    if (!restoreState.filePath) {
+      setStorageError(openedDirectory.entries.length === 0 ? t("dropbox.emptyFolder") : "");
+      return;
+    }
+
+    try {
+      setStorageError(t("dropbox.status.openingFile"));
+      const loaded = await invoke<OpenDropboxMarkdownFileResult>("open_dropbox_markdown_file", {
+        path: restoreState.filePath,
+      });
+      applyLoadedDropboxFile(loaded);
+      setStorageError("");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (dropboxErrorNeedsAuthorization(message) || dropboxErrorIsDisconnected(message)) {
+        setDropboxConnected(false);
+        setStorageError(t("dropbox.error.restoreNeedsAuthorization"));
+        return;
+      }
+      if (dropboxErrorIsConnectionTimeout(message)) {
+        setStorageError(t("dropbox.error.restoreTimeout"));
+        return;
+      }
+
+      rememberLastOpenedDropboxWorkspace(openedDirectory.path, "");
+      setStorageError(
+        t("dropbox.error.couldNotReopenLastFile", {
+          message,
+        }),
+      );
+    }
+  }
+
   async function openDirectoryPath(path: string) {
     if (!nativeStorageAvailable) {
       setStorageError(t("error.nativeRuntimeRequired"));
@@ -9847,6 +10092,10 @@ function App() {
       return;
     }
     if (dropboxConnecting) return;
+    if (isMobileViewport && browserAppearsOffline()) {
+      setStorageError(t("dropbox.error.offline"));
+      return;
+    }
 
     setFileContextMenu(null);
     if (!duplicateFileDialog?.isSubmitting) {
@@ -10166,18 +10415,6 @@ function App() {
     if (ignoreNextWorkspaceClickRef.current) {
       ignoreNextWorkspaceClickRef.current = false;
       return;
-    }
-
-    if (isMobileViewport && (entry.kind === "directory" || entry.kind === "file")) {
-      const entryKey = workspaceEntrySelectionKey(entry);
-      const entryIsCurrentDocument =
-        entry.kind === "file" && entry.documentId === selectedDocumentIdRef.current;
-
-      if (!entryIsCurrentDocument && mobileSelectedWorkspaceEntryKey !== entryKey) {
-        setSelectedWorkspaceDocumentIds(new Set());
-        setMobileSelectedWorkspaceEntryKey(entryKey);
-        return;
-      }
     }
 
     if (entry.kind === "directory") {
@@ -11046,8 +11283,16 @@ function App() {
       setActiveDocumentId(nextSelectedDocumentId);
       if (nextSelectedDocument?.filePath) {
         rememberLastOpenedMarkdownPath(nextSelectedDocument.filePath);
+      } else if (nextSelectedDocument && documentIsFromDropbox(nextSelectedDocument)) {
+        rememberLastOpenedDropboxWorkspace(
+          workspaceRootPath ??
+            readLastOpenedDropboxWorkspace()?.workspacePath ??
+            dropboxParentDirectoryPath(nextSelectedDocument.path),
+          nextSelectedDocument.path,
+        );
       } else {
         forgetLastOpenedMarkdownPath();
+        forgetLastOpenedDropboxWorkspace();
       }
     }
 
@@ -11190,6 +11435,7 @@ function App() {
   }
 
   function resetDropboxWorkspaceAfterAuthorizationRemoval() {
+    forgetLastOpenedDropboxWorkspace();
     if (workspaceSource !== "dropbox") return;
 
     setDocuments(documentsSeed);
@@ -11317,6 +11563,7 @@ function App() {
       setDropboxDirectoryPicker(null);
       dropboxOpenAfterAuthRef.current = false;
       resetDropboxWorkspaceAfterAuthorizationRemoval();
+      forgetLastOpenedDropboxWorkspace();
       setStorageError(t("dropbox.status.authorizationRemoved"));
     } catch (error) {
       setStorageError(error instanceof Error ? error.message : String(error));
@@ -11746,7 +11993,16 @@ function App() {
     setActiveNoteMode("view");
     setActiveGlossaryMode("view");
     clearReturnToViewTimer();
-    rememberLastOpenedMarkdownPath(nextDocument.filePath);
+    if (documentIsFromDropbox(nextDocument)) {
+      rememberLastOpenedDropboxWorkspace(
+        workspaceRootPath ??
+          readLastOpenedDropboxWorkspace()?.workspacePath ??
+          dropboxParentDirectoryPath(nextDocument.path),
+        nextDocument.path,
+      );
+    } else {
+      rememberLastOpenedMarkdownPath(nextDocument.filePath);
+    }
   }
 
   function handleDocumentTabPointerDown(
@@ -13332,7 +13588,10 @@ function App() {
   }> = [
     {
       id: "dropbox",
-      label: t("mobileSource.openDropbox"),
+      label:
+        workspaceSource === "dropbox"
+          ? t("mobileSource.changeDropboxFolder")
+          : t("mobileSource.openDropbox"),
       icon: <MobileCloudIcon />,
       onSelect: () => runMobileSourceAction(openDropboxCloudSource),
     },
@@ -13355,6 +13614,12 @@ function App() {
       onSelect: () => runMobileSourceAction(newMarkdownFile),
     },
   ];
+  const mobileFavoriteDirectoryShortcuts = savedLocations.favoriteDirectories.filter(
+    (location) => location.kind === "directory",
+  );
+  const mobileRecentLocationShortcuts = savedLocations.recent;
+  const mobileDropboxWorkspaceActive = workspaceSource === "dropbox";
+  const mobileSavedLocationsVisible = nativeStorageAvailable && !mobileDropboxWorkspaceActive;
 
   const shellClassName = [
     "scholium-shell",
@@ -13554,6 +13819,87 @@ function App() {
           ))}
         </div>
 
+        {mobileDropboxWorkspaceActive ? (
+          <section
+            className="mobile-workspace-summary"
+            aria-label={t("mobileSource.currentDropboxFolder")}
+          >
+            <DocumentGlyphIcon kind="folder" selected={false} />
+            <span className="mobile-workspace-summary__text">
+              <span className="mobile-workspace-summary__label">
+                {t("mobileSource.currentDropboxFolder")}
+              </span>
+              <span className="mobile-workspace-summary__title">{workspaceTitle}</span>
+            </span>
+          </section>
+        ) : null}
+
+        {mobileSavedLocationsVisible ? (
+          <div
+            className="mobile-location-shortcuts"
+            aria-label={t("mobileSource.savedLocations")}
+          >
+            <section className="mobile-location-shortcuts__section">
+              <h2>{t("mobileSource.favoriteDirectories")}</h2>
+              {mobileFavoriteDirectoryShortcuts.length > 0 ? (
+                <div className="mobile-location-shortcuts__list">
+                  {mobileFavoriteDirectoryShortcuts.map((location) => (
+                    <button
+                      aria-label={t("mobileSource.openLocation", { title: location.title })}
+                      className="mobile-location-shortcut"
+                      key={`${location.kind}:${location.path}`}
+                      onClick={() => runMobileSourceAction(() => openNativeMenuLocation(location))}
+                      title={location.path}
+                      type="button"
+                    >
+                      <DocumentGlyphIcon kind="folder" selected={false} />
+                      <span className="mobile-location-shortcut__text">
+                        <span className="mobile-location-shortcut__title">{location.title}</span>
+                        <span className="mobile-location-shortcut__path">{location.path}</span>
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <p className="mobile-location-shortcuts__empty">
+                  {t("mobileSource.noFavoriteDirectories")}
+                </p>
+              )}
+            </section>
+
+            <section className="mobile-location-shortcuts__section">
+              <h2>{t("mobileSource.recentLocations")}</h2>
+              {mobileRecentLocationShortcuts.length > 0 ? (
+                <div className="mobile-location-shortcuts__list">
+                  {mobileRecentLocationShortcuts.map((location) => (
+                    <button
+                      aria-label={t("mobileSource.openLocation", { title: location.title })}
+                      className="mobile-location-shortcut"
+                      key={`${location.kind}:${location.path}`}
+                      onClick={() => runMobileSourceAction(() => openNativeMenuLocation(location))}
+                      title={location.path}
+                      type="button"
+                    >
+                      <DocumentGlyphIcon
+                        kind={location.kind === "directory" ? "folder" : "file"}
+                        selected={false}
+                      />
+                      <span className="mobile-location-shortcut__text">
+                        <span className="mobile-location-shortcut__title">{location.title}</span>
+                        <span className="mobile-location-shortcut__path">{location.path}</span>
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <p className="mobile-location-shortcuts__empty">
+                  {t("mobileSource.noRecentLocations")}
+                </p>
+              )}
+            </section>
+          </div>
+        ) : null}
+
         <div className="document-list">
           <div className="document-tree-root" title={workspaceTitle}>
             <DocumentGlyphIcon kind="folder" selected />
@@ -13574,12 +13920,9 @@ function App() {
               ) : null}
               {!fileSearchPending && !fileSearchError
                 ? localFileSearchResults.map((result) => {
-                    const mobileSelectionKey = localFileSearchResultSelectionKey(result);
                     const isCurrentDocument =
                       hasOpenDocument && localPathsMatch(result.path, selectedDocument.id);
-                    const isSelected =
-                      isCurrentDocument ||
-                      (isMobileViewport && mobileSelectedWorkspaceEntryKey === mobileSelectionKey);
+                    const isSelected = isCurrentDocument;
 
                     return (
                       <button
@@ -13588,16 +13931,6 @@ function App() {
                         }`}
                         key={result.path}
                         onClick={() => {
-                          if (
-                            isMobileViewport &&
-                            !isCurrentDocument &&
-                            mobileSelectedWorkspaceEntryKey !== mobileSelectionKey
-                          ) {
-                            setMobileSelectedWorkspaceEntryKey(mobileSelectionKey);
-                            setSelectedWorkspaceDocumentIds(new Set());
-                            return;
-                          }
-
                           void openLocalFileSearchResult(result);
                         }}
                         title={result.relativePath}
@@ -14122,6 +14455,11 @@ function App() {
                 >
                   <span className="note-mode-switch__label">{t("toolbar.glossaryMode")}</span>
                 </button>
+              </div>
+            ) : null}
+            {hasOpenDocument ? (
+              <div className="editor-document-title" title={selectedDocument.title}>
+                <h1 className="editor-document-title__text">{selectedDocument.title}</h1>
               </div>
             ) : null}
             <div className="editor-content-frame">

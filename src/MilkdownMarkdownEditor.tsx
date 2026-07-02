@@ -4,7 +4,8 @@ import { codeBlockConfig } from "@milkdown/kit/component/code-block";
 import { listItemBlockConfig } from "@milkdown/kit/component/list-item-block";
 import { editorViewCtx, prosePluginsCtx } from "@milkdown/kit/core";
 import { hardbreakAttr, hardbreakSchema } from "@milkdown/kit/preset/commonmark";
-import type { Node as ProseMirrorNode } from "@milkdown/prose/model";
+import { splitBlock } from "@milkdown/prose/commands";
+import type { Node as ProseMirrorNode, ResolvedPos } from "@milkdown/prose/model";
 import { Plugin, PluginKey } from "@milkdown/prose/state";
 import { Decoration, DecorationSet, type EditorView } from "@milkdown/prose/view";
 import "@milkdown/crepe/theme/common/style.css";
@@ -57,6 +58,24 @@ const milkdownAnnotationPluginKey = new PluginKey<DecorationSet>(
   "scholium-milkdown-annotations",
 );
 const milkdownSearchPluginKey = new PluginKey<DecorationSet>("scholium-milkdown-search");
+const milkdownPlainEnterHardBreakPluginKey = new PluginKey(
+  "scholium-milkdown-plain-enter-hard-break",
+);
+const milkdownStructuredTextAncestorNames = new Set([
+  "list_item",
+  "listItem",
+  "bullet_list",
+  "bulletList",
+  "ordered_list",
+  "orderedList",
+  "table",
+  "table_row",
+  "tableRow",
+  "table_cell",
+  "tableCell",
+  "table_header",
+  "tableHeader",
+]);
 const milkdownAnnotationFramePadding = 4;
 const milkdownAnnotationFrameHorizontalPadding = 12;
 const milkdownAnnotationLineJoinMaxGap = 20;
@@ -1533,6 +1552,108 @@ export function MilkdownMarkdownEditor({
     return nativeIsComposing || selectionPublishSuppressedByIme();
   }
 
+  function resolvedPositionHasAncestor(
+    $from: ResolvedPos,
+    nodeTypeNames: Set<string>,
+  ) {
+    for (let depth = $from.depth; depth > 0; depth -= 1) {
+      if (nodeTypeNames.has($from.node(depth).type.name)) return true;
+    }
+
+    return false;
+  }
+
+  function shouldInsertPlainEnterHardBreak(view: EditorView, event: KeyboardEvent) {
+    const isPlainEnter =
+      event.key === "Enter" &&
+      !event.metaKey &&
+      !event.ctrlKey &&
+      !event.altKey &&
+      !event.shiftKey;
+    if (!isPlainEnter) return false;
+    if (keyboardEventIsComposing(event)) return false;
+    if (readOnlyRef.current) return false;
+
+    const { selection, schema } = view.state;
+    if (!selection.empty) return false;
+
+    const { $from } = selection;
+    const parent = $from.parent;
+    if (!parent.isTextblock || parent.content.size === 0) return false;
+    if (parent.type.name === "code_block" || parent.type.name === "heading") {
+      return false;
+    }
+    if (resolvedPositionHasAncestor($from, milkdownStructuredTextAncestorNames)) {
+      return false;
+    }
+
+    const hardbreakType = schema.nodes.hardbreak;
+    if (!hardbreakType) return false;
+
+    return parent.canReplaceWith($from.index(), $from.index(), hardbreakType);
+  }
+
+  function insertPlainEnterHardBreak(view: EditorView) {
+    const hardbreakType = view.state.schema.nodes.hardbreak;
+    if (!hardbreakType) return false;
+
+    view.dispatch(
+      view.state.tr
+        .setMeta("hardbreak", true)
+        .replaceSelectionWith(hardbreakType.create())
+        .scrollIntoView(),
+    );
+
+    return true;
+  }
+
+  function shouldSplitParagraphWithShiftEnter(view: EditorView, event: KeyboardEvent) {
+    const isShiftEnter =
+      event.key === "Enter" &&
+      event.shiftKey &&
+      !event.metaKey &&
+      !event.ctrlKey &&
+      !event.altKey;
+    if (!isShiftEnter) return false;
+    if (keyboardEventIsComposing(event)) return false;
+    if (readOnlyRef.current) return false;
+
+    const { selection } = view.state;
+    if (!selection.empty) return false;
+
+    const { $from } = selection;
+    const parent = $from.parent;
+    if (!parent.isTextblock || parent.type.name !== "paragraph") return false;
+    if (resolvedPositionHasAncestor($from, milkdownStructuredTextAncestorNames)) {
+      return false;
+    }
+
+    return true;
+  }
+
+  function splitParagraphWithShiftEnter(view: EditorView) {
+    return splitBlock(view.state, (transaction) => view.dispatch(transaction), view);
+  }
+
+  function createPlainEnterHardBreakPlugin() {
+    return new Plugin({
+      key: milkdownPlainEnterHardBreakPluginKey,
+      props: {
+        handleKeyDown(view, event) {
+          if (shouldInsertPlainEnterHardBreak(view, event)) {
+            event.preventDefault();
+            return insertPlainEnterHardBreak(view);
+          }
+
+          if (!shouldSplitParagraphWithShiftEnter(view, event)) return false;
+
+          event.preventDefault();
+          return splitParagraphWithShiftEnter(view);
+        },
+      },
+    });
+  }
+
   function clearQueuedAnnotationClick() {
     window.clearTimeout(annotationClickTimerRef.current);
     annotationClickTimerRef.current = 0;
@@ -2039,6 +2160,7 @@ export function MilkdownMarkdownEditor({
       }));
 
       ctx.update(prosePluginsCtx, (plugins) => [
+        createPlainEnterHardBreakPlugin(),
         ...plugins,
         new Plugin({
           filterTransaction(transaction) {

@@ -154,11 +154,15 @@ button:disabled {
   --document-tab-bar-offset: 0px;
   --document-tab-bar-occupied-height: var(--document-tab-bar-height);
   --editor-content-gutter: 72px;
+  --editor-content-top-gutter: 80px;
   --editor-content-inline-start-gutter: clamp(96px, 7vw, 120px);
   --editor-content-inline-end-gutter: var(--editor-content-gutter);
   --editor-content-offset: var(--side-panel-reserved-width);
   --editor-content-end-offset: var(--side-panel-reserved-width);
   --editor-left-control-gutter: clamp(56px, 4vw, 72px);
+  --editor-top-control-offset: 20px;
+  --editor-document-title-top: var(--editor-top-control-offset);
+  --editor-document-title-max-width: min(36rem, 34vw);
   --settings-editor-font-size: 18px;
   --settings-editor-line-height: 1.72;
   --settings-editor-line-height-px: 31px;
@@ -341,6 +345,8 @@ button:disabled {
 
 .mobile-panel-close,
 .mobile-source-actions,
+.mobile-workspace-summary,
+.mobile-location-shortcuts,
 .mobile-empty-actions,
 .mobile-storage-status,
 .mobile-command-bar {
@@ -1874,6 +1880,7 @@ button:disabled {
   margin-left: var(--editor-content-offset);
   margin-right: var(--editor-content-end-offset);
   min-height: calc(100vh - var(--editor-content-gutter) * 2);
+  padding-top: var(--editor-content-top-gutter);
   padding-left: var(--editor-left-control-gutter);
   transition:
     margin-left var(--side-panel-transition-duration) var(--side-panel-transition-easing),
@@ -1906,8 +1913,8 @@ button:disabled {
   align-items: center;
   gap: 6px;
   border: 1px solid var(--color-border);
-  border-radius: 999px;
-  padding: 0 5px 0 11px;
+  border-radius: 8px;
+  padding: 0 6px 0 10px;
   color: var(--color-heading);
   background: color-mix(in srgb, var(--color-surface-soft) 84%, var(--color-surface-raised));
   box-shadow: var(--shadow-low);
@@ -1930,7 +1937,7 @@ button:disabled {
   height: 20px;
   place-items: center;
   border: 0;
-  border-radius: 999px;
+  border-radius: 6px;
   padding: 0;
   color: var(--color-muted);
   background: transparent;
@@ -1962,7 +1969,7 @@ button:disabled {
   max-width: 100%;
   height: 30px;
   border: 1px dashed var(--color-border);
-  border-radius: 999px;
+  border-radius: 8px;
   padding: 0 12px;
   color: var(--color-heading);
   background: transparent;
@@ -2207,7 +2214,7 @@ button:disabled {
 
 .editor-toolbar {
   position: absolute;
-  top: 20px;
+  top: var(--editor-top-control-offset);
   left: calc(var(--editor-content-offset) + var(--editor-left-control-gutter));
   z-index: 4;
   display: inline-flex;
@@ -2232,7 +2239,41 @@ button:disabled {
 }
 
 .scholium-shell.has-document-tabs .editor-toolbar {
-  top: calc(20px + var(--document-tab-bar-occupied-height));
+  top: calc(var(--editor-top-control-offset) + var(--document-tab-bar-occupied-height));
+}
+
+.editor-document-title {
+  position: absolute;
+  top: var(--editor-document-title-top);
+  right: var(--editor-content-end-offset);
+  left: calc(var(--editor-content-offset) + var(--editor-left-control-gutter));
+  z-index: 3;
+  display: flex;
+  min-height: 40px;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  transition:
+    left var(--side-panel-transition-duration) var(--side-panel-transition-easing),
+    right var(--side-panel-transition-duration) var(--side-panel-transition-easing);
+}
+
+.scholium-shell.has-document-tabs .editor-document-title {
+  top: calc(var(--editor-document-title-top) + var(--document-tab-bar-occupied-height));
+}
+
+.editor-document-title__text {
+  max-width: var(--editor-document-title-max-width);
+  margin: 0;
+  overflow: hidden;
+  color: var(--color-preview-editor-text);
+  font-size: 1.75rem;
+  font-weight: 760;
+  letter-spacing: 0;
+  line-height: 1.22;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .editor-toolbar:not([data-expanded="true"]) .note-mode-switch--dependent {
@@ -5282,6 +5323,14 @@ button:disabled {
   }
 }
 
+@media (max-width: 1680px) {
+  .scholium-shell {
+    --editor-content-top-gutter: 128px;
+    --editor-document-title-top: calc(var(--editor-top-control-offset) + 52px);
+    --editor-document-title-max-width: min(100%, 36rem);
+  }
+}
+
 @media (max-width: 820px) {
   .scholium-shell {
     --editor-content-gutter: 32px;
@@ -5368,6 +5417,7 @@ button:disabled {
     --note-library-content-gap: 0px;
     --document-pane-width: 100vw;
     --editor-content-gutter: 18px;
+    --editor-content-top-gutter: 0px;
     --editor-content-offset: 0px;
     --editor-content-end-offset: 0px;
     --editor-left-control-gutter: 0px;
@@ -5395,7 +5445,7 @@ button:disabled {
 
   .document-pane {
     display: grid;
-    grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+    grid-template-rows: auto auto auto auto auto minmax(0, 1fr) auto;
     background: var(--color-document-pane-bg);
     transform: translateX(-100%);
   }
@@ -5425,7 +5475,8 @@ button:disabled {
 
   .directory-bookmark,
   .note-library-bookmark,
-  .editor-toolbar {
+  .editor-toolbar,
+  .editor-document-title {
     display: none;
   }
 
@@ -5595,25 +5646,165 @@ button:disabled {
   }
 
   .file-search {
-    padding: 10px 14px;
+    padding: 8px 14px;
   }
 
   .file-search input {
-    height: 40px;
-    font-size: 0.9rem;
+    height: 38px;
+    font-size: 16px;
   }
 
-  .mobile-source-actions,
   .mobile-empty-actions {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 8px;
+    gap: 7px;
   }
 
   .mobile-source-actions {
+    display: flex;
+    gap: 6px;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
     border-bottom: 1px solid var(--color-border-soft);
-    padding: 8px 14px 10px;
+    padding: 7px 14px;
     background: var(--color-surface);
+    scrollbar-width: none;
+  }
+
+  .mobile-source-actions::-webkit-scrollbar {
+    display: none;
+  }
+
+  .mobile-workspace-summary {
+    display: grid;
+    grid-template-columns: 22px minmax(0, 1fr);
+    gap: 8px;
+    align-items: center;
+    border-bottom: 1px solid var(--color-border-soft);
+    padding: 8px 14px;
+    color: var(--color-heading);
+    background: var(--color-surface);
+  }
+
+  .mobile-workspace-summary__text {
+    display: grid;
+    min-width: 0;
+    gap: 2px;
+  }
+
+  .mobile-workspace-summary__label,
+  .mobile-workspace-summary__title {
+    min-width: 0;
+    overflow: hidden;
+    line-height: 1.15;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .mobile-workspace-summary__label {
+    color: var(--color-muted);
+    font-size: 0.68rem;
+    font-weight: 720;
+  }
+
+  .mobile-workspace-summary__title {
+    color: var(--color-heading);
+    font-size: 0.82rem;
+    font-weight: 760;
+  }
+
+  .mobile-location-shortcuts {
+    display: grid;
+    max-height: min(28svh, 220px);
+    gap: 10px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    border-bottom: 1px solid var(--color-border-soft);
+    padding: 10px 16px 12px;
+    background: var(--color-surface);
+  }
+
+  .mobile-location-shortcuts__section {
+    display: grid;
+    gap: 3px;
+    min-width: 0;
+  }
+
+  .mobile-location-shortcuts__section h2 {
+    margin: 0;
+    color: var(--color-muted);
+    font-size: 13px;
+    font-weight: 720;
+    letter-spacing: 0;
+    line-height: 1.2;
+  }
+
+  .mobile-location-shortcuts__list {
+    display: grid;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .mobile-location-shortcut {
+    display: grid;
+    min-width: 0;
+    min-height: 34px;
+    grid-template-columns: 20px minmax(0, 1fr);
+    gap: 8px;
+    align-items: center;
+    border: 0;
+    border-radius: 7px;
+    padding: 4px 2px;
+    color: var(--color-heading);
+    background: transparent;
+    box-shadow: none;
+    text-align: left;
+  }
+
+  .mobile-location-shortcut:hover,
+  .mobile-location-shortcut:focus-visible {
+    border-color: var(--color-selected-border);
+    background: var(--color-surface-soft);
+    outline: none;
+  }
+
+  .mobile-location-shortcut__text {
+    display: grid;
+    min-width: 0;
+    gap: 2px;
+  }
+
+  .mobile-location-shortcut__title,
+  .mobile-location-shortcut__path {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .mobile-location-shortcut__title {
+    color: var(--color-heading);
+    font-size: 14px;
+    font-weight: 740;
+    line-height: 1.15;
+  }
+
+  .mobile-location-shortcut__path {
+    color: var(--color-muted);
+    font-size: 12px;
+    font-weight: 580;
+    line-height: 1.1;
+  }
+
+  .mobile-location-shortcuts__empty {
+    margin: 0;
+    border: 0;
+    padding: 0;
+    color: var(--color-muted);
+    background: transparent;
+    font-size: 13px;
+    font-weight: 620;
+    line-height: 1.2;
   }
 
   .mobile-empty-actions {
@@ -5621,20 +5812,35 @@ button:disabled {
     margin-top: 18px;
   }
 
-  .mobile-source-actions button,
   .mobile-empty-actions button {
     display: grid;
     min-width: 0;
-    min-height: 44px;
-    grid-template-columns: 22px minmax(0, 1fr);
-    gap: 8px;
+    min-height: 38px;
+    grid-template-columns: 20px minmax(0, 1fr);
+    gap: 7px;
     align-items: center;
     border: 1px solid var(--color-border);
     border-radius: 8px;
-    padding: 0 11px;
+    padding: 0 10px;
     color: var(--color-heading);
     background: var(--color-surface-raised);
-    box-shadow: var(--shadow-low);
+    box-shadow: 0 3px 10px rgba(32, 35, 41, 0.06);
+    text-align: left;
+  }
+
+  .mobile-source-actions button {
+    display: inline-flex;
+    flex: 0 0 auto;
+    min-width: 0;
+    min-height: 32px;
+    align-items: center;
+    gap: 6px;
+    border: 0;
+    border-radius: 999px;
+    padding: 0 10px;
+    color: var(--color-heading);
+    background: var(--color-surface-soft);
+    box-shadow: none;
     text-align: left;
   }
 
@@ -5649,12 +5855,12 @@ button:disabled {
 
   .mobile-source-action__icon {
     display: block;
-    width: 21px;
-    height: 21px;
+    width: 19px;
+    height: 19px;
     stroke: currentColor;
     stroke-linecap: round;
     stroke-linejoin: round;
-    stroke-width: 1.9;
+    stroke-width: 1.85;
   }
 
   .mobile-source-actions button span,
@@ -5662,11 +5868,15 @@ button:disabled {
     min-width: 0;
     overflow: hidden;
     color: inherit;
-    font-size: 0.82rem;
+    font-size: 14px;
     font-weight: 740;
     line-height: 1.15;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .mobile-source-actions button span {
+    max-width: 116px;
   }
 
   .document-list,
