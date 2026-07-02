@@ -3112,6 +3112,12 @@ button:disabled {
   caret-color: var(--color-accent);
 }
 
+.milkdown-markdown-editor .milkdown .ProseMirror.virtual-cursor-enabled {
+  --prosemirror-virtual-cursor-color: var(--color-accent);
+
+  caret-color: transparent;
+}
+
 .milkdown-markdown-editor .milkdown .ProseMirror p,
 .milkdown-markdown-editor .milkdown .ProseMirror li,
 .milkdown-markdown-editor .milkdown .ProseMirror blockquote {
