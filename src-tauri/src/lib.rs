@@ -117,7 +117,7 @@ struct OpenLocationPayload {
     path: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct TextSelectionAnchor {
     from: usize,
@@ -127,7 +127,7 @@ struct TextSelectionAnchor {
     suffix: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SelectionNote {
     id: String,
@@ -141,7 +141,7 @@ struct SelectionNote {
     deleted_at: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct GlossaryTerm {
     id: String,
@@ -152,7 +152,7 @@ struct GlossaryTerm {
     updated_at: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct GlossaryBinding {
     id: String,
@@ -167,7 +167,7 @@ struct GlossaryBinding {
     deleted_at: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct NotesFile {
     version: u32,
@@ -447,6 +447,82 @@ fn dropbox_notes_markdown_path(dropbox_path: &str) -> PathBuf {
     PathBuf::from(format!("dropbox:{normalized_path}"))
 }
 
+fn dropbox_notes_sidecar_path(dropbox_path: &str) -> String {
+    let normalized_path = normalize_dropbox_path(dropbox_path);
+
+    format!("{normalized_path}.notes.json")
+}
+
+fn visible_notes_from_file(
+    notes_file: NotesFile,
+) -> (Vec<SelectionNote>, Vec<GlossaryTerm>, Vec<GlossaryBinding>) {
+    (
+        notes_file
+            .notes
+            .into_iter()
+            .filter(|note| note.status != "deleted")
+            .collect(),
+        notes_file.glossary_terms,
+        notes_file
+            .glossary_bindings
+            .into_iter()
+            .filter(|binding| binding.status != "deleted")
+            .collect(),
+    )
+}
+
+fn notes_file_for_document(
+    document_path: String,
+    notes: Vec<SelectionNote>,
+    glossary_terms: Vec<GlossaryTerm>,
+    glossary_bindings: Vec<GlossaryBinding>,
+) -> NotesFile {
+    NotesFile {
+        version: 1,
+        markdown_path: document_path,
+        notes: notes
+            .into_iter()
+            .filter(|note| note.status != "deleted")
+            .collect(),
+        glossary_terms,
+        glossary_bindings: glossary_bindings
+            .into_iter()
+            .filter(|binding| binding.status != "deleted")
+            .collect(),
+    }
+}
+
+fn path_is_local_dropbox_synced_path(markdown_path: &Path) -> bool {
+    let normalized_path = normalized_markdown_path_string(markdown_path).replace('\\', "/");
+    let normalized_path = normalized_path.to_lowercase();
+
+    normalized_path.contains("/dropbox/")
+        || normalized_path.contains("/library/cloudstorage/dropbox/")
+}
+
+fn mirror_notes_file_to_local_dropbox_sidecar(
+    markdown_path: &Path,
+    notes_file: &NotesFile,
+) -> Result<(), String> {
+    if !path_is_local_dropbox_synced_path(markdown_path) {
+        return Ok(());
+    }
+
+    let sidecar_path = legacy_sidecar_path(markdown_path)?;
+    if notes_file_is_empty(notes_file) {
+        if sidecar_path.exists() {
+            fs::remove_file(&sidecar_path)
+                .map_err(|error| format!("failed to remove Dropbox sidecar notes: {error}"))?;
+        }
+        return Ok(());
+    }
+
+    let serialized = serde_json::to_string_pretty(notes_file)
+        .map_err(|error| format!("failed to serialize Dropbox sidecar notes: {error}"))?;
+    fs::write(&sidecar_path, serialized)
+        .map_err(|error| format!("failed to write Dropbox sidecar notes: {error}"))
+}
+
 fn read_document_notes(
     app: &AppHandle,
     markdown_path: &Path,
@@ -461,23 +537,13 @@ fn read_document_notes(
 > {
     let notes_path = notes_store_path(app, markdown_path)?;
     let notes_file = read_notes_file(app, markdown_path)?;
-    let (notes, glossary_terms, glossary_bindings) = notes_file
-        .map(|parsed| {
-            (
-                parsed
-                    .notes
-                    .into_iter()
-                    .filter(|note| note.status != "deleted")
-                    .collect(),
-                parsed.glossary_terms,
-                parsed
-                    .glossary_bindings
-                    .into_iter()
-                    .filter(|binding| binding.status != "deleted")
-                    .collect(),
-            )
-        })
-        .unwrap_or_else(|| (Vec::new(), Vec::new(), Vec::new()));
+    let (notes, glossary_terms, glossary_bindings) = match notes_file {
+        Some(notes_file) => {
+            mirror_notes_file_to_local_dropbox_sidecar(markdown_path, &notes_file)?;
+            visible_notes_from_file(notes_file)
+        }
+        None => (Vec::new(), Vec::new(), Vec::new()),
+    };
 
     Ok((
         notes_path.to_string_lossy().to_string(),
@@ -495,21 +561,13 @@ fn write_document_notes(
     glossary_terms: Vec<GlossaryTerm>,
     glossary_bindings: Vec<GlossaryBinding>,
 ) -> Result<PathBuf, String> {
-    let notes_file = NotesFile {
-        version: 1,
-        markdown_path: document_path,
-        notes: notes
-            .into_iter()
-            .filter(|note| note.status != "deleted")
-            .collect(),
-        glossary_terms,
-        glossary_bindings: glossary_bindings
-            .into_iter()
-            .filter(|binding| binding.status != "deleted")
-            .collect(),
-    };
+    let notes_file =
+        notes_file_for_document(document_path, notes, glossary_terms, glossary_bindings);
+    let notes_path = write_notes_file(app, markdown_path, notes_file.clone())?;
 
-    write_notes_file(app, markdown_path, notes_file)
+    mirror_notes_file_to_local_dropbox_sidecar(markdown_path, &notes_file)?;
+
+    Ok(notes_path)
 }
 
 fn remove_document_notes(app: &AppHandle, markdown_path: &Path) -> Result<PathBuf, String> {
@@ -808,6 +866,10 @@ fn dropbox_error_message(status: reqwest::StatusCode, raw_body: &str, context: &
     }
 }
 
+fn dropbox_error_is_not_found(status: reqwest::StatusCode, raw_body: &str) -> bool {
+    status == StatusCode::CONFLICT && raw_body.contains("not_found")
+}
+
 async fn parse_dropbox_token_response(
     response: reqwest::Response,
     context: &str,
@@ -1048,6 +1110,202 @@ fn dropbox_file_with_notes(
         rev,
         server_modified,
     })
+}
+
+async fn download_dropbox_notes_file(
+    app: &tauri::AppHandle,
+    dropbox_path: &str,
+) -> Result<Option<NotesFile>, String> {
+    let notes_sidecar_path = dropbox_notes_sidecar_path(dropbox_path);
+    let access_token = dropbox_access_token(app).await?;
+    let response = reqwest::Client::new()
+        .post(DROPBOX_DOWNLOAD_URL)
+        .bearer_auth(access_token)
+        .header(
+            "Dropbox-API-Arg",
+            serde_json::json!({ "path": notes_sidecar_path }).to_string(),
+        )
+        .send()
+        .await
+        .map_err(|error| format!("failed to download Dropbox notes file: {error}"))?;
+
+    if response.status() == StatusCode::UNAUTHORIZED {
+        return Err("Dropbox authorization failed; reconnect Dropbox.".to_string());
+    }
+
+    let status = response.status();
+    if !status.is_success() {
+        let raw_body = response
+            .text()
+            .await
+            .unwrap_or_else(|error| format!("failed to read Dropbox error response: {error}"));
+        if dropbox_error_is_not_found(status, &raw_body) {
+            return Ok(None);
+        }
+
+        return Err(dropbox_error_message(
+            status,
+            &raw_body,
+            "failed to download Dropbox notes file",
+        ));
+    }
+
+    let raw_notes = response
+        .text()
+        .await
+        .map_err(|error| format!("failed to read Dropbox notes file: {error}"))?;
+    let notes_file = serde_json::from_str::<NotesFile>(&raw_notes)
+        .map_err(|error| format!("failed to parse Dropbox notes file: {error}"))?;
+    let notes_markdown_path = dropbox_notes_markdown_path(dropbox_path);
+
+    write_notes_file(app, &notes_markdown_path, notes_file.clone())?;
+
+    Ok(Some(notes_file))
+}
+
+async fn read_dropbox_document_notes(
+    app: &tauri::AppHandle,
+    dropbox_path: &str,
+) -> Result<
+    (
+        String,
+        Vec<SelectionNote>,
+        Vec<GlossaryTerm>,
+        Vec<GlossaryBinding>,
+    ),
+    String,
+> {
+    if let Some(notes_file) = download_dropbox_notes_file(app, dropbox_path).await? {
+        let notes_markdown_path = dropbox_notes_markdown_path(dropbox_path);
+        let notes_path = notes_store_path(app, &notes_markdown_path)?;
+        let (notes, glossary_terms, glossary_bindings) = visible_notes_from_file(notes_file);
+
+        return Ok((
+            notes_path.to_string_lossy().to_string(),
+            notes,
+            glossary_terms,
+            glossary_bindings,
+        ));
+    }
+
+    let notes_markdown_path = dropbox_notes_markdown_path(dropbox_path);
+    if let Some(notes_file) = read_notes_file(app, &notes_markdown_path)? {
+        let notes_path = notes_store_path(app, &notes_markdown_path)?;
+        if !notes_file_is_empty(&notes_file) {
+            upload_dropbox_notes_file(app, dropbox_path, notes_file.clone()).await?;
+        }
+        let (notes, glossary_terms, glossary_bindings) = visible_notes_from_file(notes_file);
+
+        return Ok((
+            notes_path.to_string_lossy().to_string(),
+            notes,
+            glossary_terms,
+            glossary_bindings,
+        ));
+    }
+
+    read_document_notes(app, &notes_markdown_path)
+}
+
+async fn dropbox_file_with_remote_notes(
+    app: &tauri::AppHandle,
+    path: String,
+    title: String,
+    body: String,
+    rev: Option<String>,
+    server_modified: Option<String>,
+) -> Result<DropboxMarkdownFile, String> {
+    let (notes_path, notes, glossary_terms, glossary_bindings) =
+        read_dropbox_document_notes(app, &path).await?;
+
+    Ok(DropboxMarkdownFile {
+        path,
+        notes_path,
+        title,
+        body,
+        notes,
+        glossary_terms,
+        glossary_bindings,
+        rev,
+        server_modified,
+    })
+}
+
+async fn upload_dropbox_notes_file(
+    app: &tauri::AppHandle,
+    dropbox_path: &str,
+    notes_file: NotesFile,
+) -> Result<(), String> {
+    let notes_sidecar_path = dropbox_notes_sidecar_path(dropbox_path);
+    let serialized = serde_json::to_string_pretty(&notes_file)
+        .map_err(|error| format!("failed to serialize Dropbox notes: {error}"))?;
+    let access_token = dropbox_access_token(app).await?;
+    let response = reqwest::Client::new()
+        .post(DROPBOX_UPLOAD_URL)
+        .bearer_auth(access_token)
+        .header("Content-Type", "application/octet-stream")
+        .header(
+            "Dropbox-API-Arg",
+            serde_json::json!({
+                "path": notes_sidecar_path,
+                "mode": "overwrite",
+                "autorename": false,
+                "mute": false,
+                "strict_conflict": false
+            })
+            .to_string(),
+        )
+        .body(serialized)
+        .send()
+        .await
+        .map_err(|error| format!("failed to upload Dropbox notes file: {error}"))?;
+
+    if response.status() == StatusCode::UNAUTHORIZED {
+        return Err("Dropbox authorization failed; reconnect Dropbox.".to_string());
+    }
+    if !response.status().is_success() {
+        return Err(dropbox_response_error(response, "failed to upload Dropbox notes file").await);
+    }
+
+    Ok(())
+}
+
+async fn delete_dropbox_notes_file(
+    app: &tauri::AppHandle,
+    dropbox_path: &str,
+) -> Result<(), String> {
+    let notes_sidecar_path = dropbox_notes_sidecar_path(dropbox_path);
+    let access_token = dropbox_access_token(app).await?;
+    let response = reqwest::Client::new()
+        .post(DROPBOX_DELETE_URL)
+        .bearer_auth(access_token)
+        .json(&serde_json::json!({ "path": notes_sidecar_path }))
+        .send()
+        .await
+        .map_err(|error| format!("failed to delete Dropbox notes file: {error}"))?;
+
+    if response.status() == StatusCode::UNAUTHORIZED {
+        return Err("Dropbox authorization failed; reconnect Dropbox.".to_string());
+    }
+
+    let status = response.status();
+    if !status.is_success() {
+        let raw_body = response
+            .text()
+            .await
+            .unwrap_or_else(|error| format!("failed to read Dropbox error response: {error}"));
+        if dropbox_error_is_not_found(status, &raw_body) {
+            return Ok(());
+        }
+
+        return Err(dropbox_error_message(
+            status,
+            &raw_body,
+            "failed to delete Dropbox notes file",
+        ));
+    }
+
+    Ok(())
 }
 
 async fn upload_dropbox_markdown_file(
@@ -2522,7 +2780,7 @@ async fn open_dropbox_markdown_file(
         .map(|metadata| document_title(Path::new(&metadata.name)))
         .unwrap_or_else(|| document_title(Path::new(&path)));
 
-    dropbox_file_with_notes(
+    dropbox_file_with_remote_notes(
         &app,
         path,
         title,
@@ -2530,6 +2788,7 @@ async fn open_dropbox_markdown_file(
         metadata.as_ref().and_then(|metadata| metadata.rev.clone()),
         metadata.and_then(|metadata| metadata.server_modified),
     )
+    .await
 }
 
 #[tauri::command]
@@ -2554,14 +2813,15 @@ async fn save_dropbox_markdown_file(
 
     let saved = upload_dropbox_markdown_file(&app, path, body, mode).await?;
     let notes_markdown_path = dropbox_notes_markdown_path(&saved.path);
-    write_document_notes(
-        &app,
-        &notes_markdown_path,
+    let notes_file = notes_file_for_document(
         format!("dropbox:{}", saved.path),
         notes,
         glossary_terms,
         glossary_bindings,
-    )?;
+    );
+
+    write_notes_file(&app, &notes_markdown_path, notes_file.clone())?;
+    upload_dropbox_notes_file(&app, &saved.path, notes_file).await?;
 
     dropbox_file_with_notes(
         &app,
@@ -2624,11 +2884,16 @@ async fn duplicate_dropbox_markdown_file(
     }
 
     let source_notes_markdown_path = dropbox_notes_markdown_path(&source_path);
-    if let Some(mut parsed) = read_notes_file(&app, &source_notes_markdown_path)? {
-        let target_notes_markdown_path = dropbox_notes_markdown_path(&target_path);
-        let target_document_id = format!("dropbox-file:{target_path}");
+    let source_notes_file = match download_dropbox_notes_file(&app, &source_path).await? {
+        Some(parsed) => Some(parsed),
+        None => read_notes_file(&app, &source_notes_markdown_path)?,
+    };
 
-        parsed.markdown_path = format!("dropbox:{target_path}");
+    if let Some(mut parsed) = source_notes_file {
+        let target_notes_markdown_path = dropbox_notes_markdown_path(&target_path);
+        let target_document_id = format!("dropbox:{target_path}");
+
+        parsed.markdown_path = target_document_id.clone();
         for note in parsed.notes.iter_mut() {
             note.document_id = target_document_id.clone();
         }
@@ -2636,7 +2901,8 @@ async fn duplicate_dropbox_markdown_file(
             binding.document_id = target_document_id.clone();
         }
 
-        write_notes_file(&app, &target_notes_markdown_path, parsed)?;
+        write_notes_file(&app, &target_notes_markdown_path, parsed.clone())?;
+        upload_dropbox_notes_file(&app, &target_path, parsed).await?;
     }
 
     open_dropbox_markdown_file(app, target_path).await
@@ -2672,6 +2938,7 @@ async fn delete_dropbox_markdown_file(
     }
 
     let notes_markdown_path = dropbox_notes_markdown_path(&normalized_path);
+    delete_dropbox_notes_file(&app, &normalized_path).await?;
     remove_document_notes(&app, &notes_markdown_path)?;
 
     Ok(deleted_file)

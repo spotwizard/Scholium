@@ -15,6 +15,7 @@ import {
   type MouseEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
+  type TouchEvent as ReactTouchEvent,
   type WheelEvent as ReactWheelEvent,
   useEffect,
   useId,
@@ -1000,6 +1001,15 @@ function refreshAnchor(body: string, anchor: TextSelectionAnchor): TextSelection
 
 function hasRenderableAnchor(anchor: TextSelectionAnchor) {
   return anchor.to > anchor.from;
+}
+
+function anchorMatchesBodyText(body: string, anchor: TextSelectionAnchor) {
+  if (!hasRenderableAnchor(anchor)) return false;
+
+  const anchorText = normalizeSelectionTextForComparison(anchor.selectedText);
+  if (!anchorText) return true;
+
+  return normalizeSelectionTextForComparison(body.slice(anchor.from, anchor.to)) === anchorText;
 }
 
 function assignAnnotationTones(annotations: TextRangeAnnotation[]): TextRangeAnnotation[] {
@@ -3431,11 +3441,14 @@ function makePreviewAnchor(body: string, selectedText: string) {
 }
 
 function recoverRenderableAnchor(body: string, anchor: TextSelectionAnchor): TextSelectionAnchor {
-  if (hasRenderableAnchor(anchor)) {
+  if (anchorMatchesBodyText(body, anchor)) {
     return refreshAnchor(body, anchor);
   }
 
-  return makePreviewAnchor(body, anchor.selectedText) ?? refreshAnchor(body, anchor);
+  const recoveredAnchor = makePreviewAnchor(body, anchor.selectedText);
+  if (recoveredAnchor) return recoveredAnchor;
+
+  return refreshAnchor(body, anchor);
 }
 
 function getAnnotationsForPreviewBlock(
@@ -6706,6 +6719,7 @@ function App() {
   const noteEditorPostCompositionGuardUntilRef = useRef(0);
   const noteEditModalActiveRef = useRef(false);
   const ignoreNextWorkspaceClickRef = useRef(false);
+  const autoOpenedMobileNoteLibraryDocumentRef = useRef("");
   const suppressedLibraryAnnotationClickRef = useRef<{
     noteId: string;
     until: number;
@@ -6731,6 +6745,13 @@ function App() {
   const openDocumentTabIdsRef = useRef(openDocumentTabIds);
   const documentTabsScrollerRef = useRef<HTMLDivElement | null>(null);
   const documentTabPointerActivationRef = useRef("");
+  const manualDocumentSelectionRevisionRef = useRef(0);
+  const documentTabTouchStateRef = useRef<{
+    documentId: string;
+    moved: boolean;
+    startX: number;
+    startY: number;
+  } | null>(null);
   const noteModeEnabledRef = useRef(noteModeEnabled);
   const glossaryModeEnabledRef = useRef(glossaryModeEnabled);
   const documentModeStatesRef = useRef(documentModeStates);
@@ -6973,6 +6994,7 @@ function App() {
 
       return leftNote.createdAt.localeCompare(rightNote.createdAt);
     });
+  const firstNoteLibraryNoteId = noteLibraryNotes[0]?.id ?? "";
   const expandedLibraryNote = noteLibraryNotes.find(
     (note) => note.id === expandedLibraryNoteId,
   );
@@ -7183,6 +7205,54 @@ function App() {
       closeNoteLibrary({ restoreDirectoryPane: false });
     }
   }, [hasOpenDocument, noteLibraryOpen, noteModeEnabled]);
+
+  useEffect(() => {
+    if (
+      !isMobileViewport ||
+      settingsViewOpen ||
+      !noteModeEnabled ||
+      noteLibraryOpen ||
+      noteLibraryNotes.length === 0 ||
+      autoOpenedMobileNoteLibraryDocumentRef.current === selectedDocument.id
+    ) {
+      return;
+    }
+
+    autoOpenedMobileNoteLibraryDocumentRef.current = selectedDocument.id;
+    openNoteLibrary();
+    setFocusedLibraryNoteId(firstNoteLibraryNoteId);
+  }, [
+    firstNoteLibraryNoteId,
+    isMobileViewport,
+    noteLibraryNotes.length,
+    noteLibraryOpen,
+    noteLibrarySignature,
+    noteModeEnabled,
+    selectedDocument.id,
+    settingsViewOpen,
+  ]);
+
+  useEffect(() => {
+    if (
+      !isMobileViewport ||
+      settingsViewOpen ||
+      !noteModeEnabled ||
+      !noteLibraryOpen ||
+      focusedLibraryNoteId ||
+      !firstNoteLibraryNoteId
+    ) {
+      return;
+    }
+
+    setFocusedLibraryNoteId(firstNoteLibraryNoteId);
+  }, [
+    firstNoteLibraryNoteId,
+    focusedLibraryNoteId,
+    isMobileViewport,
+    noteLibraryOpen,
+    noteModeEnabled,
+    settingsViewOpen,
+  ]);
 
   useEffect(() => {
     if (
@@ -8620,7 +8690,7 @@ function App() {
     function refreshCleanDocument() {
       if (document.visibilityState === "hidden") return;
 
-      void refreshSelectedDocumentFromDisk();
+      refreshSelectedDocumentFromBackingStore();
     }
 
     function startRefreshPolling() {
@@ -8721,6 +8791,17 @@ function App() {
 
     restoreFromSelectedFileParent();
   }, [isMobileViewport, nativeStorageAvailable, settingsSnapshot]);
+
+  useEffect(() => {
+    if (!nativeStorageAvailable || !documentIsFromDropbox(selectedDocument)) return;
+
+    rememberLastOpenedDropboxWorkspace(
+      workspaceRootPath ??
+        readLastOpenedDropboxWorkspace()?.workspacePath ??
+        dropboxParentDirectoryPath(selectedDocument.path),
+      selectedDocument.path,
+    );
+  }, [nativeStorageAvailable, selectedDocument.id, selectedDocument.path, workspaceRootPath]);
 
   useEffect(() => {
     if (!nativeStorageAvailable) return;
@@ -9421,6 +9502,37 @@ function App() {
     };
   }
 
+  function dropboxLoadedNoteFromFile(
+    loadedFile: OpenDropboxMarkdownFileResult,
+    note: SelectionNote,
+    documentId: string,
+  ): SelectionNote {
+    const anchorSourceText = note.anchor.selectedText || note.selectedText;
+    const anchor = recoverRenderableAnchor(loadedFile.body, {
+      ...note.anchor,
+      selectedText: anchorSourceText,
+    });
+
+    return {
+      ...note,
+      documentId,
+      selectedText: note.selectedText || anchor.selectedText,
+      anchor,
+    };
+  }
+
+  function dropboxLoadedGlossaryBindingFromFile(
+    loadedFile: OpenDropboxMarkdownFileResult,
+    binding: GlossaryBinding,
+    documentId: string,
+  ): GlossaryBinding {
+    return {
+      ...binding,
+      documentId,
+      anchor: recoverRenderableAnchor(loadedFile.body, binding.anchor),
+    };
+  }
+
   function mergeLoadedFilesIntoDocumentState(loadedFiles: OpenMarkdownFileResult[]) {
     if (loadedFiles.length === 0) return;
 
@@ -9637,14 +9749,12 @@ function App() {
   ) {
     const loadedDocument = documentFromDropboxFile(loadedFile);
     const documentId = loadedDocument.id;
-    const loadedNotes = loadedFile.notes.map((note) => ({
-      ...note,
-      documentId,
-    }));
-    const loadedGlossaryBindings = (loadedFile.glossaryBindings ?? []).map((binding) => ({
-      ...binding,
-      documentId,
-    }));
+    const loadedNotes = loadedFile.notes.map((note) =>
+      dropboxLoadedNoteFromFile(loadedFile, note, documentId),
+    );
+    const loadedGlossaryBindings = (loadedFile.glossaryBindings ?? []).map((binding) =>
+      dropboxLoadedGlossaryBindingFromFile(loadedFile, binding, documentId),
+    );
     const loadedGlossaryTerms = loadedFile.glossaryTerms ?? [];
     const nextDocuments = [
       loadedDocument,
@@ -9716,6 +9826,71 @@ function App() {
     markLoadedDocumentsClean([loadedDocument]);
   }
 
+  function dropboxLoadedSidecarFingerprint(
+    loadedFile: OpenDropboxMarkdownFileResult,
+    documentId: string,
+  ) {
+    const loadedNotes = loadedFile.notes.map((note) =>
+      dropboxLoadedNoteFromFile(loadedFile, note, documentId),
+    );
+    const loadedGlossaryBindings = (loadedFile.glossaryBindings ?? []).map((binding) =>
+      dropboxLoadedGlossaryBindingFromFile(loadedFile, binding, documentId),
+    );
+
+    return sidecarFingerprint(
+      loadedNotes,
+      loadedFile.glossaryTerms ?? [],
+      loadedGlossaryBindings,
+    );
+  }
+
+  function dropboxLoadedFileMatchesCurrentDocument(
+    loadedFile: OpenDropboxMarkdownFileResult,
+    currentDocument: MarkdownDocument,
+  ) {
+    const currentSidecarFingerprint = sidecarFingerprint(
+      notesForDocument(currentDocument.id),
+      glossaryTermsForDocument(currentDocument.id),
+      glossaryBindingsForDocument(currentDocument.id),
+    );
+
+    return (
+      loadedFile.body === currentDocument.body &&
+      (loadedFile.rev ?? null) === (currentDocument.dropboxRev ?? null) &&
+      dropboxLoadedSidecarFingerprint(loadedFile, currentDocument.id) ===
+        currentSidecarFingerprint
+    );
+  }
+
+  async function refreshSelectedDocumentFromDropbox() {
+    if (!nativeStorageAvailable) return;
+    if (externalFileRefreshInFlightRef.current) return;
+
+    const documentId = selectedDocumentIdRef.current;
+    if (!documentId) return;
+    if (hasDirtyState(dirtyDocumentStatesRef.current[documentId])) return;
+
+    const documentToRefresh = documentsRef.current.find((document) => document.id === documentId);
+    if (!documentToRefresh || !documentIsFromDropbox(documentToRefresh)) return;
+
+    externalFileRefreshInFlightRef.current = true;
+    try {
+      const loaded = await invoke<OpenDropboxMarkdownFileResult>("open_dropbox_markdown_file", {
+        path: documentToRefresh.path,
+      });
+      const currentDocument = documentsRef.current.find((document) => document.id === documentId);
+      if (!currentDocument || hasDirtyState(dirtyDocumentStatesRef.current[documentId])) return;
+      if (!documentIsFromDropbox(currentDocument)) return;
+      if (dropboxLoadedFileMatchesCurrentDocument(loaded, currentDocument)) return;
+
+      applyLoadedDropboxFile(loaded, { tabBehavior: "none" });
+    } catch (error) {
+      setStorageError(error instanceof Error ? error.message : String(error));
+    } finally {
+      externalFileRefreshInFlightRef.current = false;
+    }
+  }
+
   async function refreshSelectedDocumentFromDisk() {
     if (!nativeStorageAvailable) return;
     if (externalFileRefreshInFlightRef.current) return;
@@ -9742,6 +9917,18 @@ function App() {
     } finally {
       externalFileRefreshInFlightRef.current = false;
     }
+  }
+
+  function refreshSelectedDocumentFromBackingStore() {
+    const selectedDocument = documentsRef.current.find(
+      (document) => document.id === selectedDocumentIdRef.current,
+    );
+    if (selectedDocument && documentIsFromDropbox(selectedDocument)) {
+      void refreshSelectedDocumentFromDropbox();
+      return;
+    }
+
+    void refreshSelectedDocumentFromDisk();
   }
 
   function applyOpenedDirectory(
@@ -9967,9 +10154,14 @@ function App() {
   async function restoreLastOpenedDropboxWorkspace(
     restoreState: LastOpenedDropboxWorkspaceState,
   ) {
+    const restoreSelectionRevision = manualDocumentSelectionRevisionRef.current;
+    const restoreWasInterrupted = () =>
+      manualDocumentSelectionRevisionRef.current !== restoreSelectionRevision;
+
     setStorageError(t("dropbox.status.restoringLastFile"));
 
     const canReachDropbox = await checkDropboxRestoreConnection();
+    if (restoreWasInterrupted()) return;
     if (!canReachDropbox) return;
 
     let openedDirectory: OpenDropboxMarkdownDirectoryResult | null = null;
@@ -9979,6 +10171,7 @@ function App() {
         "list_dropbox_markdown_directory",
         { path: restoreState.workspacePath },
       );
+      if (restoreWasInterrupted()) return;
       applyOpenedDropboxDirectory(openedDirectory);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -10011,6 +10204,7 @@ function App() {
       const loaded = await invoke<OpenDropboxMarkdownFileResult>("open_dropbox_markdown_file", {
         path: restoreState.filePath,
       });
+      if (restoreWasInterrupted()) return;
       applyLoadedDropboxFile(loaded);
       setStorageError("");
     } catch (error) {
@@ -10054,8 +10248,16 @@ function App() {
 
   async function openDropboxMarkdownFilePath(
     path: string,
-    options: { allowPendingConnection?: boolean; tabBehavior?: DocumentTabBehavior } = {},
+    options: {
+      allowPendingConnection?: boolean;
+      tabBehavior?: DocumentTabBehavior;
+      userInitiated?: boolean;
+    } = {},
   ) {
+    if (options.userInitiated !== false) {
+      manualDocumentSelectionRevisionRef.current += 1;
+    }
+
     if (!nativeStorageAvailable) {
       setStorageError(t("error.nativeRuntimeRequired"));
       return;
@@ -10437,9 +10639,9 @@ function App() {
     if (entry.source === "dropbox") {
       const loadedDocument = documents.find((document) => document.id === entry.documentId);
       if (loadedDocument) {
-        selectDocument(entry.documentId);
+        selectDocument(entry.documentId, { tabBehavior: "add" });
       } else {
-        void openDropboxMarkdownFilePath(entry.path);
+        void openDropboxMarkdownFilePath(entry.path, { tabBehavior: "add" });
       }
       if (isMobileViewport) {
         setDirectoryPaneOpen(false);
@@ -11968,8 +12170,12 @@ function App() {
 
   function selectDocument(
     documentId: string,
-    options: { tabBehavior?: DocumentTabBehavior } = {},
+    options: { tabBehavior?: DocumentTabBehavior; userInitiated?: boolean } = {},
   ) {
+    if (options.userInitiated !== false) {
+      manualDocumentSelectionRevisionRef.current += 1;
+    }
+
     const nextDocument = documentsRef.current.find((document) => document.id === documentId);
     if (!nextDocument) return;
 
@@ -12017,9 +12223,74 @@ function App() {
     selectDocument(documentId, { tabBehavior: "none" });
   }
 
+  function handleDocumentTabTouchStart(
+    documentId: string,
+    event: ReactTouchEvent<HTMLButtonElement>,
+  ) {
+    if (event.touches.length !== 1) {
+      documentTabTouchStateRef.current = null;
+      return;
+    }
+
+    const touch = event.touches[0];
+    documentTabTouchStateRef.current = {
+      documentId,
+      moved: false,
+      startX: touch.clientX,
+      startY: touch.clientY,
+    };
+  }
+
+  function handleDocumentTabTouchMove(
+    documentId: string,
+    event: ReactTouchEvent<HTMLButtonElement>,
+  ) {
+    const touchState = documentTabTouchStateRef.current;
+    if (!touchState || touchState.documentId !== documentId || event.touches.length !== 1) {
+      return;
+    }
+
+    const touch = event.touches[0];
+    const deltaX = Math.abs(touch.clientX - touchState.startX);
+    const deltaY = Math.abs(touch.clientY - touchState.startY);
+
+    if (deltaX > 10 || deltaY > 10) {
+      touchState.moved = true;
+    }
+  }
+
+  function handleDocumentTabTouchEnd(
+    documentId: string,
+    event: ReactTouchEvent<HTMLButtonElement>,
+  ) {
+    const touchState = documentTabTouchStateRef.current;
+    documentTabTouchStateRef.current = null;
+
+    if (!touchState || touchState.documentId !== documentId || touchState.moved) {
+      return;
+    }
+
+    if (event.cancelable) {
+      event.preventDefault();
+    }
+    event.stopPropagation();
+    documentTabPointerActivationRef.current = documentId;
+    window.getSelection()?.removeAllRanges();
+    selectDocument(documentId, { tabBehavior: "none" });
+  }
+
+  function handleDocumentTabTouchCancel() {
+    documentTabTouchStateRef.current = null;
+  }
+
   function handleDocumentTabClick(documentId: string) {
-    if (documentTabPointerActivationRef.current === documentId) {
-      documentTabPointerActivationRef.current = "";
+    const pointerAlreadySelectedThisTab =
+      documentTabPointerActivationRef.current === documentId &&
+      selectedDocumentIdRef.current === documentId;
+
+    documentTabPointerActivationRef.current = "";
+
+    if (pointerAlreadySelectedThisTab) {
       return;
     }
 
@@ -13744,6 +14015,10 @@ function App() {
                     onPointerDown={(event) =>
                       handleDocumentTabPointerDown(document.id, event)
                     }
+                    onTouchCancel={handleDocumentTabTouchCancel}
+                    onTouchEnd={(event) => handleDocumentTabTouchEnd(document.id, event)}
+                    onTouchMove={(event) => handleDocumentTabTouchMove(document.id, event)}
+                    onTouchStart={(event) => handleDocumentTabTouchStart(document.id, event)}
                     role="tab"
                     title={document.title}
                     type="button"
@@ -14743,7 +15018,10 @@ function App() {
             type="button"
           >
             <MobileLibraryIcon />
-            <span>{t("noteLibrary.bookmark.label")}</span>
+            <span>
+              {t("noteLibrary.bookmark.label")}
+              {noteLibraryNotes.length > 0 ? ` ${noteLibraryNotes.length}` : ""}
+            </span>
           </button>
         </nav>
       ) : null}
