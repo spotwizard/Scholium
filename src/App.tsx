@@ -13733,16 +13733,7 @@ function App() {
         top: selectionWarningPosition.top,
       }
     : undefined;
-  const fileContextMenuStyle: CSSProperties | undefined = fileContextMenu
-    ? {
-        left: Math.round(
-          clampNumber(fileContextMenu.left, 8, Math.max(8, window.innerWidth - 188)),
-        ),
-        top: Math.round(
-          clampNumber(fileContextMenu.top, 8, Math.max(8, window.innerHeight - 64)),
-        ),
-      }
-    : undefined;
+
   const floatingNoteConnectorStyle: CSSProperties | null =
     floatingNotePanelExpanded || !floatingNotePanelPosition?.connector
       ? null
@@ -13818,6 +13809,21 @@ function App() {
         ];
       })()
     : [];
+
+  const fileContextMenuStyle: CSSProperties | undefined = fileContextMenu
+    ? {
+        left: Math.round(
+          clampNumber(fileContextMenu.left, 8, Math.max(8, window.innerWidth - 188)),
+        ),
+        top: Math.round(
+          clampNumber(
+            fileContextMenu.top,
+            8,
+            Math.max(8, window.innerHeight - (24 + fileContextMenuActions.length * 34)),
+          ),
+        ),
+      }
+    : undefined;
   const floatingPanelIsGlossary = Boolean(
     pendingGlossaryTerm ||
       activeGlossaryTerm ||
