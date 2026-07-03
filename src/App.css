@@ -2865,7 +2865,7 @@ button:disabled {
 }
 
 .markdown-preview p {
-  margin: 0 0 1em;
+  margin: 0 0 calc(var(--settings-editor-line-height, 1.5) * 1em);
 }
 
 .markdown-preview ul,
@@ -4138,22 +4138,6 @@ button:disabled {
   line-height: var(--note-content-line-height);
 }
 
-.note-markdown-editor::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  z-index: 3;
-  border: 1.5px solid var(--note-edit-border-color);
-  border-radius: 6px;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 120ms ease;
-}
-
-.note-markdown-editor.is-editing::after {
-  opacity: 1;
-}
-
 .note-markdown-editor.is-readonly {
   color: var(--color-muted);
   background: transparent;
@@ -4198,17 +4182,22 @@ button:disabled {
   width: 100%;
   min-height: var(--note-markdown-editor-min-height);
   max-height: var(--note-markdown-editor-max-height, none);
+  margin: 0;
   border: 0;
   outline: 0;
   resize: none;
   overflow-y: hidden;
   overscroll-behavior: contain;
   padding: 0;
+  -webkit-appearance: none;
+  appearance: none;
+  border-radius: 0;
   color: var(--color-text);
   background: transparent;
-  font: inherit;
+  -webkit-tap-highlight-color: transparent;
+  font-family: inherit;
   font-size: inherit;
-  line-height: inherit;
+  line-height: var(--note-content-line-height, 1.5);
 }
 
 .note-markdown-editor__textarea::selection {
@@ -4224,9 +4213,9 @@ button:disabled {
   color: var(--color-text);
   background: transparent;
   cursor: text;
-  font: inherit;
+  font-family: inherit;
   font-size: inherit;
-  line-height: inherit;
+  line-height: var(--note-content-line-height, 1.5);
 }
 
 .scholium-shell.is-mobile-safe-layout .note-markdown-editor :is(.markdown-preview, .note-markdown-editor__preview) {
@@ -4239,6 +4228,11 @@ button:disabled {
 
 .note-markdown-editor.is-editing :is(.markdown-preview, .note-markdown-editor__preview) {
   cursor: text;
+}
+
+.note-markdown-editor__plain-preview {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .note-markdown-editor :is(.markdown-preview, .note-markdown-editor__preview) > :first-child {
@@ -4622,14 +4616,6 @@ button:disabled {
   min-height: 0;
 }
 
-.scholium-shell .note-library-card__editor .note-markdown-editor__preview {
-  display: -webkit-box;
-  max-height: none;
-  overflow: hidden;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 10;
-}
-
 .note-library-empty {
   margin: 0;
   border: 1px dashed var(--color-border);
@@ -4919,14 +4905,19 @@ button:disabled {
 
 .floating-note-panel.is-expanded-sidebar .floating-note-card__editor .cm-scroller,
 .floating-note-panel.is-expanded-sidebar .floating-note-card__editor .markdown-preview,
+.floating-note-panel.is-expanded-sidebar .floating-note-card__editor .note-markdown-editor__textarea,
 .floating-note-panel.is-expanded-sidebar
   .floating-note-card__editor
   .milkdown-markdown-editor
   .milkdown
   .ProseMirror {
   max-height: 100%;
-  overflow: auto;
+  overflow-y: auto !important;
   overscroll-behavior: contain;
+}
+
+.floating-note-panel.is-expanded-sidebar .floating-note-card__editor .note-markdown-editor__textarea {
+  height: 100% !important;
 }
 
 @keyframes floating-note-pop-in {
@@ -6095,6 +6086,7 @@ button:disabled {
   }
 
   .markdown-preview,
+  .note-markdown-editor,
   .milkdown-markdown-editor-shell {
     font-size: clamp(16px, var(--settings-editor-font-size), 19px);
   }
@@ -6574,6 +6566,12 @@ button:disabled {
     padding: 14px;
   }
 
+  .note-library-card .note-markdown-editor,
+  .note-library-expanded-panel .note-markdown-editor,
+  .floating-note-card .note-markdown-editor {
+    --note-edit-focus-ring-inline-padding: 8px;
+  }
+
   .note-library-card__expand-button,
   .note-library-card__actions {
     opacity: 1;
@@ -6598,14 +6596,35 @@ button:disabled {
   }
 
   .floating-note-panel {
-    width: calc(100vw - 20px);
+    width: calc(100vw - 12px);
+  }
+
+  .floating-note-card {
+    padding: 12px 12px 14px;
   }
 
   .floating-note-panel.is-expanded-sidebar,
   .note-library-expanded-panel {
-    inset: 0;
+    top: var(--mobile-status-bar-protector-height);
+    right: 0;
+    bottom: 0;
+    left: 0;
     width: 100vw;
-    height: 100svh;
+    height: calc(100svh - var(--mobile-status-bar-protector-height));
+    max-height: calc(100svh - var(--mobile-status-bar-protector-height));
+  }
+
+  .floating-note-panel.is-expanded-sidebar .floating-note-card {
+    padding: 12px 12px 16px;
+  }
+
+  .note-library-expanded-panel__card {
+    padding: 14px 12px 16px;
+  }
+
+  .note-library-expanded-panel__body-scroll {
+    padding: 0 2px;
+    scrollbar-gutter: auto;
   }
 
   .floating-note-panel-toggle-button,
@@ -6631,4 +6650,12 @@ button:disabled {
   .scholium-shell.is-mobile-safe-layout.is-note-library-open {
     --mobile-status-bar-fallback: 36px;
   }
+}
+
+.note-markdown-editor__shared-height-container {
+  display: grid;
+  grid-template-columns: 1fr;
+}
+.note-markdown-editor__shared-height-container > * {
+  grid-area: 1 / 1;
 }

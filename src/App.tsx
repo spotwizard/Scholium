@@ -838,6 +838,7 @@ const selectionWarningAutoDismissMs = 2600;
 const appDrivenSelectionClearGuardMs = 1200;
 const autosaveDelayMs = 500;
 const externalFileRefreshIntervalMs = 1500;
+const dropboxExternalFileRefreshIntervalMs = 30_000;
 const pdfCssPageWidth = 794;
 const pdfCssPageHeight = 1123;
 const pdfPageWidthPoints = 595.28;
@@ -6300,6 +6301,7 @@ function MarkdownPreviewContent({
   mermaidEmptyDefinitionLabel,
   mermaidLoadingLabel,
   onDoubleClick,
+  style,
   value,
 }: {
   className: string;
@@ -6307,6 +6309,7 @@ function MarkdownPreviewContent({
   mermaidEmptyDefinitionLabel: string;
   mermaidLoadingLabel: string;
   onDoubleClick?: () => void;
+  style?: React.CSSProperties;
   value: string;
 }) {
   const isEmpty = !stripMarkdownFrontmatter(value).trim();
@@ -6315,6 +6318,7 @@ function MarkdownPreviewContent({
   return (
     <div
       className={`${className} ${isEmpty ? "is-empty" : ""}`}
+      style={style}
       onDoubleClick={onDoubleClick}
     >
       {isEmpty
@@ -6329,6 +6333,20 @@ function MarkdownPreviewContent({
             />
           ))}
     </div>
+  );
+}
+
+function noteValueCanUsePlainTextPreview(value: string) {
+  const body = stripMarkdownFrontmatter(value);
+  if (!body.trim()) return true;
+
+  return !(
+    /^ {0,3}#{1,6}\s+\S/m.test(body) ||
+    /^ {0,3}([-*+]\s+|\d+[.)]\s+)/m.test(body) ||
+    /^ {0,3}>\s?/m.test(body) ||
+    /^ {0,3}(```|~~~)/m.test(body) ||
+    /^ {0,3}(-{3,}|\*{3,}|_{3,})\s*$/m.test(body) ||
+    /(`[^`]+`|\*\*[^*]+\*\*|\*[^*\n]+\*|\[[^\]]+\]\([^)]+\)|!\[[^\]]*\]\([^)]+\)|<br\s*\/?>)/i.test(body)
   );
 }
 
@@ -6418,12 +6436,23 @@ function resizeNoteTextareaToContent(textarea: HTMLTextAreaElement) {
     : (Number.isFinite(parsedFontSize) ? parsedFontSize : 16) * 1.5;
   const maximumHeight = lineHeight * 10;
 
+  const container = textarea.parentElement;
+  if (container) {
+    container.style.alignItems = "start";
+  }
+
+  textarea.style.minHeight = "0px";
   textarea.style.height = "auto";
   const contentHeight = textarea.scrollHeight;
   const nextHeight = Math.min(contentHeight, maximumHeight);
 
-  textarea.style.height = `${nextHeight}px`;
+  textarea.style.minHeight = `${nextHeight}px`;
+  textarea.style.height = "";
   textarea.style.overflowY = contentHeight > maximumHeight + 1 ? "auto" : "hidden";
+
+  if (container) {
+    container.style.alignItems = "";
+  }
 }
 
 function NoteMarkdownEditor({
@@ -6459,6 +6488,15 @@ function NoteMarkdownEditor({
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const pendingEditPointerRef = useRef<{ clientX: number; clientY: number } | null>(null);
   const isEditable = editing && !readOnly;
+  const usePlainTextPreview = noteValueCanUsePlainTextPreview(value);
+  const previewIsEmpty = !stripMarkdownFrontmatter(value).trim();
+  const previewVisibilityStyle: CSSProperties = {
+    opacity: isEditable ? 0 : 1,
+    pointerEvents: isEditable ? "none" : "auto",
+    zIndex: isEditable ? -1 : 1,
+    visibility: isEditable ? "hidden" : "visible",
+  };
+
   const editorClassName = [
     "note-markdown-editor",
     "note-markdown-editor--preview",
@@ -6468,6 +6506,7 @@ function NoteMarkdownEditor({
   ]
     .filter(Boolean)
     .join(" ");
+
   useLayoutEffect(() => {
     if (!isEditable) return;
 
@@ -6557,7 +6596,7 @@ function NoteMarkdownEditor({
       onPointerDownCapture={handlePointerDownCapture}
       ref={setRootElement}
     >
-      {isEditable ? (
+      <div className="note-markdown-editor__shared-height-container">
         <textarea
           aria-label={ariaLabel}
           className="note-markdown-editor__textarea"
@@ -6569,17 +6608,35 @@ function NoteMarkdownEditor({
           onCompositionEnd={onCompositionEnd}
           onCompositionStart={onCompositionStart}
           onKeyDown={handleTextareaKeyDown}
+          style={{
+            opacity: isEditable ? 1 : 0,
+            pointerEvents: isEditable ? "auto" : "none",
+            zIndex: isEditable ? 1 : -1,
+            visibility: isEditable ? "visible" : "hidden",
+          }}
         />
-      ) : (
-        <MarkdownPreviewContent
-          className="note-markdown-editor__preview"
-          emptyLabel=""
-          mermaidEmptyDefinitionLabel="Mermaid diagram is empty."
-          mermaidLoadingLabel="Rendering diagram..."
-          onDoubleClick={readOnly ? undefined : onRequestEdit}
-          value={value}
-        />
-      )}
+        {usePlainTextPreview ? (
+          <div
+            className={`note-markdown-editor__preview note-markdown-editor__plain-preview ${
+              previewIsEmpty ? "is-empty" : ""
+            }`}
+            onDoubleClick={readOnly ? undefined : onRequestEdit}
+            style={previewVisibilityStyle}
+          >
+            {previewIsEmpty ? "" : stripMarkdownFrontmatter(value)}
+          </div>
+        ) : (
+          <MarkdownPreviewContent
+            className="note-markdown-editor__preview"
+            emptyLabel=""
+            mermaidEmptyDefinitionLabel="Mermaid diagram is empty."
+            mermaidLoadingLabel="Rendering diagram..."
+            onDoubleClick={readOnly ? undefined : onRequestEdit}
+            value={value}
+            style={previewVisibilityStyle}
+          />
+        )}
+      </div>
     </div>
   );
 }
@@ -6734,6 +6791,7 @@ function App() {
   const autosaveInFlightRef = useRef(false);
   const autosaveRequestedWhileSavingRef = useRef(false);
   const externalFileRefreshInFlightRef = useRef(false);
+  const lastDropboxExternalRefreshRef = useRef<{ path: string; timestamp: number } | null>(null);
   const documentsRef = useRef(documents);
   const workspaceEntriesRef = useRef(workspaceEntries);
   const notesRef = useRef(notes);
@@ -9873,6 +9931,16 @@ function App() {
     const documentToRefresh = documentsRef.current.find((document) => document.id === documentId);
     if (!documentToRefresh || !documentIsFromDropbox(documentToRefresh)) return;
 
+    const now = Date.now();
+    const lastRefresh = lastDropboxExternalRefreshRef.current;
+    if (
+      lastRefresh?.path === documentToRefresh.path &&
+      now - lastRefresh.timestamp < dropboxExternalFileRefreshIntervalMs
+    ) {
+      return;
+    }
+    lastDropboxExternalRefreshRef.current = { path: documentToRefresh.path, timestamp: now };
+
     externalFileRefreshInFlightRef.current = true;
     try {
       const loaded = await invoke<OpenDropboxMarkdownFileResult>("open_dropbox_markdown_file", {
@@ -9885,7 +9953,11 @@ function App() {
 
       applyLoadedDropboxFile(loaded, { tabBehavior: "none" });
     } catch (error) {
-      setStorageError(error instanceof Error ? error.message : String(error));
+      const message = error instanceof Error ? error.message : String(error);
+      if (dropboxErrorNeedsAuthorization(message) || dropboxErrorIsDisconnected(message)) {
+        setDropboxConnected(false);
+        setStorageError(t("dropbox.error.restoreNeedsAuthorization"));
+      }
     } finally {
       externalFileRefreshInFlightRef.current = false;
     }
@@ -10115,6 +10187,34 @@ function App() {
     return normalizedMessage.includes("not connected") || normalizedMessage.includes("reconnect");
   }
 
+  function dropboxErrorIsNetworkFailure(message: string) {
+    const normalizedMessage = message.toLowerCase();
+    return (
+      normalizedMessage.includes("error sending request") ||
+      normalizedMessage.includes("failed to connect") ||
+      normalizedMessage.includes("connection reset") ||
+      normalizedMessage.includes("connection closed") ||
+      normalizedMessage.includes("dns") ||
+      normalizedMessage.includes("network") ||
+      normalizedMessage.includes("tls") ||
+      normalizedMessage.includes("certificate")
+    );
+  }
+
+  function dropboxUserFacingError(message: string) {
+    if (dropboxErrorNeedsAuthorization(message) || dropboxErrorIsDisconnected(message)) {
+      return t("dropbox.error.restoreNeedsAuthorization");
+    }
+    if (dropboxErrorIsConnectionTimeout(message)) {
+      return t("dropbox.error.restoreTimeout");
+    }
+    if (dropboxErrorIsNetworkFailure(message)) {
+      return t("dropbox.error.network");
+    }
+
+    return message;
+  }
+
   async function checkDropboxRestoreConnection() {
     if (browserAppearsOffline()) {
       setStorageError(t("dropbox.error.offline"));
@@ -10139,6 +10239,10 @@ function App() {
       }
       if (dropboxErrorIsConnectionTimeout(message)) {
         setStorageError(t("dropbox.error.restoreTimeout"));
+        return false;
+      }
+      if (dropboxErrorIsNetworkFailure(message)) {
+        setStorageError(t("dropbox.error.network"));
         return false;
       }
 
@@ -10184,6 +10288,10 @@ function App() {
         setStorageError(t("dropbox.error.restoreTimeout"));
         return;
       }
+      if (dropboxErrorIsNetworkFailure(message)) {
+        setStorageError(t("dropbox.error.network"));
+        return;
+      }
 
       forgetLastOpenedDropboxWorkspace();
       setStorageError(
@@ -10216,6 +10324,10 @@ function App() {
       }
       if (dropboxErrorIsConnectionTimeout(message)) {
         setStorageError(t("dropbox.error.restoreTimeout"));
+        return;
+      }
+      if (dropboxErrorIsNetworkFailure(message)) {
+        setStorageError(t("dropbox.error.network"));
         return;
       }
 
@@ -10276,7 +10388,8 @@ function App() {
       applyLoadedDropboxFile(loaded, { tabBehavior: options.tabBehavior });
       setStorageError("");
     } catch (error) {
-      setStorageError(error instanceof Error ? error.message : String(error));
+      const message = error instanceof Error ? error.message : String(error);
+      setStorageError(dropboxUserFacingError(message));
     }
   }
 
@@ -10329,6 +10442,7 @@ function App() {
       await loadDropboxDirectoryPickerRoot();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      const displayMessage = dropboxUserFacingError(message);
       if (dropboxErrorNeedsAuthorization(message)) {
         setDropboxDirectoryPicker(null);
         setDropboxConnected(false);
@@ -10341,9 +10455,9 @@ function App() {
         selectedPath: "",
         isLoadingRoot: false,
         isOpening: false,
-        error: message,
+        error: displayMessage,
       });
-      setStorageError(message);
+      setStorageError(displayMessage);
     }
   }
 
@@ -10378,11 +10492,12 @@ function App() {
       setStorageError("");
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      const displayMessage = dropboxUserFacingError(message);
       if (dropboxErrorNeedsAuthorization(message)) {
         setDropboxDirectoryPicker(null);
         setDropboxConnected(false);
         openSettingsView("cloud");
-        setStorageError(message);
+        setStorageError(displayMessage);
         return;
       }
 
@@ -10392,11 +10507,11 @@ function App() {
               ...currentPicker,
               isLoadingRoot: false,
               isOpening: false,
-              error: message,
+              error: displayMessage,
             }
           : currentPicker,
       );
-      setStorageError(message);
+      setStorageError(displayMessage);
     }
   }
 
@@ -10512,11 +10627,12 @@ function App() {
       setStorageError("");
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      const displayMessage = dropboxUserFacingError(message);
       if (dropboxErrorNeedsAuthorization(message)) {
         setDropboxDirectoryPicker(null);
         setDropboxConnected(false);
         openSettingsView("cloud");
-        setStorageError(message);
+        setStorageError(displayMessage);
         return;
       }
 
@@ -10531,13 +10647,13 @@ function App() {
                   ...node,
                   isExpanded: true,
                   isLoading: false,
-                  error: message,
+                  error: displayMessage,
                 }),
               ),
             }
           : currentPicker,
       );
-      setStorageError(message);
+      setStorageError(displayMessage);
     }
   }
 
@@ -10569,16 +10685,17 @@ function App() {
       setStorageError(openedDirectory.entries.length === 0 ? t("dropbox.emptyFolder") : "");
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      const displayMessage = dropboxUserFacingError(message);
       setDropboxDirectoryPicker((currentPicker) =>
         currentPicker
           ? {
               ...currentPicker,
               isOpening: false,
-              error: message,
+              error: displayMessage,
             }
           : currentPicker,
       );
-      setStorageError(message);
+      setStorageError(displayMessage);
     }
   }
 
