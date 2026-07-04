@@ -7143,6 +7143,24 @@ function App() {
           : "";
   noteEditModalActiveRef.current = notePanelModalActive;
 
+  const previousFloatingNotePanelExpandedRef = useRef(floatingNotePanelExpanded);
+
+  useEffect(() => {
+    if (
+      previousFloatingNotePanelExpandedRef.current === true &&
+      floatingNotePanelExpanded === false
+    ) {
+      if (activeNoteId) {
+        scrollTextAnnotationIntoView(activeNoteId);
+      } else if (activeGlossaryBindingId) {
+        scrollTextAnnotationIntoView(`glossary:${activeGlossaryBindingId}`);
+      } else if (pendingAnchor) {
+        scrollTextAnnotationIntoView("__scholium_pending_anchor__");
+      }
+    }
+    previousFloatingNotePanelExpandedRef.current = floatingNotePanelExpanded;
+  }, [floatingNotePanelExpanded, activeNoteId, activeGlossaryBindingId, pendingAnchor]);
+
   useEffect(() => {
     if (floatingNotePanelExpanded) {
       const bodyShell = document.querySelector(".floating-note-card__body-shell");
@@ -7637,10 +7655,21 @@ function App() {
 
     updateFloatingNotePanelPosition();
     window.addEventListener("resize", updateFloatingNotePanelPosition);
+    document.addEventListener("scroll", updateFloatingNotePanelPosition, true);
+
+    const resizeObserver = new ResizeObserver(() => {
+      updateFloatingNotePanelPosition();
+    });
+    const editorFrame = document.querySelector(".editor-content-frame");
+    if (editorFrame) {
+      resizeObserver.observe(editorFrame);
+    }
 
     return () => {
       window.cancelAnimationFrame(floatingNotePanelPositionFrameRef.current);
       window.removeEventListener("resize", updateFloatingNotePanelPosition);
+      document.removeEventListener("scroll", updateFloatingNotePanelPosition, true);
+      resizeObserver.disconnect();
     };
   }, [
     activeGlossaryBinding,
@@ -7651,6 +7680,7 @@ function App() {
     activeNoteId,
     activeNoteMode,
     editorMode,
+    floatingNotePanelExpanded,
     glossaryDraft,
     noteDraft,
     notePanelHasContent,
@@ -7822,17 +7852,6 @@ function App() {
   }
 
   function annotationAnchorRect(annotationId: string) {
-    const frameElements = Array.from(
-      document.querySelectorAll<HTMLElement>(
-        ".cm-annotation-frame[data-note-id], .preview-annotation-frame[data-note-id], .milkdown-annotation-frame[data-note-id]",
-      ),
-    ).filter((element) => element.dataset.noteId === annotationId);
-    const frameRects = frameElements.flatMap((element) =>
-      Array.from(element.getClientRects()).filter((rect) => rect.width > 0 && rect.height > 0),
-    );
-    const frameAnchorRect = textAnchorRectFromClientRects(frameRects);
-    if (frameAnchorRect) return frameAnchorRect;
-
     const textElements = Array.from(
       document.querySelectorAll<HTMLElement>(
         ".cm-note-annotation[data-note-id], .preview-note-annotation[data-note-id], .milkdown-note-annotation[data-note-id]",
@@ -7841,8 +7860,18 @@ function App() {
     const textRects = textElements.flatMap((element) =>
       Array.from(element.getClientRects()).filter((rect) => rect.width > 0 && rect.height > 0),
     );
+    const textAnchorRect = textAnchorRectFromClientRects(textRects);
+    if (textAnchorRect) return textAnchorRect;
 
-    return textAnchorRectFromClientRects(textRects);
+    const frameElements = Array.from(
+      document.querySelectorAll<HTMLElement>(
+        ".cm-annotation-frame[data-note-id], .preview-annotation-frame[data-note-id], .milkdown-annotation-frame[data-note-id]",
+      ),
+    ).filter((element) => element.dataset.noteId === annotationId);
+    const frameRects = frameElements.flatMap((element) =>
+      Array.from(element.getClientRects()).filter((rect) => rect.width > 0 && rect.height > 0),
+    );
+    return textAnchorRectFromClientRects(frameRects);
   }
 
   function activeNoteAnchorRect(noteId: string) {
@@ -7882,6 +7911,7 @@ function App() {
   function alignRectToVerticalViewportPosition(
     rect: Pick<TextRangeRect, "top">,
     scrollContainer: HTMLElement | null,
+    behavior: ScrollBehavior = "instant",
   ) {
     const targetViewportTop = window.innerHeight * noteLibraryFocusAlignmentRatio;
 
@@ -7891,7 +7921,7 @@ function App() {
       const nextTop = clampNumber(rawTop, 0, maxTop);
 
       if (Math.abs(scrollContainer.scrollTop - nextTop) > 1) {
-        scrollContainer.scrollTo({ top: nextTop, behavior: "instant" });
+        scrollContainer.scrollTo({ top: nextTop, behavior });
       }
       return true;
     }
@@ -7902,7 +7932,7 @@ function App() {
     const nextTop = clampNumber(rawTop, 0, maxTop);
 
     if (Math.abs(window.scrollY - nextTop) > 1) {
-      window.scrollTo({ top: nextTop, behavior: "instant" });
+      window.scrollTo({ top: nextTop, behavior });
     }
     return true;
   }
@@ -7927,7 +7957,7 @@ function App() {
       );
   }
 
-  function alignFocusedAnnotationToViewport(noteId: string) {
+  function alignFocusedAnnotationToViewport(noteId: string, behavior: ScrollBehavior = "instant") {
     const annotationElements = annotationElementsForNote(noteId);
     if (annotationElements.length === 0) return false;
 
@@ -7942,6 +7972,7 @@ function App() {
     alignRectToVerticalViewportPosition(
       anchorRect,
       scrollableAncestor(annotationElements[0]),
+      behavior,
     );
     return true;
   }
@@ -7981,7 +8012,7 @@ function App() {
   ): FloatingNotePosition {
     const viewportWidth = window.innerWidth;
     const viewportHeight = window.innerHeight;
-    const viewportMargin = isMobileViewport ? 20 : 12;
+    const viewportMargin = isMobileViewport ? 32 : 12;
     const cardWidth = Math.min(
       cardRect.width || 450,
       Math.max(180, viewportWidth - viewportMargin * 2),
@@ -12962,19 +12993,7 @@ function App() {
   }
 
   function scrollTextAnnotationIntoView(annotationId: string) {
-    const annotationElement = Array.from(
-      document.querySelectorAll<HTMLElement>(
-        ".cm-note-annotation[data-note-id], .cm-annotation-frame[data-note-id], .preview-note-annotation[data-note-id], .preview-annotation-frame[data-note-id], .milkdown-note-annotation[data-note-id], .milkdown-annotation-frame[data-note-id]",
-      ),
-    ).find(
-      (element) =>
-        element.dataset.noteId === annotationId &&
-        Array.from(element.getClientRects()).some(
-          (rect) => rect.width > 0 && rect.height > 0,
-        ),
-    );
-
-    annotationElement?.scrollIntoView({ block: "center", inline: "nearest" });
+    alignFocusedAnnotationToViewport(annotationId, "smooth");
   }
 
   function focusAdjacentFloatingAnnotation(direction: -1 | 1) {

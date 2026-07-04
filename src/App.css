@@ -5431,16 +5431,18 @@ button:disabled {
   }
 
   .floating-note-panel {
-    width: min(420px, calc(100vw - 24px));
+    width: min(420px, calc(100vw - 64px));
   }
 
   .floating-note-panel.is-expanded-sidebar {
+    position: fixed;
     inset: 0;
     width: 100vw;
     height: 100vh;
   }
 
   .note-library-expanded-panel {
+    position: fixed;
     inset: 0;
     width: 100vw;
     height: 100vh;
@@ -5456,7 +5458,9 @@ button:disabled {
     --note-library-open-width: 100%;
     --note-library-content-gap: 0px;
     --document-pane-width: 100vw;
-    --editor-content-gutter: 24px;
+    --editor-content-gutter: 32px;
+    --editor-content-inline-start-gutter: 32px;
+    --editor-content-inline-end-gutter: 32px;
     --editor-content-top-gutter: 0px;
     --editor-content-offset: 0px;
     --editor-content-end-offset: 0px;
@@ -6613,7 +6617,7 @@ button:disabled {
   }
 
   .floating-note-panel {
-    width: calc(100vw - 12px);
+    width: calc(100vw - 64px);
   }
 
   .floating-note-card {
