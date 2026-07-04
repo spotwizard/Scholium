@@ -1813,6 +1813,7 @@ button:disabled {
 
 .editor-pane {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr);
   background: var(--color-surface);
 }
@@ -1856,6 +1857,7 @@ button:disabled {
 
 .editor-grid {
   display: block;
+  min-width: 0;
   min-height: 100vh;
   background: var(--color-surface);
 }
@@ -2819,6 +2821,9 @@ button:disabled {
   line-height: var(--settings-editor-line-height);
   -webkit-user-select: text;
   user-select: text;
+  word-wrap: break-word;
+  word-break: break-word;
+  overflow-wrap: break-word;
 }
 
 .markdown-preview:focus {
@@ -3151,6 +3156,9 @@ button:disabled {
   line-height: var(--settings-editor-line-height-px) !important;
   outline: none;
   caret-color: var(--color-accent);
+  word-wrap: break-word;
+  word-break: break-word;
+  overflow-wrap: break-word;
 }
 
 .milkdown-markdown-editor .milkdown .ProseMirror.virtual-cursor-enabled {
@@ -5507,9 +5515,18 @@ button:disabled {
 
   .directory-bookmark,
   .note-library-bookmark,
-  .editor-toolbar,
-  .editor-document-title {
+  .editor-toolbar {
     display: none;
+  }
+
+  .editor-document-title {
+    position: relative;
+    top: auto;
+    right: auto;
+    left: auto;
+    height: auto;
+    padding-top: calc(var(--mobile-editor-top-padding) + 12px);
+    padding-bottom: 24px;
   }
 
   .document-search-backdrop {

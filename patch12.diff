@@ -1,0 +1,21 @@
+--- src/App.tsx
++++ src/App.tsx
+@@ -53,6 +53,18 @@
+ 
+ const documentsSeed: MarkdownDocument[] = [
+   {
++    id: "address",
++    title: "Address Note",
++    path: "workspace/address.md",
++    filePath: null,
++    notesPath: null,
++    updatedAt: "Today",
++    body: `台北市大同區庫倫街13巷2弄2號（近捷運圓山站）
++
++測試文字高度與背景色。
++    `,
++  },
++  {
+     id: "roadmap",
+     title: "Scholium Roadmap",
+     path: "workspace/roadmap.md",

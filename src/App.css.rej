@@ -1,0 +1,11 @@
+--- src/App.css
++++ src/App.css
+@@ -4213,7 +4213,7 @@
+   background: transparent;
+   cursor: text;
+   font-family: inherit;
+-  font-size: var(--note-content-font-size, 0.94rem);
++  font-size: inherit;
+   line-height: var(--note-content-line-height, 1.5);
+ }
+ 
