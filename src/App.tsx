@@ -6776,7 +6776,6 @@ function App() {
   const noteEditorPostCompositionGuardUntilRef = useRef(0);
   const noteEditModalActiveRef = useRef(false);
   const ignoreNextWorkspaceClickRef = useRef(false);
-  const autoOpenedMobileNoteLibraryDocumentRef = useRef("");
   const suppressedLibraryAnnotationClickRef = useRef<{
     noteId: string;
     until: number;
@@ -7145,6 +7144,24 @@ function App() {
   noteEditModalActiveRef.current = notePanelModalActive;
 
   useEffect(() => {
+    if (floatingNotePanelExpanded) {
+      const bodyShell = document.querySelector(".floating-note-card__body-shell");
+      if (bodyShell) {
+        bodyShell.scrollTop = 0;
+      }
+    }
+  }, [floatingNotePanelExpanded]);
+
+  useEffect(() => {
+    if (libraryNotePanelExpanded) {
+      const bodyScroll = document.querySelector(".note-library-expanded-panel__body-scroll");
+      if (bodyScroll) {
+        bodyScroll.scrollTop = 0;
+      }
+    }
+  }, [libraryNotePanelExpanded]);
+
+  useEffect(() => {
     if (!activeNoteEditorKey) return;
 
     function handleDocumentPointerDown(event: globalThis.PointerEvent) {
@@ -7264,31 +7281,6 @@ function App() {
     }
   }, [hasOpenDocument, noteLibraryOpen, noteModeEnabled]);
 
-  useEffect(() => {
-    if (
-      !isMobileViewport ||
-      settingsViewOpen ||
-      !noteModeEnabled ||
-      noteLibraryOpen ||
-      noteLibraryNotes.length === 0 ||
-      autoOpenedMobileNoteLibraryDocumentRef.current === selectedDocument.id
-    ) {
-      return;
-    }
-
-    autoOpenedMobileNoteLibraryDocumentRef.current = selectedDocument.id;
-    openNoteLibrary();
-    setFocusedLibraryNoteId(firstNoteLibraryNoteId);
-  }, [
-    firstNoteLibraryNoteId,
-    isMobileViewport,
-    noteLibraryNotes.length,
-    noteLibraryOpen,
-    noteLibrarySignature,
-    noteModeEnabled,
-    selectedDocument.id,
-    settingsViewOpen,
-  ]);
 
   useEffect(() => {
     if (
@@ -7988,16 +7980,34 @@ function App() {
     cardRect: DOMRect,
   ): FloatingNotePosition {
     const viewportWidth = window.innerWidth;
-    const viewportMargin = 12;
+    const viewportHeight = window.innerHeight;
+    const viewportMargin = isMobileViewport ? 20 : 12;
     const cardWidth = Math.min(
       cardRect.width || 450,
       Math.max(180, viewportWidth - viewportMargin * 2),
     );
-    const placement = "below";
+    const cardHeight = cardRect.height || 260;
+    const verticalDistance = 12;
     const connectorAnchorGap = 6;
-    const panelAnchorY = anchorRect.bottom + connectorAnchorGap;
+
+    let placement: "below" | "above" | "detached" = "below";
+    let targetY = anchorRect.targetBottom;
+    let panelAnchorY = anchorRect.bottom + connectorAnchorGap;
+    let top = panelAnchorY + verticalDistance;
+
+    if (top + cardHeight > viewportHeight - viewportMargin) {
+      const spaceAbove = anchorRect.top - verticalDistance - connectorAnchorGap - viewportMargin;
+      const spaceBelow = viewportHeight - top - viewportMargin;
+
+      if (spaceAbove >= cardHeight || spaceAbove > spaceBelow) {
+        placement = "above";
+        targetY = anchorRect.targetTop;
+        panelAnchorY = anchorRect.top - connectorAnchorGap;
+        top = panelAnchorY - verticalDistance - cardHeight;
+      }
+    }
+
     const targetX = anchorRect.targetX;
-    const targetY = anchorRect.targetBottom;
     const preferredLeft = clampNumber(
       targetX - cardWidth / 2,
       viewportMargin,
@@ -8005,7 +8015,6 @@ function App() {
     );
     const left = preferredLeft;
     const right = left + cardWidth;
-    const verticalDistance = 12;
     const connectorTilt = verticalDistance * 0.65;
     const preferredSourceX =
       targetX + (targetX < viewportWidth / 2 ? connectorTilt : -connectorTilt);
@@ -8015,8 +8024,7 @@ function App() {
       minSourceX <= maxSourceX
         ? clampNumber(preferredSourceX, minSourceX, maxSourceX)
         : clampNumber(targetX, left, right);
-    const top = panelAnchorY + verticalDistance;
-    const sourceY = top;
+    const sourceY = placement === "below" ? top : top + cardHeight;
     const connectorDeltaX = sourceX - targetX;
     const connectorDeltaY = sourceY - targetY;
     const connectorWidth = Math.max(

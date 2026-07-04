@@ -1402,6 +1402,38 @@ export function MilkdownMarkdownEditor({
     [],
   );
 
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const preventFocus = (e: Event) => {
+      const target = e.target as HTMLElement;
+      const button = target.closest(".milkdown-code-block .tools button") as HTMLButtonElement | null;
+      if (button) {
+        e.preventDefault();
+      }
+    };
+
+    const handleTouchEnd = (e: TouchEvent) => {
+      const target = e.target as HTMLElement;
+      const button = target.closest(".milkdown-code-block .tools button") as HTMLButtonElement | null;
+      if (button) {
+        e.preventDefault();
+        button.click();
+      }
+    };
+
+    container.addEventListener("mousedown", preventFocus, { capture: true });
+    container.addEventListener("touchstart", preventFocus, { capture: true, passive: false });
+    container.addEventListener("touchend", handleTouchEnd, { capture: true, passive: false });
+
+    return () => {
+      container.removeEventListener("mousedown", preventFocus, { capture: true });
+      container.removeEventListener("touchstart", preventFocus, { capture: true });
+      container.removeEventListener("touchend", handleTouchEnd, { capture: true });
+    };
+  }, []);
+
   function updateAnnotationFrames() {
     const container = containerRef.current;
     if (!container) return;
@@ -2332,6 +2364,12 @@ export function MilkdownMarkdownEditor({
         onKeyDownCapture={handleKeyDown}
         onKeyUp={publishSelectionAfterSelectionComplete}
         onMouseUp={publishSelectionAfterSelectionComplete}
+        onPointerDownCapture={(e) => {
+          const target = e.target as HTMLElement;
+          if (target.closest(".copy-button")) {
+            e.preventDefault();
+          }
+        }}
         ref={rootRef}
       />
     </div>

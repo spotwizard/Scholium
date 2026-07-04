@@ -5456,7 +5456,7 @@ button:disabled {
     --note-library-open-width: 100%;
     --note-library-content-gap: 0px;
     --document-pane-width: 100vw;
-    --editor-content-gutter: 18px;
+    --editor-content-gutter: 24px;
     --editor-content-top-gutter: 0px;
     --editor-content-offset: 0px;
     --editor-content-end-offset: 0px;
@@ -6633,6 +6633,10 @@ button:disabled {
 
   .floating-note-panel.is-expanded-sidebar .floating-note-card {
     padding: 12px 12px 16px;
+  }
+
+  .floating-note-panel.is-expanded-sidebar .floating-note-card__body-shell {
+    min-height: 0;
   }
 
   .note-library-expanded-panel__card {
