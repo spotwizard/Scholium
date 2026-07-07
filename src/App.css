@@ -213,6 +213,7 @@ button:disabled {
   height: var(--mobile-status-bar-protector-height);
   pointer-events: none;
   background: var(--color-surface);
+  transform: translateY(var(--visual-viewport-offset-top, 0px));
 }
 
 .scholium-shell.is-mobile-safe-layout .editor-pane {
@@ -3110,6 +3111,10 @@ button:disabled {
   pointer-events: none;
 }
 
+.milkdown-annotation-layer--foreground {
+  z-index: 2;
+}
+
 .milkdown-annotation-frame {
   position: absolute;
   z-index: 0;
@@ -3124,6 +3129,18 @@ button:disabled {
 
 .milkdown-annotation-frame[data-annotation-kind="glossary"] {
   z-index: 1;
+  background: var(--color-glossary-surface);
+}
+
+.milkdown-annotation-frame.is-code-block-frame {
+  background: var(--color-annotation-surface);
+}
+
+.milkdown-annotation-frame.is-code-block-frame[data-note-tone="1"] {
+  background: var(--color-annotation-surface-alt);
+}
+
+.milkdown-annotation-frame.is-code-block-frame[data-annotation-kind="glossary"] {
   background: var(--color-glossary-surface);
 }
 
@@ -3164,6 +3181,14 @@ button:disabled {
 .milkdown-markdown-editor .milkdown .ProseMirror.virtual-cursor-enabled {
   --prosemirror-virtual-cursor-color: var(--color-accent);
 
+  caret-color: transparent;
+}
+
+.milkdown-markdown-editor-shell.is-readonly .milkdown .ProseMirror {
+  caret-color: transparent;
+}
+
+.milkdown-markdown-editor-shell.is-readonly .milkdown .cm-content {
   caret-color: transparent;
 }
 
@@ -3291,6 +3316,11 @@ button:disabled {
 .milkdown-markdown-editor .ProseMirror h4,
 .milkdown-markdown-editor .ProseMirror h5,
 .milkdown-markdown-editor .ProseMirror h6 {
+  position: relative;
+  display: block;
+  clear: both;
+  box-sizing: border-box;
+  width: 100%;
   color: var(--color-preview-editor-text);
   letter-spacing: 0;
 }
@@ -3302,7 +3332,14 @@ button:disabled {
 }
 
 .milkdown-markdown-editor .ProseMirror h1 {
-  margin-bottom: 0.68em;
+  margin: 0 0 0.68em;
+  padding: 0;
+  font-weight: 760;
+  line-height: 1.22;
+}
+
+.milkdown-markdown-editor .ProseMirror h1 + * {
+  margin-top: 0;
 }
 
 .milkdown-markdown-editor .ProseMirror h3,
@@ -3329,12 +3366,38 @@ button:disabled {
 }
 
 .milkdown-markdown-editor .milkdown .milkdown-code-block {
+  position: relative;
+  isolation: isolate;
   overflow: visible;
   margin: 0 0 1em;
   border: 1px solid var(--color-border);
   border-radius: 8px;
   padding: 8px 12px 12px;
   background: var(--color-surface-soft);
+}
+
+.milkdown-markdown-editor .milkdown .milkdown-code-block-annotation-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  border-radius: inherit;
+  pointer-events: none;
+}
+
+.milkdown-markdown-editor
+  .milkdown
+  .milkdown-code-block-annotation-layer
+  .milkdown-annotation-frame {
+  z-index: 0;
+}
+
+.milkdown-markdown-editor
+  .milkdown
+  .milkdown-code-block
+  > :not(.milkdown-code-block-annotation-layer) {
+  position: relative;
+  z-index: 1;
 }
 
 .milkdown-markdown-editor .milkdown .milkdown-code-block .codemirror-host.hidden {
@@ -3442,6 +3505,43 @@ button:disabled {
   background: transparent;
   -webkit-user-select: text;
   user-select: text;
+}
+
+.milkdown-markdown-editor-shell.is-touch-note-selection,
+.milkdown-markdown-editor-shell.is-touch-note-selection .milkdown-markdown-editor,
+.milkdown-markdown-editor-shell.is-touch-note-selection .milkdown .ProseMirror,
+.milkdown-markdown-editor-shell.is-touch-note-selection .milkdown .ProseMirror * {
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.milkdown-markdown-editor-shell.is-readonly
+  .milkdown
+  .milkdown-code-block
+  .tools
+  .language-button,
+.milkdown-markdown-editor-shell.is-touch-note-selection
+  .milkdown
+  .milkdown-code-block
+  .tools
+  .language-button {
+  display: none !important;
+}
+
+.milkdown-markdown-editor-shell.is-touch-note-selection
+  .milkdown
+  .milkdown-code-block {
+  padding-top: 54px;
+}
+
+.milkdown-markdown-editor-shell.is-touch-note-selection
+  .milkdown
+  .milkdown-code-block
+  :is(.codemirror-host, .cm-editor, .cm-scroller, .cm-content) {
+  pointer-events: none;
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 .milkdown-glossary-annotation {
@@ -4592,9 +4692,35 @@ button:disabled {
 }
 
 .note-library-expanded-panel__editor {
-  --note-markdown-editor-min-height: 100%;
-  min-height: 100%;
+  --note-markdown-editor-min-height: 0px;
+  --note-markdown-editor-max-height: none;
+  height: auto;
+  min-height: 0;
+  max-height: none;
   overflow: visible;
+}
+
+.note-library-expanded-panel__editor.is-previewing
+  .note-markdown-editor__shared-height-container,
+.note-library-expanded-panel__editor.is-previewing
+  :is(.markdown-preview, .note-markdown-editor__preview) {
+  height: auto;
+  min-height: 0;
+  max-height: none;
+  overflow: visible;
+}
+
+.note-library-expanded-panel__editor.is-editing,
+.note-library-expanded-panel__editor.is-editing
+  .note-markdown-editor__shared-height-container,
+.note-library-expanded-panel__editor.is-editing .note-markdown-editor__textarea {
+  height: 100%;
+  min-height: 100%;
+  max-height: none;
+}
+
+.note-library-expanded-panel__editor.is-editing .note-markdown-editor__textarea {
+  overflow-y: auto;
 }
 
 .floating-note-card__editor {
@@ -4888,34 +5014,74 @@ button:disabled {
 }
 
 .floating-note-panel.is-expanded-sidebar .floating-note-card__editor {
-  --note-markdown-editor-min-height: 100%;
+  --note-markdown-editor-min-height: 0px;
+  --note-markdown-editor-max-height: none;
+  height: auto;
   max-height: none;
   min-height: 0;
-  overflow: hidden;
+  overflow: visible;
 }
 
-.floating-note-panel.is-expanded-sidebar .floating-note-card__editor,
-.floating-note-panel.is-expanded-sidebar .floating-note-card__editor .markdown-editor-host,
-.floating-note-panel.is-expanded-sidebar .floating-note-card__editor .markdown-preview,
-.floating-note-panel.is-expanded-sidebar .floating-note-card__editor .note-markdown-editor__textarea,
+.floating-note-panel.is-expanded-sidebar .floating-note-card__editor.is-previewing,
 .floating-note-panel.is-expanded-sidebar
-  .floating-note-card__editor
+  .floating-note-card__editor.is-previewing
+  .note-markdown-editor__shared-height-container,
+.floating-note-panel.is-expanded-sidebar
+  .floating-note-card__editor.is-previewing
+  :is(.markdown-preview, .note-markdown-editor__preview),
+.floating-note-panel.is-expanded-sidebar
+  .floating-note-card__editor.is-previewing
   .milkdown-markdown-editor-shell,
-.floating-note-panel.is-expanded-sidebar .floating-note-card__editor .cm-editor,
-.floating-note-panel.is-expanded-sidebar .floating-note-card__editor .milkdown-markdown-editor,
 .floating-note-panel.is-expanded-sidebar
-  .floating-note-card__editor
+  .floating-note-card__editor.is-previewing
+  .milkdown-markdown-editor,
+.floating-note-panel.is-expanded-sidebar
+  .floating-note-card__editor.is-previewing
+  .milkdown-markdown-editor
+  .milkdown,
+.floating-note-panel.is-expanded-sidebar
+  .floating-note-card__editor.is-previewing
+  .milkdown-markdown-editor
+  .milkdown
+  .ProseMirror {
+  height: auto;
+  min-height: 0;
+  max-height: none;
+  overflow: visible !important;
+}
+
+.floating-note-panel.is-expanded-sidebar .floating-note-card__editor.is-editing,
+.floating-note-panel.is-expanded-sidebar
+  .floating-note-card__editor.is-editing
+  .note-markdown-editor__shared-height-container,
+.floating-note-panel.is-expanded-sidebar
+  .floating-note-card__editor.is-editing
+  .note-markdown-editor__textarea,
+.floating-note-panel.is-expanded-sidebar
+  .floating-note-card__editor.is-editing
+  .markdown-editor-host,
+.floating-note-panel.is-expanded-sidebar
+  .floating-note-card__editor.is-editing
+  .milkdown-markdown-editor-shell,
+.floating-note-panel.is-expanded-sidebar .floating-note-card__editor.is-editing .cm-editor,
+.floating-note-panel.is-expanded-sidebar
+  .floating-note-card__editor.is-editing
+  .milkdown-markdown-editor,
+.floating-note-panel.is-expanded-sidebar
+  .floating-note-card__editor.is-editing
   .milkdown-markdown-editor
   .milkdown {
   height: 100%;
   min-height: 0;
+  max-height: none;
 }
 
-.floating-note-panel.is-expanded-sidebar .floating-note-card__editor .cm-scroller,
-.floating-note-panel.is-expanded-sidebar .floating-note-card__editor .markdown-preview,
-.floating-note-panel.is-expanded-sidebar .floating-note-card__editor .note-markdown-editor__textarea,
+.floating-note-panel.is-expanded-sidebar .floating-note-card__editor.is-editing .cm-scroller,
 .floating-note-panel.is-expanded-sidebar
-  .floating-note-card__editor
+  .floating-note-card__editor.is-editing
+  .note-markdown-editor__textarea,
+.floating-note-panel.is-expanded-sidebar
+  .floating-note-card__editor.is-editing
   .milkdown-markdown-editor
   .milkdown
   .ProseMirror {
@@ -4924,7 +5090,9 @@ button:disabled {
   overscroll-behavior: contain;
 }
 
-.floating-note-panel.is-expanded-sidebar .floating-note-card__editor .note-markdown-editor__textarea {
+.floating-note-panel.is-expanded-sidebar
+  .floating-note-card__editor.is-editing
+  .note-markdown-editor__textarea {
   height: 100% !important;
 }
 
@@ -6090,7 +6258,8 @@ button:disabled {
     min-height: var(--mobile-editor-content-min-height);
     margin-right: 0;
     margin-left: 0;
-    padding-left: 0;
+    padding-right: 16px;
+    padding-left: 16px;
   }
 
   .empty-editor-state {

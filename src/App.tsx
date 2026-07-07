@@ -1013,7 +1013,33 @@ function anchorMatchesBodyText(body: string, anchor: TextSelectionAnchor) {
   return normalizeSelectionTextForComparison(body.slice(anchor.from, anchor.to)) === anchorText;
 }
 
-function assignAnnotationTones(annotations: TextRangeAnnotation[]): TextRangeAnnotation[] {
+function compareNotesByDocumentPosition(left: SelectionNote, right: SelectionNote) {
+  return (
+    left.anchor.from - right.anchor.from ||
+    left.anchor.to - right.anchor.to ||
+    left.createdAt.localeCompare(right.createdAt) ||
+    left.id.localeCompare(right.id)
+  );
+}
+
+function buildVisibleNoteToneMap(notes: SelectionNote[]) {
+  const noteToneById = new Map<string, AnnotationTone>();
+
+  notes
+    .filter((note) => note.status === "active" && selectionNoteHasContent(note))
+    .slice()
+    .sort(compareNotesByDocumentPosition)
+    .forEach((note, index) => {
+      noteToneById.set(note.id, (index % 2) as AnnotationTone);
+    });
+
+  return noteToneById;
+}
+
+function assignAnnotationTones(
+  annotations: TextRangeAnnotation[],
+  noteToneById = new Map<string, AnnotationTone>(),
+): TextRangeAnnotation[] {
   let noteToneIndex = 0;
 
   return [...annotations]
@@ -1032,7 +1058,10 @@ function assignAnnotationTones(annotations: TextRangeAnnotation[]): TextRangeAnn
         };
       }
 
-      const tone = (noteToneIndex % 2) as AnnotationTone;
+      const tone =
+        noteToneById.get(annotation.id) ??
+        annotation.tone ??
+        ((noteToneIndex % 2) as AnnotationTone);
       noteToneIndex += 1;
 
       return {
@@ -6457,6 +6486,7 @@ function resizeNoteTextareaToContent(textarea: HTMLTextAreaElement) {
 
 function NoteMarkdownEditor({
   ariaLabel,
+  autoFocusOnEdit = true,
   className = "",
   editing = true,
   editorRootRef,
@@ -6469,8 +6499,10 @@ function NoteMarkdownEditor({
   onRequestEdit,
   readOnly = false,
   value,
+  placeholder,
 }: {
   ariaLabel: string;
+  autoFocusOnEdit?: boolean;
   className?: string;
   editing?: boolean;
   editorRootRef?: (element: HTMLDivElement | null) => void;
@@ -6483,6 +6515,7 @@ function NoteMarkdownEditor({
   onRequestEdit?: () => void;
   readOnly?: boolean;
   value: string;
+  placeholder?: string;
 }) {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -6515,12 +6548,17 @@ function NoteMarkdownEditor({
       if (!textarea) return;
 
       resizeNoteTextareaToContent(textarea);
+      if (!autoFocusOnEdit) {
+        pendingEditPointerRef.current = null;
+        return;
+      }
+
       textarea.focus({ preventScroll: true });
       const selectionOffset = textarea.value.length;
       textarea.setSelectionRange(selectionOffset, selectionOffset);
       pendingEditPointerRef.current = null;
     });
-  }, [isEditable]);
+  }, [autoFocusOnEdit, isEditable]);
 
   useLayoutEffect(() => {
     const textarea = textareaRef.current;
@@ -6604,6 +6642,7 @@ function NoteMarkdownEditor({
           rows={1}
           spellCheck={false}
           value={value}
+          placeholder={placeholder}
           onChange={handleTextareaChange}
           onCompositionEnd={onCompositionEnd}
           onCompositionStart={onCompositionStart}
@@ -6678,6 +6717,27 @@ function App() {
   const [selectedWorkspaceDocumentIds, setSelectedWorkspaceDocumentIds] = useState<Set<string>>(
     () => new Set(),
   );
+
+  useEffect(() => {
+    if (!window.visualViewport) return;
+
+    function handleVisualViewportScroll() {
+      document.documentElement.style.setProperty(
+        "--visual-viewport-offset-top",
+        `${window.visualViewport?.offsetTop || 0}px`
+      );
+    }
+
+    window.visualViewport.addEventListener("scroll", handleVisualViewportScroll);
+    window.visualViewport.addEventListener("resize", handleVisualViewportScroll);
+    handleVisualViewportScroll();
+
+    return () => {
+      window.visualViewport?.removeEventListener("scroll", handleVisualViewportScroll);
+      window.visualViewport?.removeEventListener("resize", handleVisualViewportScroll);
+      document.documentElement.style.removeProperty("--visual-viewport-offset-top");
+    };
+  }, []);
   const [mobileSelectedWorkspaceEntryKey, setMobileSelectedWorkspaceEntryKey] = useState("");
   const [savedLocations, setSavedLocations] =
     useState<SavedLocationsResult>(emptySavedLocations);
@@ -6711,6 +6771,8 @@ function App() {
   const appLanguage = settingsSnapshot["app.language"];
   const noteModeEnabledByDefault = settingsSnapshot["app.noteModeEnabledByDefault"];
   const t = createTranslator(appLanguage);
+  const mobileAnnotationKeyboardShouldStayClosed =
+    isMobileViewport || isMobileSafeLayoutViewport;
   const [editorMode, setEditorMode] = useState<EditorMode>("preview");
   const initialNoteModeEnabled =
     noteModeEnabledByDefault && documentsSeed.length > 0;
@@ -6994,6 +7056,11 @@ function App() {
   );
   const noteLibraryFocusedNoteCandidateId =
     noteModeEnabled && noteLibraryOpen ? focusedLibraryNoteId : "";
+  const noteLibraryNotes = activeNotes
+    .filter(selectionNoteHasContent)
+    .slice()
+    .sort(compareNotesByDocumentPosition);
+  const visibleNoteToneById = buildVisibleNoteToneMap(noteLibraryNotes);
 
   const activeGlossaryAnnotations: TextRangeAnnotation[] = glossaryModeActive
     ? documentGlossaryBindings
@@ -7021,7 +7088,7 @@ function App() {
       kind: "note",
       status: note.status,
       anchor: note.anchor,
-      tone: note.tone,
+      tone: visibleNoteToneById.get(note.id) ?? note.tone,
     }));
   const pendingAnchorAnnotation: TextRangeAnnotation | null =
     noteModeEnabled && pendingAnchor && hasRenderableAnchor(pendingAnchor)
@@ -7033,24 +7100,15 @@ function App() {
           anchor: pendingAnchor,
         }
       : null;
-  const activeTextAnnotations = assignAnnotationTones([
-    ...activeNoteAnnotations,
-    ...activeGlossaryAnnotations,
-  ]);
+  const activeTextAnnotations = assignAnnotationTones(
+    [...activeNoteAnnotations, ...activeGlossaryAnnotations],
+    visibleNoteToneById,
+  );
   const activeNoteToneById = new Map(
     activeTextAnnotations
       .filter((annotation) => annotation.kind === "note")
       .map((annotation) => [annotation.id, annotation.tone ?? 0]),
   );
-  const noteLibraryNotes = activeNotes
-    .filter(selectionNoteHasContent)
-    .slice()
-    .sort((leftNote, rightNote) => {
-      const positionDifference = leftNote.anchor.from - rightNote.anchor.from;
-      if (positionDifference !== 0) return positionDifference;
-
-      return leftNote.createdAt.localeCompare(rightNote.createdAt);
-    });
   const firstNoteLibraryNoteId = noteLibraryNotes[0]?.id ?? "";
   const expandedLibraryNote = noteLibraryNotes.find(
     (note) => note.id === expandedLibraryNoteId,
@@ -9318,6 +9376,37 @@ function App() {
     notesRef.current = nextNotes;
     setNotes(nextNotes);
     return nextNotes;
+  }
+
+  function toneForNewSelectionNote(anchor: TextSelectionAnchor): AnnotationTone {
+    const visibleNotes = notesRef.current
+      .filter(
+        (note) =>
+          note.documentId === selectedDocument.id &&
+          note.status === "active" &&
+          selectionNoteHasContent(note) &&
+          hasRenderableAnchor(note.anchor),
+      )
+      .slice()
+      .sort(compareNotesByDocumentPosition);
+    const noteToneById = buildVisibleNoteToneMap(visibleNotes);
+    let previousNote: SelectionNote | null = null;
+    let nextNote: SelectionNote | null = null;
+
+    for (const note of visibleNotes) {
+      if (note.anchor.from <= anchor.from) {
+        previousNote = note;
+        continue;
+      }
+
+      nextNote = note;
+      break;
+    }
+
+    const adjacentTone =
+      previousNote ? noteToneById.get(previousNote.id) : nextNote ? noteToneById.get(nextNote.id) : 1;
+
+    return adjacentTone === 0 ? 1 : 0;
   }
 
   function markLoadedDocumentsClean(loadedDocuments: MarkdownDocument[]) {
@@ -12545,6 +12634,7 @@ function App() {
     setActiveGlossaryMode("view");
     setNoteDraft("");
     setGlossaryDraft("");
+    noteEditorShouldRefocusRef.current = false;
     setSelectionWarningPosition(null);
     setNotePanelExpanded(false);
     setExpandedLibraryNoteId("");
@@ -12604,6 +12694,7 @@ function App() {
     setSelectionWarningPosition(null);
     setNotePanelExpanded(false);
     setActiveNoteEditorKey("");
+    noteEditorShouldRefocusRef.current = false;
 
     if (!notePanelHasContentRef.current) {
       setPendingAnchor(null);
@@ -12691,21 +12782,6 @@ function App() {
     }
   }
 
-  function openSelectionNoteConfirmation(anchor: TextSelectionAnchor) {
-    const anchorRect = currentSelectionAnchorRect();
-    if (anchorRect) {
-      floatingNoteAnchorRectRef.current = anchorRect;
-    }
-
-    setSelectionWarningPosition(null);
-    setPendingAnchor(anchor);
-    setNoteDraft("");
-    setPendingGlossaryTerm(null);
-    setGlossaryDraft("");
-    setActiveNoteId("");
-    setActiveNoteMode("view");
-    notePanelHasContentRef.current = true;
-  }
 
   function handleSelectionChange(anchor: TextSelectionAnchor | null) {
     if (!noteModeEnabled) {
@@ -12787,7 +12863,7 @@ function App() {
         return;
       }
 
-      openSelectionNoteConfirmation(anchor);
+      confirmSelectionNoteForAnchor(anchor);
     }
   }
 
@@ -12852,7 +12928,10 @@ function App() {
     setActiveGlossaryMode("view");
     setActiveNoteId(note.id);
     setActiveNoteMode("view");
-    setActiveNoteEditorKey(selectionNoteHasContent(note) ? "" : noteEditorKey("floating", note.id));
+    const noteIsEmpty = !selectionNoteHasContent(note);
+    noteEditorShouldRefocusRef.current =
+      noteIsEmpty && !mobileAnnotationKeyboardShouldStayClosed;
+    setActiveNoteEditorKey(noteIsEmpty ? noteEditorKey("floating", note.id) : "");
     setNoteDraft(note.body);
     notePanelHasContentRef.current = true;
   }
@@ -12879,7 +12958,8 @@ function App() {
     setActiveGlossaryTermId(term.id);
     setActiveGlossaryMode(termHasContent ? "view" : "edit");
     setGlossaryDraft(term.definition);
-    noteEditorShouldRefocusRef.current = !termHasContent;
+    noteEditorShouldRefocusRef.current =
+      !termHasContent && !mobileAnnotationKeyboardShouldStayClosed;
     notePanelHasContentRef.current = true;
     return true;
   }
@@ -12943,7 +13023,7 @@ function App() {
       if (noteLibraryOpen) {
         setNoteLibraryOpen(false);
       }
-      openSelectionNoteConfirmation(anchor);
+      createSelectionNoteForAnchor(anchor, { startEditing: true });
       return true;
     }
 
@@ -12958,7 +13038,7 @@ function App() {
       setNoteLibraryOpen(false);
     }
 
-    openSelectionNoteConfirmation(anchor);
+    createSelectionNoteForAnchor(anchor, { startEditing: true });
     return true;
   }
 
@@ -13128,7 +13208,7 @@ function App() {
     setActiveGlossaryTermId(term.id);
     setActiveGlossaryMode("edit");
     setGlossaryDraft("");
-    noteEditorShouldRefocusRef.current = true;
+    noteEditorShouldRefocusRef.current = !mobileAnnotationKeyboardShouldStayClosed;
     setIsNotePanelClosing(false);
     notePanelHasContentRef.current = true;
   }
@@ -13350,6 +13430,7 @@ function App() {
       status: "active",
       selectedText: anchor.selectedText,
       anchor,
+      tone: toneForNewSelectionNote(anchor),
       body: "",
       createdAt: nowLabel(),
       updatedAt: nowLabel(),
@@ -13358,7 +13439,8 @@ function App() {
 
     updateNotesState((currentNotes) => [note, ...currentNotes]);
     transientSelectionNoteIdRef.current = note.id;
-    noteEditorShouldRefocusRef.current = startEditing;
+    noteEditorShouldRefocusRef.current =
+      startEditing && !mobileAnnotationKeyboardShouldStayClosed;
     clearReturnToViewTimer();
     setPendingAnchor(null);
     setActiveNoteId(note.id);
@@ -13727,9 +13809,11 @@ function App() {
         </div>
         <NoteMarkdownEditor
           ariaLabel={t("note.edit")}
+          autoFocusOnEdit={noteEditorShouldRefocusRef.current}
           className="note-library-card__editor"
           editing={activeNoteEditorKey === editorKey}
           value={note.body}
+          placeholder={t("note.placeholder")}
           onChange={(value) => updateLibraryNoteDraft(note.id, value)}
           onClick={(event) => {
             event.stopPropagation();
@@ -13741,6 +13825,7 @@ function App() {
           onKeyDown={(event) => handleLibraryNoteEditorKeyDown(note.id, event)}
           onRequestEdit={() => {
             setFocusedLibraryNoteId(note.id);
+            noteEditorShouldRefocusRef.current = true;
             setActiveNoteEditorKey(editorKey);
           }}
         />
@@ -13887,7 +13972,7 @@ function App() {
           transform: `translateY(-50%) rotate(${floatingNotePanelPosition.connector.angle}deg)`,
           width: floatingNotePanelPosition.connector.width,
         };
-  const editorReadOnly = notePanelModalActive;
+  const editorReadOnly = notePanelModalActive || noteModeEnabled;
   const fileContextMenuActions: FileContextMenuAction[] = fileContextMenu
     ? (() => {
         const exportDocumentCount = fileContextMenu.exportDocumentIds.length;
@@ -14945,6 +15030,7 @@ function App() {
                   annotations={annotations}
                   documentFilePath={selectedDocument.filePath}
                   key={selectedDocument.id}
+                  mobileBlockSelectionEnabled={mobileAnnotationKeyboardShouldStayClosed}
                   noteModeEnabled={noteModeEnabled}
                   readOnly={editorReadOnly}
                   search={documentSearchState}
@@ -15059,9 +15145,11 @@ function App() {
               >
                 <NoteMarkdownEditor
                   ariaLabel={t("note.edit")}
+                  autoFocusOnEdit={noteEditorShouldRefocusRef.current}
                   className="note-library-expanded-panel__editor"
                   editing={activeNoteEditorKey === expandedLibraryNoteEditorKey}
                   value={expandedLibraryNote.body}
+                  placeholder={t("note.placeholder")}
                   onChange={(value) =>
                     updateLibraryNoteDraft(expandedLibraryNote.id, value)
                   }
@@ -15075,6 +15163,7 @@ function App() {
                   }
                   onRequestEdit={() => {
                     setFocusedLibraryNoteId(expandedLibraryNote.id);
+                    noteEditorShouldRefocusRef.current = true;
                     setActiveNoteEditorKey(expandedLibraryNoteEditorKey);
                   }}
                 />
@@ -15343,12 +15432,14 @@ function App() {
                   <div className="floating-note-card__body-measure">
                     <NoteMarkdownEditor
                       ariaLabel={t("note.edit")}
+                      autoFocusOnEdit={noteEditorShouldRefocusRef.current}
                       className="floating-note-card__editor"
                       editing={activeNoteEditorKey === noteEditorKey("floating", activeNote.id)}
                       editorRootRef={(element) => {
                         noteEditorRootRef.current = element;
                       }}
                       value={activeNote.body}
+                      placeholder={t("note.placeholder")}
                       onChange={updateActiveNoteDraft}
                       onCompositionStart={handleNoteEditorCompositionStart}
                       onCompositionEnd={handleNoteEditorCompositionEnd}
@@ -15356,9 +15447,10 @@ function App() {
                         finishNoteEditorEditing(noteEditorKey("floating", activeNote.id))
                       }
                       onKeyDown={handleNoteEditorKeyDown}
-                      onRequestEdit={() =>
-                        setActiveNoteEditorKey(noteEditorKey("floating", activeNote.id))
-                      }
+                      onRequestEdit={() => {
+                        noteEditorShouldRefocusRef.current = true;
+                        setActiveNoteEditorKey(noteEditorKey("floating", activeNote.id));
+                      }}
                     />
                   </div>
                 </div>
@@ -15367,6 +15459,7 @@ function App() {
               {!pendingAnchor && activeGlossaryIsEditing ? (
                 <NoteMarkdownEditor
                   ariaLabel={t("glossary.edit")}
+                  autoFocusOnEdit={noteEditorShouldRefocusRef.current}
                   className="floating-note-card__editor"
                   editorRootRef={(element) => {
                     noteEditorRootRef.current = element;

@@ -135,6 +135,7 @@ struct SelectionNote {
     status: String,
     selected_text: String,
     anchor: TextSelectionAnchor,
+    tone: Option<u8>,
     body: String,
     created_at: String,
     updated_at: String,
