@@ -232,6 +232,13 @@ type WorkspaceEntry =
 
 type NativeLocationKind = "directory" | "file";
 type WorkspaceSource = "local" | "dropbox";
+type MobileDocumentBrowseMode = "files" | "tags";
+
+type DocumentTagGroup = {
+  key: string;
+  label: string;
+  documents: MarkdownDocument[];
+};
 
 type NativeLocation = {
   kind: NativeLocationKind;
@@ -6790,6 +6797,8 @@ function App() {
   const [documentSearchActiveIndex, setDocumentSearchActiveIndex] = useState(0);
   const [documentSearchMatchCount, setDocumentSearchMatchCount] = useState(0);
   const [tagDraft, setTagDraft] = useState("");
+  const [mobileTagPickerOpen, setMobileTagPickerOpen] = useState(false);
+  const tagInputRef = useRef<HTMLInputElement>(null);
   const [expandedDirectoryKeys, setExpandedDirectoryKeys] = useState<Set<string>>(() => new Set());
   const [loadingDirectoryKeys, setLoadingDirectoryKeys] = useState<Set<string>>(() => new Set());
   const [selectedDocumentId, setSelectedDocumentId] = useState(documentsSeed[0].id);
@@ -6873,6 +6882,9 @@ function App() {
     };
   }, []);
   const [mobileSelectedWorkspaceEntryKey, setMobileSelectedWorkspaceEntryKey] = useState("");
+  const [mobileDocumentBrowseMode, setMobileDocumentBrowseMode] =
+    useState<MobileDocumentBrowseMode>("files");
+  const [mobileSelectedTagKey, setMobileSelectedTagKey] = useState("");
   const [savedLocations, setSavedLocations] =
     useState<SavedLocationsResult>(emptySavedLocations);
   const [notes, setNotes] = useState(notesSeed);
@@ -7070,6 +7082,55 @@ function App() {
     [hasOpenDocument, selectedDocument.body],
   );
   const documentsById = new Map(documents.map((document) => [document.id, document]));
+  const documentTagGroups = useMemo(() => {
+    const workspaceDocumentIds = new Set(
+      workspaceEntries.flatMap((entry) => (entry.kind === "file" ? [entry.documentId] : [])),
+    );
+    const groups = new Map<string, DocumentTagGroup>();
+
+    documents.forEach((document) => {
+      if (!workspaceDocumentIds.has(document.id)) return;
+
+      readMarkdownTags(document.body).forEach((tag) => {
+        const label = normalizeTagInput(tag);
+        const key = tagDedupeKey(label);
+        if (!key) return;
+
+        const group = groups.get(key);
+        if (!group) {
+          groups.set(key, { key, label, documents: [document] });
+          return;
+        }
+        if (!group.documents.some((candidate) => candidate.id === document.id)) {
+          group.documents.push(document);
+        }
+      });
+    });
+
+    return Array.from(groups.values())
+      .map((group) => ({
+        ...group,
+        documents: [...group.documents].sort((left, right) =>
+          left.title.localeCompare(right.title),
+        ),
+      }))
+      .sort((left, right) => left.label.localeCompare(right.label));
+  }, [documents, workspaceEntries]);
+  const mobileSelectedTagGroup =
+    documentTagGroups.find((group) => group.key === mobileSelectedTagKey) ?? null;
+  const mobileTagBrowserActive = isMobileViewport && mobileDocumentBrowseMode === "tags";
+  const selectedDocumentTagKeys = new Set(selectedDocumentTags.map(tagDedupeKey));
+  const normalizedTagDraft = normalizeTagInput(tagDraft);
+  const normalizedTagDraftKey = tagDedupeKey(tagDraft);
+  const mobileTagPickerGroups = documentTagGroups.filter(
+    (group) =>
+      !selectedDocumentTagKeys.has(group.key) &&
+      (!normalizedTagDraftKey || tagDedupeKey(group.label).includes(normalizedTagDraftKey)),
+  );
+  const mobileTagPickerCanCreate =
+    Boolean(normalizedTagDraft) &&
+    !documentTagGroups.some((group) => group.key === normalizedTagDraftKey);
+  const mobileTagDraftAlreadySelected = selectedDocumentTagKeys.has(normalizedTagDraftKey);
   const openDocumentTabs = openDocumentTabIds
     .map((documentId) => documentsById.get(documentId))
     .filter((document): document is MarkdownDocument => Boolean(document));
@@ -9263,7 +9324,8 @@ function App() {
 
   useEffect(() => {
     setTagDraft("");
-  }, [selectedDocument.id]);
+    setMobileTagPickerOpen(false);
+  }, [isMobileViewport, selectedDocument.id]);
 
   useEffect(() => {
     if (!hasOpenDocument && documentSearchOpen) {
@@ -12571,30 +12633,55 @@ function App() {
   }
 
   function updateSelectedDocumentTags(nextTags: string[]) {
-    if (!hasOpenDocument) return;
+    if (!hasOpenDocument) return false;
 
     if (markdownHasMalformedFrontmatter(selectedDocument.body)) {
       setStorageError(t("tags.error.invalidFrontmatter"));
-      return;
+      return false;
     }
 
     const nextBody = writeMarkdownTags(selectedDocument.body, nextTags);
-    if (nextBody === selectedDocument.body) return;
+    if (nextBody === selectedDocument.body) return false;
 
     updateSelectedDocumentBody(nextBody, "user");
     setStorageError("");
+    return true;
+  }
+
+  function addSelectedDocumentTag(tag: string) {
+    const nextTag = normalizeTagInput(tag);
+    if (!nextTag) return false;
+
+    const existingTagKeys = new Set(selectedDocumentTags.map(tagDedupeKey));
+    setTagDraft("");
+    if (existingTagKeys.has(tagDedupeKey(nextTag))) return false;
+
+    return updateSelectedDocumentTags([...selectedDocumentTags, nextTag]);
+  }
+
+  function closeMobileTagPicker() {
+    tagInputRef.current?.blur();
+    setTagDraft("");
+    setMobileTagPickerOpen(false);
+  }
+
+  function selectMobileDocumentTag(tag: string) {
+    if (addSelectedDocumentTag(tag)) {
+      closeMobileTagPicker();
+    }
   }
 
   function submitSelectedDocumentTag(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const nextTag = normalizeTagInput(tagDraft);
-    if (!nextTag) return;
+    if (addSelectedDocumentTag(tagDraft) && isMobileViewport) {
+      closeMobileTagPicker();
+    }
+  }
 
-    const existingTagKeys = new Set(selectedDocumentTags.map(tagDedupeKey));
-    setTagDraft("");
-    if (existingTagKeys.has(tagDedupeKey(nextTag))) return;
-
-    updateSelectedDocumentTags([...selectedDocumentTags, nextTag]);
+  function submitMobileTagPicker(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const existingTag = documentTagGroups.find((group) => group.key === normalizedTagDraftKey);
+    selectMobileDocumentTag(existingTag?.label ?? tagDraft);
   }
 
   function removeSelectedDocumentTag(tagToRemove: string) {
@@ -12602,6 +12689,27 @@ function App() {
     updateSelectedDocumentTags(
       selectedDocumentTags.filter((tag) => tagDedupeKey(tag) !== removedTagKey),
     );
+  }
+
+  function showMobileDocumentBrowseMode(mode: MobileDocumentBrowseMode) {
+    setMobileDocumentBrowseMode(mode);
+    if (mode === "files") {
+      setMobileSelectedTagKey("");
+    }
+  }
+
+  function openMobileTagBrowser(tag = "") {
+    if (noteLibraryOpen) {
+      closeNoteLibrary({ restoreDirectoryPane: false });
+    }
+    setMobileDocumentBrowseMode("tags");
+    setMobileSelectedTagKey(tagDedupeKey(tag));
+    setDirectoryPaneOpen(true);
+  }
+
+  function openMobileTaggedDocument(documentId: string) {
+    selectDocument(documentId);
+    setDirectoryPaneOpen(false);
   }
 
   function updateSelectedDocumentBody(
@@ -14579,7 +14687,10 @@ function App() {
           </button>
         </nav>
       ) : null}
-      <aside className="document-pane" aria-label={t("app.documents")}>
+      <aside
+        className={`document-pane ${mobileTagBrowserActive ? "is-tag-browser" : ""}`}
+        aria-label={t("app.documents")}
+      >
         <div className="pane-header">
           <div>
             <h1>{t("app.documents")}</h1>
@@ -14594,37 +14705,70 @@ function App() {
           </button>
         </div>
 
-        <label className="file-search" aria-label={t("fileSearch.label")}>
-          <input
-            aria-label={t("fileSearch.label")}
-            autoComplete="off"
-            placeholder={t("fileSearch.placeholder")}
-            type="search"
-            value={fileSearchQuery}
-            onChange={(event) => setFileSearchQuery(event.target.value)}
-          />
-          {fileSearchQuery ? (
-            <button
-              aria-label={t("fileSearch.clear")}
-              className="file-search__clear"
-              onClick={resetFileSearch}
-              type="button"
+        <div className="document-browser-controls">
+          {isMobileViewport ? (
+            <div
+              aria-label={t("documentBrowser.label")}
+              className="mobile-document-browser-tabs"
+              role="tablist"
             >
-              ×
-            </button>
+              <button
+                aria-selected={mobileDocumentBrowseMode === "files"}
+                className={mobileDocumentBrowseMode === "files" ? "is-active" : ""}
+                onClick={() => showMobileDocumentBrowseMode("files")}
+                role="tab"
+                type="button"
+              >
+                {t("documentBrowser.files")}
+              </button>
+              <button
+                aria-selected={mobileDocumentBrowseMode === "tags"}
+                className={mobileDocumentBrowseMode === "tags" ? "is-active" : ""}
+                onClick={() => showMobileDocumentBrowseMode("tags")}
+                role="tab"
+                type="button"
+              >
+                {t("documentBrowser.tags")}
+              </button>
+            </div>
           ) : null}
-        </label>
 
-        <div className="mobile-source-actions" aria-label={t("mobileSource.label")}>
-          {mobileSourceActions.map((action) => (
-            <button key={action.id} onClick={action.onSelect} type="button">
-              {action.icon}
-              <span>{action.label}</span>
-            </button>
-          ))}
+          {!mobileTagBrowserActive ? (
+            <label className="file-search" aria-label={t("fileSearch.label")}>
+              <input
+                aria-label={t("fileSearch.label")}
+                autoComplete="off"
+                placeholder={t("fileSearch.placeholder")}
+                type="search"
+                value={fileSearchQuery}
+                onChange={(event) => setFileSearchQuery(event.target.value)}
+              />
+              {fileSearchQuery ? (
+                <button
+                  aria-label={t("fileSearch.clear")}
+                  className="file-search__clear"
+                  onClick={resetFileSearch}
+                  type="button"
+                >
+                  ×
+                </button>
+              ) : null}
+            </label>
+          ) : null}
         </div>
 
-        {mobileDropboxWorkspaceActive ? (
+        {!mobileTagBrowserActive ? (
+          <div className="mobile-source-actions" aria-label={t("mobileSource.label")}>
+            {mobileSourceActions.map((action) => (
+              <button key={action.id} onClick={action.onSelect} type="button">
+                {action.icon}
+                <span>{action.label}</span>
+              </button>
+            ))}
+          </div>
+        ) : null}
+
+        {!mobileTagBrowserActive && mobileDropboxWorkspaceActive ? (
           <section
             className="mobile-workspace-summary"
             aria-label={t("mobileSource.currentDropboxFolder")}
@@ -14639,7 +14783,7 @@ function App() {
           </section>
         ) : null}
 
-        {mobileSavedLocationsVisible ? (
+        {!mobileTagBrowserActive && mobileSavedLocationsVisible ? (
           <div
             className="mobile-location-shortcuts"
             aria-label={t("mobileSource.savedLocations")}
@@ -14705,7 +14849,64 @@ function App() {
           </div>
         ) : null}
 
-        <div className="document-list">
+        {mobileTagBrowserActive ? (
+          <div className="document-list mobile-tag-browser" aria-label={t("tagBrowser.label")}>
+            {mobileSelectedTagGroup ? (
+              <>
+                <div className="mobile-tag-browser__header">
+                  <button onClick={() => setMobileSelectedTagKey("")} type="button">
+                    ‹ {t("tagBrowser.allTags")}
+                  </button>
+                  <h2>{mobileSelectedTagGroup.label}</h2>
+                  <p>
+                    {t("tagBrowser.documentCount", {
+                      count: mobileSelectedTagGroup.documents.length,
+                    })}
+                  </p>
+                </div>
+                {mobileSelectedTagGroup.documents.map((document) => {
+                  const isSelected = document.id === selectedDocument.id;
+
+                  return (
+                    <button
+                      aria-label={t("tagBrowser.openDocument", { title: document.title })}
+                      className={`document-row mobile-tag-document ${
+                        isSelected ? "is-selected" : ""
+                      }`}
+                      key={document.id}
+                      onClick={() => openMobileTaggedDocument(document.id)}
+                      title={document.path}
+                      type="button"
+                    >
+                      <span className="document-disclosure is-placeholder" aria-hidden="true" />
+                      <DocumentGlyphIcon kind="file" selected={isSelected} />
+                      <span className="document-title">{document.title}</span>
+                    </button>
+                  );
+                })}
+              </>
+            ) : documentTagGroups.length > 0 ? (
+              documentTagGroups.map((group) => (
+                <button
+                  aria-label={t("tagBrowser.openTag", {
+                    tag: group.label,
+                    count: group.documents.length,
+                  })}
+                  className="mobile-tag-row"
+                  key={group.key}
+                  onClick={() => setMobileSelectedTagKey(group.key)}
+                  type="button"
+                >
+                  <span className="mobile-tag-row__label">{group.label}</span>
+                  <span className="mobile-tag-row__count">{group.documents.length}</span>
+                </button>
+              ))
+            ) : (
+              <p className="mobile-tag-browser__empty">{t("tagBrowser.empty")}</p>
+            )}
+          </div>
+        ) : (
+          <div className="document-list">
           <div className="document-tree-root" title={workspaceTitle}>
             <DocumentGlyphIcon kind="folder" selected />
             <span className="document-tree-root__title">{workspaceTitle}</span>
@@ -14822,7 +15023,8 @@ function App() {
               {t("fileSearch.noResults")}
             </p>
           ) : null}
-        </div>
+          </div>
+        )}
 
         {storageError ? <p className="storage-error">{storageError}</p> : null}
 
@@ -14846,6 +15048,81 @@ function App() {
           </button>
         ) : null}
       </aside>
+
+      {isMobileViewport && mobileTagPickerOpen ? (
+        <div className="mobile-tag-picker-backdrop" onPointerDown={closeMobileTagPicker}>
+          <section
+            aria-labelledby="mobile-tag-picker-title"
+            aria-modal="true"
+            className="mobile-tag-picker-sheet"
+            onKeyDown={(event) => {
+              if (event.key === "Escape") closeMobileTagPicker();
+            }}
+            onPointerDown={(event) => event.stopPropagation()}
+            role="dialog"
+          >
+            <div className="mobile-tag-picker-sheet__header">
+              <h2 id="mobile-tag-picker-title">{t("tags.picker.title")}</h2>
+              <button
+                aria-label={t("dialog.close")}
+                onClick={closeMobileTagPicker}
+                type="button"
+              >
+                ×
+              </button>
+            </div>
+            <form className="mobile-tag-picker-search" onSubmit={submitMobileTagPicker}>
+              <input
+                aria-label={t("tags.picker.search")}
+                autoComplete="off"
+                enterKeyHint="done"
+                placeholder={t("tags.picker.search")}
+                ref={tagInputRef}
+                type="search"
+                value={tagDraft}
+                onChange={(event) => setTagDraft(event.currentTarget.value)}
+              />
+            </form>
+            <div className="mobile-tag-picker-results" aria-label={t("tags.picker.results")}>
+              {mobileTagPickerGroups.map((group) => (
+                <button
+                  aria-label={t("tags.picker.select", {
+                    tag: group.label,
+                    count: group.documents.length,
+                  })}
+                  className="mobile-tag-picker-result"
+                  key={group.key}
+                  onClick={() => selectMobileDocumentTag(group.label)}
+                  type="button"
+                >
+                  <span>#{group.label}</span>
+                  <small>
+                    {t("tagBrowser.documentCount", { count: group.documents.length })}
+                  </small>
+                </button>
+              ))}
+              {mobileTagPickerCanCreate ? (
+                <button
+                  className="mobile-tag-picker-create"
+                  onClick={() => selectMobileDocumentTag(normalizedTagDraft)}
+                  type="button"
+                >
+                  <span aria-hidden="true">＋</span>
+                  {t("tags.picker.create", { tag: normalizedTagDraft })}
+                </button>
+              ) : null}
+              {mobileTagDraftAlreadySelected && normalizedTagDraft ? (
+                <p className="mobile-tag-picker-empty">{t("tags.picker.alreadyAdded")}</p>
+              ) : null}
+              {!mobileTagDraftAlreadySelected &&
+              mobileTagPickerGroups.length === 0 &&
+              !mobileTagPickerCanCreate ? (
+                <p className="mobile-tag-picker-empty">{t("tags.picker.empty")}</p>
+              ) : null}
+            </div>
+          </section>
+        </div>
+      ) : null}
 
       {fileContextMenu ? (
         <div
@@ -15273,11 +15550,22 @@ function App() {
                   <div className="document-tags__chips">
                     {selectedDocumentTags.map((tag) => (
                       <span className="document-tag-chip" key={tag}>
-                        <span className="document-tag-chip__label">{tag}</span>
+                        {isMobileViewport ? (
+                          <button
+                            aria-label={t("tags.open", { tag })}
+                            className="document-tag-chip__label"
+                            onClick={() => openMobileTagBrowser(tag)}
+                            type="button"
+                          >
+                            {tag}
+                          </button>
+                        ) : (
+                          <span className="document-tag-chip__label">{tag}</span>
+                        )}
                         <button
                           aria-label={t("tags.remove", { tag })}
                           className="document-tag-chip__remove"
-                          disabled={editorReadOnly}
+                          disabled={notePanelModalActive}
                           onClick={() => removeSelectedDocumentTag(tag)}
                           title={t("tags.remove", { tag })}
                           type="button"
@@ -15286,16 +15574,39 @@ function App() {
                         </button>
                       </span>
                     ))}
-                    <form className="document-tags__form" onSubmit={submitSelectedDocumentTag}>
-                      <input
+                    {isMobileViewport ? (
+                      <button
                         aria-label={t("tags.add")}
-                        disabled={editorReadOnly}
-                        placeholder={t("tags.placeholder")}
-                        type="text"
-                        value={tagDraft}
-                        onChange={(event) => setTagDraft(event.currentTarget.value)}
-                      />
-                    </form>
+                        className="document-tags__add-button"
+                        disabled={notePanelModalActive}
+                        onClick={() => setMobileTagPickerOpen(true)}
+                        type="button"
+                      >
+                        +
+                      </button>
+                    ) : (
+                      <form className="document-tags__form" onSubmit={submitSelectedDocumentTag}>
+                        <input
+                          aria-label={t("tags.add")}
+                          disabled={notePanelModalActive}
+                          enterKeyHint="done"
+                          placeholder={t("tags.placeholder")}
+                          ref={tagInputRef}
+                          type="text"
+                          value={tagDraft}
+                          onChange={(event) => setTagDraft(event.currentTarget.value)}
+                        />
+                      </form>
+                    )}
+                    {isMobileViewport ? (
+                      <button
+                        className="document-tags__browse-all"
+                        onClick={() => openMobileTagBrowser()}
+                        type="button"
+                      >
+                        {t("tags.browseAll")}
+                      </button>
+                    ) : null}
                   </div>
                 </section>
               ) : null}
