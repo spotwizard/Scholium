@@ -32,6 +32,7 @@ import {
   type EditorChangeSource,
   type TextAnnotation,
   type TextSelectionAnchor,
+  type TextSelectionEnterContext,
 } from "./MarkdownEditor";
 import type { DocumentSearchState } from "./documentSearch";
 import { SettingsView } from "./SettingsView";
@@ -67,6 +68,19 @@ const inlineBreakPattern = /<br\s*\/?>/gi;
 const annotationClickDelayMs = 500;
 const libraryAnnotationClickSuppressionMs = annotationClickDelayMs + 350;
 const pendingAnchorAnnotationId = "__scholium_pending_anchor__";
+
+function shouldClearTouchButtonFocus() {
+  return Boolean(
+    typeof window !== "undefined" &&
+      window.matchMedia?.("(hover: none), (pointer: coarse)").matches,
+  );
+}
+
+function clearTouchButtonFocus(button: HTMLButtonElement) {
+  if (shouldClearTouchButtonFocus()) {
+    button.blur();
+  }
+}
 
 type NoteStatus = "active" | "orphaned" | "deleted";
 type AnnotationKind = "note" | "glossary";
@@ -459,6 +473,19 @@ function DuplicateIcon() {
 }
 
 function CopyIcon() {
+  return <NoteCopyIcon />;
+}
+
+function NoteCopyIcon() {
+  return (
+    <span
+      aria-hidden="true"
+      className="note-action-icon note-copy-icon"
+    />
+  );
+}
+
+function CheckIcon() {
   return (
     <svg
       aria-hidden="true"
@@ -466,8 +493,7 @@ function CopyIcon() {
       fill="none"
       viewBox="0 0 24 24"
     >
-      <path d="M8 8h10v12H8z" />
-      <path d="M6 16H4V4h10v2" />
+      <path d="m5 12.5 4.5 4.5L19 7" />
     </svg>
   );
 }
@@ -534,6 +560,54 @@ function CollapsePanelIcon() {
       className="note-action-icon note-action-icon--raw-svg"
       dangerouslySetInnerHTML={{ __html: collapseIconSvg }}
     />
+  );
+}
+
+function FloatingNoteCopyIcon() {
+  return (
+    <span
+      aria-hidden="true"
+      className="floating-note-action-icon floating-note-action-icon--copy"
+    />
+  );
+}
+
+function FloatingNoteExpandIcon() {
+  return (
+    <span
+      aria-hidden="true"
+      className="floating-note-action-icon floating-note-action-icon--raw-svg"
+      dangerouslySetInnerHTML={{ __html: expandIconSvg }}
+    />
+  );
+}
+
+function FloatingNoteCollapseIcon() {
+  return (
+    <span
+      aria-hidden="true"
+      className="floating-note-action-icon floating-note-action-icon--raw-svg"
+      dangerouslySetInnerHTML={{ __html: collapseIconSvg }}
+    />
+  );
+}
+
+function FloatingNoteCheckIcon() {
+  return (
+    <svg aria-hidden="true" className="floating-note-action-icon" viewBox="4 5 16 14">
+      <path d="M9.4 17.6a1.2 1.2 0 0 1-1.7 0l-3.5-3.5a1.2 1.2 0 0 1 1.7-1.7l2.6 2.6 9.1-9.1a1.2 1.2 0 1 1 1.7 1.7Z" />
+    </svg>
+  );
+}
+
+function FloatingNoteCloseIcon() {
+  return (
+    <span
+      aria-hidden="true"
+      className="floating-note-action-icon floating-note-action-icon--close"
+    >
+      ×
+    </span>
   );
 }
 
@@ -1022,15 +1096,26 @@ function compareNotesByDocumentPosition(left: SelectionNote, right: SelectionNot
   );
 }
 
+function noteAnchorRangeKey(anchor: TextSelectionAnchor) {
+  return `${anchor.from}:${anchor.to}`;
+}
+
 function buildVisibleNoteToneMap(notes: SelectionNote[]) {
   const noteToneById = new Map<string, AnnotationTone>();
+  let rangeIndex = -1;
+  let previousRangeKey = "";
 
   notes
-    .filter((note) => note.status === "active" && selectionNoteHasContent(note))
+    .filter((note) => note.status === "active" && hasRenderableAnchor(note.anchor))
     .slice()
     .sort(compareNotesByDocumentPosition)
-    .forEach((note, index) => {
-      noteToneById.set(note.id, (index % 2) as AnnotationTone);
+    .forEach((note) => {
+      const rangeKey = noteAnchorRangeKey(note.anchor);
+      if (rangeKey !== previousRangeKey) {
+        rangeIndex += 1;
+        previousRangeKey = rangeKey;
+      }
+      noteToneById.set(note.id, (rangeIndex % 2) as AnnotationTone);
     });
 
   return noteToneById;
@@ -5084,7 +5169,10 @@ export function MarkdownPreview({
     anchorTransform?: BodyAnchorTransform,
   ) => void;
   onSelectionChange: (anchor: TextSelectionAnchor | null) => void;
-  onSelectionEnter: (anchor: TextSelectionAnchor) => boolean;
+  onSelectionEnter: (
+    anchor: TextSelectionAnchor,
+    context?: TextSelectionEnterContext,
+  ) => boolean;
   onAnnotationClick: (annotationId: string) => void;
 }) {
   const blocks = parseMarkdownPreviewBlocks(value);
@@ -6719,23 +6807,40 @@ function App() {
   );
 
   useEffect(() => {
-    if (!window.visualViewport) return;
-
-    function handleVisualViewportScroll() {
+    function syncVisualViewportProperties() {
+      const visualViewport = window.visualViewport;
       document.documentElement.style.setProperty(
         "--visual-viewport-offset-top",
-        `${window.visualViewport?.offsetTop || 0}px`
+        `${visualViewport?.offsetTop ?? 0}px`,
+      );
+      document.documentElement.style.setProperty(
+        "--visual-viewport-offset-left",
+        `${visualViewport?.offsetLeft ?? 0}px`,
+      );
+      document.documentElement.style.setProperty(
+        "--visual-viewport-height",
+        `${visualViewport?.height ?? window.innerHeight}px`,
+      );
+      document.documentElement.style.setProperty(
+        "--visual-viewport-width",
+        `${visualViewport?.width ?? window.innerWidth}px`,
       );
     }
 
-    window.visualViewport.addEventListener("scroll", handleVisualViewportScroll);
-    window.visualViewport.addEventListener("resize", handleVisualViewportScroll);
-    handleVisualViewportScroll();
+    const visualViewport = window.visualViewport;
+    visualViewport?.addEventListener("scroll", syncVisualViewportProperties);
+    visualViewport?.addEventListener("resize", syncVisualViewportProperties);
+    window.addEventListener("resize", syncVisualViewportProperties);
+    syncVisualViewportProperties();
 
     return () => {
-      window.visualViewport?.removeEventListener("scroll", handleVisualViewportScroll);
-      window.visualViewport?.removeEventListener("resize", handleVisualViewportScroll);
+      visualViewport?.removeEventListener("scroll", syncVisualViewportProperties);
+      visualViewport?.removeEventListener("resize", syncVisualViewportProperties);
+      window.removeEventListener("resize", syncVisualViewportProperties);
       document.documentElement.style.removeProperty("--visual-viewport-offset-top");
+      document.documentElement.style.removeProperty("--visual-viewport-offset-left");
+      document.documentElement.style.removeProperty("--visual-viewport-height");
+      document.documentElement.style.removeProperty("--visual-viewport-width");
     };
   }, []);
   const [mobileSelectedWorkspaceEntryKey, setMobileSelectedWorkspaceEntryKey] = useState("");
@@ -6795,6 +6900,7 @@ function App() {
   const [noteLibraryOpen, setNoteLibraryOpen] = useState(false);
   const [focusedLibraryNoteId, setFocusedLibraryNoteId] = useState("");
   const [expandedLibraryNoteId, setExpandedLibraryNoteId] = useState("");
+  const [copiedNoteActionKey, setCopiedNoteActionKey] = useState("");
   const [dirtyDocumentStates, setDirtyDocumentStates] = useState<
     Record<string, DirtyDocumentState>
   >({});
@@ -6837,6 +6943,7 @@ function App() {
   const noteEditorEnterIgnoredDuringCompositionRef = useRef(false);
   const noteEditorPostCompositionGuardUntilRef = useRef(0);
   const noteEditModalActiveRef = useRef(false);
+  const copiedNoteActionTimerRef = useRef(0);
   const ignoreNextWorkspaceClickRef = useRef(false);
   const suppressedLibraryAnnotationClickRef = useRef<{
     noteId: string;
@@ -6919,6 +7026,12 @@ function App() {
   completeDropboxOAuthHandlerRef.current = (payload) => {
     void completeDropboxOAuth(payload);
   };
+
+  useEffect(() => {
+    return () => {
+      window.clearTimeout(copiedNoteActionTimerRef.current);
+    };
+  }, []);
 
   const activeDocument = documents.find((document) => document.id === selectedDocumentId);
   const hasOpenDocument = Boolean(activeDocument);
@@ -7060,7 +7173,7 @@ function App() {
     .filter(selectionNoteHasContent)
     .slice()
     .sort(compareNotesByDocumentPosition);
-  const visibleNoteToneById = buildVisibleNoteToneMap(noteLibraryNotes);
+  const visibleNoteToneById = buildVisibleNoteToneMap(activeNotes);
 
   const activeGlossaryAnnotations: TextRangeAnnotation[] = glossaryModeActive
     ? documentGlossaryBindings
@@ -7651,11 +7764,6 @@ function App() {
                 : pendingAnchor
                   ? activeNoteAnchorRect(pendingAnchorAnnotationId) ?? currentSelectionAnchorRect()
                   : null;
-        if (measuredAnchorRect) {
-          anchorMeasureRetryCount = 0;
-          floatingNoteAnchorRectRef.current = measuredAnchorRect;
-        }
-        const anchorRect = measuredAnchorRect ?? floatingNoteAnchorRectRef.current;
         const expectsAnchor = Boolean(
           activeNote ||
             activeNoteId ||
@@ -7668,51 +7776,53 @@ function App() {
           setFloatingNotePanelPosition(null);
           return;
         }
+        const cardRect = card.getBoundingClientRect();
 
-        if (!anchorRect && expectsAnchor) {
-          if (anchorMeasureRetryCount < 24) {
-            setFloatingNotePanelPosition(null);
-            anchorMeasureRetryCount += 1;
-            updateFloatingNotePanelPosition();
-            return;
-          }
-
-          const fallbackAnchorRect = lastPointerAnchorRectRef.current;
-          if (fallbackAnchorRect) {
-            const nextPosition = calculateFloatingNotePosition(
-              fallbackAnchorRect,
-              card.getBoundingClientRect(),
-            );
-            setFloatingNotePanelPosition((currentPosition) =>
-              floatingNotePositionsAreEqual(currentPosition, nextPosition)
-                ? currentPosition
-                : nextPosition,
-            );
-            return;
-          }
-
-          const nextPosition = calculateDetachedFloatingNotePosition(card.getBoundingClientRect());
+        function setPositionForAnchor(anchorRect: TextRangeRect | null) {
+          const nextPosition = anchorRect
+            ? calculateFloatingNotePosition(anchorRect, cardRect)
+            : calculateDetachedFloatingNotePosition(cardRect);
           setFloatingNotePanelPosition((currentPosition) =>
             floatingNotePositionsAreEqual(currentPosition, nextPosition)
               ? currentPosition
               : nextPosition,
           );
+        }
+
+        if (measuredAnchorRect) {
+          anchorMeasureRetryCount = 0;
+          floatingNoteAnchorRectRef.current = measuredAnchorRect;
+        } else if (expectsAnchor) {
+          const fallbackAnchorRect = floatingNoteAnchorRectRef.current;
+          if (anchorMeasureRetryCount < 24) {
+            if (fallbackAnchorRect) {
+              setPositionForAnchor(fallbackAnchorRect);
+            } else {
+              setFloatingNotePanelPosition(null);
+            }
+            anchorMeasureRetryCount += 1;
+            updateFloatingNotePanelPosition();
+            return;
+          }
+
+          if (fallbackAnchorRect) {
+            setPositionForAnchor(fallbackAnchorRect);
+            return;
+          }
+
+          floatingNoteAnchorRectRef.current = null;
+          closeNotePanel();
           return;
         }
 
-        const nextPosition = anchorRect
-          ? calculateFloatingNotePosition(anchorRect, card.getBoundingClientRect())
-          : calculateDetachedFloatingNotePosition(card.getBoundingClientRect());
-        setFloatingNotePanelPosition((currentPosition) =>
-          floatingNotePositionsAreEqual(currentPosition, nextPosition)
-            ? currentPosition
-            : nextPosition,
-        );
+        setPositionForAnchor(measuredAnchorRect);
       });
     }
 
     updateFloatingNotePanelPosition();
     window.addEventListener("resize", updateFloatingNotePanelPosition);
+    window.visualViewport?.addEventListener("resize", updateFloatingNotePanelPosition);
+    window.visualViewport?.addEventListener("scroll", updateFloatingNotePanelPosition);
     document.addEventListener("scroll", updateFloatingNotePanelPosition, true);
 
     const resizeObserver = new ResizeObserver(() => {
@@ -7726,6 +7836,8 @@ function App() {
     return () => {
       window.cancelAnimationFrame(floatingNotePanelPositionFrameRef.current);
       window.removeEventListener("resize", updateFloatingNotePanelPosition);
+      window.visualViewport?.removeEventListener("resize", updateFloatingNotePanelPosition);
+      window.visualViewport?.removeEventListener("scroll", updateFloatingNotePanelPosition);
       document.removeEventListener("scroll", updateFloatingNotePanelPosition, true);
       resizeObserver.disconnect();
     };
@@ -7883,6 +7995,26 @@ function App() {
       targetY: clientY,
       top: clientY,
       width: 1,
+    };
+  }
+
+  function textRangeRectFromSelectionEnterContext(
+    context?: TextSelectionEnterContext,
+  ): TextRangeRect | null {
+    const rect = context?.anchorRect;
+    if (!rect || rect.width <= 0 || rect.height <= 0) return null;
+
+    return {
+      bottom: rect.bottom,
+      height: rect.height,
+      left: rect.left,
+      right: rect.right,
+      targetBottom: rect.targetBottom,
+      targetTop: rect.targetTop,
+      targetX: rect.targetX,
+      targetY: rect.targetY,
+      top: rect.top,
+      width: rect.width,
     };
   }
 
@@ -8064,49 +8196,90 @@ function App() {
     };
   }
 
+  function floatingLayerPointFromViewport(clientX: number, clientY: number) {
+    if (mobileAnnotationKeyboardShouldStayClosed) {
+      return {
+        left: clientX,
+        top: clientY,
+      };
+    }
+
+    return shellRelativePointFromViewport(clientX, clientY);
+  }
+
+  function currentVisualViewportRect() {
+    const visualViewport = window.visualViewport;
+    const left = visualViewport?.offsetLeft ?? 0;
+    const top = visualViewport?.offsetTop ?? 0;
+    const width = visualViewport?.width ?? window.innerWidth;
+    const height = visualViewport?.height ?? window.innerHeight;
+
+    return {
+      bottom: top + height,
+      height,
+      left,
+      right: left + width,
+      top,
+      width,
+    };
+  }
+
   function calculateFloatingNotePosition(
     anchorRect: TextRangeRect,
     cardRect: DOMRect,
   ): FloatingNotePosition {
-    const viewportWidth = window.innerWidth;
-    const viewportHeight = window.innerHeight;
+    const viewportRect = currentVisualViewportRect();
+    const viewportWidth = viewportRect.width;
+    const viewportHeight = viewportRect.height;
     const viewportMargin = isMobileViewport ? 32 : 12;
     const cardWidth = Math.min(
       cardRect.width || 450,
       Math.max(180, viewportWidth - viewportMargin * 2),
     );
-    const cardHeight = cardRect.height || 260;
+    const cardHeight = Math.min(
+      cardRect.height || 260,
+      Math.max(120, viewportHeight - viewportMargin * 2),
+    );
     const verticalDistance = 12;
     const connectorAnchorGap = 6;
 
     let placement: "below" | "above" | "detached" = "below";
-    let targetY = anchorRect.targetBottom;
+    let targetY = anchorRect.bottom;
     let panelAnchorY = anchorRect.bottom + connectorAnchorGap;
     let top = panelAnchorY + verticalDistance;
 
-    if (top + cardHeight > viewportHeight - viewportMargin) {
-      const spaceAbove = anchorRect.top - verticalDistance - connectorAnchorGap - viewportMargin;
-      const spaceBelow = viewportHeight - top - viewportMargin;
+    if (top + cardHeight > viewportRect.bottom - viewportMargin) {
+      const spaceAbove =
+        anchorRect.top - verticalDistance - connectorAnchorGap - viewportRect.top - viewportMargin;
+      const spaceBelow = viewportRect.bottom - top - viewportMargin;
 
       if (spaceAbove >= cardHeight || spaceAbove > spaceBelow) {
         placement = "above";
-        targetY = anchorRect.targetTop;
+        targetY = anchorRect.top;
         panelAnchorY = anchorRect.top - connectorAnchorGap;
         top = panelAnchorY - verticalDistance - cardHeight;
       }
     }
 
     const targetX = anchorRect.targetX;
+    const minPanelLeft = viewportRect.left + viewportMargin;
+    const maxPanelLeft = viewportRect.right - viewportMargin - cardWidth;
     const preferredLeft = clampNumber(
       targetX - cardWidth / 2,
-      viewportMargin,
-      viewportWidth - viewportMargin - cardWidth,
+      minPanelLeft,
+      maxPanelLeft,
     );
-    const left = preferredLeft;
+    const left = maxPanelLeft >= minPanelLeft ? preferredLeft : minPanelLeft;
     const right = left + cardWidth;
+    if (mobileAnnotationKeyboardShouldStayClosed) {
+      const minPanelTop = viewportRect.top + viewportMargin;
+      const maxPanelTop = viewportRect.bottom - viewportMargin - cardHeight;
+      top = maxPanelTop >= minPanelTop ? clampNumber(top, minPanelTop, maxPanelTop) : minPanelTop;
+    }
     const connectorTilt = verticalDistance * 0.65;
+    const viewportCenterX = viewportRect.left + viewportRect.width / 2;
     const preferredSourceX =
-      targetX + (targetX < viewportWidth / 2 ? connectorTilt : -connectorTilt);
+      targetX + (targetX < viewportCenterX ? connectorTilt : -connectorTilt);
     const minSourceX = Math.max(left, targetX - verticalDistance);
     const maxSourceX = Math.min(right, targetX + verticalDistance);
     const sourceX =
@@ -8122,8 +8295,8 @@ function App() {
     );
     const connectorAngle =
       Math.atan2(connectorDeltaY, connectorDeltaX) * (180 / Math.PI);
-    const panelPoint = shellRelativePointFromViewport(left, top);
-    const connectorPoint = shellRelativePointFromViewport(targetX, targetY);
+    const panelPoint = floatingLayerPointFromViewport(left, top);
+    const connectorPoint = floatingLayerPointFromViewport(targetX, targetY);
 
     return {
       connector: {
@@ -8139,15 +8312,18 @@ function App() {
   }
 
   function calculateDetachedFloatingNotePosition(cardRect: DOMRect): FloatingNotePosition {
-    const viewportHeight = window.innerHeight;
+    const viewportRect = currentVisualViewportRect();
     const viewportMargin = 12;
-    const cardHeight = cardRect.height || 260;
-    const maxFittingTop = viewportHeight - viewportMargin - cardHeight;
+    const cardHeight = Math.min(
+      cardRect.height || 260,
+      Math.max(120, viewportRect.height - viewportMargin * 2),
+    );
+    const maxFittingTop = viewportRect.bottom - viewportMargin - cardHeight;
     const top =
-      maxFittingTop >= viewportMargin
-        ? viewportHeight - viewportMargin - cardHeight
-        : viewportMargin;
-    const panelPoint = shellRelativePointFromViewport(viewportMargin, top);
+      maxFittingTop >= viewportRect.top + viewportMargin
+        ? maxFittingTop
+        : viewportRect.top + viewportMargin;
+    const panelPoint = floatingLayerPointFromViewport(viewportRect.left + viewportMargin, top);
 
     return {
       connector: null,
@@ -8432,7 +8608,12 @@ function App() {
   }
 
   function notePanelKeepsFocus(target: EventTarget | null, clientX?: number, clientY?: number) {
-    if (targetIsInsideNotePanel(target) || targetIsActiveNoteRange(target)) return true;
+    if (
+      targetIsInsideNotePanel(target) ||
+      targetIsActiveNoteRange(target)
+    ) {
+      return true;
+    }
 
     if (typeof clientX === "number" && typeof clientY === "number") {
       return (
@@ -9233,16 +9414,15 @@ function App() {
 
       if (notePanelModalActive) {
         if (targetIsInsideDocumentSearch(event.target)) return;
-        if (isAnnotationNavigationTab && targetIsInsideEditingNoteMarkdownEditor(event.target)) {
-          return;
-        }
 
-        if (
-          isAnnotationNavigationTab &&
-          focusAdjacentFloatingAnnotation(event.shiftKey ? -1 : 1)
-        ) {
+        if (isAnnotationNavigationTab && (activeNoteId || activeGlossaryBindingId)) {
+          if (targetIsInsideEditingNoteMarkdownEditor(event.target)) {
+            return;
+          }
+
           event.preventDefault();
           event.stopPropagation();
+          focusAdjacentFloatingAnnotation(event.shiftKey ? -1 : 1);
           return;
         }
 
@@ -9389,24 +9569,26 @@ function App() {
       )
       .slice()
       .sort(compareNotesByDocumentPosition);
-    const noteToneById = buildVisibleNoteToneMap(visibleNotes);
-    let previousNote: SelectionNote | null = null;
-    let nextNote: SelectionNote | null = null;
+    const anchorRangeKey = noteAnchorRangeKey(anchor);
+    let insertionIndex = 0;
+    let previousRangeKey = "";
 
     for (const note of visibleNotes) {
-      if (note.anchor.from <= anchor.from) {
-        previousNote = note;
-        continue;
+      const rangeKey = noteAnchorRangeKey(note.anchor);
+      if (rangeKey === previousRangeKey) continue;
+      if (
+        note.anchor.from > anchor.from ||
+        (note.anchor.from === anchor.from && note.anchor.to > anchor.to)
+      ) {
+        break;
       }
+      if (rangeKey === anchorRangeKey) return (insertionIndex % 2) as AnnotationTone;
 
-      nextNote = note;
-      break;
+      insertionIndex += 1;
+      previousRangeKey = rangeKey;
     }
 
-    const adjacentTone =
-      previousNote ? noteToneById.get(previousNote.id) : nextNote ? noteToneById.get(nextNote.id) : 1;
-
-    return adjacentTone === 0 ? 1 : 0;
+    return (insertionIndex % 2) as AnnotationTone;
   }
 
   function markLoadedDocumentsClean(loadedDocuments: MarkdownDocument[]) {
@@ -11684,6 +11866,29 @@ function App() {
     }
   }
 
+  function markNoteCopySucceeded(actionKey: string) {
+    window.clearTimeout(copiedNoteActionTimerRef.current);
+    setCopiedNoteActionKey(actionKey);
+    copiedNoteActionTimerRef.current = window.setTimeout(() => {
+      copiedNoteActionTimerRef.current = 0;
+      setCopiedNoteActionKey((currentKey) => (currentKey === actionKey ? "" : currentKey));
+    }, 1200);
+  }
+
+  function noteCopyButtonIcon(actionKey: string) {
+    return copiedNoteActionKey === actionKey ? <CheckIcon /> : <NoteCopyIcon />;
+  }
+
+  async function copyNoteContent(note: Pick<SelectionNote, "body">, actionKey: string) {
+    try {
+      await writeTextToClipboard(note.body);
+      markNoteCopySucceeded(actionKey);
+      setStorageError("");
+    } catch (error) {
+      setStorageError(error instanceof Error ? error.message : String(error));
+    }
+  }
+
   function removeDocumentsFromWorkspace(documentIds: Iterable<string>) {
     const documentIdSet = new Set(documentIds);
     if (documentIdSet.size === 0) return;
@@ -12979,7 +13184,12 @@ function App() {
     return false;
   }
 
-  function handleSelectionEnter(anchor: TextSelectionAnchor) {
+  function handleSelectionEnter(
+    anchor: TextSelectionAnchor,
+    context?: TextSelectionEnterContext,
+  ) {
+    const contextAnchorRect = textRangeRectFromSelectionEnterContext(context);
+
     if (!hasOpenDocument) return false;
     if (
       settingsViewOpen ||
@@ -13001,6 +13211,9 @@ function App() {
       if (noteLibraryOpen) {
         setNoteLibraryOpen(false);
       }
+      if (contextAnchorRect) {
+        floatingNoteAnchorRectRef.current = contextAnchorRect;
+      }
       openExistingAnnotationForSelection(anchor);
       return true;
     }
@@ -13009,7 +13222,7 @@ function App() {
       if (noteLibraryOpen) {
         setNoteLibraryOpen(false);
       }
-      startGlossaryFlowForAnchor(anchor);
+      startGlossaryFlowForAnchor(anchor, { anchorRect: contextAnchorRect });
       return true;
     }
 
@@ -13023,7 +13236,10 @@ function App() {
       if (noteLibraryOpen) {
         setNoteLibraryOpen(false);
       }
-      createSelectionNoteForAnchor(anchor, { startEditing: true });
+      createSelectionNoteForAnchor(anchor, {
+        anchorRect: contextAnchorRect,
+        startEditing: true,
+      });
       return true;
     }
 
@@ -13038,7 +13254,10 @@ function App() {
       setNoteLibraryOpen(false);
     }
 
-    createSelectionNoteForAnchor(anchor, { startEditing: true });
+    createSelectionNoteForAnchor(anchor, {
+      anchorRect: contextAnchorRect,
+      startEditing: true,
+    });
     return true;
   }
 
@@ -13078,13 +13297,14 @@ function App() {
 
   function focusAdjacentFloatingAnnotation(direction: -1 | 1) {
     if (activeNoteId) {
-      const currentIndex = noteLibraryNotes.findIndex((note) => note.id === activeNoteId);
+      const navigationNotes = noteLibraryNotes.filter((note) => activeNoteAnchorRect(note.id));
+      const currentIndex = navigationNotes.findIndex((note) => note.id === activeNoteId);
       const nextIndex = wrappedNavigationIndex(
         currentIndex,
-        noteLibraryNotes.length,
+        navigationNotes.length,
         direction,
       );
-      const nextNoteId = nextIndex >= 0 ? noteLibraryNotes[nextIndex]?.id : "";
+      const nextNoteId = nextIndex >= 0 ? navigationNotes[nextIndex]?.id : "";
       if (!nextNoteId) return false;
 
       scrollTextAnnotationIntoView(nextNoteId);
@@ -13093,16 +13313,19 @@ function App() {
     }
 
     if (activeGlossaryBindingId) {
-      const currentIndex = glossaryNavigationBindings.findIndex(
+      const navigationBindings = glossaryNavigationBindings.filter((binding) =>
+        activeGlossaryAnchorRect(binding.id),
+      );
+      const currentIndex = navigationBindings.findIndex(
         (binding) => binding.id === activeGlossaryBindingId,
       );
       const nextIndex = wrappedNavigationIndex(
         currentIndex,
-        glossaryNavigationBindings.length,
+        navigationBindings.length,
         direction,
       );
       const nextBindingId =
-        nextIndex >= 0 ? glossaryNavigationBindings[nextIndex]?.id : "";
+        nextIndex >= 0 ? navigationBindings[nextIndex]?.id : "";
       if (!nextBindingId) return false;
 
       scrollTextAnnotationIntoView(`glossary:${nextBindingId}`);
@@ -13155,12 +13378,16 @@ function App() {
     startGlossaryFlowForAnchor(pendingAnchor);
   }
 
-  function startGlossaryFlowForAnchor(anchor: TextSelectionAnchor) {
+  function startGlossaryFlowForAnchor(
+    anchor: TextSelectionAnchor,
+    options: { anchorRect?: TextRangeRect | null } = {},
+  ) {
     if (!glossaryModeActive) return;
 
     discardTransientEmptySelectionNote();
     setSelectionWarningPosition(null);
     const anchorRect =
+      options.anchorRect ??
       currentSelectionAnchorRect() ??
       activeNoteAnchorRect(pendingAnchorAnnotationId) ??
       floatingNoteAnchorRectRef.current ??
@@ -13409,20 +13636,30 @@ function App() {
     confirmSelectionNoteForAnchor(pendingAnchor);
   }
 
-  function confirmSelectionNoteForAnchor(anchor: TextSelectionAnchor) {
+  function confirmSelectionNoteForAnchor(
+    anchor: TextSelectionAnchor,
+    options: { anchorRect?: TextRangeRect | null } = {},
+  ) {
     if (!noteModeEnabled) return;
 
-    createSelectionNoteForAnchor(anchor, { startEditing: true });
+    createSelectionNoteForAnchor(anchor, {
+      anchorRect: options.anchorRect,
+      startEditing: true,
+    });
   }
 
   function createSelectionNoteForAnchor(
     anchor: TextSelectionAnchor,
-    options: { startEditing?: boolean } = {},
+    options: { anchorRect?: TextRangeRect | null; startEditing?: boolean } = {},
   ) {
     const { startEditing = false } = options;
+    const anchorRect =
+      options.anchorRect ?? currentSelectionAnchorRect() ?? activeNoteAnchorRect(pendingAnchorAnnotationId);
+    if (!hasRenderableAnchor(anchor) || !anchorRect) return;
 
     discardTransientEmptySelectionNote();
     setSelectionWarningPosition(null);
+    floatingNoteAnchorRectRef.current = anchorRect;
 
     const note: SelectionNote = {
       id: crypto.randomUUID(),
@@ -13777,6 +14014,8 @@ function App() {
   function renderNoteLibraryCard(note: SelectionNote) {
     const isFocusedLibraryNote = focusedLibraryNoteId === note.id;
     const editorKey = noteEditorKey("library", note.id);
+    const copyActionKey = `library-card:${note.id}`;
+    const noteCopied = copiedNoteActionKey === copyActionKey;
 
     return (
       <article
@@ -13794,18 +14033,35 @@ function App() {
       >
         <div className="note-library-card__header">
           <PinBadge ariaLabel={t("note.pin")} />
-          <button
-            className="note-library-card__expand-button"
-            type="button"
-            aria-label={t("note.expand")}
-            title={t("note.expand")}
-            onClick={(event) => {
-              event.stopPropagation();
-              openLibraryNoteExpandedPanel(note.id);
-            }}
-          >
-            <ExpandPanelIcon />
-          </button>
+          <div className="note-library-card__header-actions">
+            <button
+              className={`note-library-card__copy-button ${
+                noteCopied ? "is-copy-success" : ""
+              }`}
+              type="button"
+              aria-label={noteCopied ? t("note.copy.copied") : t("note.copy")}
+              title={noteCopied ? t("note.copy.copied") : t("note.copy")}
+              onClick={(event) => {
+                event.stopPropagation();
+                clearTouchButtonFocus(event.currentTarget);
+                void copyNoteContent(note, copyActionKey);
+              }}
+            >
+              {noteCopyButtonIcon(copyActionKey)}
+            </button>
+            <button
+              className="note-library-card__expand-button"
+              type="button"
+              aria-label={t("note.expand")}
+              title={t("note.expand")}
+              onClick={(event) => {
+                event.stopPropagation();
+                openLibraryNoteExpandedPanel(note.id);
+              }}
+            >
+              <ExpandPanelIcon />
+            </button>
+          </div>
         </div>
         <NoteMarkdownEditor
           ariaLabel={t("note.edit")}
@@ -13973,6 +14229,16 @@ function App() {
           width: floatingNotePanelPosition.connector.width,
         };
   const editorReadOnly = notePanelModalActive || noteModeEnabled;
+  const previewEditorReadOnly =
+    notePanelModalActive || (noteModeEnabled && mobileAnnotationKeyboardShouldStayClosed);
+  const mobileCommittedSelectionAnchor = pendingAnchor ?? activeNote?.anchor ?? null;
+  const mobileCommittedSelectionKey =
+    mobileAnnotationKeyboardShouldStayClosed &&
+    noteModeEnabled &&
+    mobileCommittedSelectionAnchor &&
+    hasRenderableAnchor(mobileCommittedSelectionAnchor)
+      ? `selection:${selectedDocument.id}:${mobileCommittedSelectionAnchor.from}:${mobileCommittedSelectionAnchor.to}:${mobileCommittedSelectionAnchor.selectedText.length}`
+      : "";
   const fileContextMenuActions: FileContextMenuAction[] = fileContextMenu
     ? (() => {
         const exportDocumentCount = fileContextMenu.exportDocumentIds.length;
@@ -15031,11 +15297,16 @@ function App() {
                   documentFilePath={selectedDocument.filePath}
                   key={selectedDocument.id}
                   mobileBlockSelectionEnabled={mobileAnnotationKeyboardShouldStayClosed}
+                  mobileBlockSelectionHint={t("selection.dragToCreateNote")}
+                  mobileCommittedSelectionKey={mobileCommittedSelectionKey}
+                  mobileCommittedSelectionTone={floatingNoteTone}
+                  mobileSelectionToneForAnchor={toneForNewSelectionNote}
                   noteModeEnabled={noteModeEnabled}
-                  readOnly={editorReadOnly}
+                  readOnly={previewEditorReadOnly}
                   search={documentSearchState}
                   toolbarEnabled={false}
                   value={selectedDocument.body}
+                  codeBlockCopiedLabel={t("codeBlock.copy.copied")}
                   onAnnotationClick={showAnnotationViewer}
                   onAnnotationDoubleClick={showAnnotationViewer}
                   onChange={updateSelectedDocumentBody}
@@ -15128,6 +15399,33 @@ function App() {
               <div className="note-library-expanded-panel__header">
                 <PinBadge ariaLabel={t("note.pin")} />
                 <div className="note-library-expanded-panel__header-actions">
+                  <button
+                    className={`note-library-expanded-panel__copy-button ${
+                      copiedNoteActionKey === `library-expanded:${expandedLibraryNote.id}`
+                        ? "is-copy-success"
+                        : ""
+                    }`}
+                    type="button"
+                    aria-label={
+                      copiedNoteActionKey === `library-expanded:${expandedLibraryNote.id}`
+                        ? t("note.copy.copied")
+                        : t("note.copy")
+                    }
+                    title={
+                      copiedNoteActionKey === `library-expanded:${expandedLibraryNote.id}`
+                        ? t("note.copy.copied")
+                        : t("note.copy")
+                    }
+                    onClick={(event) => {
+                      clearTouchButtonFocus(event.currentTarget);
+                      void copyNoteContent(
+                        expandedLibraryNote,
+                        `library-expanded:${expandedLibraryNote.id}`,
+                      );
+                    }}
+                  >
+                    {noteCopyButtonIcon(`library-expanded:${expandedLibraryNote.id}`)}
+                  </button>
                   <button
                     className="note-library-expanded-panel__collapse-button"
                     type="button"
@@ -15343,6 +15641,36 @@ function App() {
               <div className="floating-note-card__header">
                 <PinBadge ariaLabel={t("note.pin")} />
                 <div className="floating-note-card__header-actions">
+                  {activeNote ? (
+                    <button
+                      className={`floating-note-copy-button ${
+                        copiedNoteActionKey === `floating:${activeNote.id}`
+                          ? "is-copy-success"
+                          : ""
+                      }`}
+                      type="button"
+                      aria-label={
+                        copiedNoteActionKey === `floating:${activeNote.id}`
+                          ? t("note.copy.copied")
+                          : t("note.copy")
+                      }
+                      title={
+                        copiedNoteActionKey === `floating:${activeNote.id}`
+                          ? t("note.copy.copied")
+                          : t("note.copy")
+                      }
+                      onClick={(event) => {
+                        clearTouchButtonFocus(event.currentTarget);
+                        void copyNoteContent(activeNote, `floating:${activeNote.id}`);
+                      }}
+                    >
+                      {copiedNoteActionKey === `floating:${activeNote.id}` ? (
+                        <FloatingNoteCheckIcon />
+                      ) : (
+                        <FloatingNoteCopyIcon />
+                      )}
+                    </button>
+                  ) : null}
                   {floatingNoteCanExpand ? (
                     <button
                       className={`floating-note-panel-toggle-button ${
@@ -15358,7 +15686,11 @@ function App() {
                       }
                       onClick={toggleFloatingNotePanelExpanded}
                     >
-                      {floatingNotePanelExpanded ? <CollapsePanelIcon /> : <ExpandPanelIcon />}
+                      {floatingNotePanelExpanded ? (
+                        <FloatingNoteCollapseIcon />
+                      ) : (
+                        <FloatingNoteExpandIcon />
+                      )}
                     </button>
                   ) : null}
                   <button
@@ -15367,7 +15699,7 @@ function App() {
                     aria-label={t("note.close")}
                     onClick={closeNotePanel}
                   >
-                    ×
+                    <FloatingNoteCloseIcon />
                   </button>
                 </div>
               </div>

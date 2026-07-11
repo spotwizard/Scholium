@@ -46,6 +46,10 @@
   --shadow-note:
     0 14px 28px rgba(32, 35, 41, 0.16),
     inset 0 1px 0 rgba(255, 255, 255, 0.75);
+  --visual-viewport-height: 100vh;
+  --visual-viewport-offset-left: 0px;
+  --visual-viewport-offset-top: 0px;
+  --visual-viewport-width: 100vw;
   color: var(--color-text);
   background: var(--color-app-bg);
   font-family:
@@ -3188,6 +3192,10 @@ button:disabled {
   caret-color: transparent;
 }
 
+.milkdown-markdown-editor-shell.is-note-mode .milkdown .ProseMirror {
+  caret-color: transparent;
+}
+
 .milkdown-markdown-editor-shell.is-readonly .milkdown .cm-content {
   caret-color: transparent;
 }
@@ -3367,12 +3375,13 @@ button:disabled {
 
 .milkdown-markdown-editor .milkdown .milkdown-code-block {
   position: relative;
+  --code-block-toolbar-reserved-space: 42px;
   isolation: isolate;
   overflow: visible;
   margin: 0 0 1em;
   border: 1px solid var(--color-border);
   border-radius: 8px;
-  padding: 8px 12px 12px;
+  padding: var(--code-block-toolbar-reserved-space) 12px 12px;
   background: var(--color-surface-soft);
 }
 
@@ -3408,7 +3417,7 @@ button:disabled {
   position: absolute;
   top: 6px;
   right: 8px;
-  z-index: 2;
+  z-index: 3;
   display: flex;
   width: max-content;
   justify-content: flex-end;
@@ -3419,6 +3428,65 @@ button:disabled {
 
 .milkdown-markdown-editor .milkdown .milkdown-code-block .tools > * {
   pointer-events: auto;
+}
+
+.milkdown-markdown-editor .milkdown .milkdown-code-block .tools .copy-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  line-height: 1;
+}
+
+.milkdown-markdown-editor
+  .milkdown
+  .milkdown-code-block
+  .tools
+  .copy-button:not(.is-copy-success)
+  svg {
+  display: none;
+}
+
+.milkdown-markdown-editor
+  .milkdown
+  .milkdown-code-block
+  .tools
+  .copy-button:not(.is-copy-success)::before {
+  content: "";
+  display: block;
+  width: 14px;
+  height: 14px;
+  background-color: currentColor;
+  flex: 0 0 auto;
+  -webkit-mask: url("./assets/copy-page.svg") center / contain no-repeat;
+  mask: url("./assets/copy-page.svg") center / contain no-repeat;
+}
+
+.milkdown-markdown-editor .milkdown .milkdown-code-block .tools .copy-button.is-copy-success {
+  color: var(--color-accent-strong);
+}
+
+.milkdown-markdown-editor
+  .milkdown
+  .milkdown-code-block
+  .tools
+  .copy-button.is-copy-success
+  svg {
+  display: none;
+}
+
+.milkdown-markdown-editor
+  .milkdown
+  .milkdown-code-block
+  .tools
+  .copy-button.is-copy-success::before {
+  content: "";
+  display: block;
+  width: 14px;
+  height: 14px;
+  background-color: currentColor;
+  flex: 0 0 auto;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2024%2024'%3E%3Cpath%20d='m5%2012.5%204.5%204.5L19%207'%20fill='none'%20stroke='black'%20stroke-width='2.6'%20stroke-linecap='round'%20stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2024%2024'%3E%3Cpath%20d='m5%2012.5%204.5%204.5L19%207'%20fill='none'%20stroke='black'%20stroke-width='2.6'%20stroke-linecap='round'%20stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
 }
 
 .milkdown-markdown-editor .milkdown .milkdown-code-block .tools .language-button {
@@ -3451,6 +3519,43 @@ button:disabled {
 .milkdown-markdown-editor .milkdown .milkdown-code-block .cm-content {
   padding: 0;
   caret-color: var(--color-accent);
+}
+
+.milkdown-markdown-editor-shell.is-note-mode .milkdown .milkdown-code-block,
+.milkdown-markdown-editor-shell.is-note-mode .milkdown .milkdown-code-block .cm-editor,
+.milkdown-markdown-editor-shell.is-note-mode .milkdown .milkdown-code-block .cm-scroller,
+.milkdown-markdown-editor-shell.is-note-mode .milkdown .milkdown-code-block .cm-content,
+.milkdown-markdown-editor-shell.is-note-mode .milkdown .milkdown-code-block .cm-line {
+  cursor: default;
+}
+
+.milkdown-markdown-editor-shell.is-note-mode
+  .milkdown
+  .milkdown-code-block.is-annotation-hit-hovered,
+.milkdown-markdown-editor-shell.is-note-mode
+  .milkdown
+  .milkdown-code-block.is-annotation-hit-hovered
+  .cm-editor,
+.milkdown-markdown-editor-shell.is-note-mode
+  .milkdown
+  .milkdown-code-block.is-annotation-hit-hovered
+  .cm-scroller,
+.milkdown-markdown-editor-shell.is-note-mode
+  .milkdown
+  .milkdown-code-block.is-annotation-hit-hovered
+  .cm-content,
+.milkdown-markdown-editor-shell.is-note-mode
+  .milkdown
+  .milkdown-code-block.is-annotation-hit-hovered
+  .cm-line {
+  cursor: pointer;
+}
+
+.milkdown-markdown-editor-shell.is-note-mode
+  .milkdown
+  .milkdown-code-block
+  .cm-content {
+  caret-color: transparent;
 }
 
 .milkdown-markdown-editor .milkdown .milkdown-code-block .cm-line {
@@ -3521,6 +3626,11 @@ button:disabled {
   .milkdown-code-block
   .tools
   .language-button,
+.milkdown-markdown-editor-shell.is-note-mode
+  .milkdown
+  .milkdown-code-block
+  .tools
+  .language-button,
 .milkdown-markdown-editor-shell.is-touch-note-selection
   .milkdown
   .milkdown-code-block
@@ -3532,7 +3642,7 @@ button:disabled {
 .milkdown-markdown-editor-shell.is-touch-note-selection
   .milkdown
   .milkdown-code-block {
-  padding-top: 54px;
+  padding-top: var(--code-block-toolbar-reserved-space);
 }
 
 .milkdown-markdown-editor-shell.is-touch-note-selection
@@ -3542,6 +3652,78 @@ button:disabled {
   pointer-events: none;
   -webkit-user-select: none;
   user-select: none;
+}
+
+.milkdown-touch-block-selection-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 86;
+  pointer-events: none;
+}
+
+.milkdown-touch-block-selection-preview {
+  position: fixed;
+  box-sizing: border-box;
+  background: color-mix(in srgb, var(--color-annotation-surface) 74%, transparent);
+}
+
+.milkdown-touch-block-selection-overlay[data-note-tone="1"]
+  .milkdown-touch-block-selection-preview {
+  background: color-mix(in srgb, var(--color-annotation-surface-alt) 74%, transparent);
+}
+
+.milkdown-touch-block-selection-overlay.is-committed
+  .milkdown-touch-block-selection-preview {
+  background: color-mix(in srgb, var(--color-annotation-surface) 82%, transparent);
+}
+
+.milkdown-touch-block-selection-overlay.is-committed[data-note-tone="1"]
+  .milkdown-touch-block-selection-preview {
+  background: color-mix(in srgb, var(--color-annotation-surface-alt) 82%, transparent);
+}
+
+.milkdown-touch-block-selection-rect {
+  position: fixed;
+  box-sizing: border-box;
+  border: 1.5px solid color-mix(in srgb, var(--color-accent) 84%, white);
+  border-radius: 5px;
+  background: transparent;
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.78),
+    0 8px 20px rgba(32, 35, 41, 0.1);
+}
+
+.milkdown-touch-block-selection-hint {
+  position: fixed;
+  box-sizing: border-box;
+  max-width: calc(100vw - 28px);
+  border: 1px solid rgba(32, 35, 41, 0.12);
+  border-radius: 8px;
+  padding: 7px 11px;
+  color: var(--color-heading);
+  background: color-mix(in srgb, var(--color-surface-raised) 94%, white);
+  box-shadow: 0 12px 28px rgba(32, 35, 41, 0.14);
+  font-size: 0.84rem;
+  font-weight: 760;
+  line-height: 1.25;
+  opacity: 0;
+  transform: translateX(-50%) translateY(4px);
+  transition:
+    opacity 140ms ease-out,
+    transform 140ms ease-out;
+  white-space: nowrap;
+}
+
+.milkdown-touch-block-selection-hint.is-visible {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+.milkdown-touch-block-selection-hint.is-hiding {
+  opacity: 0;
+  transform: translateX(-50%) translateY(2px);
+  transition-duration: 160ms;
+  transition-timing-function: ease-in;
 }
 
 .milkdown-glossary-annotation {
@@ -3953,6 +4135,13 @@ button:disabled {
   margin-bottom: 10px;
 }
 
+.note-library-card__header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.note-library-card__copy-button,
 .note-library-card__expand-button {
   display: inline-flex;
   width: 26px;
@@ -3974,6 +4163,8 @@ button:disabled {
     visibility 0s linear 160ms;
 }
 
+.note-library-card.is-focused .note-library-card__copy-button,
+.note-library-card:focus-within .note-library-card__copy-button,
 .note-library-card.is-focused .note-library-card__expand-button,
 .note-library-card:focus-within .note-library-card__expand-button {
   opacity: 1;
@@ -3982,12 +4173,19 @@ button:disabled {
   transition-delay: 0s;
 }
 
+.note-library-card__copy-button:hover,
+.note-library-card__copy-button:focus-visible,
 .note-library-card__expand-button:hover,
 .note-library-card__expand-button:focus-visible {
   background: rgba(255, 255, 255, 0.32);
   box-shadow: none;
 }
 
+.note-library-card__copy-button.is-copy-success {
+  color: var(--color-accent-strong);
+}
+
+.note-library-card__copy-button .note-action-icon,
 .note-library-card__expand-button .note-action-icon {
   width: 15px;
   height: 15px;
@@ -4164,6 +4362,7 @@ button:disabled {
   gap: 6px;
 }
 
+.note-library-expanded-panel__copy-button,
 .note-library-expanded-panel__collapse-button {
   display: inline-flex;
   width: 26px;
@@ -4179,12 +4378,19 @@ button:disabled {
   box-shadow: none;
 }
 
+.note-library-expanded-panel__copy-button:hover,
+.note-library-expanded-panel__copy-button:focus-visible,
 .note-library-expanded-panel__collapse-button:hover,
 .note-library-expanded-panel__collapse-button:focus-visible {
   background: rgba(255, 255, 255, 0.32);
   box-shadow: none;
 }
 
+.note-library-expanded-panel__copy-button.is-copy-success {
+  color: var(--color-accent-strong);
+}
+
+.note-library-expanded-panel__copy-button .note-action-icon,
 .note-library-expanded-panel__collapse-button .note-action-icon {
   width: 15px;
   height: 15px;
@@ -4907,14 +5113,17 @@ button:disabled {
 .floating-note-card__header-actions {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
 }
 
+.floating-note-copy-button,
 .floating-note-panel-toggle-button,
 .floating-note-close-button {
   display: inline-flex;
-  width: 24px;
+  width: 20px;
+  min-width: 20px;
   height: 24px;
+  min-height: 24px;
   align-items: center;
   justify-content: center;
   border: 0;
@@ -4927,21 +5136,67 @@ button:disabled {
   line-height: 1;
 }
 
+.floating-note-copy-button:hover,
+.floating-note-copy-button:focus-visible,
 .floating-note-panel-toggle-button:hover,
 .floating-note-panel-toggle-button:focus-visible,
+.floating-note-close-button:focus-visible,
 .floating-note-close-button:hover {
   background: var(--color-accent-softer);
 }
 
+.floating-note-copy-button.is-copy-success {
+  color: var(--color-accent-strong);
+}
+
+.floating-note-panel.is-glossary .floating-note-copy-button:hover,
+.floating-note-panel.is-glossary .floating-note-copy-button:focus-visible,
 .floating-note-panel.is-glossary .floating-note-panel-toggle-button:hover,
 .floating-note-panel.is-glossary .floating-note-panel-toggle-button:focus-visible,
+.floating-note-panel.is-glossary .floating-note-close-button:focus-visible,
 .floating-note-panel.is-glossary .floating-note-close-button:hover {
   background: rgba(33, 132, 96, 0.08);
 }
 
-.floating-note-panel-toggle-button .note-action-icon {
-  width: 15px;
-  height: 15px;
+.floating-note-copy-button .note-action-icon,
+.floating-note-panel-toggle-button .note-action-icon,
+.floating-note-close-button .note-action-icon {
+  width: 16px;
+  height: 16px;
+}
+
+.floating-note-action-icon {
+  display: block;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+}
+
+.floating-note-action-icon--copy {
+  width: 17px;
+  height: 17px;
+  background-color: currentColor;
+  -webkit-mask: url("./assets/copy-page.svg") center / contain no-repeat;
+  mask: url("./assets/copy-page.svg") center / contain no-repeat;
+}
+
+.floating-note-action-icon--raw-svg svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  fill: currentColor;
+}
+
+.floating-note-action-icon--raw-svg path {
+  fill: currentColor;
+}
+
+.floating-note-action-icon--close {
+  display: grid;
+  place-items: center;
+  font-size: 20px;
+  font-weight: 800;
+  line-height: 18px;
 }
 
 .floating-note-card__context {
@@ -5480,6 +5735,15 @@ button:disabled {
   stroke-width: 2;
 }
 
+.note-copy-icon {
+  display: block;
+  flex: 0 0 auto;
+  background-color: currentColor;
+  stroke: none;
+  -webkit-mask: url("./assets/copy-page.svg") center / contain no-repeat;
+  mask: url("./assets/copy-page.svg") center / contain no-repeat;
+}
+
 .note-action-icon--raw-svg svg {
   display: block;
   width: 100%;
@@ -5489,6 +5753,35 @@ button:disabled {
 
 .note-action-icon--raw-svg path {
   fill: currentColor;
+}
+
+@media (hover: none), (pointer: coarse) {
+  .milkdown-markdown-editor .milkdown .milkdown-code-block .tools .copy-button,
+  .note-library-card__copy-button,
+  .note-library-expanded-panel__copy-button,
+  .floating-note-copy-button {
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .note-library-card__copy-button:hover,
+  .note-library-card__copy-button:focus,
+  .note-library-card__copy-button:focus-visible,
+  .note-library-card__copy-button:active,
+  .note-library-expanded-panel__copy-button:hover,
+  .note-library-expanded-panel__copy-button:focus,
+  .note-library-expanded-panel__copy-button:focus-visible,
+  .note-library-expanded-panel__copy-button:active,
+  .floating-note-copy-button:hover,
+  .floating-note-copy-button:focus,
+  .floating-note-copy-button:focus-visible,
+  .floating-note-copy-button:active,
+  .floating-note-panel.is-glossary .floating-note-copy-button:hover,
+  .floating-note-panel.is-glossary .floating-note-copy-button:focus,
+  .floating-note-panel.is-glossary .floating-note-copy-button:focus-visible,
+  .floating-note-panel.is-glossary .floating-note-copy-button:active {
+    background: transparent;
+    box-shadow: none;
+  }
 }
 
 .floating-note-card .bottom-note-actions button:not(.selection-confirmation-button) .note-action-icon {
@@ -5634,6 +5927,7 @@ button:disabled {
     --editor-content-end-offset: 0px;
     --editor-left-control-gutter: 0px;
     --note-library-width: 100vw;
+    --mobile-document-search-reserved-inline-end: clamp(118px, 32vw, 142px);
     --side-panel-transition-duration: 220ms;
   }
 
@@ -5697,8 +5991,12 @@ button:disabled {
     right: auto;
     left: auto;
     height: auto;
-    padding-top: calc(var(--mobile-editor-top-padding) + 12px);
-    padding-bottom: 24px;
+    padding: calc(var(--mobile-editor-top-padding) + 20px)
+      var(--mobile-document-search-reserved-inline-end) 26px 18px;
+  }
+
+  .editor-document-title__text {
+    max-width: 100%;
   }
 
   .document-search-backdrop {
@@ -6618,7 +6916,7 @@ button:disabled {
     box-sizing: border-box;
     max-width: 100%;
     overflow: hidden;
-    padding: 42px 10px 10px;
+    padding: var(--code-block-toolbar-reserved-space) 10px 10px;
   }
 
   .milkdown-markdown-editor .milkdown .milkdown-code-block .tools {
@@ -6696,6 +6994,24 @@ button:disabled {
     background: color-mix(in srgb, var(--color-surface-raised) 92%, transparent);
     box-shadow: 0 14px 34px rgba(32, 35, 41, 0.18);
     backdrop-filter: blur(16px);
+  }
+
+  .scholium-shell.is-mobile-safe-layout .note-edit-backdrop {
+    top: var(--visual-viewport-offset-top, 0px);
+    right: auto;
+    bottom: auto;
+    left: var(--visual-viewport-offset-left, 0px);
+    width: var(--visual-viewport-width, 100vw);
+    height: var(--visual-viewport-height, 100svh);
+  }
+
+  .scholium-shell.is-mobile-safe-layout .floating-note-panel:not(.is-expanded-sidebar) {
+    position: fixed;
+    width: min(420px, calc(var(--visual-viewport-width, 100vw) - 64px));
+  }
+
+  .scholium-shell.is-mobile-safe-layout .floating-note-connector {
+    position: fixed;
   }
 
   .mobile-command-bar button {
@@ -6787,10 +7103,27 @@ button:disabled {
 
   .floating-note-panel {
     width: calc(100vw - 64px);
+    max-height: max(120px, calc(var(--visual-viewport-height, 100svh) - 64px));
   }
 
   .floating-note-card {
+    max-height: inherit;
+    overflow: hidden;
     padding: 12px 12px 14px;
+  }
+
+  .floating-note-card__body-shell {
+    max-height: min(
+      var(--floating-note-card-body-visible-height),
+      max(72px, calc(var(--visual-viewport-height, 100svh) - 132px))
+    );
+  }
+
+  .floating-note-card__editor {
+    --note-markdown-editor-max-height: min(
+      calc(10 * 1.5em),
+      max(72px, calc(var(--visual-viewport-height, 100svh) - 150px))
+    );
   }
 
   .floating-note-panel.is-expanded-sidebar,
@@ -6821,13 +7154,20 @@ button:disabled {
     scrollbar-gutter: auto;
   }
 
-  .floating-note-panel-toggle-button,
-  .floating-note-close-button,
   .note-library-expanded-panel__collapse-button {
     width: 34px;
     min-width: 34px;
     height: 34px;
     min-height: 34px;
+  }
+
+  .floating-note-copy-button,
+  .floating-note-panel-toggle-button,
+  .floating-note-close-button {
+    width: 24px;
+    min-width: 24px;
+    height: 30px;
+    min-height: 30px;
   }
 
   .floating-note-card .note-actions .selection-confirmation-button {

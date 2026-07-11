@@ -5,7 +5,7 @@ use base64::{
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{Read, Write};
 use std::net::TcpListener;
@@ -2038,6 +2038,70 @@ fn notes_file_is_empty(notes_file: &NotesFile) -> bool {
         && notes_file.glossary_bindings.is_empty()
 }
 
+fn random_sidecar_id(prefix: &str, used_ids: &mut HashSet<String>) -> Result<String, String> {
+    for _ in 0..8 {
+        let token = random_url_token(18)?;
+        let id = format!("{prefix}-{token}");
+        if used_ids.insert(id.clone()) {
+            return Ok(id);
+        }
+    }
+
+    Err("failed to generate unique sidecar id".to_string())
+}
+
+fn duplicate_notes_file_for_document(
+    mut notes_file: NotesFile,
+    target_document_id: &str,
+) -> Result<NotesFile, String> {
+    let mut used_ids = HashSet::new();
+    let mut glossary_term_id_map = HashMap::new();
+    let target_document_id = target_document_id.to_string();
+
+    for note in notes_file.notes.iter() {
+        used_ids.insert(note.id.clone());
+    }
+    for term in notes_file.glossary_terms.iter() {
+        used_ids.insert(term.id.clone());
+    }
+    for binding in notes_file.glossary_bindings.iter() {
+        used_ids.insert(binding.id.clone());
+    }
+
+    notes_file.markdown_path = target_document_id.clone();
+
+    for term in notes_file.glossary_terms.iter_mut() {
+        let source_id = term.id.clone();
+        let copied_id = random_sidecar_id("glossary", &mut used_ids)?;
+
+        term.id = copied_id.clone();
+        glossary_term_id_map.insert(source_id, copied_id);
+    }
+
+    for note in notes_file.notes.iter_mut() {
+        note.id = random_sidecar_id("note", &mut used_ids)?;
+        note.document_id = target_document_id.clone();
+    }
+
+    for binding in notes_file.glossary_bindings.iter_mut() {
+        let source_term_id = binding.term_id.clone();
+        let copied_term_id = match glossary_term_id_map.get(&source_term_id) {
+            Some(copied_id) => copied_id.clone(),
+            None => {
+                let copied_id = random_sidecar_id("glossary", &mut used_ids)?;
+                glossary_term_id_map.insert(source_term_id, copied_id.clone());
+                copied_id
+            }
+        };
+
+        binding.id = random_sidecar_id("glossary-binding", &mut used_ids)?;
+        binding.document_id = target_document_id.clone();
+        binding.term_id = copied_term_id;
+    }
+
+    Ok(notes_file)
+}
+
 fn read_notes_file(app: &AppHandle, markdown_path: &Path) -> Result<Option<NotesFile>, String> {
     let notes_path = notes_store_path(app, markdown_path)?;
     if notes_path.exists() {
@@ -2256,16 +2320,9 @@ fn duplicate_markdown_file(
     fs::copy(&source_path, &target_path)
         .map_err(|error| format!("failed to duplicate Markdown file: {error}"))?;
 
-    if let Some(mut parsed) = read_notes_file(&app, &source_path)? {
+    if let Some(parsed) = read_notes_file(&app, &source_path)? {
         let target_path_string = target_path.to_string_lossy().to_string();
-
-        parsed.markdown_path = target_path_string.clone();
-        for note in parsed.notes.iter_mut() {
-            note.document_id = target_path_string.clone();
-        }
-        for binding in parsed.glossary_bindings.iter_mut() {
-            binding.document_id = target_path_string.clone();
-        }
+        let parsed = duplicate_notes_file_for_document(parsed, &target_path_string)?;
 
         write_notes_file(&app, &target_path, parsed)?;
     }
@@ -2890,17 +2947,10 @@ async fn duplicate_dropbox_markdown_file(
         None => read_notes_file(&app, &source_notes_markdown_path)?,
     };
 
-    if let Some(mut parsed) = source_notes_file {
+    if let Some(parsed) = source_notes_file {
         let target_notes_markdown_path = dropbox_notes_markdown_path(&target_path);
         let target_document_id = format!("dropbox:{target_path}");
-
-        parsed.markdown_path = target_document_id.clone();
-        for note in parsed.notes.iter_mut() {
-            note.document_id = target_document_id.clone();
-        }
-        for binding in parsed.glossary_bindings.iter_mut() {
-            binding.document_id = target_document_id.clone();
-        }
+        let parsed = duplicate_notes_file_for_document(parsed, &target_document_id)?;
 
         write_notes_file(&app, &target_notes_markdown_path, parsed.clone())?;
         upload_dropbox_notes_file(&app, &target_path, parsed).await?;

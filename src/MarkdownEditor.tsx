@@ -22,6 +22,24 @@ export type TextSelectionAnchor = {
   suffix: string;
 };
 
+export type TextSelectionViewportRect = {
+  bottom: number;
+  height: number;
+  left: number;
+  right: number;
+  targetBottom: number;
+  targetTop: number;
+  targetX: number;
+  targetY: number;
+  top: number;
+  width: number;
+};
+
+export type TextSelectionEnterContext = {
+  anchorRect?: TextSelectionViewportRect | null;
+  source?: "keyboard" | "touch-block";
+};
+
 export type AnnotationTone = 0 | 1;
 
 export type TextAnnotation = {
@@ -47,7 +65,10 @@ type MarkdownEditorProps = {
   onSearchMatchCountChange?: (count: number) => void;
   onChange: (value: string, source: EditorChangeSource) => void;
   onSelectionChange: (anchor: TextSelectionAnchor | null) => void;
-  onSelectionEnter: (anchor: TextSelectionAnchor) => boolean;
+  onSelectionEnter: (
+    anchor: TextSelectionAnchor,
+    context?: TextSelectionEnterContext,
+  ) => boolean;
   onAnnotationClick: (noteId: string) => void;
   onAnnotationDoubleClick: (noteId: string) => void;
   onFocusTargetAnnotationPress?: (noteId: string) => void;
