@@ -6807,8 +6807,11 @@ function App() {
   );
 
   useEffect(() => {
+    let keyboardCloseTimer = 0;
+
     function syncVisualViewportProperties() {
       const visualViewport = window.visualViewport;
+      const rootElement = document.documentElement;
       document.documentElement.style.setProperty(
         "--visual-viewport-offset-top",
         `${visualViewport?.offsetTop ?? 0}px`,
@@ -6825,6 +6828,30 @@ function App() {
         "--visual-viewport-width",
         `${visualViewport?.width ?? window.innerWidth}px`,
       );
+
+      const activeElement = document.activeElement;
+      const editableElementFocused =
+        activeElement instanceof HTMLInputElement ||
+        activeElement instanceof HTMLTextAreaElement ||
+        (activeElement instanceof HTMLElement && activeElement.isContentEditable);
+      const softwareKeyboardOpen =
+        editableElementFocused &&
+        visualViewport !== null &&
+        Math.max(window.innerHeight, rootElement.clientHeight) - visualViewport.height > 96;
+
+      if (softwareKeyboardOpen) {
+        window.clearTimeout(keyboardCloseTimer);
+        keyboardCloseTimer = 0;
+        rootElement.classList.add("is-mobile-keyboard-open");
+      } else if (
+        rootElement.classList.contains("is-mobile-keyboard-open") &&
+        keyboardCloseTimer === 0
+      ) {
+        keyboardCloseTimer = window.setTimeout(() => {
+          rootElement.classList.remove("is-mobile-keyboard-open");
+          keyboardCloseTimer = 0;
+        }, 180);
+      }
     }
 
     const visualViewport = window.visualViewport;
@@ -6834,9 +6861,11 @@ function App() {
     syncVisualViewportProperties();
 
     return () => {
+      window.clearTimeout(keyboardCloseTimer);
       visualViewport?.removeEventListener("scroll", syncVisualViewportProperties);
       visualViewport?.removeEventListener("resize", syncVisualViewportProperties);
       window.removeEventListener("resize", syncVisualViewportProperties);
+      document.documentElement.classList.remove("is-mobile-keyboard-open");
       document.documentElement.style.removeProperty("--visual-viewport-offset-top");
       document.documentElement.style.removeProperty("--visual-viewport-offset-left");
       document.documentElement.style.removeProperty("--visual-viewport-height");
