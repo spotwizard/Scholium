@@ -10160,7 +10160,10 @@ function App() {
     return openedDirectory.path ? `Dropbox / ${openedDirectory.title}` : "Dropbox";
   }
 
-  function applyOpenedDropboxDirectory(openedDirectory: OpenDropboxMarkdownDirectoryResult) {
+  function applyOpenedDropboxDirectory(
+    openedDirectory: OpenDropboxMarkdownDirectoryResult,
+    options: { rememberLastOpened?: boolean } = {},
+  ) {
     discardTransientEmptySelectionNote();
     discardTransientEmptyGlossary();
 
@@ -10193,7 +10196,9 @@ function App() {
     setActiveGlossaryMode("view");
     setDirtyDocumentStates({});
     setSavedDocumentBodies({});
-    rememberLastOpenedDropboxWorkspace(openedDirectory.path, "");
+    if (options.rememberLastOpened !== false) {
+      rememberLastOpenedDropboxWorkspace(openedDirectory.path, "");
+    }
 
     if (nextEntries.length === 0) {
       setStorageError(t("dropbox.emptyFolder"));
@@ -10677,7 +10682,7 @@ function App() {
         { path: restoreState.workspacePath },
       );
       if (restoreWasInterrupted()) return;
-      applyOpenedDropboxDirectory(openedDirectory);
+      applyOpenedDropboxDirectory(openedDirectory, { rememberLastOpened: false });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (dropboxErrorNeedsAuthorization(message) || dropboxErrorIsDisconnected(message)) {
@@ -10703,7 +10708,11 @@ function App() {
       return;
     }
 
-    if (!restoreState.filePath) {
+    const restoreFilePath =
+      restoreState.filePath || firstDropboxMarkdownFileEntry(openedDirectory)?.path || "";
+
+    if (!restoreFilePath) {
+      rememberLastOpenedDropboxWorkspace(openedDirectory.path, "");
       setStorageError(openedDirectory.entries.length === 0 ? t("dropbox.emptyFolder") : "");
       return;
     }
@@ -10711,7 +10720,7 @@ function App() {
     try {
       setStorageError(t("dropbox.status.openingFile"));
       const loaded = await invoke<OpenDropboxMarkdownFileResult>("open_dropbox_markdown_file", {
-        path: restoreState.filePath,
+        path: restoreFilePath,
       });
       if (restoreWasInterrupted()) return;
       applyLoadedDropboxFile(loaded);

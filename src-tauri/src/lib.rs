@@ -51,6 +51,8 @@ const DROPBOX_COPY_URL: &str = "https://api.dropboxapi.com/2/files/copy_v2";
 const DROPBOX_DELETE_URL: &str = "https://api.dropboxapi.com/2/files/delete_v2";
 const DROPBOX_REQUIRED_SCOPES: &str =
     "files.metadata.read files.content.read files.metadata.write files.content.write";
+const DROPBOX_TOKEN_REFRESH_ATTEMPTS: usize = 3;
+const DROPBOX_TOKEN_REFRESH_RETRY_DELAY: Duration = Duration::from_millis(500);
 #[cfg(desktop)]
 static NEW_WINDOW_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
@@ -908,6 +910,11 @@ fn tokens_expire_soon(tokens: &DropboxTokenStore) -> bool {
         .unwrap_or(false)
 }
 
+fn dropbox_token_refresh_retry_delay(failed_attempt: usize) -> Option<Duration> {
+    (failed_attempt < DROPBOX_TOKEN_REFRESH_ATTEMPTS)
+        .then(|| DROPBOX_TOKEN_REFRESH_RETRY_DELAY * failed_attempt as u32)
+}
+
 async fn refresh_dropbox_access_token(
     app_handle: &tauri::AppHandle,
     tokens: DropboxTokenStore,
@@ -916,23 +923,43 @@ async fn refresh_dropbox_access_token(
         .refresh_token
         .clone()
         .ok_or_else(|| "Dropbox session expired; reconnect Dropbox.".to_string())?;
-    let response = reqwest::Client::builder()
+    let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(5))
         .build()
-        .map_err(|error| format!("failed to prepare Dropbox token refresh: {error}"))?
-        .post(DROPBOX_OAUTH_TOKEN_URL)
-        .header(
-            "Content-Type",
-            "application/x-www-form-urlencoded; charset=utf-8",
-        )
-        .body(urlencoded_form_body(&[
-            ("grant_type", "refresh_token"),
-            ("refresh_token", refresh_token.as_str()),
-            ("client_id", tokens.app_key.as_str()),
-        ]))
-        .send()
-        .await
-        .map_err(|error| format!("failed to refresh Dropbox token: {error}"))?;
+        .map_err(|error| format!("failed to prepare Dropbox token refresh: {error}"))?;
+    let form_body = urlencoded_form_body(&[
+        ("grant_type", "refresh_token"),
+        ("refresh_token", refresh_token.as_str()),
+        ("client_id", tokens.app_key.as_str()),
+    ]);
+    let mut failed_attempt = 0;
+    let response = loop {
+        failed_attempt += 1;
+        match client
+            .post(DROPBOX_OAUTH_TOKEN_URL)
+            .header(
+                "Content-Type",
+                "application/x-www-form-urlencoded; charset=utf-8",
+            )
+            .body(form_body.clone())
+            .send()
+            .await
+        {
+            Ok(response) => break response,
+            Err(error) => {
+                let Some(delay) = dropbox_token_refresh_retry_delay(failed_attempt) else {
+                    return Err(format!("failed to refresh Dropbox token: {error}"));
+                };
+                tauri::async_runtime::spawn_blocking(move || std::thread::sleep(delay))
+                    .await
+                    .map_err(|wait_error| {
+                        format!(
+                            "failed to wait before retrying Dropbox token refresh: {wait_error}"
+                        )
+                    })?;
+            }
+        }
+    };
 
     let token_response =
         parse_dropbox_token_response(response, "failed to refresh Dropbox token").await?;
@@ -3395,4 +3422,22 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dropbox_token_refresh_retries_twice_with_backoff() {
+        assert_eq!(
+            dropbox_token_refresh_retry_delay(1),
+            Some(Duration::from_millis(500))
+        );
+        assert_eq!(
+            dropbox_token_refresh_retry_delay(2),
+            Some(Duration::from_millis(1_000))
+        );
+        assert_eq!(dropbox_token_refresh_retry_delay(3), None);
+    }
 }
