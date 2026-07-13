@@ -6119,12 +6119,22 @@ button.document-tag-chip__label:focus-visible {
     right: auto;
     left: auto;
     height: auto;
+    justify-content: flex-start;
     padding: calc(var(--mobile-editor-top-padding) + 20px)
-      var(--mobile-document-search-reserved-inline-end) 26px 18px;
+      var(--mobile-document-search-reserved-inline-end) 26px 16px;
+  }
+
+  .scholium-shell.has-document-tabs .editor-document-title {
+    top: auto;
   }
 
   .editor-document-title__text {
     max-width: 100%;
+    overflow: visible;
+    overflow-wrap: anywhere;
+    text-align: left;
+    text-overflow: clip;
+    white-space: normal;
   }
 
   .document-search-backdrop {
