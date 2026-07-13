@@ -2877,6 +2877,42 @@ async fn open_dropbox_markdown_file(
 }
 
 #[tauri::command]
+async fn read_dropbox_markdown_body(app: tauri::AppHandle, path: String) -> Result<String, String> {
+    let normalized_path = normalize_dropbox_path(&path);
+    if !is_markdown_dropbox_path(&normalized_path) {
+        return Err("selected Dropbox file is not a Markdown file".to_string());
+    }
+
+    let access_token = dropbox_access_token(&app).await?;
+    let response = reqwest::Client::new()
+        .post(DROPBOX_DOWNLOAD_URL)
+        .bearer_auth(access_token)
+        .header(
+            "Dropbox-API-Arg",
+            serde_json::json!({ "path": normalized_path }).to_string(),
+        )
+        .send()
+        .await
+        .map_err(|error| format!("failed to download Dropbox Markdown file: {error}"))?;
+
+    if response.status() == StatusCode::UNAUTHORIZED {
+        return Err("Dropbox authorization failed; reconnect Dropbox.".to_string());
+    }
+    if !response.status().is_success() {
+        return Err(
+            dropbox_response_error(response, "failed to download Dropbox Markdown file").await,
+        );
+    }
+
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|error| format!("failed to read Dropbox Markdown response: {error}"))?;
+    String::from_utf8(bytes.to_vec())
+        .map_err(|error| format!("Dropbox Markdown file is not valid UTF-8: {error}"))
+}
+
+#[tauri::command]
 async fn save_dropbox_markdown_file(
     app: tauri::AppHandle,
     path: String,
@@ -3415,6 +3451,7 @@ pub fn run() {
             check_dropbox_connection,
             list_dropbox_markdown_directory,
             open_dropbox_markdown_file,
+            read_dropbox_markdown_body,
             save_dropbox_markdown_file,
             create_dropbox_markdown_file,
             duplicate_dropbox_markdown_file,

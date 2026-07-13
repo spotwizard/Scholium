@@ -42,6 +42,8 @@ import folderGlyphSvg from "./assets/folder-glyph.svg?raw";
 import folderSelectedGlyphSvg from "./assets/folder-selected-glyph.svg?raw";
 import collapseIconSvg from "./assets/collapse.svg?raw";
 import expandIconSvg from "./assets/expand.svg?raw";
+import plusSignIconSvg from "./assets/plus-sign.svg?raw";
+import priceTagIconSvg from "./assets/price-tag.svg?raw";
 import { appLanguageHtmlLang, createTranslator } from "./i18n";
 import { loadScholiumMermaid } from "./mermaid";
 import {
@@ -238,6 +240,17 @@ type DocumentTagGroup = {
   key: string;
   label: string;
   documents: MarkdownDocument[];
+};
+
+type DocumentTagSuggestionGroup = {
+  key: string;
+  label: string;
+  documentCount: number;
+};
+
+type DropboxIndexedDocumentTags = {
+  documentId: string;
+  tags: string[];
 };
 
 type NativeLocation = {
@@ -6798,6 +6811,10 @@ function App() {
   const [documentSearchMatchCount, setDocumentSearchMatchCount] = useState(0);
   const [tagDraft, setTagDraft] = useState("");
   const [mobileTagPickerOpen, setMobileTagPickerOpen] = useState(false);
+  const [dropboxIndexedDocumentTags, setDropboxIndexedDocumentTags] = useState<
+    DropboxIndexedDocumentTags[]
+  >([]);
+  const [dropboxTagIndexLoading, setDropboxTagIndexLoading] = useState(false);
   const tagInputRef = useRef<HTMLInputElement>(null);
   const [expandedDirectoryKeys, setExpandedDirectoryKeys] = useState<Set<string>>(() => new Set());
   const [loadingDirectoryKeys, setLoadingDirectoryKeys] = useState<Set<string>>(() => new Set());
@@ -7001,6 +7018,7 @@ function App() {
   const autosaveRequestedWhileSavingRef = useRef(false);
   const externalFileRefreshInFlightRef = useRef(false);
   const lastDropboxExternalRefreshRef = useRef<{ path: string; timestamp: number } | null>(null);
+  const dropboxTagIndexRequestRef = useRef(0);
   const documentsRef = useRef(documents);
   const workspaceEntriesRef = useRef(workspaceEntries);
   const notesRef = useRef(notes);
@@ -7119,17 +7137,75 @@ function App() {
   const mobileSelectedTagGroup =
     documentTagGroups.find((group) => group.key === mobileSelectedTagKey) ?? null;
   const mobileTagBrowserActive = isMobileViewport && mobileDocumentBrowseMode === "tags";
+  const documentTagSuggestionGroups = useMemo<DocumentTagSuggestionGroup[]>(() => {
+    if (workspaceSource !== "dropbox") {
+      return documentTagGroups.map((group) => ({
+        key: group.key,
+        label: group.label,
+        documentCount: group.documents.length,
+      }));
+    }
+
+    const loadedDocumentsById = new Map(
+      documents.map((document) => [document.id, document]),
+    );
+    const indexedTagsByDocumentId = new Map(
+      dropboxIndexedDocumentTags.map((entry) => [entry.documentId, entry]),
+    );
+    const groups = new Map<
+      string,
+      { key: string; label: string; documentIds: Set<string> }
+    >();
+
+    workspaceEntries.forEach((entry) => {
+      if (entry.kind !== "file") return;
+
+      const loadedDocument = loadedDocumentsById.get(entry.documentId);
+      const indexedEntry = indexedTagsByDocumentId.get(entry.documentId);
+      const tags = loadedDocument
+        ? readMarkdownTags(loadedDocument.body)
+        : indexedEntry?.tags ?? [];
+
+      tags.forEach((tag) => {
+        const label = normalizeTagInput(tag);
+        const key = tagDedupeKey(label);
+        if (!key) return;
+
+        const group = groups.get(key);
+        if (!group) {
+          groups.set(key, { key, label, documentIds: new Set([entry.documentId]) });
+          return;
+        }
+        group.documentIds.add(entry.documentId);
+      });
+    });
+
+    return Array.from(groups.values())
+      .map((group) => ({
+        key: group.key,
+        label: group.label,
+        documentCount: group.documentIds.size,
+      }))
+      .sort((left, right) => left.label.localeCompare(right.label));
+  }, [documentTagGroups, documents, dropboxIndexedDocumentTags, workspaceEntries, workspaceSource]);
   const selectedDocumentTagKeys = new Set(selectedDocumentTags.map(tagDedupeKey));
   const normalizedTagDraft = normalizeTagInput(tagDraft);
   const normalizedTagDraftKey = tagDedupeKey(tagDraft);
-  const mobileTagPickerGroups = documentTagGroups.filter(
+  const matchingTagPickerGroups = documentTagSuggestionGroups.filter(
     (group) =>
-      !selectedDocumentTagKeys.has(group.key) &&
-      (!normalizedTagDraftKey || tagDedupeKey(group.label).includes(normalizedTagDraftKey)),
+      !normalizedTagDraftKey || tagDedupeKey(group.label).includes(normalizedTagDraftKey),
   );
-  const mobileTagPickerCanCreate =
+  const tagPickerGroups = matchingTagPickerGroups.filter(
+    (group) => !selectedDocumentTagKeys.has(group.key),
+  );
+  const visibleTagPickerGroups = normalizedTagDraftKey
+    ? matchingTagPickerGroups
+    : tagPickerGroups;
+  const tagPickerIndexPending = workspaceSource === "dropbox" && dropboxTagIndexLoading;
+  const tagPickerCanCreate =
     Boolean(normalizedTagDraft) &&
-    !documentTagGroups.some((group) => group.key === normalizedTagDraftKey);
+    !tagPickerIndexPending &&
+    !documentTagSuggestionGroups.some((group) => group.key === normalizedTagDraftKey);
   const mobileTagDraftAlreadySelected = selectedDocumentTagKeys.has(normalizedTagDraftKey);
   const openDocumentTabs = openDocumentTabIds
     .map((documentId) => documentsById.get(documentId))
@@ -10160,6 +10236,45 @@ function App() {
     return openedDirectory.path ? `Dropbox / ${openedDirectory.title}` : "Dropbox";
   }
 
+  async function loadDropboxTagIndex(
+    entries: WorkspaceEntry[],
+    requestId: number,
+    replace: boolean,
+  ) {
+    const fileEntries = entries.filter(
+      (entry): entry is Extract<WorkspaceEntry, { kind: "file" }> => entry.kind === "file",
+    );
+
+    for (let index = 0; index < fileEntries.length; index += 6) {
+      const results = await Promise.allSettled(
+        fileEntries.slice(index, index + 6).map(async (entry) => ({
+          documentId: entry.documentId,
+          tags: readMarkdownTags(
+            await invoke<string>("read_dropbox_markdown_body", { path: entry.path }),
+          ),
+        })),
+      );
+      if (dropboxTagIndexRequestRef.current !== requestId) return;
+
+      const indexedEntries = results.flatMap((result) =>
+        result.status === "fulfilled" ? [result.value] : [],
+      );
+      setDropboxIndexedDocumentTags((currentEntries) => {
+        const nextEntries = new Map(
+          replace && index === 0
+            ? []
+            : currentEntries.map((entry) => [entry.documentId, entry]),
+        );
+        indexedEntries.forEach((entry) => nextEntries.set(entry.documentId, entry));
+        return Array.from(nextEntries.values());
+      });
+    }
+
+    if (replace && dropboxTagIndexRequestRef.current === requestId) {
+      setDropboxTagIndexLoading(false);
+    }
+  }
+
   function applyOpenedDropboxDirectory(
     openedDirectory: OpenDropboxMarkdownDirectoryResult,
     options: { rememberLastOpened?: boolean } = {},
@@ -10168,6 +10283,7 @@ function App() {
     discardTransientEmptyGlossary();
 
     const nextEntries = workspaceEntriesFromOpenedDropboxDirectory(openedDirectory, 1);
+    const tagIndexRequestId = ++dropboxTagIndexRequestRef.current;
 
     setDocuments([]);
     setNotes([]);
@@ -10196,6 +10312,9 @@ function App() {
     setActiveGlossaryMode("view");
     setDirtyDocumentStates({});
     setSavedDocumentBodies({});
+    setDropboxIndexedDocumentTags([]);
+    setDropboxTagIndexLoading(true);
+    void loadDropboxTagIndex(nextEntries, tagIndexRequestId, true);
     if (options.rememberLastOpened !== false) {
       rememberLastOpenedDropboxWorkspace(openedDirectory.path, "");
     }
@@ -11355,6 +11474,11 @@ function App() {
           { path: entry.path },
         );
         childEntries = workspaceEntriesFromOpenedDropboxDirectory(openedDirectory, childDepth);
+        void loadDropboxTagIndex(
+          childEntries,
+          dropboxTagIndexRequestRef.current,
+          false,
+        );
       } else {
         const openedDirectory = await invoke<OpenMarkdownDirectoryResult>("open_markdown_directory", {
           path: entry.path,
@@ -12689,8 +12813,41 @@ function App() {
 
   function submitMobileTagPicker(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const existingTag = documentTagGroups.find((group) => group.key === normalizedTagDraftKey);
+    const existingTag = documentTagSuggestionGroups.find(
+      (group) => group.key === normalizedTagDraftKey,
+    );
     selectMobileDocumentTag(existingTag?.label ?? tagDraft);
+  }
+
+  function handleTagSuggestionKeyDown(
+    event: ReactKeyboardEvent<HTMLInputElement | HTMLButtonElement>,
+  ) {
+    if (event.key === "Escape") {
+      tagInputRef.current?.focus();
+      return;
+    }
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+
+    const mobilePicker = event.currentTarget.closest(".mobile-tag-picker-sheet");
+    const suggestionRoot = mobilePicker ?? event.currentTarget.form;
+    const suggestionSelector = mobilePicker
+      ? ".mobile-tag-picker-result:not(:disabled), .mobile-tag-picker-create"
+      : ".document-tags__suggestion:not(:disabled)";
+    const suggestions = Array.from(
+      suggestionRoot?.querySelectorAll<HTMLButtonElement>(suggestionSelector) ?? [],
+    );
+    if (suggestions.length === 0) return;
+
+    event.preventDefault();
+    const currentIndex = suggestions.indexOf(event.currentTarget as HTMLButtonElement);
+    const nextIndex =
+      currentIndex < 0
+        ? event.key === "ArrowDown"
+          ? 0
+          : suggestions.length - 1
+        : (currentIndex + (event.key === "ArrowDown" ? 1 : -1) + suggestions.length) %
+          suggestions.length;
+    suggestions[nextIndex]?.focus();
   }
 
   function removeSelectedDocumentTag(tagToRemove: string) {
@@ -15090,42 +15247,72 @@ function App() {
                 type="search"
                 value={tagDraft}
                 onChange={(event) => setTagDraft(event.currentTarget.value)}
+                onKeyDown={handleTagSuggestionKeyDown}
               />
             </form>
-            <div className="mobile-tag-picker-results" aria-label={t("tags.picker.results")}>
-              {mobileTagPickerGroups.map((group) => (
+            <div
+              aria-busy={tagPickerIndexPending || undefined}
+              aria-label={t("tags.picker.results")}
+              className="mobile-tag-picker-results"
+            >
+              {visibleTagPickerGroups.map((group) => {
+                const alreadySelected = selectedDocumentTagKeys.has(group.key);
+                return (
+                  <button
+                    aria-label={
+                      alreadySelected
+                        ? undefined
+                        : t("tags.picker.select", {
+                            tag: group.label,
+                            count: group.documentCount,
+                          })
+                    }
+                    className="mobile-tag-picker-result"
+                    disabled={alreadySelected}
+                    key={group.key}
+                    onClick={() => selectMobileDocumentTag(group.label)}
+                    onKeyDown={handleTagSuggestionKeyDown}
+                    type="button"
+                  >
+                    <span className="mobile-tag-picker-result__label">
+                      <span
+                        aria-hidden="true"
+                        className="mobile-tag-picker-result__icon"
+                        dangerouslySetInnerHTML={{ __html: priceTagIconSvg }}
+                      />
+                      {group.label}
+                    </span>
+                    <small>
+                      {alreadySelected
+                        ? t("tags.picker.alreadyAdded")
+                        : t("tagBrowser.documentCount", { count: group.documentCount })}
+                    </small>
+                  </button>
+                );
+              })}
+              {matchingTagPickerGroups.length === 0 && tagPickerCanCreate ? (
                 <button
-                  aria-label={t("tags.picker.select", {
-                    tag: group.label,
-                    count: group.documents.length,
-                  })}
-                  className="mobile-tag-picker-result"
-                  key={group.key}
-                  onClick={() => selectMobileDocumentTag(group.label)}
-                  type="button"
-                >
-                  <span>#{group.label}</span>
-                  <small>
-                    {t("tagBrowser.documentCount", { count: group.documents.length })}
-                  </small>
-                </button>
-              ))}
-              {mobileTagPickerCanCreate ? (
-                <button
+                  aria-label={t("tags.picker.create", { tag: normalizedTagDraft })}
                   className="mobile-tag-picker-create"
                   onClick={() => selectMobileDocumentTag(normalizedTagDraft)}
+                  onKeyDown={handleTagSuggestionKeyDown}
                   type="button"
                 >
-                  <span aria-hidden="true">＋</span>
-                  {t("tags.picker.create", { tag: normalizedTagDraft })}
+                  <span
+                    aria-hidden="true"
+                    className="mobile-tag-picker-create__icon"
+                    dangerouslySetInnerHTML={{ __html: plusSignIconSvg }}
+                  />
+                  <span>{t("tags.picker.create", { tag: normalizedTagDraft })}</span>
                 </button>
               ) : null}
               {mobileTagDraftAlreadySelected && normalizedTagDraft ? (
                 <p className="mobile-tag-picker-empty">{t("tags.picker.alreadyAdded")}</p>
               ) : null}
               {!mobileTagDraftAlreadySelected &&
-              mobileTagPickerGroups.length === 0 &&
-              !mobileTagPickerCanCreate ? (
+              !tagPickerIndexPending &&
+              visibleTagPickerGroups.length === 0 &&
+              !tagPickerCanCreate ? (
                 <p className="mobile-tag-picker-empty">{t("tags.picker.empty")}</p>
               ) : null}
             </div>
@@ -15566,10 +15753,22 @@ function App() {
                             onClick={() => openMobileTagBrowser(tag)}
                             type="button"
                           >
+                            <span
+                              aria-hidden="true"
+                              className="document-tag-chip__icon"
+                              dangerouslySetInnerHTML={{ __html: priceTagIconSvg }}
+                            />
                             {tag}
                           </button>
                         ) : (
-                          <span className="document-tag-chip__label">{tag}</span>
+                          <span className="document-tag-chip__label">
+                            <span
+                              aria-hidden="true"
+                              className="document-tag-chip__icon"
+                              dangerouslySetInnerHTML={{ __html: priceTagIconSvg }}
+                            />
+                            {tag}
+                          </span>
                         )}
                         <button
                           aria-label={t("tags.remove", { tag })}
@@ -15591,7 +15790,12 @@ function App() {
                         onClick={() => setMobileTagPickerOpen(true)}
                         type="button"
                       >
-                        +
+                        <span
+                          aria-hidden="true"
+                          className="document-tags__add-icon"
+                          dangerouslySetInnerHTML={{ __html: plusSignIconSvg }}
+                        />
+                        <span>{t("documentBrowser.tags")}</span>
                       </button>
                     ) : (
                       <form className="document-tags__form" onSubmit={submitSelectedDocumentTag}>
@@ -15604,7 +15808,54 @@ function App() {
                           type="text"
                           value={tagDraft}
                           onChange={(event) => setTagDraft(event.currentTarget.value)}
+                          onKeyDown={handleTagSuggestionKeyDown}
                         />
+                        {normalizedTagDraft ? (
+                          <div
+                            aria-label={t("tags.picker.results")}
+                            className="document-tags__suggestions"
+                          >
+                            {visibleTagPickerGroups.map((group) => (
+                              <button
+                                className="document-tags__suggestion"
+                                disabled={selectedDocumentTagKeys.has(group.key)}
+                                key={group.key}
+                                onClick={() => addSelectedDocumentTag(group.label)}
+                                onKeyDown={handleTagSuggestionKeyDown}
+                                onPointerDown={(event) => event.preventDefault()}
+                                title={
+                                  selectedDocumentTagKeys.has(group.key)
+                                    ? t("tags.picker.alreadyAdded")
+                                    : undefined
+                                }
+                                type="button"
+                              >
+                                <span
+                                  aria-hidden="true"
+                                  className="document-tags__suggestion-icon"
+                                  dangerouslySetInnerHTML={{ __html: priceTagIconSvg }}
+                                />
+                                <span>{group.label}</span>
+                              </button>
+                            ))}
+                            {matchingTagPickerGroups.length === 0 && tagPickerCanCreate ? (
+                              <button
+                                className="document-tags__suggestion document-tags__suggestion--create"
+                                onClick={() => addSelectedDocumentTag(normalizedTagDraft)}
+                                onKeyDown={handleTagSuggestionKeyDown}
+                                onPointerDown={(event) => event.preventDefault()}
+                                type="button"
+                              >
+                                <span
+                                  aria-hidden="true"
+                                  className="document-tags__suggestion-icon"
+                                  dangerouslySetInnerHTML={{ __html: plusSignIconSvg }}
+                                />
+                                <span>{t("tags.picker.create", { tag: normalizedTagDraft })}</span>
+                              </button>
+                            ) : null}
+                          </div>
+                        ) : null}
                       </form>
                     )}
                     {isMobileViewport ? (
