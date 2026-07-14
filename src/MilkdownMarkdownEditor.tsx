@@ -46,14 +46,17 @@ type MilkdownMarkdownEditorProps = {
   noteModeEnabled: boolean;
   readOnly?: boolean;
   mobileBlockSelectionEnabled?: boolean;
-  mobileBlockSelectionHint?: string;
+  mobileBlockSelectionHint: string;
   mobileCommittedSelectionKey?: string;
   mobileCommittedSelectionTone?: AnnotationTone;
   mobileSelectionToneForAnchor?: (anchor: TextSelectionAnchor) => AnnotationTone;
   search?: DocumentSearchState;
   onSearchMatchCountChange?: (count: number) => void;
   toolbarEnabled?: boolean;
-  codeBlockCopiedLabel?: string;
+  codeBlockCopiedLabel: string;
+  mermaidEmptyDefinitionLabel: string;
+  mermaidErrorLabel: string;
+  mermaidLoadingLabel: string;
   onChange: (value: string, source: EditorChangeSource) => void;
   onSelectionChange: (anchor: TextSelectionAnchor | null) => void;
   onSelectionEnter: (
@@ -429,17 +432,18 @@ function renderMilkdownMermaidFrame(content: string) {
 function renderMilkdownMermaidPreview(
   definition: string,
   applyPreview: MilkdownCodeBlockApplyPreview,
+  labels: { empty: string; error: string; loading: string },
 ) {
   const trimmedDefinition = definition.trim();
   if (!trimmedDefinition) {
     return renderMilkdownMermaidFrame(
-      '<pre class="milkdown-mermaid-diagram__error">Mermaid diagram is empty.</pre>',
+      `<pre class="milkdown-mermaid-diagram__error">${escapeHtml(labels.empty)}</pre>`,
     );
   }
 
   applyPreview(
     renderMilkdownMermaidFrame(
-      '<div class="milkdown-mermaid-diagram__loading">Rendering diagram...</div>',
+      `<div class="milkdown-mermaid-diagram__loading">${escapeHtml(labels.loading)}</div>`,
     ),
   );
 
@@ -454,11 +458,10 @@ function renderMilkdownMermaidPreview(
       );
     })
     .catch((error: unknown) => {
-      const errorMessage =
-        error instanceof Error ? error.message : "Unable to render Mermaid diagram.";
+      console.error(error);
       applyPreview(
         renderMilkdownMermaidFrame(
-          `<pre class="milkdown-mermaid-diagram__error">${escapeHtml(errorMessage)}</pre>`,
+          `<pre class="milkdown-mermaid-diagram__error">${escapeHtml(labels.error)}</pre>`,
         ),
       );
     });
@@ -2034,14 +2037,17 @@ export function MilkdownMarkdownEditor({
   noteModeEnabled,
   readOnly = false,
   mobileBlockSelectionEnabled = false,
-  mobileBlockSelectionHint = "拖曳以建立筆記",
+  mobileBlockSelectionHint,
   mobileCommittedSelectionKey = "",
   mobileCommittedSelectionTone = 0,
   mobileSelectionToneForAnchor,
   search = { activeIndex: 0, query: "" },
   onSearchMatchCountChange,
   toolbarEnabled = true,
-  codeBlockCopiedLabel = "Copied",
+  codeBlockCopiedLabel,
+  mermaidEmptyDefinitionLabel,
+  mermaidErrorLabel,
+  mermaidLoadingLabel,
   onChange,
   onSelectionChange,
   onSelectionEnter,
@@ -2067,6 +2073,11 @@ export function MilkdownMarkdownEditor({
   const mobileSelectionToneForAnchorRef = useRef(mobileSelectionToneForAnchor);
   const onChangeRef = useRef(onChange);
   const codeBlockCopiedLabelRef = useRef(codeBlockCopiedLabel);
+  const mermaidLabelsRef = useRef({
+    empty: mermaidEmptyDefinitionLabel,
+    error: mermaidErrorLabel,
+    loading: mermaidLoadingLabel,
+  });
   const pendingCodeBlockCopyButtonRef = useRef<HTMLElement | null>(null);
   const pendingCodeBlockCopyClearTimerRef = useRef(0);
   const codeBlockCopyFeedbackTimersRef = useRef(new Map<HTMLElement, number>());
@@ -2149,7 +2160,7 @@ export function MilkdownMarkdownEditor({
   }
 
   function showCodeBlockCopyFeedback(button: HTMLElement) {
-    const label = codeBlockCopiedLabelRef.current || "Copied";
+    const label = codeBlockCopiedLabelRef.current;
     const previousTimer = codeBlockCopyFeedbackTimersRef.current.get(button);
     if (previousTimer) {
       window.clearTimeout(previousTimer);
@@ -2970,6 +2981,14 @@ export function MilkdownMarkdownEditor({
   useEffect(() => {
     codeBlockCopiedLabelRef.current = codeBlockCopiedLabel;
   }, [codeBlockCopiedLabel]);
+
+  useEffect(() => {
+    mermaidLabelsRef.current = {
+      empty: mermaidEmptyDefinitionLabel,
+      error: mermaidErrorLabel,
+      loading: mermaidLoadingLabel,
+    };
+  }, [mermaidEmptyDefinitionLabel, mermaidErrorLabel, mermaidLoadingLabel]);
 
   useEffect(() => {
     onSearchMatchCountChangeRef.current = onSearchMatchCountChange;
@@ -4228,7 +4247,7 @@ export function MilkdownMarkdownEditor({
         previewOnlyByDefault: false,
         renderPreview: (language, content, applyPreview) => {
           if (isMermaidLanguage(language)) {
-            return renderMilkdownMermaidPreview(content, applyPreview);
+            return renderMilkdownMermaidPreview(content, applyPreview, mermaidLabelsRef.current);
           }
 
           return previousConfig.renderPreview(language, content, applyPreview);

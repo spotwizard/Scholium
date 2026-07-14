@@ -44,7 +44,7 @@ import collapseIconSvg from "./assets/collapse.svg?raw";
 import expandIconSvg from "./assets/expand.svg?raw";
 import plusSignIconSvg from "./assets/plus-sign.svg?raw";
 import priceTagIconSvg from "./assets/price-tag.svg?raw";
-import { appLanguageHtmlLang, createTranslator } from "./i18n";
+import { appLanguageHtmlLang, createTranslator, type TranslationKey } from "./i18n";
 import { loadScholiumMermaid } from "./mermaid";
 import {
   markdownHasMalformedFrontmatter,
@@ -956,128 +956,10 @@ function previewAnnotationFrameHorizontalPaddingForKind(kind: AnnotationKind) {
   return kind === "glossary" ? 0 : previewAnnotationFrameHorizontalPadding;
 }
 
-const documentsSeed: MarkdownDocument[] = [
-  {
-    id: "roadmap",
-    title: "Scholium Roadmap",
-    path: "workspace/roadmap.md",
-    filePath: null,
-    notesPath: null,
-    updatedAt: "Today",
-    body: `# Scholium Roadmap
-
-Scholium is a Markdown writing space for reading, drafting, and keeping text-bound notes beside the source material.
-
-## MVP Scope
-
-The first product surface keeps documents, the editor, and notes visible at the same time.
-
-## Selection Notes
-
-Readers can highlight a passage, attach a note, and return later to see a thin marked range around the annotated text.`,
-  },
-  {
-    id: "research",
-    title: "Research Notes",
-    path: "workspace/research.md",
-    filePath: null,
-    notesPath: null,
-    updatedAt: "Yesterday",
-    body: `# Research Notes
-
-Markdown users often want plain files, fast editing, and a clean reading surface.
-
-## Annotation Pattern
-
-The note sidebar should show the context of each note without forcing the document to become a database.
-
-## Storage Direction
-
-The Markdown file can stay untouched while annotations live in a sidecar JSON file.`,
-  },
-  {
-    id: "meeting",
-    title: "Planning Meeting",
-    path: "workspace/meeting.md",
-    filePath: null,
-    notesPath: null,
-    updatedAt: "Jun 3",
-    body: `# Planning Meeting
-
-Define the first release around a calm editor, reliable local files, and notes that attach to selected text.
-
-## Decisions
-
-- Build the shell with Tauri
-- Keep the first editor simple
-- Let users rebind notes when edited text no longer matches`,
-  },
-];
-
-function makeAnchor(body: string, selectedText: string): TextSelectionAnchor {
-  const from = body.indexOf(selectedText);
-  const safeFrom = from >= 0 ? from : 0;
-  const safeTo = from >= 0 ? from + selectedText.length : selectedText.length;
-
-  return {
-    from: safeFrom,
-    to: safeTo,
-    selectedText,
-    prefix: body.slice(Math.max(0, safeFrom - 48), safeFrom),
-    suffix: body.slice(safeTo, Math.min(body.length, safeTo + 48)),
-  };
-}
-
-const notesSeed: SelectionNote[] = [
-  {
-    id: "note-1",
-    documentId: "roadmap",
-    status: "active",
-    selectedText: "text-bound notes",
-    anchor: makeAnchor(documentsSeed[0].body, "text-bound notes"),
-    body: "This wording should stay central to the product positioning.",
-    createdAt: "09:40",
-    updatedAt: "09:40",
-    deletedAt: null,
-  },
-  {
-    id: "note-2",
-    documentId: "research",
-    status: "active",
-    selectedText: "sidecar JSON file",
-    anchor: makeAnchor(documentsSeed[1].body, "sidecar JSON file"),
-    body: "Sidecar storage keeps the Markdown file portable for other tools.",
-    createdAt: "10:15",
-    updatedAt: "10:15",
-    deletedAt: null,
-  },
-];
-
-const glossaryTermsSeed: GlossaryTerm[] = [
-  {
-    id: "glossary-1",
-    term: "Markdown",
-    normalizedTerm: "markdown",
-    definition: "A lightweight plain-text markup format used for readable writing and publishing.",
-    createdAt: "10:30",
-    updatedAt: "10:30",
-  },
-];
-
-const glossaryBindingsSeed: GlossaryBinding[] = [
-  {
-    id: "glossary-binding-1",
-    documentId: "roadmap",
-    termId: "glossary-1",
-    term: "Markdown",
-    normalizedTerm: "markdown",
-    status: "active",
-    anchor: makeAnchor(documentsSeed[0].body, "Markdown"),
-    createdAt: "10:30",
-    updatedAt: "10:30",
-    deletedAt: null,
-  },
-];
+const documentsSeed: MarkdownDocument[] = [];
+const notesSeed: SelectionNote[] = [];
+const glossaryTermsSeed: GlossaryTerm[] = [];
+const glossaryBindingsSeed: GlossaryBinding[] = [];
 
 function nowLabel() {
   return new Date().toLocaleTimeString([], {
@@ -2558,7 +2440,7 @@ class PdfSvgLayout {
       fontSize: pdfImageFallbackStyle.fontSize,
       fontWeight: pdfImageFallbackStyle.fontWeight,
       kind: "text",
-      text: label || "Image unavailable",
+      text: label,
       x: pdfPagePaddingX + 12,
       y: this.y + 26,
     });
@@ -2586,6 +2468,7 @@ async function addPdfInlineParts(
   markdownPath: string | null,
   parts: PdfInlinePart[],
   style: PdfTextStyle,
+  imageUnavailableLabel: string,
   options: { indent?: number; marginBottom?: number; marginTop?: number } = {},
 ) {
   const indent = options.indent ?? 0;
@@ -2603,10 +2486,10 @@ async function addPdfInlineParts(
         if (image) {
           layout.addImage(image);
         } else {
-          layout.addImageFallback(part.alt || part.src);
+          layout.addImageFallback(part.alt || part.src || imageUnavailableLabel);
         }
       } catch {
-        layout.addImageFallback(part.alt || part.src);
+        layout.addImageFallback(part.alt || part.src || imageUnavailableLabel);
       }
       hasAddedContent = true;
     }
@@ -2617,16 +2500,15 @@ async function addPdfInlineParts(
   }
 }
 
-async function layoutMarkdownDocumentForPdf(exportDocument: PdfExportDocument) {
+async function layoutMarkdownDocumentForPdf(
+  exportDocument: PdfExportDocument,
+  imageUnavailableLabel: string,
+) {
   const blocks = parseMarkdownPreviewBlocks(exportDocument.body);
   const layout = new PdfSvgLayout(createPdfTextMeasureContext());
   const markdownPath = exportDocument.filePath;
 
   if (blocks.length === 0) {
-    layout.addWrappedText("Empty document", pdfPagePaddingX, pdfContentWidth, {
-      ...pdfBodyTextStyle,
-      fill: "#6b7280",
-    });
     return layout.getPages();
   }
 
@@ -2652,6 +2534,7 @@ async function layoutMarkdownDocumentForPdf(exportDocument: PdfExportDocument) {
         markdownPath,
         parsePdfInlineParts(block.text),
         pdfBodyTextStyle,
+        imageUnavailableLabel,
         {
           marginBottom: 10,
           marginTop: 4,
@@ -2665,6 +2548,7 @@ async function layoutMarkdownDocumentForPdf(exportDocument: PdfExportDocument) {
         markdownPath,
         parsePdfInlineParts(block.text),
         pdfQuoteTextStyle,
+        imageUnavailableLabel,
         {
           indent: 16,
           marginBottom: 10,
@@ -2784,8 +2668,11 @@ async function renderPdfPageToJpeg(page: PdfSvgPage) {
   };
 }
 
-async function renderMarkdownDocumentToPdfBase64(exportDocument: PdfExportDocument) {
-  const pages = await layoutMarkdownDocumentForPdf(exportDocument);
+async function renderMarkdownDocumentToPdfBase64(
+  exportDocument: PdfExportDocument,
+  imageUnavailableLabel: string,
+) {
+  const pages = await layoutMarkdownDocumentForPdf(exportDocument, imageUnavailableLabel);
   const jpegPages: PdfJpegPage[] = [];
 
   for (const page of pages) {
@@ -3794,10 +3681,12 @@ function MermaidDiagram({
   definition,
   emptyDefinitionLabel,
   loadingLabel,
+  renderErrorLabel,
 }: {
   definition: string;
   emptyDefinitionLabel: string;
   loadingLabel: string;
+  renderErrorLabel: string;
 }) {
   const reactId = useId();
   const diagramId = `scholium-mermaid-${reactId.replace(/[^A-Za-z0-9_-]/g, "")}`;
@@ -3831,11 +3720,12 @@ function MermaidDiagram({
           setRenderState({ status: "rendered", svg, error: "" });
         }
       } catch (error) {
+        console.error(error);
         if (!cancelled) {
           setRenderState({
             status: "error",
             svg: "",
-            error: error instanceof Error ? error.message : String(error),
+            error: renderErrorLabel,
           });
         }
       }
@@ -3846,7 +3736,7 @@ function MermaidDiagram({
     return () => {
       cancelled = true;
     };
-  }, [definition, diagramId, emptyDefinitionLabel]);
+  }, [definition, diagramId, emptyDefinitionLabel, renderErrorLabel]);
 
   return (
     <figure className="mermaid-diagram">
@@ -4391,7 +4281,7 @@ function markdownFromPreviewBlock(block: MarkdownPreviewBlock, text: string) {
   }
 
   if (block.kind === "heading") {
-    return `${"#".repeat(block.level)} ${lines.join(" ").trim() || "Untitled"}`;
+    return `${"#".repeat(block.level)} ${lines.join(" ").trim()}`;
   }
 
   if (block.kind === "quote") {
@@ -5037,6 +4927,7 @@ function MarkdownPreviewBlockView({
   markdown,
   annotations,
   mermaidEmptyDefinitionLabel,
+  mermaidErrorLabel,
   mermaidLoadingLabel,
   onAnnotationClick,
   onAnnotationDoubleClick,
@@ -5045,6 +4936,7 @@ function MarkdownPreviewBlockView({
   markdown: string;
   annotations: TextRangeAnnotation[];
   mermaidEmptyDefinitionLabel: string;
+  mermaidErrorLabel: string;
   mermaidLoadingLabel: string;
   onAnnotationClick: (annotationId: string) => void;
   onAnnotationDoubleClick: (annotationId: string) => void;
@@ -5121,6 +5013,7 @@ function MarkdownPreviewBlockView({
           emptyDefinitionLabel={mermaidEmptyDefinitionLabel}
           key={block.key}
           loadingLabel={mermaidLoadingLabel}
+          renderErrorLabel={mermaidErrorLabel}
         />
       );
     }
@@ -5168,6 +5061,7 @@ export function MarkdownPreview({
   commitOnInput = false,
   enableTabIndent = false,
   mermaidEmptyDefinitionLabel,
+  mermaidErrorLabel,
   mermaidLoadingLabel,
   readOnly,
   onChange,
@@ -5181,6 +5075,7 @@ export function MarkdownPreview({
   commitOnInput?: boolean;
   enableTabIndent?: boolean;
   mermaidEmptyDefinitionLabel: string;
+  mermaidErrorLabel: string;
   mermaidLoadingLabel: string;
   readOnly?: boolean;
   onChange: (
@@ -6331,6 +6226,7 @@ export function MarkdownPreview({
             markdown={value}
             annotations={annotations}
             mermaidEmptyDefinitionLabel={mermaidEmptyDefinitionLabel}
+            mermaidErrorLabel={mermaidErrorLabel}
             mermaidLoadingLabel={mermaidLoadingLabel}
             onAnnotationClick={queueAnnotationClick}
             onAnnotationDoubleClick={handleAnnotationDoubleClick}
@@ -6365,11 +6261,13 @@ function MarkdownPreviewContentBlock({
   block,
   keyPrefix,
   mermaidEmptyDefinitionLabel,
+  mermaidErrorLabel,
   mermaidLoadingLabel,
 }: {
   block: MarkdownPreviewBlock;
   keyPrefix: string;
   mermaidEmptyDefinitionLabel: string;
+  mermaidErrorLabel: string;
   mermaidLoadingLabel: string;
 }) {
   if (block.kind === "heading") {
@@ -6406,6 +6304,7 @@ function MarkdownPreviewContentBlock({
           emptyDefinitionLabel={mermaidEmptyDefinitionLabel}
           key={block.key}
           loadingLabel={mermaidLoadingLabel}
+          renderErrorLabel={mermaidErrorLabel}
         />
       );
     }
@@ -6436,6 +6335,7 @@ function MarkdownPreviewContent({
   className,
   emptyLabel,
   mermaidEmptyDefinitionLabel,
+  mermaidErrorLabel,
   mermaidLoadingLabel,
   onDoubleClick,
   style,
@@ -6444,6 +6344,7 @@ function MarkdownPreviewContent({
   className: string;
   emptyLabel: string;
   mermaidEmptyDefinitionLabel: string;
+  mermaidErrorLabel: string;
   mermaidLoadingLabel: string;
   onDoubleClick?: () => void;
   style?: React.CSSProperties;
@@ -6466,6 +6367,7 @@ function MarkdownPreviewContent({
               key={block.key}
               keyPrefix={`markdown-content-${blockIndex}`}
               mermaidEmptyDefinitionLabel={mermaidEmptyDefinitionLabel}
+              mermaidErrorLabel={mermaidErrorLabel}
               mermaidLoadingLabel={mermaidLoadingLabel}
             />
           ))}
@@ -6598,6 +6500,9 @@ function NoteMarkdownEditor({
   className = "",
   editing = true,
   editorRootRef,
+  mermaidEmptyDefinitionLabel,
+  mermaidErrorLabel,
+  mermaidLoadingLabel,
   onChange,
   onClick,
   onCompositionEnd,
@@ -6614,6 +6519,9 @@ function NoteMarkdownEditor({
   className?: string;
   editing?: boolean;
   editorRootRef?: (element: HTMLDivElement | null) => void;
+  mermaidEmptyDefinitionLabel: string;
+  mermaidErrorLabel: string;
+  mermaidLoadingLabel: string;
   onChange: (value: string) => void;
   onClick?: (event: MouseEvent<HTMLElement>) => void;
   onCompositionEnd?: () => void;
@@ -6776,8 +6684,9 @@ function NoteMarkdownEditor({
           <MarkdownPreviewContent
             className="note-markdown-editor__preview"
             emptyLabel=""
-            mermaidEmptyDefinitionLabel="Mermaid diagram is empty."
-            mermaidLoadingLabel="Rendering diagram..."
+            mermaidEmptyDefinitionLabel={mermaidEmptyDefinitionLabel}
+            mermaidErrorLabel={mermaidErrorLabel}
+            mermaidLoadingLabel={mermaidLoadingLabel}
             onDoubleClick={readOnly ? undefined : onRequestEdit}
             value={value}
             style={previewVisibilityStyle}
@@ -6818,7 +6727,7 @@ function App() {
   const tagInputRef = useRef<HTMLInputElement>(null);
   const [expandedDirectoryKeys, setExpandedDirectoryKeys] = useState<Set<string>>(() => new Set());
   const [loadingDirectoryKeys, setLoadingDirectoryKeys] = useState<Set<string>>(() => new Set());
-  const [selectedDocumentId, setSelectedDocumentId] = useState(documentsSeed[0].id);
+  const [selectedDocumentId, setSelectedDocumentId] = useState(documentsSeed[0]?.id ?? "");
   const [openDocumentTabIds, setOpenDocumentTabIds] = useState<string[]>(() =>
     documentsSeed[0]?.id ? [documentsSeed[0].id] : [],
   );
@@ -6934,6 +6843,10 @@ function App() {
   const appLanguage = settingsSnapshot["app.language"];
   const noteModeEnabledByDefault = settingsSnapshot["app.noteModeEnabledByDefault"];
   const t = createTranslator(appLanguage);
+  const translatedError = (error: unknown, key: TranslationKey = "error.operationFailed") => {
+    console.error(error);
+    return t(key);
+  };
   const mobileAnnotationKeyboardShouldStayClosed =
     isMobileViewport || isMobileSafeLayoutViewport;
   const [editorMode, setEditorMode] = useState<EditorMode>("preview");
@@ -7049,6 +6962,7 @@ function App() {
   const openSettingsHandlerRef = useRef<() => void>(() => undefined);
   const newMarkdownFileHandlerRef = useRef<() => void>(() => undefined);
   const openMarkdownFileHandlerRef = useRef<() => void>(() => undefined);
+  const openDroppedMarkdownPathsHandlerRef = useRef<(paths: string[]) => void>(() => undefined);
   const openMarkdownFolderHandlerRef = useRef<() => void>(() => undefined);
   const openDropboxCloudHandlerRef = useRef<() => void>(() => undefined);
   const completeDropboxOAuthHandlerRef = useRef<
@@ -7075,6 +6989,9 @@ function App() {
   };
   openMarkdownFileHandlerRef.current = () => {
     void openMarkdownFileFromPicker();
+  };
+  openDroppedMarkdownPathsHandlerRef.current = (paths) => {
+    void openDroppedMarkdownPaths(paths);
   };
   openMarkdownFolderHandlerRef.current = () => {
     void openMarkdownFolder();
@@ -9107,7 +9024,7 @@ function App() {
         .catch((error) => {
           if (cancelled) return;
           setLocalFileSearchResults([]);
-          setFileSearchError(error instanceof Error ? error.message : String(error));
+          setFileSearchError(translatedError(error, "fileSearch.error"));
         })
         .finally(() => {
           if (!cancelled) {
@@ -9234,65 +9151,127 @@ function App() {
 
   useEffect(() => {
     if (!nativeStorageAvailable || lastOpenedFileRestoreAttemptedRef.current) return;
-    lastOpenedFileRestoreAttemptedRef.current = true;
-    if (!settingsSnapshot["app.restoreLastOpenedFile"]) return;
 
-    const lastOpenedDropboxWorkspace = readLastOpenedDropboxWorkspace();
-    if (isMobileViewport && lastOpenedDropboxWorkspace) {
-      void restoreLastOpenedDropboxWorkspace(lastOpenedDropboxWorkspace);
-      return;
-    }
+    let disposed = false;
+    let unlistenOpenedFilePaths: (() => void) | null = null;
 
-    const lastOpenedPath = readLastOpenedMarkdownPath();
-    const lastOpenedRootDirectoryPath = readLastOpenedMarkdownRootDirectoryPath();
-    if (!lastOpenedPath && !lastOpenedRootDirectoryPath) return;
+    function restoreLastOpenedFile() {
+      if (!settingsSnapshot["app.restoreLastOpenedFile"]) return;
 
-    setStorageError(t("status.openingLastFile"));
-
-    function restoreFromSelectedFileParent() {
-      if (!lastOpenedPath) {
-        forgetLastOpenedMarkdownRootDirectoryPath();
-        setStorageError("");
+      const lastOpenedDropboxWorkspace = readLastOpenedDropboxWorkspace();
+      if (isMobileViewport && lastOpenedDropboxWorkspace) {
+        void restoreLastOpenedDropboxWorkspace(lastOpenedDropboxWorkspace);
         return;
       }
 
-      void invoke<OpenMarkdownFileContextResult>("open_markdown_file_context", {
-        path: lastOpenedPath,
-      })
-        .then((context) => {
-          applyOpenedDirectory(directoryWithSelectedFile(context), context.selectedFile.path, {
-            rememberRecent: false,
+      const lastOpenedPath = readLastOpenedMarkdownPath();
+      const lastOpenedRootDirectoryPath = readLastOpenedMarkdownRootDirectoryPath();
+      if (!lastOpenedPath && !lastOpenedRootDirectoryPath) return;
+
+      setStorageError(t("status.openingLastFile"));
+
+      function restoreFromSelectedFileParent() {
+        if (!lastOpenedPath) {
+          forgetLastOpenedMarkdownRootDirectoryPath();
+          setStorageError("");
+          return;
+        }
+
+        void invoke<OpenMarkdownFileContextResult>("open_markdown_file_context", {
+          path: lastOpenedPath,
+        })
+          .then((context) => {
+            applyOpenedDirectory(directoryWithSelectedFile(context), context.selectedFile.path, {
+              rememberRecent: false,
+            });
+            setStorageError("");
+          })
+          .catch((error) => {
+            forgetLastOpenedMarkdownPath();
+            forgetLastOpenedMarkdownRootDirectoryPath();
+            console.error(error);
+            setStorageError(t("error.couldNotReopenLastFile"));
           });
-          setStorageError("");
-        })
-        .catch((error) => {
-          forgetLastOpenedMarkdownPath();
-          forgetLastOpenedMarkdownRootDirectoryPath();
-          setStorageError(
-            t("error.couldNotReopenLastFile", {
-              message: error instanceof Error ? error.message : String(error),
-            }),
-          );
-        });
+      }
+
+      if (lastOpenedRootDirectoryPath) {
+        void restoreLastOpenedMarkdownWorkspace(
+          lastOpenedRootDirectoryPath,
+          lastOpenedPath,
+        )
+          .then(() => {
+            setStorageError("");
+          })
+          .catch(() => {
+            forgetLastOpenedMarkdownRootDirectoryPath();
+            restoreFromSelectedFileParent();
+          });
+        return;
+      }
+
+      restoreFromSelectedFileParent();
     }
 
-    if (lastOpenedRootDirectoryPath) {
-      void restoreLastOpenedMarkdownWorkspace(
-        lastOpenedRootDirectoryPath,
-        lastOpenedPath,
-      )
-        .then(() => {
-          setStorageError("");
-        })
-        .catch(() => {
-          forgetLastOpenedMarkdownRootDirectoryPath();
-          restoreFromSelectedFileParent();
-        });
-      return;
-    }
+    void listen<string[]>("scholium-open-file-paths", (event) => {
+      if (!disposed) {
+        openDroppedMarkdownPathsHandlerRef.current(event.payload);
+      }
+    }).then(async (listener) => {
+      if (disposed || lastOpenedFileRestoreAttemptedRef.current) {
+        listener();
+        return;
+      }
 
-    restoreFromSelectedFileParent();
-  }, [isMobileViewport, nativeStorageAvailable, settingsSnapshot]);
+      unlistenOpenedFilePaths = listener;
+      lastOpenedFileRestoreAttemptedRef.current = true;
+
+      try {
+        const openedFilePaths = await invoke<string[]>("take_opened_file_paths");
+        if (disposed) return;
+        if (openedFilePaths.length > 0) {
+          openDroppedMarkdownPathsHandlerRef.current(openedFilePaths);
+          return;
+        }
+      } catch (error) {
+        console.error(error);
+      }
+
+      if (!disposed) {
+        restoreLastOpenedFile();
+      }
+    });
+
+    return () => {
+      disposed = true;
+      unlistenOpenedFilePaths?.();
+    };
+  }, [nativeStorageAvailable]);
+
+  useEffect(() => {
+    if (!nativeStorageAvailable) return;
+
+    let disposed = false;
+    let unlistenDragDrop: (() => void) | null = null;
+
+    void getCurrentWindow()
+      .onDragDropEvent((event) => {
+        if (!disposed && event.payload.type === "drop") {
+          openDroppedMarkdownPathsHandlerRef.current(event.payload.paths);
+        }
+      })
+      .then((listener) => {
+        if (disposed) {
+          listener();
+          return;
+        }
+        unlistenDragDrop = listener;
+      });
+
+    return () => {
+      disposed = true;
+      unlistenDragDrop?.();
+    };
+  }, [nativeStorageAvailable]);
 
   useEffect(() => {
     if (!nativeStorageAvailable || !documentIsFromDropbox(selectedDocument)) return;
@@ -9785,7 +9764,7 @@ function App() {
         void refreshSavedLocations();
       })
       .catch((error) => {
-        setStorageError(error instanceof Error ? error.message : String(error));
+        setStorageError(translatedError(error));
       });
   }
 
@@ -9793,7 +9772,7 @@ function App() {
     if (!nativeStorageAvailable) return;
 
     void invoke("set_current_directory_location", { path, title }).catch((error) => {
-      setStorageError(error instanceof Error ? error.message : String(error));
+      setStorageError(translatedError(error));
     });
   }
 
@@ -9810,7 +9789,7 @@ function App() {
         favoriteDirectories: nextSavedLocations.favoriteDirectories ?? [],
       });
     } catch (error) {
-      setStorageError(error instanceof Error ? error.message : String(error));
+      setStorageError(translatedError(error));
     }
   }
 
@@ -10137,7 +10116,7 @@ function App() {
     options: { rememberRecent?: boolean; sortEntries?: boolean } = {},
   ) {
     if (loadedFiles.length === 0) {
-      setStorageError("No Markdown files found in the selected folder.");
+      setStorageError(t("status.noFoldersOrMarkdown"));
       return;
     }
 
@@ -10479,6 +10458,7 @@ function App() {
       applyLoadedDropboxFile(loaded, { tabBehavior: "none" });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      console.error(error);
       if (dropboxErrorNeedsAuthorization(message) || dropboxErrorIsDisconnected(message)) {
         setDropboxConnected(false);
         setStorageError(t("dropbox.error.restoreNeedsAuthorization"));
@@ -10510,7 +10490,7 @@ function App() {
 
       applyReloadedFile(loaded);
     } catch (error) {
-      setStorageError(error instanceof Error ? error.message : String(error));
+      setStorageError(translatedError(error, "error.openFileFailed"));
     } finally {
       externalFileRefreshInFlightRef.current = false;
     }
@@ -10727,6 +10707,7 @@ function App() {
   }
 
   function dropboxUserFacingError(message: string) {
+    console.error(message);
     if (dropboxErrorNeedsAuthorization(message) || dropboxErrorIsDisconnected(message)) {
       return t("dropbox.error.restoreNeedsAuthorization");
     }
@@ -10737,7 +10718,7 @@ function App() {
       return t("dropbox.error.network");
     }
 
-    return message;
+    return t("dropbox.error.unexpected");
   }
 
   async function checkDropboxRestoreConnection() {
@@ -10771,11 +10752,8 @@ function App() {
         return false;
       }
 
-      setStorageError(
-        t("dropbox.error.couldNotRestore", {
-          message,
-        }),
-      );
+      console.error(error);
+      setStorageError(t("dropbox.error.couldNotRestore"));
       return false;
     }
   }
@@ -10819,11 +10797,8 @@ function App() {
       }
 
       forgetLastOpenedDropboxWorkspace();
-      setStorageError(
-        t("dropbox.error.couldNotRestore", {
-          message,
-        }),
-      );
+      console.error(error);
+      setStorageError(t("dropbox.error.couldNotRestore"));
       return;
     }
 
@@ -10861,11 +10836,8 @@ function App() {
       }
 
       rememberLastOpenedDropboxWorkspace(openedDirectory.path, "");
-      setStorageError(
-        t("dropbox.error.couldNotReopenLastFile", {
-          message,
-        }),
-      );
+      console.error(error);
+      setStorageError(t("dropbox.error.couldNotReopenLastFile"));
     }
   }
 
@@ -10883,7 +10855,7 @@ function App() {
       });
       applyOpenedDirectory(openedDirectory);
     } catch (error) {
-      setStorageError(error instanceof Error ? error.message : String(error));
+      setStorageError(translatedError(error, "error.openFolderFailed"));
     }
   }
 
@@ -11391,7 +11363,7 @@ function App() {
         setDirectoryPaneOpen(false);
       }
     } catch (error) {
-      setStorageError(error instanceof Error ? error.message : String(error));
+      setStorageError(translatedError(error, "error.openFileFailed"));
     }
   }
 
@@ -11428,7 +11400,7 @@ function App() {
         setDirectoryPaneOpen(false);
       }
     } catch (error) {
-      setStorageError(error instanceof Error ? error.message : String(error));
+      setStorageError(translatedError(error, "error.openFileFailed"));
     }
   }
 
@@ -11503,13 +11475,22 @@ function App() {
       setExpandedDirectoryKeys((currentKeys) => new Set(currentKeys).add(entryKey));
       setStorageError("");
     } catch (error) {
-      setStorageError(error instanceof Error ? error.message : String(error));
+      setStorageError(translatedError(error, "error.openFolderFailed"));
     } finally {
       setLoadingDirectoryKeys((currentKeys) => {
         const nextKeys = new Set(currentKeys);
         nextKeys.delete(entryKey);
         return nextKeys;
       });
+    }
+  }
+
+  async function openDroppedMarkdownPaths(paths: string[]) {
+    try {
+      const path = await invoke<string>("validate_dropped_markdown_file", { paths });
+      await openMarkdownFilePath(path);
+    } catch {
+      setStorageError(t("error.dropOneMdFile"));
     }
   }
 
@@ -11528,7 +11509,7 @@ function App() {
 
       applyOpenedDirectory(directoryWithSelectedFile(context), context.selectedFile.path);
     } catch (error) {
-      setStorageError(error instanceof Error ? error.message : String(error));
+      setStorageError(translatedError(error, "error.openFileFailed"));
     }
   }
 
@@ -11558,7 +11539,7 @@ function App() {
 
       await openDirectoryPath(selectedPath);
     } catch (error) {
-      setStorageError(error instanceof Error ? error.message : String(error));
+      setStorageError(translatedError(error, "error.openFolderFailed"));
     }
   }
 
@@ -11583,7 +11564,7 @@ function App() {
 
       await openMarkdownFilePath(selectedPath);
     } catch (error) {
-      setStorageError(error instanceof Error ? error.message : String(error));
+      setStorageError(translatedError(error, "error.openFileFailed"));
     }
   }
 
@@ -11627,7 +11608,10 @@ function App() {
     documentToExport: MarkdownDocument,
     directory: string,
   ) {
-    const dataBase64 = await renderMarkdownDocumentToPdfBase64(documentToExport);
+    const dataBase64 = await renderMarkdownDocumentToPdfBase64(
+      documentToExport,
+      t("pdfExport.content.imageUnavailable"),
+    );
 
     return invoke<WritePdfFileResult>("write_pdf_file_to_directory", {
       directory,
@@ -11676,7 +11660,10 @@ function App() {
           });
           if (!selectedPath) return;
 
-          const dataBase64 = await renderMarkdownDocumentToPdfBase64(documentToExport);
+          const dataBase64 = await renderMarkdownDocumentToPdfBase64(
+            documentToExport,
+            t("pdfExport.content.imageUnavailable"),
+          );
           saved = await invoke<WritePdfFileResult>("write_pdf_file", {
             path: selectedPath,
             dataBase64,
@@ -11685,11 +11672,8 @@ function App() {
 
         setStorageError(t("pdfExport.status.saved", { path: saved.path }));
       } catch (error) {
-        setStorageError(
-          t("pdfExport.error.renderFailed", {
-            message: error instanceof Error ? error.message : String(error),
-          }),
-        );
+        console.error(error);
+        setStorageError(t("pdfExport.error.renderFailed"));
       }
       return;
     }
@@ -11735,11 +11719,8 @@ function App() {
             }),
       );
     } catch (error) {
-      setStorageError(
-        t("pdfExport.error.renderFailed", {
-          message: error instanceof Error ? error.message : String(error),
-        }),
-      );
+      console.error(error);
+      setStorageError(t("pdfExport.error.renderFailed"));
     }
   }
 
@@ -11806,7 +11787,7 @@ function App() {
       applyLoadedFiles([loaded]);
       setEditorMode("edit");
     } catch (error) {
-      setStorageError(error instanceof Error ? error.message : String(error));
+      setStorageError(translatedError(error, "error.createFileFailed"));
     }
   }
 
@@ -12033,7 +12014,11 @@ function App() {
         await saveDocument(documentToSave);
       }
     } catch (error) {
-      setStorageError(error instanceof Error ? error.message : String(error));
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(error);
+      setStorageError(
+        message === t("error.externalFileChanged") ? message : t("error.saveFailed"),
+      );
     } finally {
       autosaveInFlightRef.current = false;
 
@@ -12109,7 +12094,7 @@ function App() {
       markNoteCopySucceeded(actionKey);
       setStorageError("");
     } catch (error) {
-      setStorageError(error instanceof Error ? error.message : String(error));
+      setStorageError(translatedError(error));
     }
   }
 
@@ -12306,7 +12291,7 @@ function App() {
       setDropboxConnected(status.connected);
     } catch (error) {
       setDropboxConnected(false);
-      setStorageError(error instanceof Error ? error.message : String(error));
+      setStorageError(translatedError(error, "dropbox.error.unexpected"));
     }
   }
 
@@ -12369,7 +12354,7 @@ function App() {
       await openExternalUrl(oauthStart.authUrl);
     } catch (error) {
       setDropboxConnecting(false);
-      setStorageError(error instanceof Error ? error.message : String(error));
+      setStorageError(translatedError(error, "dropbox.error.unexpected"));
     }
   }
 
@@ -12377,11 +12362,8 @@ function App() {
     if (payload.status !== "success" || !payload.code || !payload.state) {
       setDropboxConnecting(false);
       dropboxOpenAfterAuthRef.current = false;
-      setStorageError(
-        t("dropbox.error.oauthCallback", {
-          message: payload.error ?? "unknown error",
-        }),
-      );
+      console.error(payload.error ?? "Dropbox OAuth callback failed");
+      setStorageError(t("dropbox.error.oauthCallback"));
       return;
     }
 
@@ -12405,7 +12387,7 @@ function App() {
       setDropboxConnecting(false);
       setDropboxConnected(false);
       dropboxOpenAfterAuthRef.current = false;
-      setStorageError(error instanceof Error ? error.message : String(error));
+      setStorageError(translatedError(error, "dropbox.error.unexpected"));
     }
   }
 
@@ -12442,7 +12424,7 @@ function App() {
       forgetLastOpenedDropboxWorkspace();
       setStorageError(t("dropbox.status.authorizationRemoved"));
     } catch (error) {
-      setStorageError(error instanceof Error ? error.message : String(error));
+      setStorageError(translatedError(error, "dropbox.error.unexpected"));
     }
   }
 
@@ -12573,7 +12555,7 @@ function App() {
       } else if (message === "duplicate file name is empty") {
         setStorageError(t("error.duplicateFileNameRequired"));
       } else {
-        setStorageError(message);
+        setStorageError(translatedError(error));
       }
       return false;
     }
@@ -12633,7 +12615,7 @@ function App() {
       await writeTextToClipboard(bodyToCopy);
       setStorageError("");
     } catch (error) {
-      setStorageError(error instanceof Error ? error.message : String(error));
+      setStorageError(translatedError(error));
     }
   }
 
@@ -12753,7 +12735,7 @@ function App() {
       setStorageError("");
     } catch (error) {
       removeDocumentsFromWorkspace(deletedDocumentIds);
-      setStorageError(error instanceof Error ? error.message : String(error));
+      setStorageError(translatedError(error));
     }
   }
 
@@ -14371,6 +14353,9 @@ function App() {
           autoFocusOnEdit={noteEditorShouldRefocusRef.current}
           className="note-library-card__editor"
           editing={activeNoteEditorKey === editorKey}
+          mermaidEmptyDefinitionLabel={t("mermaid.empty")}
+          mermaidErrorLabel={t("mermaid.error")}
+          mermaidLoadingLabel={t("mermaid.loading")}
           value={note.body}
           placeholder={t("note.placeholder")}
           onChange={(value) => updateLibraryNoteDraft(note.id, value)}
@@ -15901,6 +15886,9 @@ function App() {
                   mobileCommittedSelectionKey={mobileCommittedSelectionKey}
                   mobileCommittedSelectionTone={floatingNoteTone}
                   mobileSelectionToneForAnchor={toneForNewSelectionNote}
+                  mermaidEmptyDefinitionLabel={t("mermaid.empty")}
+                  mermaidErrorLabel={t("mermaid.error")}
+                  mermaidLoadingLabel={t("mermaid.loading")}
                   noteModeEnabled={noteModeEnabled}
                   readOnly={previewEditorReadOnly}
                   search={documentSearchState}
@@ -16046,6 +16034,9 @@ function App() {
                   autoFocusOnEdit={noteEditorShouldRefocusRef.current}
                   className="note-library-expanded-panel__editor"
                   editing={activeNoteEditorKey === expandedLibraryNoteEditorKey}
+                  mermaidEmptyDefinitionLabel={t("mermaid.empty")}
+                  mermaidErrorLabel={t("mermaid.error")}
+                  mermaidLoadingLabel={t("mermaid.loading")}
                   value={expandedLibraryNote.body}
                   placeholder={t("note.placeholder")}
                   onChange={(value) =>
@@ -16320,6 +16311,7 @@ function App() {
                     className="bottom-note-body glossary-existing-definition"
                     emptyLabel={t("glossary.emptyDefinition")}
                     mermaidEmptyDefinitionLabel={t("mermaid.empty")}
+                    mermaidErrorLabel={t("mermaid.error")}
                     mermaidLoadingLabel={t("mermaid.loading")}
                     value={pendingGlossaryTerm.definition}
                   />
@@ -16370,6 +16362,9 @@ function App() {
                       editorRootRef={(element) => {
                         noteEditorRootRef.current = element;
                       }}
+                      mermaidEmptyDefinitionLabel={t("mermaid.empty")}
+                      mermaidErrorLabel={t("mermaid.error")}
+                      mermaidLoadingLabel={t("mermaid.loading")}
                       value={activeNote.body}
                       placeholder={t("note.placeholder")}
                       onChange={updateActiveNoteDraft}
@@ -16396,6 +16391,9 @@ function App() {
                   editorRootRef={(element) => {
                     noteEditorRootRef.current = element;
                   }}
+                  mermaidEmptyDefinitionLabel={t("mermaid.empty")}
+                  mermaidErrorLabel={t("mermaid.error")}
+                  mermaidLoadingLabel={t("mermaid.loading")}
                   value={glossaryDraft}
                   onChange={updateActiveGlossaryDraft}
                   onCompositionStart={handleNoteEditorCompositionStart}
@@ -16409,6 +16407,7 @@ function App() {
                   className="bottom-note-body"
                   emptyLabel={t("glossary.emptyDefinition")}
                   mermaidEmptyDefinitionLabel={t("mermaid.empty")}
+                  mermaidErrorLabel={t("mermaid.error")}
                   mermaidLoadingLabel={t("mermaid.loading")}
                   onDoubleClick={() => openGlossaryEditor(activeGlossaryTerm.id)}
                   value={activeGlossaryTerm.definition}

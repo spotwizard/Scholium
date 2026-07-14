@@ -112,6 +112,15 @@ struct DropboxState {
     tokens: Mutex<Option<DropboxTokenStore>>,
 }
 
+#[derive(Default)]
+struct OpenedFileQueue {
+    frontend_ready: bool,
+    pending_paths: Vec<String>,
+}
+
+#[derive(Default)]
+struct OpenedFileState(Mutex<OpenedFileQueue>);
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct OpenLocationPayload {
@@ -1452,12 +1461,12 @@ fn current_app_language(app_handle: &tauri::AppHandle) -> String {
 
 fn menu_text(language: &str, key: &str) -> &'static str {
     match (normalize_app_language(language), key) {
-        ("en", "directoryFallback") => "Directory",
+        ("en", "directoryFallback") => "Folder",
         ("en", "markdownFileFallback") => "Markdown file",
-        ("en", "favoriteDirectories") => "Favorite Directories",
-        ("en", "addCurrentDirectory") => "Add Current Directory",
-        ("en", "noFavoriteDirectories") => "No favorite directories",
-        ("en", "clearFavoriteDirectories") => "Clear Favorite Directories",
+        ("en", "favoriteDirectories") => "Favorite Folders",
+        ("en", "addCurrentDirectory") => "Add Current Folder",
+        ("en", "noFavoriteDirectories") => "No favorite folders",
+        ("en", "clearFavoriteDirectories") => "Clear Favorite Folders",
         ("en", "recentLocations") => "Recent",
         ("en", "noRecentLocations") => "No recent items",
         ("en", "clearItems") => "Clear Items",
@@ -1473,19 +1482,19 @@ fn menu_text(language: &str, key: &str) -> &'static str {
         ("en", "viewMenu") => "View",
         ("en", "windowMenu") => "Window",
         ("en", "helpMenu") => "Help",
-        ("zh-Hans", "directoryFallback") => "目录",
+        ("zh-Hans", "directoryFallback") => "文件夹",
         ("zh-Hans", "markdownFileFallback") => "Markdown 文件",
-        ("zh-Hans", "favoriteDirectories") => "常用目录",
-        ("zh-Hans", "addCurrentDirectory") => "加入目前目录",
-        ("zh-Hans", "noFavoriteDirectories") => "尚未加入常用目录",
-        ("zh-Hans", "clearFavoriteDirectories") => "清除常用目录",
+        ("zh-Hans", "favoriteDirectories") => "收藏的文件夹",
+        ("zh-Hans", "addCurrentDirectory") => "收藏当前文件夹",
+        ("zh-Hans", "noFavoriteDirectories") => "尚未收藏文件夹",
+        ("zh-Hans", "clearFavoriteDirectories") => "清除收藏的文件夹",
         ("zh-Hans", "recentLocations") => "最近打开",
         ("zh-Hans", "noRecentLocations") => "尚无最近打开项目",
         ("zh-Hans", "clearItems") => "清除项目",
-        ("zh-Hans", "newWindow") => "新增窗口",
-        ("zh-Hans", "newFile") => "新增文件",
+        ("zh-Hans", "newWindow") => "新建窗口",
+        ("zh-Hans", "newFile") => "新建文件",
         ("zh-Hans", "openFile") => "打开文件",
-        ("zh-Hans", "openFolder") => "打开目录",
+        ("zh-Hans", "openFolder") => "打开文件夹",
         ("zh-Hans", "cloud") => "云端",
         ("zh-Hans", "dropbox") => "Dropbox",
         ("zh-Hans", "settings") => "设置...",
@@ -1494,19 +1503,19 @@ fn menu_text(language: &str, key: &str) -> &'static str {
         ("zh-Hans", "viewMenu") => "视图",
         ("zh-Hans", "windowMenu") => "窗口",
         ("zh-Hans", "helpMenu") => "帮助",
-        (_, "directoryFallback") => "目錄",
+        (_, "directoryFallback") => "資料夾",
         (_, "markdownFileFallback") => "Markdown 檔案",
-        (_, "favoriteDirectories") => "常用目錄",
-        (_, "addCurrentDirectory") => "加入目前目錄",
-        (_, "noFavoriteDirectories") => "尚未加入常用目錄",
-        (_, "clearFavoriteDirectories") => "清除常用目錄",
+        (_, "favoriteDirectories") => "常用資料夾",
+        (_, "addCurrentDirectory") => "加入目前資料夾",
+        (_, "noFavoriteDirectories") => "尚未加入常用資料夾",
+        (_, "clearFavoriteDirectories") => "清除常用資料夾",
         (_, "recentLocations") => "最近開啟",
         (_, "noRecentLocations") => "尚無最近開啟項目",
         (_, "clearItems") => "清除項目",
         (_, "newWindow") => "新增視窗",
         (_, "newFile") => "新增檔案",
         (_, "openFile") => "開啟檔案",
-        (_, "openFolder") => "開啟目錄",
+        (_, "openFolder") => "開啟資料夾",
         (_, "cloud") => "雲端",
         (_, "dropbox") => "Dropbox",
         (_, "settings") => "設定...",
@@ -1812,6 +1821,23 @@ fn is_markdown_path(path: &Path) -> bool {
             )
         })
         .unwrap_or(false)
+}
+
+fn dropped_markdown_path(paths: &[String]) -> Result<&Path, String> {
+    let [path] = paths else {
+        return Err("drop requires exactly one .md file".to_string());
+    };
+    let path = Path::new(path);
+
+    if !path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
+    {
+        return Err("dropped file must use the .md extension".to_string());
+    }
+
+    Ok(path)
 }
 
 fn hex_digit_value(byte: u8) -> Option<u8> {
@@ -3339,11 +3365,60 @@ fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
 }
 
+#[tauri::command]
+fn validate_dropped_markdown_file(paths: Vec<String>) -> Result<String, String> {
+    let path = dropped_markdown_path(&paths)?;
+
+    if !path.is_file() {
+        return Err("dropped path is not an existing file".to_string());
+    }
+
+    Ok(path.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+fn take_opened_file_paths(state: tauri::State<'_, OpenedFileState>) -> Result<Vec<String>, String> {
+    let mut queue = state
+        .0
+        .lock()
+        .map_err(|_| "failed to access pending opened files".to_string())?;
+    queue.frontend_ready = true;
+
+    Ok(std::mem::take(&mut queue.pending_paths))
+}
+
+#[cfg(target_os = "macos")]
+fn handle_opened_file_urls(app_handle: &AppHandle, urls: Vec<Url>) {
+    let paths = urls
+        .into_iter()
+        .filter_map(|url| url.to_file_path().ok())
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+
+    if paths.is_empty() {
+        return;
+    }
+
+    let should_emit = match app_handle.state::<OpenedFileState>().0.lock() {
+        Ok(queue) if queue.frontend_ready => true,
+        Ok(mut queue) => {
+            queue.pending_paths.extend(paths.clone());
+            false
+        }
+        Err(_) => true,
+    };
+
+    if should_emit {
+        let _ = emit_to_target_webview_window(app_handle, "scholium-open-file-paths", paths);
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default()
         .manage(LocationMenuState::default())
         .manage(DropboxState::default())
+        .manage(OpenedFileState::default())
         .setup(|app| {
             let mut location_store = read_location_store_from_disk(app.handle());
             let pruned_recent_locations = prune_missing_recent_locations(&mut location_store);
@@ -3424,12 +3499,14 @@ pub fn run() {
         }
     });
 
-    builder
+    let app = builder
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             create_new_window,
             greet,
+            validate_dropped_markdown_file,
+            take_opened_file_paths,
             open_markdown_directory,
             open_markdown_file,
             open_markdown_file_context,
@@ -3457,8 +3534,15 @@ pub fn run() {
             duplicate_dropbox_markdown_file,
             delete_dropbox_markdown_file
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+
+    app.run(|_app_handle, _event| {
+        #[cfg(target_os = "macos")]
+        if let tauri::RunEvent::Opened { urls } = _event {
+            handle_opened_file_urls(_app_handle, urls);
+        }
+    });
 }
 
 #[cfg(test)]
@@ -3476,5 +3560,18 @@ mod tests {
             Some(Duration::from_millis(1_000))
         );
         assert_eq!(dropbox_token_refresh_retry_delay(3), None);
+    }
+
+    #[test]
+    fn dropped_file_must_be_one_md_path() {
+        let markdown = vec!["draft.MD".to_string()];
+        assert_eq!(
+            dropped_markdown_path(&markdown).unwrap(),
+            Path::new("draft.MD")
+        );
+
+        assert!(dropped_markdown_path(&["draft.txt".to_string()]).is_err());
+        assert!(dropped_markdown_path(&[]).is_err());
+        assert!(dropped_markdown_path(&["one.md".to_string(), "two.md".to_string()]).is_err());
     }
 }
