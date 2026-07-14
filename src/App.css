@@ -6099,6 +6099,11 @@ button.document-tag-chip__label:focus-visible {
     transform: translateX(0);
   }
 
+  .scholium-shell.is-directory-pane-closed .document-pane,
+  .note-library-pane:not(.is-open) {
+    box-shadow: none;
+  }
+
   .scholium-shell.has-document-tabs .document-pane,
   .scholium-shell.has-document-tabs .note-library-pane {
     top: var(--document-tab-bar-occupied-height);
