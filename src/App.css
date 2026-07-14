@@ -881,6 +881,46 @@ button:disabled {
   overscroll-behavior: none;
 }
 
+.scholium-shell.has-mobile-startup > :not(.mobile-startup):not(.dropbox-directory-dialog-backdrop) {
+  visibility: hidden;
+}
+
+.mobile-startup {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  color: var(--color-text);
+  background: var(--color-surface);
+}
+
+.mobile-startup__center {
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 26px;
+  padding: calc(24px + env(safe-area-inset-top)) 24px
+    calc(24px + env(safe-area-inset-bottom));
+}
+
+.mobile-startup__logo {
+  display: block;
+  width: 112px;
+  height: 112px;
+  object-fit: contain;
+}
+
+.mobile-startup__cloud-button {
+  min-height: 42px;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  padding: 0 18px;
+  color: var(--color-heading);
+  background: var(--color-surface-raised);
+  font-size: 0.92rem;
+  font-weight: 740;
+}
+
 .dropbox-directory-dialog {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
@@ -6076,12 +6116,19 @@ button.document-tag-chip__label:focus-visible {
   .document-pane {
     display: grid;
     grid-template-rows: auto auto auto auto auto minmax(0, 1fr) auto;
+    height: calc(
+      100svh - var(--mobile-command-bar-height) - var(--mobile-safe-area-bottom)
+    );
     background: var(--color-document-pane-bg);
     transform: translateX(-100%);
   }
 
   .document-pane.is-tag-browser {
     grid-template-rows: auto auto minmax(0, 1fr) auto;
+  }
+
+  .document-pane:not(.is-tag-browser) > .document-list {
+    grid-row: 6;
   }
 
   .scholium-shell:not(.is-directory-pane-closed) .document-pane {
@@ -6110,6 +6157,17 @@ button.document-tag-chip__label:focus-visible {
     height: calc(100svh - var(--document-tab-bar-occupied-height));
     min-height: 0;
     max-height: calc(100svh - var(--document-tab-bar-occupied-height));
+  }
+
+  .scholium-shell.has-document-tabs .document-pane {
+    height: calc(
+      100svh - var(--document-tab-bar-occupied-height) - var(--mobile-command-bar-height) -
+        var(--mobile-safe-area-bottom)
+    );
+    max-height: calc(
+      100svh - var(--document-tab-bar-occupied-height) - var(--mobile-command-bar-height) -
+        var(--mobile-safe-area-bottom)
+    );
   }
 
   .directory-bookmark,
@@ -6689,6 +6747,11 @@ button.document-tag-chip__label:focus-visible {
     padding-bottom: calc(
       var(--mobile-command-bar-height) + var(--mobile-safe-area-bottom) + 28px
     );
+  }
+
+  .document-pane > .document-list {
+    scroll-padding-bottom: 24px;
+    padding-bottom: 28px;
   }
 
   .document-tree-root {

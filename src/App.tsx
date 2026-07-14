@@ -36,6 +36,7 @@ import {
 } from "./MarkdownEditor";
 import type { DocumentSearchState } from "./documentSearch";
 import { SettingsView } from "./SettingsView";
+import appIconUrl from "../src-tauri/icons/128x128@2x.png";
 import fileSelectedGlyphSvg from "./assets/file-selected-glyph.svg?raw";
 import fileGlyphSvg from "./assets/file-glyph.svg?raw";
 import folderGlyphSvg from "./assets/folder-glyph.svg?raw";
@@ -269,6 +270,8 @@ type LastOpenedDropboxWorkspaceState = {
   filePath: string;
   updatedAt: number;
 };
+
+type MobileStartupPhase = "hidden" | "restoring" | "welcome";
 
 type OpenLocationEventPayload = {
   kind: NativeLocationKind;
@@ -6889,6 +6892,10 @@ function App() {
   const [dropboxConnecting, setDropboxConnecting] = useState(false);
   const [dropboxDirectoryPicker, setDropboxDirectoryPicker] =
     useState<DropboxDirectoryPickerState | null>(null);
+  const [mobileStartupPhase, setMobileStartupPhase] = useState<MobileStartupPhase>(() => {
+    if (!window.matchMedia(mobileViewportQuery).matches) return "hidden";
+    return readLastOpenedDropboxWorkspace() ? "restoring" : "welcome";
+  });
   const notePanelRef = useRef<HTMLElement | null>(null);
   const floatingNoteCardRef = useRef<HTMLDivElement | null>(null);
   const settingsCloseButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -9156,13 +9163,21 @@ function App() {
     let unlistenOpenedFilePaths: (() => void) | null = null;
 
     function restoreLastOpenedFile() {
-      if (!settingsSnapshot["app.restoreLastOpenedFile"]) return;
-
       const lastOpenedDropboxWorkspace = readLastOpenedDropboxWorkspace();
-      if (isMobileViewport && lastOpenedDropboxWorkspace) {
-        void restoreLastOpenedDropboxWorkspace(lastOpenedDropboxWorkspace);
+      if (isMobileViewport) {
+        if (!lastOpenedDropboxWorkspace) {
+          setMobileStartupPhase("welcome");
+          return;
+        }
+
+        setMobileStartupPhase("restoring");
+        void restoreLastOpenedDropboxWorkspace(lastOpenedDropboxWorkspace).finally(() => {
+          if (!disposed) setMobileStartupPhase("hidden");
+        });
         return;
       }
+
+      if (!settingsSnapshot["app.restoreLastOpenedFile"]) return;
 
       const lastOpenedPath = readLastOpenedMarkdownPath();
       const lastOpenedRootDirectoryPath = readLastOpenedMarkdownRootDirectoryPath();
@@ -11180,10 +11195,13 @@ function App() {
       const firstFile = firstDropboxMarkdownFileEntry(openedDirectory);
       if (firstFile) {
         await openDropboxMarkdownFilePath(firstFile.path);
-        return;
+      } else {
+        setStorageError(openedDirectory.entries.length === 0 ? t("dropbox.emptyFolder") : "");
       }
 
-      setStorageError(openedDirectory.entries.length === 0 ? t("dropbox.emptyFolder") : "");
+      if (isMobileViewport && mobileStartupPhase === "welcome") {
+        setMobileStartupPhase("hidden");
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const displayMessage = dropboxUserFacingError(message);
@@ -14680,9 +14698,12 @@ function App() {
   const mobileRecentLocationShortcuts = savedLocations.recent;
   const mobileDropboxWorkspaceActive = workspaceSource === "dropbox";
   const mobileSavedLocationsVisible = nativeStorageAvailable && !mobileDropboxWorkspaceActive;
+  const mobileStartupActive =
+    isMobileViewport && mobileStartupPhase !== "hidden" && !settingsViewOpen;
 
   const shellClassName = [
     "scholium-shell",
+    mobileStartupActive ? "has-mobile-startup" : "",
     isMobileSafeLayoutViewport ? "is-mobile-safe-layout" : "",
     directoryPaneOpen ? "" : "is-directory-pane-closed",
     !settingsViewOpen && noteModeEnabled && noteLibraryOpen ? "is-note-library-open" : "",
@@ -14768,6 +14789,22 @@ function App() {
       onMouseDownCapture={handleShellMouseDownCapture}
       onPointerDownCapture={handleShellPointerDownCapture}
     >
+      {mobileStartupActive ? (
+        <section aria-label={t("mobileStartup.title")} className="mobile-startup">
+          <div className="mobile-startup__center">
+            <img alt="Scholium" className="mobile-startup__logo" src={appIconUrl} />
+            {mobileStartupPhase === "welcome" ? (
+              <button
+                className="mobile-startup__cloud-button"
+                onClick={() => void openDropboxCloudSource()}
+                type="button"
+              >
+                {t("mobileStartup.openCloudFiles")}
+              </button>
+            ) : null}
+          </div>
+        </section>
+      ) : null}
       {!settingsViewOpen && noteLibraryFocusActive ? (
         <div
           aria-hidden="true"
