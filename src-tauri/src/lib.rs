@@ -22,6 +22,7 @@ use url::Url;
 #[cfg(desktop)]
 const MENU_NEW_WINDOW: &str = "file:new-window";
 const MENU_NEW_FILE: &str = "file:new-file";
+const MENU_NEW_FOLDER: &str = "file:new-folder";
 const MENU_OPEN_FILE: &str = "file:open-file";
 const MENU_OPEN_FOLDER: &str = "file:open-folder";
 const MENU_CLOUD_DROPBOX: &str = "file:cloud:dropbox";
@@ -50,6 +51,7 @@ const DROPBOX_UPLOAD_URL: &str = "https://content.dropboxapi.com/2/files/upload"
 const DROPBOX_COPY_URL: &str = "https://api.dropboxapi.com/2/files/copy_v2";
 const DROPBOX_DELETE_URL: &str = "https://api.dropboxapi.com/2/files/delete_v2";
 const DROPBOX_MOVE_URL: &str = "https://api.dropboxapi.com/2/files/move_v2";
+const DROPBOX_CREATE_FOLDER_URL: &str = "https://api.dropboxapi.com/2/files/create_folder_v2";
 const DROPBOX_REQUIRED_SCOPES: &str =
     "files.metadata.read files.content.read files.metadata.write files.content.write";
 const DROPBOX_TOKEN_REFRESH_ATTEMPTS: usize = 3;
@@ -63,6 +65,12 @@ struct LocationEntry {
     kind: String,
     path: String,
     title: String,
+    #[serde(default = "default_location_source")]
+    source: String,
+}
+
+fn default_location_source() -> String {
+    "local".to_string()
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -127,6 +135,8 @@ struct OpenedFileState(Mutex<OpenedFileQueue>);
 struct OpenLocationPayload {
     kind: String,
     path: String,
+    source: String,
+    title: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1502,6 +1512,7 @@ fn menu_text(language: &str, key: &str) -> &'static str {
         ("en", "clearItems") => "Clear Items",
         ("en", "newWindow") => "New Window",
         ("en", "newFile") => "New File",
+        ("en", "newFolder") => "New Folder",
         ("en", "openFile") => "Open File",
         ("en", "openFolder") => "Open Folder",
         ("en", "cloud") => "Cloud",
@@ -1523,6 +1534,7 @@ fn menu_text(language: &str, key: &str) -> &'static str {
         ("zh-Hans", "clearItems") => "清除项目",
         ("zh-Hans", "newWindow") => "新建窗口",
         ("zh-Hans", "newFile") => "新建文件",
+        ("zh-Hans", "newFolder") => "新建文件夹",
         ("zh-Hans", "openFile") => "打开文件",
         ("zh-Hans", "openFolder") => "打开文件夹",
         ("zh-Hans", "cloud") => "云端",
@@ -1544,6 +1556,7 @@ fn menu_text(language: &str, key: &str) -> &'static str {
         (_, "clearItems") => "清除項目",
         (_, "newWindow") => "新增視窗",
         (_, "newFile") => "新增檔案",
+        (_, "newFolder") => "新增資料夾",
         (_, "openFile") => "開啟檔案",
         (_, "openFolder") => "開啟資料夾",
         (_, "cloud") => "雲端",
@@ -1656,6 +1669,7 @@ fn sanitize_location_entry(
     kind: &str,
     path: String,
     title: String,
+    source: String,
     language: &str,
 ) -> Result<LocationEntry, String> {
     if kind != "directory" && kind != "file" {
@@ -1666,6 +1680,11 @@ fn sanitize_location_entry(
     if trimmed_path.is_empty() {
         return Err("location path is empty".to_string());
     }
+    let normalized_source = match source.trim() {
+        "" | "local" => "local",
+        "dropbox" => "dropbox",
+        _ => return Err("unsupported location source".to_string()),
+    };
 
     let fallback_title = if kind == "directory" {
         location_title(
@@ -1688,6 +1707,7 @@ fn sanitize_location_entry(
         } else {
             trimmed_title.to_string()
         },
+        source: normalized_source.to_string(),
     })
 }
 
@@ -1750,6 +1770,10 @@ fn write_location_store(
 }
 
 fn recent_location_exists(location: &LocationEntry) -> bool {
+    if location.source == "dropbox" {
+        return true;
+    }
+
     let path = Path::new(&location.path);
 
     match location.kind.as_str() {
@@ -1773,9 +1797,11 @@ fn remember_recent_location_entry(
 ) -> Result<(), String> {
     let mut store = current_location_store(app_handle);
 
-    store
-        .recent
-        .retain(|location| location.kind != entry.kind || location.path != entry.path);
+    store.recent.retain(|location| {
+        location.source != entry.source
+            || location.kind != entry.kind
+            || location.path != entry.path
+    });
     store.recent.insert(0, entry);
     store.recent.truncate(MAX_RECENT_LOCATIONS);
 
@@ -1792,7 +1818,7 @@ fn remember_favorite_directory_entry(
 
     store
         .favorite_directories
-        .retain(|location| location.path != entry.path);
+        .retain(|location| location.source != entry.source || location.path != entry.path);
     store.favorite_directories.insert(0, entry);
 
     replace_current_location_store(app_handle, store.clone())?;
@@ -1825,9 +1851,17 @@ fn location_menu_label(location: &LocationEntry) -> String {
         .and_then(|parent| parent.to_str())
         .filter(|parent| !parent.is_empty());
 
-    match parent {
-        Some(parent) => format!("{} — {}", location.title, parent),
-        None => location.title.clone(),
+    let location_detail = match (location.source.as_str(), parent) {
+        ("dropbox", Some(parent)) => format!("Dropbox {parent}"),
+        ("dropbox", None) => "Dropbox".to_string(),
+        (_, Some(parent)) => parent.to_string(),
+        _ => String::new(),
+    };
+
+    if location_detail.is_empty() {
+        location.title.clone()
+    } else {
+        format!("{} — {}", location.title, location_detail)
     }
 }
 
@@ -2607,6 +2641,32 @@ fn rename_markdown_directory(
     })
 }
 
+#[tauri::command]
+fn create_markdown_directory(parent_path: String, name: String) -> Result<RenamedPath, String> {
+    let parent_path = PathBuf::from(parent_path);
+    if !parent_path.is_dir() {
+        return Err("parent path is not a directory".to_string());
+    }
+
+    let directory_name = validate_path_name(
+        &name,
+        "folder name is empty",
+        "folder name must not include folders",
+    )?;
+    let target_path = parent_path.join(directory_name);
+    if target_path.exists() {
+        return Err("folder already exists".to_string());
+    }
+
+    fs::create_dir(&target_path).map_err(|error| format!("failed to create directory: {error}"))?;
+
+    Ok(RenamedPath {
+        title: directory_title(&target_path),
+        path: target_path.to_string_lossy().to_string(),
+        notes_path: None,
+    })
+}
+
 fn ensure_pdf_extension(mut path: PathBuf) -> PathBuf {
     if !path
         .extension()
@@ -2731,9 +2791,10 @@ fn remember_recent_location(
     kind: String,
     path: String,
     title: String,
+    source: String,
 ) -> Result<(), String> {
     let language = current_app_language(&app);
-    let entry = sanitize_location_entry(&kind, path, title, &language)?;
+    let entry = sanitize_location_entry(&kind, path, title, source, &language)?;
 
     remember_recent_location_entry(&app, entry)
 }
@@ -2757,9 +2818,10 @@ fn set_current_directory_location(
     window: tauri::WebviewWindow,
     path: String,
     title: String,
+    source: String,
 ) -> Result<(), String> {
     let language = current_app_language(&app);
-    let entry = sanitize_location_entry("directory", path, title, &language)?;
+    let entry = sanitize_location_entry("directory", path, title, source, &language)?;
     let state = app.state::<LocationMenuState>();
 
     {
@@ -3204,6 +3266,48 @@ async fn create_dropbox_markdown_file(
 }
 
 #[tauri::command]
+async fn create_dropbox_markdown_directory(
+    app: tauri::AppHandle,
+    parent_path: String,
+    name: String,
+) -> Result<RenamedPath, String> {
+    let directory_name = validate_path_name(
+        &name,
+        "folder name is empty",
+        "folder name must not include folders",
+    )?;
+    let directory_name = directory_name
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "folder name is empty".to_string())?;
+    let target_path = dropbox_child_path(&parent_path, directory_name);
+    let access_token = dropbox_access_token(&app).await?;
+    let response = reqwest::Client::new()
+        .post(DROPBOX_CREATE_FOLDER_URL)
+        .bearer_auth(access_token)
+        .json(&serde_json::json!({
+            "path": target_path,
+            "autorename": false
+        }))
+        .send()
+        .await
+        .map_err(|error| format!("failed to create Dropbox directory: {error}"))?;
+
+    if response.status() == StatusCode::UNAUTHORIZED {
+        return Err("Dropbox authorization failed; reconnect Dropbox.".to_string());
+    }
+    if !response.status().is_success() {
+        return Err(dropbox_response_error(response, "failed to create Dropbox directory").await);
+    }
+
+    Ok(RenamedPath {
+        title: dropbox_path_title(&target_path),
+        path: target_path,
+        notes_path: None,
+    })
+}
+
+#[tauri::command]
 async fn duplicate_dropbox_markdown_file(
     app: tauri::AppHandle,
     path: String,
@@ -3530,6 +3634,13 @@ fn build_app_menu(app_handle: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wr
         true,
         Some("CmdOrCtrl+N"),
     )?;
+    let new_folder = MenuItem::with_id(
+        app_handle,
+        MENU_NEW_FOLDER,
+        menu_text(&language, "newFolder"),
+        true,
+        None::<&str>,
+    )?;
     let open_file = MenuItem::with_id(
         app_handle,
         MENU_OPEN_FILE,
@@ -3594,6 +3705,7 @@ fn build_app_menu(app_handle: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wr
                 &[
                     &new_window,
                     &new_file,
+                    &new_folder,
                     &open_file,
                     &open_folder,
                     &PredefinedMenuItem::separator(app_handle)?,
@@ -3773,6 +3885,9 @@ pub fn run() {
         } else if event_id == MENU_NEW_FILE {
             let _ = emit_to_target_webview_window(app, "menu:new-file", ());
             let _ = emit_to_target_webview_window(app, "scholium-new-file", ());
+        } else if event_id == MENU_NEW_FOLDER {
+            let _ = emit_to_target_webview_window(app, "menu:new-folder", ());
+            let _ = emit_to_target_webview_window(app, "scholium-new-folder", ());
         } else if event_id == MENU_OPEN_SETTINGS {
             let _ = emit_to_target_webview_window(app, "menu:open-settings", ());
             let _ = emit_to_target_webview_window(app, "scholium-open-settings", ());
@@ -3808,6 +3923,8 @@ pub fn run() {
                 let payload = OpenLocationPayload {
                     kind: location.kind.clone(),
                     path: location.path.clone(),
+                    source: location.source.clone(),
+                    title: location.title.clone(),
                 };
                 let _ = emit_to_target_webview_window(app, "menu:open-location", &payload);
                 let _ = emit_to_target_webview_window(app, "scholium-open-location", payload);
@@ -3832,6 +3949,7 @@ pub fn run() {
             delete_markdown_file,
             rename_markdown_file,
             rename_markdown_directory,
+            create_markdown_directory,
             write_pdf_file,
             write_pdf_file_to_directory,
             save_markdown_file,
@@ -3849,6 +3967,7 @@ pub fn run() {
             read_dropbox_markdown_body,
             save_dropbox_markdown_file,
             create_dropbox_markdown_file,
+            create_dropbox_markdown_directory,
             duplicate_dropbox_markdown_file,
             delete_dropbox_markdown_file,
             rename_dropbox_markdown_file,

@@ -272,6 +272,7 @@ type NativeLocation = {
   kind: NativeLocationKind;
   path: string;
   title: string;
+  source: WorkspaceSource;
 };
 
 type SavedLocationsResult = {
@@ -290,6 +291,8 @@ type MobileStartupPhase = "hidden" | "restoring" | "welcome";
 type OpenLocationEventPayload = {
   kind: NativeLocationKind;
   path: string;
+  source: WorkspaceSource;
+  title: string;
 };
 
 const emptySavedLocations: SavedLocationsResult = {
@@ -785,6 +788,22 @@ function MobileNewFileIcon() {
   );
 }
 
+function MobileNewFolderIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      className="mobile-source-action__icon"
+      fill="none"
+      viewBox="0 0 24 24"
+    >
+      <path d="M3.5 7h6l2 2h9v8.5a2 2 0 0 1-2 2h-15z" />
+      <path d="M3.5 7v-2h5.4l2 2h4.6" />
+      <path d="M12 11.5v5" />
+      <path d="M9.5 14h5" />
+    </svg>
+  );
+}
+
 function MobileOpenFileIcon() {
   return (
     <svg
@@ -815,11 +834,11 @@ function MobileOpenFolderIcon() {
   );
 }
 
-function MobileCloudIcon() {
+function MobileCloudIcon({ className = "mobile-source-action__icon" }: { className?: string }) {
   return (
     <svg
       aria-hidden="true"
-      className="mobile-source-action__icon"
+      className={className}
       fill="none"
       viewBox="0 0 24 24"
     >
@@ -6801,6 +6820,7 @@ function App() {
   const [documentSearchMatchCount, setDocumentSearchMatchCount] = useState(0);
   const [tagDraft, setTagDraft] = useState("");
   const [mobileTagPickerOpen, setMobileTagPickerOpen] = useState(false);
+  const [mobileDataSourceOpen, setMobileDataSourceOpen] = useState(false);
   const [dropboxIndexedDocumentTags, setDropboxIndexedDocumentTags] = useState<
     DropboxIndexedDocumentTags[]
   >([]);
@@ -7050,8 +7070,10 @@ function App() {
   const selectionClearedByAppUntilRef = useRef(0);
   const lastOpenedFileRestoreAttemptedRef = useRef(false);
   const dropboxOpenAfterAuthRef = useRef(false);
+  const pendingDropboxLocationAfterAuthRef = useRef<NativeLocation | null>(null);
   const openSettingsHandlerRef = useRef<() => void>(() => undefined);
   const newMarkdownFileHandlerRef = useRef<() => void>(() => undefined);
+  const newMarkdownFolderHandlerRef = useRef<() => void>(() => undefined);
   const openMarkdownFileHandlerRef = useRef<() => void>(() => undefined);
   const openDroppedMarkdownPathsHandlerRef = useRef<(paths: string[]) => void>(() => undefined);
   const openMarkdownFolderHandlerRef = useRef<() => void>(() => undefined);
@@ -7078,6 +7100,9 @@ function App() {
   openSettingsHandlerRef.current = openSettingsView;
   newMarkdownFileHandlerRef.current = () => {
     void newMarkdownFile();
+  };
+  newMarkdownFolderHandlerRef.current = () => {
+    void newMarkdownFolder();
   };
   openMarkdownFileHandlerRef.current = () => {
     void openMarkdownFileFromPicker();
@@ -9397,6 +9422,7 @@ function App() {
     if (!nativeStorageAvailable) return;
 
     let unlistenNewFile: (() => void) | null = null;
+    let unlistenNewFolder: (() => void) | null = null;
     let unlistenOpenSettings: (() => void) | null = null;
     let unlistenOpenFile: (() => void) | null = null;
     let unlistenOpenFolder: (() => void) | null = null;
@@ -9406,6 +9432,9 @@ function App() {
     void Promise.all([
       listen("scholium-new-file", () => {
         newMarkdownFileHandlerRef.current();
+      }),
+      listen("scholium-new-folder", () => {
+        newMarkdownFolderHandlerRef.current();
       }),
       listen("scholium-open-settings", () => {
         openSettingsHandlerRef.current();
@@ -9425,6 +9454,7 @@ function App() {
     ]).then(
       ([
         newFileListener,
+        newFolderListener,
         openSettingsListener,
         openFileListener,
         openFolderListener,
@@ -9432,6 +9462,7 @@ function App() {
         openLocationListener,
       ]) => {
         unlistenNewFile = newFileListener;
+        unlistenNewFolder = newFolderListener;
         unlistenOpenSettings = openSettingsListener;
         unlistenOpenFile = openFileListener;
         unlistenOpenFolder = openFolderListener;
@@ -9442,6 +9473,7 @@ function App() {
 
     return () => {
       unlistenNewFile?.();
+      unlistenNewFolder?.();
       unlistenOpenSettings?.();
       unlistenOpenFile?.();
       unlistenOpenFolder?.();
@@ -9885,10 +9917,10 @@ function App() {
       });
   }
 
-  function setNativeCurrentDirectory(path: string, title: string) {
+  function setNativeCurrentDirectory(path: string, title: string, source: WorkspaceSource) {
     if (!nativeStorageAvailable) return;
 
-    void invoke("set_current_directory_location", { path, title }).catch((error) => {
+    void invoke("set_current_directory_location", { path, title, source }).catch((error) => {
       setStorageError(translatedError(error));
     });
   }
@@ -10337,6 +10369,7 @@ function App() {
           kind: "file",
           path: loadedFile.path,
           title: loadedFile.title,
+          source: "local",
         });
       });
     }
@@ -10401,7 +10434,7 @@ function App() {
 
   function applyOpenedDropboxDirectory(
     openedDirectory: OpenDropboxMarkdownDirectoryResult,
-    options: { rememberLastOpened?: boolean } = {},
+    options: { rememberLastOpened?: boolean; rememberRecent?: boolean } = {},
   ) {
     discardTransientEmptySelectionNote();
     discardTransientEmptyGlossary();
@@ -10442,6 +10475,17 @@ function App() {
     if (options.rememberLastOpened !== false) {
       rememberLastOpenedDropboxWorkspace(openedDirectory.path, "");
     }
+    if (openedDirectory.path) {
+      if (options.rememberRecent !== false) {
+        rememberNativeRecentLocation({
+          kind: "directory",
+          path: openedDirectory.path,
+          title: openedDirectory.title,
+          source: "dropbox",
+        });
+      }
+      setNativeCurrentDirectory(openedDirectory.path, openedDirectory.title, "dropbox");
+    }
 
     if (nextEntries.length === 0) {
       setStorageError(t("dropbox.emptyFolder"));
@@ -10452,7 +10496,7 @@ function App() {
 
   function applyLoadedDropboxFile(
     loadedFile: OpenDropboxMarkdownFileResult,
-    options: { tabBehavior?: DocumentTabBehavior } = {},
+    options: { rememberRecent?: boolean; tabBehavior?: DocumentTabBehavior } = {},
   ) {
     const loadedDocument = documentFromDropboxFile(loadedFile);
     const documentId = loadedDocument.id;
@@ -10505,6 +10549,14 @@ function App() {
         dropboxParentDirectoryPath(loadedDocument.path),
       loadedDocument.path,
     );
+    if (options.rememberRecent !== false) {
+      rememberNativeRecentLocation({
+        kind: "file",
+        path: loadedFile.path,
+        title: loadedFile.title,
+        source: "dropbox",
+      });
+    }
   }
 
   function applyReloadedFile(loadedFile: OpenMarkdownFileResult) {
@@ -10602,7 +10654,7 @@ function App() {
       if (!documentIsFromDropbox(currentDocument)) return;
       if (dropboxLoadedFileMatchesCurrentDocument(loaded, currentDocument)) return;
 
-      applyLoadedDropboxFile(loaded, { tabBehavior: "none" });
+      applyLoadedDropboxFile(loaded, { rememberRecent: false, tabBehavior: "none" });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error(error);
@@ -10742,9 +10794,10 @@ function App() {
         kind: "directory",
         path: openedDirectory.path,
         title: openedDirectory.title,
+        source: "local",
       });
     }
-    setNativeCurrentDirectory(openedDirectory.path, openedDirectory.title);
+    setNativeCurrentDirectory(openedDirectory.path, openedDirectory.title, "local");
   }
 
   async function restoreLastOpenedMarkdownWorkspace(
@@ -10926,7 +10979,10 @@ function App() {
         { path: restoreState.workspacePath },
       );
       if (restoreWasInterrupted()) return;
-      applyOpenedDropboxDirectory(openedDirectory, { rememberLastOpened: false });
+      applyOpenedDropboxDirectory(openedDirectory, {
+        rememberLastOpened: false,
+        rememberRecent: false,
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (dropboxErrorNeedsAuthorization(message) || dropboxErrorIsDisconnected(message)) {
@@ -10964,7 +11020,7 @@ function App() {
         path: restoreFilePath,
       });
       if (restoreWasInterrupted()) return;
-      applyLoadedDropboxFile(loaded);
+      applyLoadedDropboxFile(loaded, { rememberRecent: false });
       setStorageError("");
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -11679,7 +11735,72 @@ function App() {
     }
   }
 
+  async function openDropboxLocation(
+    location: NativeLocation,
+    options: { allowPendingConnection?: boolean } = {},
+  ) {
+    if (!nativeStorageAvailable) {
+      setStorageError(t("error.nativeRuntimeRequired"));
+      return;
+    }
+
+    let connected = dropboxConnected || options.allowPendingConnection === true;
+    if (!connected) {
+      try {
+        const status = await invoke<DropboxOAuthStatusResult>("dropbox_oauth_status");
+        connected = status.connected;
+        setDropboxConnected(status.connected);
+      } catch (error) {
+        setStorageError(translatedError(error, "dropbox.error.unexpected"));
+        return;
+      }
+    }
+
+    if (!connected) {
+      pendingDropboxLocationAfterAuthRef.current = location;
+      await connectDropbox();
+      return;
+    }
+
+    setStorageError(
+      location.kind === "directory"
+        ? t("dropbox.status.openingFolder")
+        : t("dropbox.status.openingFile"),
+    );
+
+    try {
+      const directoryPath =
+        location.kind === "directory"
+          ? location.path
+          : dropboxParentDirectoryPath(location.path);
+      const openedDirectory = await invoke<OpenDropboxMarkdownDirectoryResult>(
+        "list_dropbox_markdown_directory",
+        { path: directoryPath },
+      );
+      applyOpenedDropboxDirectory(openedDirectory);
+
+      if (location.kind === "file") {
+        await openDropboxMarkdownFilePath(location.path, {
+          allowPendingConnection: options.allowPendingConnection,
+        });
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (dropboxErrorNeedsAuthorization(message) || dropboxErrorIsDisconnected(message)) {
+        setDropboxConnected(false);
+        pendingDropboxLocationAfterAuthRef.current = location;
+        await connectDropbox();
+        return;
+      }
+      setStorageError(dropboxUserFacingError(message));
+    }
+  }
+
   async function openNativeMenuLocation(location: OpenLocationEventPayload) {
+    if (location.source === "dropbox") {
+      await openDropboxLocation(location);
+      return;
+    }
     if (location.kind === "directory") {
       await openDirectoryPath(location.path);
       return;
@@ -11954,6 +12075,63 @@ function App() {
       setActiveDocumentModeState({ editorMode: "edit" });
     } catch (error) {
       setStorageError(translatedError(error, "error.createFileFailed"));
+    }
+  }
+
+  async function newMarkdownFolder() {
+    if (!nativeStorageAvailable) {
+      setStorageError(t("error.nativeRuntimeRequired"));
+      return;
+    }
+    if (!workspaceRootPath || !workspaceSource) {
+      setStorageError(t("newFolder.noWorkspace"));
+      return;
+    }
+
+    const name = window.prompt(t("newFolder.namePrompt"));
+    if (name === null) return;
+
+    const trimmedName = name.trim();
+    if (!trimmedName) {
+      setStorageError(t("newFolder.nameRequired"));
+      return;
+    }
+
+    try {
+      const created = await invoke<RenamePathResult>(
+        workspaceSource === "dropbox"
+          ? "create_dropbox_markdown_directory"
+          : "create_markdown_directory",
+        {
+          parentPath: workspaceRootPath,
+          name: trimmedName,
+        },
+      );
+      const source = workspaceSource;
+      const createdEntry: WorkspaceEntry = {
+        kind: "directory",
+        id: source === "dropbox" ? `dropbox-directory:${created.path}` : `directory:${created.path}`,
+        title: created.title,
+        path: created.path,
+        modifiedAt: Date.now(),
+        depth: 1,
+        source,
+      };
+
+      setWorkspaceEntries((currentEntries) =>
+        sortWorkspaceEntriesForDirectory([
+          ...currentEntries.filter(
+            (entry) =>
+              entry.kind === "parent-directory" ||
+              entry.source !== source ||
+              entry.path !== created.path,
+          ),
+          createdEntry,
+        ]),
+      );
+      setStorageError("");
+    } catch (error) {
+      setStorageError(translatedError(error, "newFolder.createFailed"));
     }
   }
 
@@ -12527,6 +12705,7 @@ function App() {
 
     if (!configuredDropboxAppKey) {
       dropboxOpenAfterAuthRef.current = false;
+      pendingDropboxLocationAfterAuthRef.current = null;
       setStorageError(t("dropbox.error.notConfigured"));
       return;
     }
@@ -12542,6 +12721,7 @@ function App() {
       await openExternalUrl(oauthStart.authUrl);
     } catch (error) {
       setDropboxConnecting(false);
+      pendingDropboxLocationAfterAuthRef.current = null;
       setStorageError(translatedError(error, "dropbox.error.unexpected"));
     }
   }
@@ -12550,6 +12730,7 @@ function App() {
     if (payload.status !== "success" || !payload.code || !payload.state) {
       setDropboxConnecting(false);
       dropboxOpenAfterAuthRef.current = false;
+      pendingDropboxLocationAfterAuthRef.current = null;
       console.error(payload.error ?? "Dropbox OAuth callback failed");
       setStorageError(t("dropbox.error.oauthCallback"));
       return;
@@ -12564,9 +12745,13 @@ function App() {
       });
       setDropboxConnected(status.connected);
       setDropboxConnecting(false);
+      const pendingLocation = pendingDropboxLocationAfterAuthRef.current;
+      pendingDropboxLocationAfterAuthRef.current = null;
       const shouldOpenDirectoryPicker = dropboxOpenAfterAuthRef.current;
       dropboxOpenAfterAuthRef.current = false;
-      if (shouldOpenDirectoryPicker) {
+      if (pendingLocation) {
+        await openDropboxLocation(pendingLocation, { allowPendingConnection: status.connected });
+      } else if (shouldOpenDirectoryPicker) {
         await openDropboxCloudSource({ allowPendingConnection: status.connected });
       } else {
         setStorageError("");
@@ -12575,6 +12760,7 @@ function App() {
       setDropboxConnecting(false);
       setDropboxConnected(false);
       dropboxOpenAfterAuthRef.current = false;
+      pendingDropboxLocationAfterAuthRef.current = null;
       setStorageError(translatedError(error, "dropbox.error.unexpected"));
     }
   }
@@ -12608,6 +12794,7 @@ function App() {
       setDropboxConnected(status.connected);
       setDropboxDirectoryPicker(null);
       dropboxOpenAfterAuthRef.current = false;
+      pendingDropboxLocationAfterAuthRef.current = null;
       resetDropboxWorkspaceAfterAuthorizationRemoval();
       forgetLastOpenedDropboxWorkspace();
       setStorageError(t("dropbox.status.authorizationRemoved"));
@@ -14885,9 +15072,32 @@ function App() {
     setDirectoryPaneOpen(writtenValue);
   }
 
+  function toggleMobileFilesPane() {
+    if (isMobileViewport) {
+      if (directoryPaneOpen && mobileDocumentBrowseMode !== "files") {
+        showMobileDocumentBrowseMode("files");
+        return;
+      }
+      if (!directoryPaneOpen) {
+        showMobileDocumentBrowseMode("files");
+      }
+    }
+    toggleDirectoryPane();
+  }
+
+  async function selectMobileDropboxSource() {
+    setMobileDataSourceOpen(false);
+    if (dropboxConnected) {
+      await openDropboxCloudSource();
+      return;
+    }
+    await connectDropbox({ openDirectoryPickerAfterAuth: true });
+  }
+
   function runMobileSourceAction(action: () => Promise<void> | void) {
     if (isMobileViewport) {
       setFileContextMenu(null);
+      setMobileDataSourceOpen(false);
       setDirectoryPaneOpen(false);
       if (noteLibraryOpen) {
         closeNoteLibrary({ restoreDirectoryPane: false });
@@ -15078,15 +15288,6 @@ function App() {
     onSelect: () => void;
   }> = [
     {
-      id: "dropbox",
-      label:
-        workspaceSource === "dropbox"
-          ? t("mobileSource.changeDropboxFolder")
-          : t("mobileSource.openDropbox"),
-      icon: <MobileCloudIcon />,
-      onSelect: () => runMobileSourceAction(openDropboxCloudSource),
-    },
-    {
       id: "open-file",
       label: t("mobileSource.openFile"),
       icon: <MobileOpenFileIcon />,
@@ -15104,13 +15305,32 @@ function App() {
       icon: <MobileNewFileIcon />,
       onSelect: () => runMobileSourceAction(newMarkdownFile),
     },
+    {
+      id: "new-folder",
+      label: t("mobileSource.newFolder"),
+      icon: <MobileNewFolderIcon />,
+      onSelect: () => void newMarkdownFolder(),
+    },
+  ];
+  const mobileEmptyActions = [
+    {
+      id: "dropbox",
+      label:
+        workspaceSource === "dropbox"
+          ? t("mobileSource.changeDropboxFolder")
+          : t("mobileSource.openDropbox"),
+      icon: <MobileCloudIcon />,
+      onSelect: () => runMobileSourceAction(openDropboxCloudSource),
+    },
+    ...mobileSourceActions.filter((action) => action.id !== "new-folder"),
   ];
   const mobileFavoriteDirectoryShortcuts = savedLocations.favoriteDirectories.filter(
     (location) => location.kind === "directory",
   );
   const mobileRecentLocationShortcuts = savedLocations.recent;
   const mobileDropboxWorkspaceActive = workspaceSource === "dropbox";
-  const mobileSavedLocationsVisible = nativeStorageAvailable && !mobileDropboxWorkspaceActive;
+  const mobileSavedLocationsVisible = nativeStorageAvailable;
+  const mobileDataSourceLabel = dropboxConnected ? "Dropbox" : t("mobileDataSource.label");
   const mobileStartupActive =
     isMobileViewport && mobileStartupPhase !== "hidden" && !settingsViewOpen;
 
@@ -15429,7 +15649,7 @@ function App() {
                     <button
                       aria-label={t("mobileSource.openLocation", { title: location.title })}
                       className="mobile-location-shortcut"
-                      key={`${location.kind}:${location.path}`}
+                      key={`${location.source}:${location.kind}:${location.path}`}
                       onClick={() => runMobileSourceAction(() => openNativeMenuLocation(location))}
                       title={location.path}
                       type="button"
@@ -15437,7 +15657,11 @@ function App() {
                       <DocumentGlyphIcon kind="folder" selected={false} />
                       <span className="mobile-location-shortcut__text">
                         <span className="mobile-location-shortcut__title">{location.title}</span>
-                        <span className="mobile-location-shortcut__path">{location.path}</span>
+                        <span className="mobile-location-shortcut__path">
+                          {location.source === "dropbox"
+                            ? `Dropbox · ${location.path}`
+                            : location.path}
+                        </span>
                       </span>
                     </button>
                   ))}
@@ -15457,7 +15681,7 @@ function App() {
                     <button
                       aria-label={t("mobileSource.openLocation", { title: location.title })}
                       className="mobile-location-shortcut"
-                      key={`${location.kind}:${location.path}`}
+                      key={`${location.source}:${location.kind}:${location.path}`}
                       onClick={() => runMobileSourceAction(() => openNativeMenuLocation(location))}
                       title={location.path}
                       type="button"
@@ -15468,7 +15692,11 @@ function App() {
                       />
                       <span className="mobile-location-shortcut__text">
                         <span className="mobile-location-shortcut__title">{location.title}</span>
-                        <span className="mobile-location-shortcut__path">{location.path}</span>
+                        <span className="mobile-location-shortcut__path">
+                          {location.source === "dropbox"
+                            ? `Dropbox · ${location.path}`
+                            : location.path}
+                        </span>
                       </span>
                     </button>
                   ))}
@@ -16437,7 +16665,7 @@ function App() {
                       : t("emptyDirectory.description")}
                   </p>
                   <div className="mobile-empty-actions" aria-label={t("mobileSource.label")}>
-                    {mobileSourceActions.map((action) => (
+                    {mobileEmptyActions.map((action) => (
                       <button key={action.id} onClick={action.onSelect} type="button">
                         {action.icon}
                         <span>{action.label}</span>
@@ -16643,6 +16871,60 @@ function App() {
         </>
       ) : null}
 
+      {isMobileViewport && mobileDataSourceOpen && !settingsViewOpen ? (
+        <div
+          className="mobile-data-source-backdrop"
+          onPointerDown={() => setMobileDataSourceOpen(false)}
+        >
+          <section
+            aria-labelledby="mobile-data-source-title"
+            aria-modal="true"
+            className="mobile-data-source-sheet"
+            onPointerDown={(event) => event.stopPropagation()}
+            role="dialog"
+          >
+            <div className="mobile-data-source-sheet__header">
+              <div>
+                <h2 id="mobile-data-source-title">{t("mobileDataSource.title")}</h2>
+                <p>{t("mobileDataSource.description")}</p>
+              </div>
+              <button
+                aria-label={t("dialog.close")}
+                onClick={() => setMobileDataSourceOpen(false)}
+                type="button"
+              >
+                ×
+              </button>
+            </div>
+            <button
+              className="mobile-data-source-option"
+              disabled={dropboxConnecting}
+              onClick={() => void selectMobileDropboxSource()}
+              type="button"
+            >
+              <span className="mobile-data-source-option__icon">
+                <MobileCloudIcon />
+              </span>
+              <span className="mobile-data-source-option__text">
+                <strong>Dropbox</strong>
+                <span>
+                  {dropboxConnecting
+                    ? t("dropbox.connecting")
+                    : dropboxConnected
+                      ? t("dropbox.connected")
+                      : t("dropbox.disconnected")}
+                </span>
+              </span>
+              <span className="mobile-data-source-option__action">
+                {dropboxConnected
+                  ? t("mobileDataSource.choose")
+                  : t("mobileDataSource.connect")}
+              </span>
+            </button>
+          </section>
+        </div>
+      ) : null}
+
       {!settingsViewOpen ? (
         <nav className="mobile-command-bar" aria-label={t("app.editorTools")}>
           <button
@@ -16651,7 +16933,7 @@ function App() {
             }
             aria-pressed={directoryPaneOpen}
             className={directoryPaneOpen ? "is-active" : ""}
-            onClick={toggleDirectoryPane}
+            onClick={toggleMobileFilesPane}
             type="button"
           >
             <MobileFilesIcon />
@@ -16667,7 +16949,26 @@ function App() {
             type="button"
           >
             <MobileNoteIcon />
-            <span>{t("toolbar.noteMode")}</span>
+            <span>{t("mobileToolbar.note")}</span>
+          </button>
+          <button
+            aria-expanded={mobileDataSourceOpen}
+            aria-label={t("mobileDataSource.open", { source: mobileDataSourceLabel })}
+            className={`mobile-command-bar__source ${
+              mobileDataSourceOpen || workspaceSource === "dropbox" ? "is-active" : ""
+            }`}
+            onClick={() => setMobileDataSourceOpen((currentOpen) => !currentOpen)}
+            type="button"
+          >
+            <span className="mobile-command-bar__source-content">
+              <MobileCloudIcon className="mobile-command-bar__icon" />
+              <span className="mobile-command-bar__source-title">
+                {t("mobileDataSource.title")}
+              </span>
+              <span className="mobile-command-bar__source-status">
+                {mobileDataSourceLabel}
+              </span>
+            </span>
           </button>
           <button
             aria-checked={glossaryModeActive}
@@ -16683,7 +16984,7 @@ function App() {
             type="button"
           >
             <MobileTermIcon />
-            <span>{t("toolbar.glossaryMode")}</span>
+            <span>{t("mobileToolbar.terms")}</span>
           </button>
           <button
             aria-label={
