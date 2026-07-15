@@ -907,7 +907,24 @@ button:disabled {
   display: block;
   width: 112px;
   height: 112px;
+  animation: mobile-startup-logo-in 420ms ease-out both;
   object-fit: contain;
+}
+
+@keyframes mobile-startup-logo-in {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mobile-startup__logo {
+    animation: none;
+  }
 }
 
 .mobile-startup__cloud-button {
