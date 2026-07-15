@@ -49,6 +49,7 @@ const DROPBOX_DOWNLOAD_URL: &str = "https://content.dropboxapi.com/2/files/downl
 const DROPBOX_UPLOAD_URL: &str = "https://content.dropboxapi.com/2/files/upload";
 const DROPBOX_COPY_URL: &str = "https://api.dropboxapi.com/2/files/copy_v2";
 const DROPBOX_DELETE_URL: &str = "https://api.dropboxapi.com/2/files/delete_v2";
+const DROPBOX_MOVE_URL: &str = "https://api.dropboxapi.com/2/files/move_v2";
 const DROPBOX_REQUIRED_SCOPES: &str =
     "files.metadata.read files.content.read files.metadata.write files.content.write";
 const DROPBOX_TOKEN_REFRESH_ATTEMPTS: usize = 3;
@@ -197,6 +198,7 @@ struct OpenMarkdownFile {
     path: String,
     notes_path: String,
     title: String,
+    modified_at: Option<i64>,
     body: String,
     notes: Vec<SelectionNote>,
     glossary_terms: Vec<GlossaryTerm>,
@@ -209,6 +211,7 @@ struct OpenDirectoryEntry {
     kind: String,
     path: String,
     title: String,
+    modified_at: Option<i64>,
     file: Option<OpenMarkdownFile>,
 }
 
@@ -242,6 +245,7 @@ struct OpenMarkdownFileContext {
 struct SaveMarkdownFile {
     path: String,
     notes_path: String,
+    modified_at: Option<i64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -249,6 +253,14 @@ struct SaveMarkdownFile {
 struct DeleteMarkdownFile {
     path: String,
     notes_path: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RenamedPath {
+    path: String,
+    title: String,
+    notes_path: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -413,6 +425,24 @@ fn validate_markdown_file_name(file_name: &str) -> Result<PathBuf, String> {
     }
 
     Ok(file_name_path)
+}
+
+fn validate_path_name(
+    name: &str,
+    empty_error: &str,
+    folders_error: &str,
+) -> Result<PathBuf, String> {
+    let trimmed_name = name.trim();
+    if trimmed_name.is_empty() {
+        return Err(empty_error.to_string());
+    }
+
+    let name_path = PathBuf::from(trimmed_name);
+    if name_path.components().count() != 1 {
+        return Err(folders_error.to_string());
+    }
+
+    Ok(name_path)
 }
 
 fn legacy_sidecar_path(markdown_path: &Path) -> Result<PathBuf, String> {
@@ -1936,14 +1966,49 @@ fn is_hidden_path(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-fn entry_sort_key(entry: &OpenDirectoryEntry) -> (u8, String, String) {
-    let kind_order = if entry.kind == "directory" { 0 } else { 1 };
+fn modified_time_millis(path: &Path) -> Option<i64> {
+    path.metadata()
+        .ok()
+        .and_then(|metadata| metadata.modified().ok())
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_millis() as i64)
+}
 
-    (
-        kind_order,
-        entry.title.to_lowercase(),
-        entry.path.to_lowercase(),
-    )
+fn entry_kind_order(kind: &str) -> u8 {
+    if kind == "directory" {
+        0
+    } else {
+        1
+    }
+}
+
+fn entry_sort_key(entry: &OpenDirectoryEntry) -> (String, String) {
+    (entry.title.to_lowercase(), entry.path.to_lowercase())
+}
+
+fn compare_directory_entries(
+    left: &OpenDirectoryEntry,
+    right: &OpenDirectoryEntry,
+) -> std::cmp::Ordering {
+    entry_kind_order(&left.kind)
+        .cmp(&entry_kind_order(&right.kind))
+        .then_with(|| {
+            right
+                .modified_at
+                .unwrap_or(i64::MIN)
+                .cmp(&left.modified_at.unwrap_or(i64::MIN))
+        })
+        .then_with(|| entry_sort_key(left).cmp(&entry_sort_key(right)))
+}
+
+fn compare_dropbox_entries(
+    left: &DropboxDirectoryEntry,
+    right: &DropboxDirectoryEntry,
+) -> std::cmp::Ordering {
+    entry_kind_order(&left.kind)
+        .cmp(&entry_kind_order(&right.kind))
+        .then_with(|| right.server_modified.cmp(&left.server_modified))
+        .then_with(|| dropbox_entry_sort_key(left).cmp(&dropbox_entry_sort_key(right)))
 }
 
 fn file_search_matches(path: &Path, root: &Path, query: &str) -> bool {
@@ -2053,6 +2118,7 @@ fn read_markdown_directory(
                 kind: "directory".to_string(),
                 title: directory_title(&path),
                 path: path.to_string_lossy().to_string(),
+                modified_at: modified_time_millis(&path),
                 file: None,
             });
         } else if is_markdown_path(&path) {
@@ -2060,12 +2126,13 @@ fn read_markdown_directory(
                 kind: "file".to_string(),
                 title: document_title(&path),
                 path: path.to_string_lossy().to_string(),
+                modified_at: modified_time_millis(&path),
                 file: Some(read_markdown_file(app, path)?),
             });
         }
     }
 
-    entries.sort_by_key(entry_sort_key);
+    entries.sort_by(compare_directory_entries);
 
     Ok(OpenMarkdownDirectory {
         title: directory_title(&directory),
@@ -2155,6 +2222,66 @@ fn duplicate_notes_file_for_document(
     Ok(notes_file)
 }
 
+fn move_notes_file_for_document(mut notes_file: NotesFile, target_document_id: &str) -> NotesFile {
+    let target_document_id = target_document_id.to_string();
+    notes_file.markdown_path = target_document_id.clone();
+
+    for note in notes_file.notes.iter_mut() {
+        note.document_id = target_document_id.clone();
+    }
+    for binding in notes_file.glossary_bindings.iter_mut() {
+        binding.document_id = target_document_id.clone();
+    }
+
+    notes_file
+}
+
+fn move_notes_for_renamed_markdown_path(
+    app: &AppHandle,
+    source_path: &Path,
+    target_path: &Path,
+) -> Result<(), String> {
+    if let Some(notes_file) = read_notes_file(app, source_path)? {
+        let target_path_string = target_path.to_string_lossy().to_string();
+        let notes_file = move_notes_file_for_document(notes_file, &target_path_string);
+        write_notes_file(app, target_path, notes_file)?;
+        remove_document_notes(app, source_path)?;
+    }
+
+    Ok(())
+}
+
+fn move_notes_for_renamed_directory(
+    app: &AppHandle,
+    source_directory: &Path,
+    target_directory: &Path,
+) -> Result<(), String> {
+    if !target_directory.is_dir() {
+        return Ok(());
+    }
+
+    for entry in fs::read_dir(target_directory)
+        .map_err(|error| format!("failed to read renamed directory: {error}"))?
+    {
+        let entry =
+            entry.map_err(|error| format!("failed to read renamed directory item: {error}"))?;
+        let target_path = entry.path();
+        let relative_path = match target_path.strip_prefix(target_directory) {
+            Ok(relative_path) => relative_path,
+            Err(_) => continue,
+        };
+        let source_path = source_directory.join(relative_path);
+
+        if target_path.is_dir() {
+            move_notes_for_renamed_directory(app, &source_path, &target_path)?;
+        } else if is_markdown_path(&target_path) {
+            move_notes_for_renamed_markdown_path(app, &source_path, &target_path)?;
+        }
+    }
+
+    Ok(())
+}
+
 fn read_notes_file(app: &AppHandle, markdown_path: &Path) -> Result<Option<NotesFile>, String> {
     let notes_path = notes_store_path(app, markdown_path)?;
     if notes_path.exists() {
@@ -2217,6 +2344,7 @@ fn read_markdown_file(app: &AppHandle, markdown_path: PathBuf) -> Result<OpenMar
         path: markdown_path.to_string_lossy().to_string(),
         notes_path,
         title: document_title(&markdown_path),
+        modified_at: modified_time_millis(&markdown_path),
         body,
         notes,
         glossary_terms,
@@ -2344,6 +2472,7 @@ fn save_markdown_file(
     Ok(SaveMarkdownFile {
         path: markdown_path.to_string_lossy().to_string(),
         notes_path: notes_path.to_string_lossy().to_string(),
+        modified_at: modified_time_millis(&markdown_path),
     })
 }
 
@@ -2401,6 +2530,80 @@ fn delete_markdown_file(app: AppHandle, path: String) -> Result<DeleteMarkdownFi
     Ok(DeleteMarkdownFile {
         path: markdown_path.to_string_lossy().to_string(),
         notes_path: notes_path.to_string_lossy().to_string(),
+    })
+}
+
+#[tauri::command]
+fn rename_markdown_file(
+    app: AppHandle,
+    path: String,
+    name: String,
+) -> Result<OpenMarkdownFile, String> {
+    let source_path = PathBuf::from(path);
+    if !source_path.is_file() {
+        return Err("selected path is not a file".to_string());
+    }
+    if !is_markdown_path(&source_path) {
+        return Err("selected file is not a Markdown file".to_string());
+    }
+
+    let target_file_name = normalized_markdown_file_name(&name)?;
+    let target_path = source_path.with_file_name(target_file_name);
+    if source_path == target_path {
+        return read_markdown_file(&app, target_path);
+    }
+    if target_path.exists() {
+        return Err("rename target already exists".to_string());
+    }
+
+    let notes_file = read_notes_file(&app, &source_path)?;
+
+    fs::rename(&source_path, &target_path)
+        .map_err(|error| format!("failed to rename Markdown file: {error}"))?;
+
+    if notes_file.is_some() {
+        move_notes_for_renamed_markdown_path(&app, &source_path, &target_path)?;
+    }
+
+    read_markdown_file(&app, target_path)
+}
+
+#[tauri::command]
+fn rename_markdown_directory(
+    app: AppHandle,
+    path: String,
+    name: String,
+) -> Result<RenamedPath, String> {
+    let source_path = PathBuf::from(path);
+    if !source_path.is_dir() {
+        return Err("selected path is not a directory".to_string());
+    }
+
+    let target_name = validate_path_name(
+        &name,
+        "rename name is empty",
+        "rename name must not include folders",
+    )?;
+    let target_path = source_path.with_file_name(target_name);
+    if source_path == target_path {
+        return Ok(RenamedPath {
+            title: directory_title(&target_path),
+            path: target_path.to_string_lossy().to_string(),
+            notes_path: None,
+        });
+    }
+    if target_path.exists() {
+        return Err("rename target already exists".to_string());
+    }
+
+    fs::rename(&source_path, &target_path)
+        .map_err(|error| format!("failed to rename directory: {error}"))?;
+    move_notes_for_renamed_directory(&app, &source_path, &target_path)?;
+
+    Ok(RenamedPath {
+        title: directory_title(&target_path),
+        path: target_path.to_string_lossy().to_string(),
+        notes_path: None,
     })
 }
 
@@ -2784,6 +2987,10 @@ async fn list_dropbox_markdown_directory(
                     path_display,
                     path_lower,
                 } => {
+                    if name.starts_with('.') {
+                        continue;
+                    }
+
                     entries.push(DropboxDirectoryEntry {
                         kind: "directory".to_string(),
                         path: dropbox_metadata_path(path_display, path_lower, &name),
@@ -2800,6 +3007,10 @@ async fn list_dropbox_markdown_directory(
                     size,
                     is_downloadable,
                 } => {
+                    if name.starts_with('.') {
+                        continue;
+                    }
+
                     let path = dropbox_metadata_path(path_display, path_lower, &name);
                     if is_downloadable == Some(false) || !is_markdown_dropbox_path(&path) {
                         continue;
@@ -2824,7 +3035,7 @@ async fn list_dropbox_markdown_directory(
         page = read_dropbox_list_continue_page(&client, &access_token, &page.cursor).await?;
     }
 
-    entries.sort_by_key(dropbox_entry_sort_key);
+    entries.sort_by(compare_dropbox_entries);
 
     Ok(DropboxMarkdownDirectory {
         title: dropbox_path_title(&normalized_path),
@@ -3082,6 +3293,111 @@ async fn delete_dropbox_markdown_file(
     remove_document_notes(&app, &notes_markdown_path)?;
 
     Ok(deleted_file)
+}
+
+async fn move_dropbox_path(
+    app: &tauri::AppHandle,
+    from_path: String,
+    to_path: String,
+) -> Result<(), String> {
+    let access_token = dropbox_access_token(app).await?;
+    let response = reqwest::Client::new()
+        .post(DROPBOX_MOVE_URL)
+        .bearer_auth(access_token)
+        .json(&serde_json::json!({
+            "from_path": from_path,
+            "to_path": to_path,
+            "autorename": false,
+            "allow_shared_folder": false,
+            "allow_ownership_transfer": false
+        }))
+        .send()
+        .await
+        .map_err(|error| format!("failed to rename Dropbox item: {error}"))?;
+
+    if response.status() == StatusCode::UNAUTHORIZED {
+        return Err("Dropbox authorization failed; reconnect Dropbox.".to_string());
+    }
+    if !response.status().is_success() {
+        return Err(dropbox_response_error(response, "failed to rename Dropbox item").await);
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+async fn rename_dropbox_markdown_file(
+    app: tauri::AppHandle,
+    path: String,
+    name: String,
+) -> Result<DropboxMarkdownFile, String> {
+    let source_path = normalize_dropbox_path(&path);
+    if !is_markdown_dropbox_path(&source_path) {
+        return Err("selected Dropbox file is not a Markdown file".to_string());
+    }
+
+    let target_file_name = normalized_markdown_file_name(&name)?;
+    let parent_path = dropbox_parent_path(&source_path).unwrap_or_default();
+    let target_path = dropbox_child_path(&parent_path, &target_file_name);
+    if source_path == target_path {
+        return open_dropbox_markdown_file(app, target_path).await;
+    }
+
+    let source_notes_markdown_path = dropbox_notes_markdown_path(&source_path);
+    let source_notes_file = match download_dropbox_notes_file(&app, &source_path).await? {
+        Some(parsed) => Some(parsed),
+        None => read_notes_file(&app, &source_notes_markdown_path)?,
+    };
+
+    move_dropbox_path(&app, source_path.clone(), target_path.clone()).await?;
+
+    if let Some(notes_file) = source_notes_file {
+        let target_notes_markdown_path = dropbox_notes_markdown_path(&target_path);
+        let target_document_id = format!("dropbox:{target_path}");
+        let notes_file = move_notes_file_for_document(notes_file, &target_document_id);
+
+        write_notes_file(&app, &target_notes_markdown_path, notes_file.clone())?;
+        upload_dropbox_notes_file(&app, &target_path, notes_file).await?;
+        delete_dropbox_notes_file(&app, &source_path).await?;
+        remove_document_notes(&app, &source_notes_markdown_path)?;
+    }
+
+    open_dropbox_markdown_file(app, target_path).await
+}
+
+#[tauri::command]
+async fn rename_dropbox_markdown_directory(
+    app: tauri::AppHandle,
+    path: String,
+    name: String,
+) -> Result<RenamedPath, String> {
+    let source_path = normalize_dropbox_path(&path);
+    let target_name = validate_path_name(
+        &name,
+        "rename name is empty",
+        "rename name must not include folders",
+    )?;
+    let target_name = target_name
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "rename name is empty".to_string())?;
+    let parent_path = dropbox_parent_path(&source_path).unwrap_or_default();
+    let target_path = dropbox_child_path(&parent_path, target_name);
+    if source_path == target_path {
+        return Ok(RenamedPath {
+            title: dropbox_path_title(&target_path),
+            path: target_path,
+            notes_path: None,
+        });
+    }
+
+    move_dropbox_path(&app, source_path, target_path.clone()).await?;
+
+    Ok(RenamedPath {
+        title: dropbox_path_title(&target_path),
+        path: target_path,
+        notes_path: None,
+    })
 }
 
 #[cfg(desktop)]
@@ -3514,6 +3830,8 @@ pub fn run() {
             search_markdown_files,
             duplicate_markdown_file,
             delete_markdown_file,
+            rename_markdown_file,
+            rename_markdown_directory,
             write_pdf_file,
             write_pdf_file_to_directory,
             save_markdown_file,
@@ -3532,7 +3850,9 @@ pub fn run() {
             save_dropbox_markdown_file,
             create_dropbox_markdown_file,
             duplicate_dropbox_markdown_file,
-            delete_dropbox_markdown_file
+            delete_dropbox_markdown_file,
+            rename_dropbox_markdown_file,
+            rename_dropbox_markdown_directory
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

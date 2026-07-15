@@ -95,6 +95,7 @@ type MarkdownDocument = {
   filePath: string | null;
   notesPath: string | null;
   updatedAt: string;
+  modifiedAt?: number | null;
   body: string;
   dropboxRev?: string | null;
 };
@@ -138,6 +139,7 @@ type OpenMarkdownFileResult = {
   path: string;
   notesPath: string;
   title: string;
+  modifiedAt?: number | null;
   body: string;
   notes: SelectionNote[];
   glossaryTerms?: GlossaryTerm[];
@@ -158,12 +160,14 @@ type OpenDirectoryEntryResult =
       kind: "directory";
       path: string;
       title: string;
+      modifiedAt?: number | null;
       file: null;
     }
   | {
       kind: "file";
       path: string;
       title: string;
+      modifiedAt?: number | null;
       file: OpenMarkdownFileResult;
     };
 
@@ -189,11 +193,18 @@ type OpenMarkdownFileContextResult = {
 type SaveMarkdownFileResult = {
   path: string;
   notesPath: string;
+  modifiedAt?: number | null;
 };
 
 type DeleteMarkdownFileResult = {
   path: string;
   notesPath: string;
+};
+
+type RenamePathResult = {
+  path: string;
+  title: string;
+  notesPath?: string | null;
 };
 
 type MarkdownImageFileResult = {
@@ -212,6 +223,7 @@ type WorkspaceEntry =
       id: string;
       title: string;
       path: string;
+      modifiedAt?: number | null;
       depth?: number;
       source?: "local" | "dropbox";
     }
@@ -220,6 +232,7 @@ type WorkspaceEntry =
       id: string;
       title: string;
       path: string;
+      modifiedAt?: number | null;
       depth?: number;
       source?: "local" | "dropbox";
     }
@@ -229,6 +242,7 @@ type WorkspaceEntry =
       title: string;
       path: string;
       documentId: string;
+      modifiedAt?: number | null;
       depth?: number;
       source?: "local" | "dropbox";
     };
@@ -370,6 +384,7 @@ type ActiveNoteMode = "view" | "edit";
 type DocumentTabBehavior = "replace" | "add" | "none";
 
 type DocumentModeState = {
+  editorMode: EditorMode;
   noteModeEnabled: boolean;
   glossaryModeEnabled: boolean;
 };
@@ -415,13 +430,23 @@ type SelectionWarningPosition = {
 };
 
 type FileActionTarget = {
+  kind: "file";
   documentId: string;
   path: string;
   title: string;
   source?: WorkspaceSource;
 };
 
-type FileContextMenuState = FileActionTarget & {
+type DirectoryActionTarget = {
+  kind: "directory";
+  path: string;
+  title: string;
+  source?: WorkspaceSource;
+};
+
+type WorkspaceActionTarget = FileActionTarget | DirectoryActionTarget;
+
+type FileContextMenuState = WorkspaceActionTarget & {
   exportDocumentIds: string[];
   left: number;
   top: number;
@@ -442,6 +467,11 @@ type FileContextMenuAction = {
 
 type DuplicateFileDialogState = FileActionTarget & {
   fileName: string;
+  isSubmitting: boolean;
+};
+
+type RenameDialogState = WorkspaceActionTarget & {
+  name: string;
   isSubmitting: boolean;
 };
 
@@ -1196,6 +1226,7 @@ function workspaceEntryFromDocument(
     title: document.title,
     path: document.path,
     documentId: document.id,
+    modifiedAt: document.modifiedAt ?? null,
     depth,
     source: documentIsFromDropbox(document) ? "dropbox" : "local",
   };
@@ -1207,9 +1238,16 @@ function workspaceEntrySortRank(entry: WorkspaceEntry) {
   return 2;
 }
 
+function workspaceEntryModifiedAt(entry: WorkspaceEntry) {
+  return entry.modifiedAt ?? Number.NEGATIVE_INFINITY;
+}
+
 function compareWorkspaceEntries(left: WorkspaceEntry, right: WorkspaceEntry) {
   const rankDifference = workspaceEntrySortRank(left) - workspaceEntrySortRank(right);
   if (rankDifference !== 0) return rankDifference;
+
+  const modifiedDifference = workspaceEntryModifiedAt(right) - workspaceEntryModifiedAt(left);
+  if (modifiedDifference !== 0) return modifiedDifference;
 
   const leftTitle = left.title.toLowerCase();
   const rightTitle = right.title.toLowerCase();
@@ -1225,7 +1263,41 @@ function compareWorkspaceEntries(left: WorkspaceEntry, right: WorkspaceEntry) {
 }
 
 function sortWorkspaceEntriesForDirectory(entries: WorkspaceEntry[]) {
-  return [...entries].sort(compareWorkspaceEntries);
+  type WorkspaceEntryNode = { entry: WorkspaceEntry; children: WorkspaceEntryNode[] };
+  const parentEntries = entries.filter((entry) => entry.kind === "parent-directory");
+  const rootNodes: WorkspaceEntryNode[] = [];
+  const stack: WorkspaceEntryNode[] = [];
+
+  entries
+    .filter((entry) => entry.kind !== "parent-directory")
+    .forEach((entry) => {
+      const node = { entry, children: [] };
+      const depth = entry.depth ?? 1;
+
+      while (stack.length > 0 && (stack[stack.length - 1].entry.depth ?? 1) >= depth) {
+        stack.pop();
+      }
+
+      const parent = stack[stack.length - 1];
+      if (parent) {
+        parent.children.push(node);
+      } else {
+        rootNodes.push(node);
+      }
+      stack.push(node);
+    });
+
+  const sortedEntries: WorkspaceEntry[] = [...parentEntries];
+  const appendNodes = (nodes: WorkspaceEntryNode[]) => {
+    nodes.sort((left, right) => compareWorkspaceEntries(left.entry, right.entry));
+    nodes.forEach((node) => {
+      sortedEntries.push(node.entry);
+      appendNodes(node.children);
+    });
+  };
+
+  appendNodes(rootNodes);
+  return sortedEntries;
 }
 
 function directoryTreeKey(entry: Pick<WorkspaceEntry, "path" | "source">) {
@@ -1247,6 +1319,7 @@ function workspaceEntriesFromOpenedDirectory(
         id: `directory:${entry.path}`,
         title: entry.title,
         path: entry.path,
+        modifiedAt: entry.modifiedAt ?? null,
         depth,
         source: "local",
       };
@@ -1267,6 +1340,7 @@ function workspaceEntriesFromOpenedDropboxDirectory(
         id: `dropbox-directory:${entry.path || "/"}`,
         title: entry.title,
         path: entry.path,
+        modifiedAt: entry.serverModified ? Date.parse(entry.serverModified) : null,
         depth,
         source: "dropbox",
       };
@@ -1278,6 +1352,7 @@ function workspaceEntriesFromOpenedDropboxDirectory(
       title: entry.title,
       path: entry.path,
       documentId: dropboxDocumentId(entry.path),
+      modifiedAt: entry.serverModified ? Date.parse(entry.serverModified) : null,
       depth,
       source: "dropbox",
     };
@@ -1357,6 +1432,7 @@ function documentFromLoadedFileResult(loaded: OpenMarkdownFileResult): MarkdownD
     filePath: loaded.path,
     notesPath: loaded.notesPath,
     updatedAt: "",
+    modifiedAt: loaded.modifiedAt ?? null,
     body: loaded.body,
   };
 }
@@ -1432,6 +1508,7 @@ function insertOrUpdateWorkspaceFileEntry(
             path: fileEntry.path,
             id: fileEntry.id,
             documentId: fileEntry.documentId,
+            modifiedAt: fileEntry.modifiedAt ?? null,
           }
         : entry,
     );
@@ -6864,6 +6941,7 @@ function App() {
     documentsSeed[0]?.id
       ? {
           [documentsSeed[0].id]: {
+            editorMode: "preview",
             noteModeEnabled: initialNoteModeEnabled,
             glossaryModeEnabled: false,
           },
@@ -6889,6 +6967,7 @@ function App() {
   const [fileContextMenu, setFileContextMenu] = useState<FileContextMenuState | null>(null);
   const [duplicateFileDialog, setDuplicateFileDialog] =
     useState<DuplicateFileDialogState | null>(null);
+  const [renameDialog, setRenameDialog] = useState<RenameDialogState | null>(null);
   const [dropboxConnected, setDropboxConnected] = useState(false);
   const [dropboxConnecting, setDropboxConnecting] = useState(false);
   const [dropboxDirectoryPicker, setDropboxDirectoryPicker] =
@@ -6903,6 +6982,7 @@ function App() {
   const floatingNoteCardRef = useRef<HTMLDivElement | null>(null);
   const settingsCloseButtonRef = useRef<HTMLButtonElement | null>(null);
   const duplicateFileInputRef = useRef<HTMLInputElement | null>(null);
+  const renameInputRef = useRef<HTMLInputElement | null>(null);
   const documentSearchInputRef = useRef<HTMLInputElement | null>(null);
   const documentSearchTransitionTimerRef = useRef(0);
   const noteEditorRootRef = useRef<HTMLDivElement | null>(null);
@@ -6962,6 +7042,7 @@ function App() {
   } | null>(null);
   const noteModeEnabledRef = useRef(noteModeEnabled);
   const glossaryModeEnabledRef = useRef(glossaryModeEnabled);
+  const editorModeRef = useRef(editorMode);
   const documentModeStatesRef = useRef(documentModeStates);
   const notePanelHasContentRef = useRef(false);
   const selectionWarningPreserveUntilRef = useRef(0);
@@ -6990,6 +7071,7 @@ function App() {
   openDocumentTabIdsRef.current = openDocumentTabIds;
   noteModeEnabledRef.current = noteModeEnabled;
   glossaryModeEnabledRef.current = glossaryModeEnabled;
+  editorModeRef.current = editorMode;
   documentModeStatesRef.current = documentModeStates;
   noteDraftRef.current = noteDraft;
   glossaryDraftRef.current = glossaryDraft;
@@ -8969,6 +9051,15 @@ function App() {
   }, [duplicateFileDialog?.documentId]);
 
   useEffect(() => {
+    if (!renameDialog) return;
+
+    window.setTimeout(() => {
+      renameInputRef.current?.focus();
+      renameInputRef.current?.select();
+    });
+  }, [renameDialog?.path]);
+
+  useEffect(() => {
     if (!settingsViewOpen) return;
 
     window.setTimeout(() => {
@@ -9524,6 +9615,14 @@ function App() {
         return;
       }
 
+      if (renameDialog) {
+        if (event.key === "Escape" && !renameDialog.isSubmitting) {
+          event.preventDefault();
+          setRenameDialog(null);
+        }
+        return;
+      }
+
       if (dropboxDirectoryPicker) {
         if (event.key === "Escape" && !dropboxDirectoryPicker.isOpening) {
           event.preventDefault();
@@ -9607,7 +9706,7 @@ function App() {
 
       event.preventDefault();
       closeNotePanel();
-      setEditorMode((currentMode) => (currentMode === "preview" ? "edit" : "preview"));
+      toggleEditorMode();
     }
 
     window.addEventListener("keydown", handleModeShortcut, true);
@@ -9820,6 +9919,7 @@ function App() {
 
   function normalizeDocumentModeState(modeState: DocumentModeState): DocumentModeState {
     return {
+      editorMode: modeState.editorMode,
       noteModeEnabled: modeState.noteModeEnabled,
       glossaryModeEnabled: modeState.noteModeEnabled
         ? modeState.glossaryModeEnabled
@@ -9829,6 +9929,7 @@ function App() {
 
   function defaultDocumentModeState(documentId: string): DocumentModeState {
     return {
+      editorMode: "preview",
       noteModeEnabled: Boolean(documentId) && noteModeEnabledByDefault,
       glossaryModeEnabled: false,
     };
@@ -9841,15 +9942,26 @@ function App() {
     );
   }
 
+  function completeDocumentModeState(
+    documentId: string,
+    modeState: Partial<DocumentModeState>,
+  ): DocumentModeState {
+    return normalizeDocumentModeState({
+      ...documentModeStateForDocument(documentId),
+      ...modeState,
+    });
+  }
+
   function setDocumentModeState(
     documentId: string,
-    modeState: DocumentModeState,
+    modeState: Partial<DocumentModeState>,
   ) {
     if (!documentId) return;
 
-    const normalizedModeState = normalizeDocumentModeState(modeState);
+    const normalizedModeState = completeDocumentModeState(documentId, modeState);
     const currentModeState = documentModeStatesRef.current[documentId];
     if (
+      currentModeState?.editorMode === normalizedModeState.editorMode &&
       currentModeState?.noteModeEnabled === normalizedModeState.noteModeEnabled &&
       currentModeState?.glossaryModeEnabled === normalizedModeState.glossaryModeEnabled
     ) {
@@ -9866,6 +9978,7 @@ function App() {
 
   function saveCurrentDocumentModeState(documentId = selectedDocumentIdRef.current) {
     setDocumentModeState(documentId, {
+      editorMode: editorModeRef.current,
       noteModeEnabled: noteModeEnabledRef.current,
       glossaryModeEnabled: glossaryModeEnabledRef.current,
     });
@@ -9874,15 +9987,28 @@ function App() {
   function applyDocumentModeState(modeState: DocumentModeState) {
     const normalizedModeState = normalizeDocumentModeState(modeState);
 
+    editorModeRef.current = normalizedModeState.editorMode;
     noteModeEnabledRef.current = normalizedModeState.noteModeEnabled;
     glossaryModeEnabledRef.current = normalizedModeState.glossaryModeEnabled;
+    setEditorMode(normalizedModeState.editorMode);
     setNoteModeEnabled(normalizedModeState.noteModeEnabled);
     setGlossaryModeEnabled(normalizedModeState.glossaryModeEnabled);
   }
 
-  function setActiveDocumentModeState(modeState: DocumentModeState) {
-    applyDocumentModeState(modeState);
-    setDocumentModeState(selectedDocumentIdRef.current, modeState);
+  function toggleEditorMode() {
+    const nextEditorMode = editorModeRef.current === "preview" ? "edit" : "preview";
+    setActiveDocumentModeState({
+      editorMode: nextEditorMode,
+      noteModeEnabled: noteModeEnabledRef.current,
+      glossaryModeEnabled: glossaryModeEnabledRef.current,
+    });
+  }
+
+  function setActiveDocumentModeState(modeState: Partial<DocumentModeState>) {
+    const selectedDocumentId = selectedDocumentIdRef.current;
+    const normalizedModeState = completeDocumentModeState(selectedDocumentId, modeState);
+    applyDocumentModeState(normalizedModeState);
+    setDocumentModeState(selectedDocumentId, normalizedModeState);
   }
 
   function restoreDocumentModeState(documentId: string) {
@@ -10224,6 +10350,7 @@ function App() {
       filePath: null,
       notesPath: loaded.notesPath,
       updatedAt: loaded.serverModified ? `Dropbox ${loaded.serverModified}` : "Dropbox",
+      modifiedAt: loaded.serverModified ? Date.parse(loaded.serverModified) : null,
       body: loaded.body,
       dropboxRev: loaded.rev ?? null,
     };
@@ -10346,7 +10473,9 @@ function App() {
     setWorkspaceEntries((currentEntries) => {
       const fileEntry = workspaceEntryFromDocument(loadedDocument);
 
-      return insertOrUpdateWorkspaceFileEntry(currentEntries, fileEntry, workspaceRootPath);
+      return sortWorkspaceEntriesForDirectory(
+        insertOrUpdateWorkspaceFileEntry(currentEntries, fileEntry, workspaceRootPath),
+      );
     });
     setNotes((currentNotes) => [
       ...loadedNotes,
@@ -11311,29 +11440,45 @@ function App() {
   }
 
   function openFileContextMenu(
-    entry: Extract<WorkspaceEntry, { kind: "file" }>,
+    entry: Extract<WorkspaceEntry, { kind: "file" | "directory" }>,
     event: MouseEvent<HTMLButtonElement>,
   ) {
     event.preventDefault();
     event.stopPropagation();
 
-    if (event.ctrlKey && event.button === 0) {
+    if (entry.kind === "file" && event.ctrlKey && event.button === 0) {
       ignoreNextWorkspaceClickRef.current = true;
       toggleWorkspaceExportSelection(entry.documentId);
       return;
     }
 
-    const exportDocumentIds = workspaceExportDocumentIdsForContext(entry);
-    setSelectedWorkspaceDocumentIds(new Set(exportDocumentIds));
-    setFileContextMenu({
-      documentId: entry.documentId,
-      exportDocumentIds,
-      path: entry.path,
-      title: entry.title,
-      source: entry.source,
-      left: event.clientX,
-      top: event.clientY,
-    });
+    const exportDocumentIds = entry.kind === "file" ? workspaceExportDocumentIdsForContext(entry) : [];
+    if (entry.kind === "file") {
+      setSelectedWorkspaceDocumentIds(new Set(exportDocumentIds));
+    } else {
+      setSelectedWorkspaceDocumentIds(new Set());
+    }
+    const position = { left: event.clientX, top: event.clientY };
+    setFileContextMenu(
+      entry.kind === "file"
+        ? {
+            kind: "file",
+            documentId: entry.documentId,
+            exportDocumentIds,
+            path: entry.path,
+            title: entry.title,
+            source: entry.source,
+            ...position,
+          }
+        : {
+            kind: "directory",
+            exportDocumentIds,
+            path: entry.path,
+            title: entry.title,
+            source: entry.source,
+            ...position,
+          },
+    );
   }
 
   async function openFileInNewTab(target: FileActionTarget) {
@@ -11777,7 +11922,7 @@ function App() {
           },
         );
         applyLoadedDropboxFile(loaded);
-        setEditorMode("edit");
+        setActiveDocumentModeState({ editorMode: "edit" });
         setStorageError("");
         return;
       }
@@ -11805,8 +11950,8 @@ function App() {
         path: saved.path,
       });
 
-      applyLoadedFiles([loaded]);
-      setEditorMode("edit");
+      applyLoadedFiles([loaded], { sortEntries: true });
+      setActiveDocumentModeState({ editorMode: "edit" });
     } catch (error) {
       setStorageError(translatedError(error, "error.createFileFailed"));
     }
@@ -11945,8 +12090,23 @@ function App() {
               path: saved.path,
               notesPath: saved.notesPath,
               updatedAt: `Saved ${nowLabel()}`,
+              modifiedAt: saved.modifiedAt ?? Date.now(),
             }
           : document,
+      ),
+    );
+    setWorkspaceEntries((currentEntries) =>
+      sortWorkspaceEntriesForDirectory(
+        currentEntries.map((entry) =>
+          entry.kind === "file" && entry.documentId === documentToSave.id
+            ? {
+                ...entry,
+                path: saved.path,
+                id: `file:${saved.path}`,
+                modifiedAt: saved.modifiedAt ?? Date.now(),
+              }
+            : entry,
+        ),
       ),
     );
     markDocumentSnapshotSaved(documentToSave.id, bodyToSave, savedSidecarFingerprint);
@@ -11984,21 +12144,25 @@ function App() {
               updatedAt: saved.serverModified
                 ? `Dropbox ${saved.serverModified}`
                 : `Saved ${nowLabel()}`,
+              modifiedAt: saved.serverModified ? Date.parse(saved.serverModified) : Date.now(),
               dropboxRev: saved.rev ?? null,
             }
           : document,
       ),
     );
     setWorkspaceEntries((currentEntries) =>
-      currentEntries.map((entry) =>
-        entry.kind === "file" && entry.documentId === documentToSave.id
-          ? {
-              ...entry,
-              title: saved.title,
-              path: saved.path,
-              id: `dropbox-file:${saved.path}`,
-            }
-          : entry,
+      sortWorkspaceEntriesForDirectory(
+        currentEntries.map((entry) =>
+          entry.kind === "file" && entry.documentId === documentToSave.id
+            ? {
+                ...entry,
+                title: saved.title,
+                path: saved.path,
+                id: `dropbox-file:${saved.path}`,
+                modifiedAt: saved.serverModified ? Date.parse(saved.serverModified) : Date.now(),
+              }
+            : entry,
+        ),
       ),
     );
     markDocumentSnapshotSaved(documentToSave.id, bodyToSave, savedSidecarFingerprint);
@@ -12231,6 +12395,9 @@ function App() {
     setFileContextMenu(null);
     if (!duplicateFileDialog?.isSubmitting) {
       setDuplicateFileDialog(null);
+    }
+    if (!renameDialog?.isSubmitting) {
+      setRenameDialog(null);
     }
     setSettingsInitialCategory(category);
     setStorageError("");
@@ -12486,6 +12653,7 @@ function App() {
 
     setStorageError("");
     setDuplicateFileDialog({
+      kind: "file",
       documentId: target.documentId,
       path,
       title,
@@ -12670,6 +12838,7 @@ function App() {
       const title = documentToDelete?.title ?? workspaceEntry?.title ?? fallback?.title ?? path;
 
       targets.push({
+        kind: "file",
         documentId,
         document: documentToDelete,
         isDropboxTarget,
@@ -12758,6 +12927,225 @@ function App() {
       removeDocumentsFromWorkspace(deletedDocumentIds);
       setStorageError(translatedError(error));
     }
+  }
+
+  function renamedPath(path: string, oldPath: string, newPath: string, source?: WorkspaceSource) {
+    if (source === "dropbox") {
+      if (path === oldPath) return newPath;
+      const prefix = oldPath.endsWith("/") ? oldPath : `${oldPath}/`;
+      return path.startsWith(prefix) ? `${newPath}${path.slice(oldPath.length)}` : path;
+    }
+
+    if (localPathsMatch(path, oldPath)) return newPath;
+    if (localPathIsInsideDirectory(path, oldPath)) {
+      return `${newPath}${normalizeLocalPathForCompare(path).slice(normalizeLocalPathForCompare(oldPath).length)}`;
+    }
+    return path;
+  }
+
+  function updateWorkspaceAfterRename(
+    target: WorkspaceActionTarget,
+    renamed: RenamePathResult | OpenMarkdownFileResult | OpenDropboxMarkdownFileResult,
+  ) {
+    const oldPath = target.path;
+    const newPath = renamed.path;
+    const source = target.source;
+    const renamedDocumentId = (documentId: string) => {
+      const documentPath =
+        source === "dropbox" && isDropboxDocumentId(documentId)
+          ? documentId.slice(dropboxDocumentIdPrefix.length)
+          : documentId;
+      const nextPath = renamedPath(documentPath, oldPath, newPath, source);
+      if (nextPath === documentPath) return documentId;
+
+      return source === "dropbox" ? dropboxDocumentId(nextPath) : nextPath;
+    };
+
+    setWorkspaceEntries((currentEntries) => {
+      const nextEntries = sortWorkspaceEntriesForDirectory(
+        currentEntries.map((entry) => {
+          const nextPath = renamedPath(entry.path, oldPath, newPath, source);
+          if (nextPath === entry.path) return entry;
+
+          if (entry.kind === "file") {
+            const nextDocumentId =
+              entry.source === "dropbox" ? dropboxDocumentId(nextPath) : nextPath;
+            return {
+              ...entry,
+              id: `${entry.source === "dropbox" ? "dropbox-file" : "file"}:${nextPath}`,
+              path: nextPath,
+              title: nextPath === newPath ? renamed.title : entry.title,
+              documentId: nextDocumentId,
+              modifiedAt: nextPath === newPath && "modifiedAt" in renamed ? renamed.modifiedAt ?? null : entry.modifiedAt,
+            };
+          }
+
+          return {
+            ...entry,
+            id: `${entry.source === "dropbox" ? "dropbox-directory" : "directory"}:${nextPath || "/"}`,
+            path: nextPath,
+            title: nextPath === newPath ? renamed.title : entry.title,
+          };
+        }),
+      );
+      workspaceEntriesRef.current = nextEntries;
+      return nextEntries;
+    });
+
+    setDocuments((currentDocuments) => {
+      const nextDocuments = currentDocuments.map((document) => {
+        const documentPath = source === "dropbox" ? document.path : document.filePath;
+        const nextPath = renamedPath(documentPath ?? "", oldPath, newPath, source);
+        if (!nextPath || nextPath === documentPath) return document;
+
+        const nextDocumentId = source === "dropbox" ? dropboxDocumentId(nextPath) : nextPath;
+        return {
+          ...document,
+          id: nextDocumentId,
+          path: nextPath,
+          filePath: source === "dropbox" ? null : nextPath,
+          title: nextPath === newPath ? renamed.title : document.title,
+          notesPath:
+            nextPath === newPath && "notesPath" in renamed
+              ? renamed.notesPath ?? document.notesPath
+              : document.notesPath,
+          modifiedAt: nextPath === newPath && "modifiedAt" in renamed ? renamed.modifiedAt ?? null : document.modifiedAt,
+          dropboxRev: nextPath === newPath && "rev" in renamed ? renamed.rev ?? null : document.dropboxRev,
+        };
+      });
+      documentsRef.current = nextDocuments;
+      return nextDocuments;
+    });
+
+    setNotes((currentNotes) =>
+      currentNotes.map((note) => ({ ...note, documentId: renamedDocumentId(note.documentId) })),
+    );
+    setGlossaryBindings((currentBindings) =>
+      currentBindings.map((binding) => ({
+        ...binding,
+        documentId: renamedDocumentId(binding.documentId),
+      })),
+    );
+    setOpenDocumentTabIds((currentIds) =>
+      currentIds.map((documentId) => renamedDocumentId(documentId)),
+    );
+    setSelectedDocumentId((currentDocumentId) =>
+      renamedDocumentId(currentDocumentId),
+    );
+    selectedDocumentIdRef.current = renamedDocumentId(selectedDocumentIdRef.current);
+    setDirtyDocumentStates((currentStates) => {
+      const nextStates: typeof currentStates = {};
+      for (const [documentId, state] of Object.entries(currentStates)) {
+        nextStates[renamedDocumentId(documentId)] = state;
+      }
+      dirtyDocumentStatesRef.current = nextStates;
+      return nextStates;
+    });
+    setDocumentModeStates((currentStates) => {
+      const nextStates: typeof currentStates = {};
+      for (const [documentId, state] of Object.entries(currentStates)) {
+        nextStates[renamedDocumentId(documentId)] = state;
+      }
+      documentModeStatesRef.current = nextStates;
+      return nextStates;
+    });
+    setSavedDocumentBodies((currentBodies) => {
+      const nextBodies: typeof currentBodies = {};
+      for (const [documentId, body] of Object.entries(currentBodies)) {
+        nextBodies[renamedDocumentId(documentId)] = body;
+      }
+      return nextBodies;
+    });
+
+    if (workspaceRootPath && localPathsMatch(workspaceRootPath, oldPath)) {
+      setWorkspaceRootPath(newPath);
+    }
+  }
+
+  function openRenameDialog(target: FileContextMenuState) {
+    setFileContextMenu(null);
+    if (!nativeStorageAvailable) {
+      setStorageError(t("error.nativeRuntimeRequired"));
+      return;
+    }
+    if (autosaveInFlightRef.current) {
+      setStorageError(t("error.waitForAutosaveBeforeRename"));
+      return;
+    }
+
+    setStorageError("");
+    setRenameDialog({
+      ...target,
+      name: target.kind === "file" ? stripMarkdownExtension(target.title) : target.title,
+      isSubmitting: false,
+    });
+  }
+
+  async function performRenameWorkspaceEntry(target: WorkspaceActionTarget, nextName: string) {
+    if (!nextName.trim()) {
+      setStorageError(t("error.renameNameRequired"));
+      return false;
+    }
+
+    setStorageError(t("status.renaming"));
+    try {
+      const command =
+        target.source === "dropbox"
+          ? target.kind === "directory"
+            ? "rename_dropbox_markdown_directory"
+            : "rename_dropbox_markdown_file"
+          : target.kind === "directory"
+            ? "rename_markdown_directory"
+            : "rename_markdown_file";
+      const renamed = await invoke<
+        RenamePathResult | OpenMarkdownFileResult | OpenDropboxMarkdownFileResult
+      >(command, {
+        path: target.path,
+        name: nextName,
+      });
+
+      updateWorkspaceAfterRename(target, renamed);
+      setStorageError("");
+      return true;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message === "rename target already exists") {
+        setStorageError(t("error.renameExists"));
+      } else if (message === "rename name must not include folders") {
+        setStorageError(t("error.renameNameNoFolders"));
+      } else if (message === "rename name is empty") {
+        setStorageError(t("error.renameNameRequired"));
+      } else {
+        setStorageError(translatedError(error));
+      }
+      return false;
+    }
+  }
+
+  async function submitRenameWorkspaceEntry(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!renameDialog || renameDialog.isSubmitting) return;
+
+    setRenameDialog((currentDialog) =>
+      currentDialog ? { ...currentDialog, isSubmitting: true } : currentDialog,
+    );
+
+    const renamed = await performRenameWorkspaceEntry(renameDialog, renameDialog.name);
+    if (renamed) {
+      setRenameDialog(null);
+      return;
+    }
+
+    setRenameDialog((currentDialog) =>
+      currentDialog ? { ...currentDialog, isSubmitting: false } : currentDialog,
+    );
+  }
+
+  function closeRenameDialog() {
+    if (renameDialog?.isSubmitting) return;
+
+    setRenameDialog(null);
+    setStorageError("");
   }
 
   function normalizeTagInput(value: string) {
@@ -14550,6 +14938,19 @@ function App() {
       : "";
   const fileContextMenuActions: FileContextMenuAction[] = fileContextMenu
     ? (() => {
+        if (fileContextMenu.kind === "directory") {
+          return [
+            {
+              id: "rename",
+              label: t("rename.action"),
+              icon: <PencilIcon />,
+              onSelect: () => {
+                openRenameDialog(fileContextMenu);
+              },
+            },
+          ];
+        }
+
         const exportDocumentCount = fileContextMenu.exportDocumentIds.length;
         const exportPdfAction = {
           id: "export-pdf",
@@ -14592,6 +14993,14 @@ function App() {
             void openFileInNewTab(fileContextMenu);
           },
         };
+        const renameAction = {
+          id: "rename",
+          label: t("rename.action"),
+          icon: <PencilIcon />,
+          onSelect: () => {
+            openRenameDialog(fileContextMenu);
+          },
+        };
 
         if (exportDocumentCount > 1) {
           return [exportPdfAction, deleteFileAction];
@@ -14599,6 +15008,7 @@ function App() {
 
         return [
           openInNewTabAction,
+          renameAction,
           exportPdfAction,
           {
             id: "duplicate",
@@ -15214,7 +15624,7 @@ function App() {
                     openWorkspaceEntry(entry, event);
                   }}
                   onContextMenu={(event) => {
-                    if (entry.kind !== "file") return;
+                    if (entry.kind === "parent-directory") return;
 
                     openFileContextMenu(entry, event);
                   }}
@@ -15471,6 +15881,80 @@ function App() {
                 {duplicateFileDialog.isSubmitting
                   ? t("duplicate.submitting")
                   : t("duplicate.submit")}
+              </button>
+            </div>
+          </form>
+        </div>
+      ) : null}
+
+      {renameDialog ? (
+        <div
+          className="duplicate-file-dialog-backdrop"
+          onMouseDown={closeRenameDialog}
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          <form
+            aria-labelledby="rename-dialog-title"
+            aria-modal="true"
+            className="duplicate-file-dialog"
+            onMouseDown={(event) => event.stopPropagation()}
+            onSubmit={submitRenameWorkspaceEntry}
+            role="dialog"
+          >
+            <div className="duplicate-file-dialog__header">
+              <h2 id="rename-dialog-title">{t("rename.title")}</h2>
+              <button
+                aria-label={t("dialog.close")}
+                className="duplicate-file-dialog__close"
+                disabled={renameDialog.isSubmitting}
+                onClick={closeRenameDialog}
+                type="button"
+              >
+                ×
+              </button>
+            </div>
+            <label className="duplicate-file-dialog__field">
+              <span>{t("rename.name")}</span>
+              <span className="duplicate-file-dialog__file-name-control">
+                <input
+                  disabled={renameDialog.isSubmitting}
+                  ref={renameInputRef}
+                  type="text"
+                  value={renameDialog.name}
+                  onChange={(event) => {
+                    const nextName =
+                      renameDialog.kind === "file"
+                        ? stripMarkdownExtension(event.target.value)
+                        : event.target.value;
+                    setRenameDialog((currentDialog) =>
+                      currentDialog ? { ...currentDialog, name: nextName } : currentDialog,
+                    );
+                  }}
+                />
+                {renameDialog.kind === "file" ? (
+                  <span className="duplicate-file-dialog__extension">.md</span>
+                ) : null}
+              </span>
+            </label>
+            {storageError ? (
+              <p className="duplicate-file-dialog__message" role="status">
+                {storageError}
+              </p>
+            ) : null}
+            <div className="note-actions duplicate-file-dialog__actions">
+              <button
+                disabled={renameDialog.isSubmitting}
+                onClick={closeRenameDialog}
+                type="button"
+              >
+                {t("rename.cancel")}
+              </button>
+              <button
+                className="is-primary"
+                disabled={renameDialog.isSubmitting}
+                type="submit"
+              >
+                {renameDialog.isSubmitting ? t("rename.submitting") : t("rename.submit")}
               </button>
             </div>
           </form>
@@ -15742,11 +16226,7 @@ function App() {
                 className={`editor-mode-toggle mobile-editor-mode-toggle ${
                   editorMode === "edit" ? "is-active" : ""
                 }`}
-                onClick={() =>
-                  setEditorMode((currentMode) =>
-                    currentMode === "preview" ? "edit" : "preview",
-                  )
-                }
+                onClick={toggleEditorMode}
                 type="button"
               >
                 <SourceModeIcon />
@@ -15764,11 +16244,7 @@ function App() {
                   }`}
                   aria-pressed={editorMode === "edit"}
                   className={`editor-mode-toggle ${editorMode === "edit" ? "is-active" : ""}`}
-                  onClick={() =>
-                    setEditorMode((currentMode) =>
-                      currentMode === "preview" ? "edit" : "preview",
-                    )
-                  }
+                  onClick={toggleEditorMode}
                   title={
                     editorMode === "edit"
                       ? t("toolbar.previewMode.open")
