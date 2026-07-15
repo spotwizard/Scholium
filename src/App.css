@@ -2504,12 +2504,13 @@ button.document-tag-chip__label:focus-visible {
 }
 
 .editor-mode-toggle__icon {
-  width: 15px;
-  height: 15px;
-  stroke: currentColor;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  stroke-width: 2;
+  width: 20px;
+  height: 20px;
+  fill: currentColor;
+}
+
+.mobile-editor-mode-toggle {
+  display: none;
 }
 
 .note-mode-switch {
@@ -6097,7 +6098,6 @@ button.document-tag-chip__label:focus-visible {
     --editor-content-end-offset: 0px;
     --editor-left-control-gutter: 0px;
     --note-library-width: 100vw;
-    --mobile-document-search-reserved-inline-end: clamp(118px, 32vw, 142px);
     --side-panel-transition-duration: 220ms;
   }
 
@@ -6195,8 +6195,7 @@ button.document-tag-chip__label:focus-visible {
     left: auto;
     height: auto;
     justify-content: flex-start;
-    padding: calc(var(--mobile-editor-top-padding) + 20px)
-      var(--mobile-document-search-reserved-inline-end) 26px 16px;
+    padding: calc(var(--mobile-editor-top-padding) + 64px) 16px 26px;
   }
 
   .scholium-shell.has-document-tabs .editor-document-title {
@@ -6210,6 +6209,27 @@ button.document-tag-chip__label:focus-visible {
     text-align: left;
     text-overflow: clip;
     white-space: normal;
+  }
+
+  .mobile-editor-mode-toggle {
+    position: fixed;
+    top: calc(var(--mobile-safe-area-top) + 12px);
+    left: 16px;
+    z-index: 74;
+    display: inline-flex;
+    width: 42px;
+    height: 42px;
+    border-color: rgba(31, 41, 55, 0.12);
+    border-radius: 50%;
+    color: var(--color-heading);
+    background: color-mix(in srgb, var(--color-surface-raised) 94%, transparent);
+    box-shadow: var(--shadow-low);
+    backdrop-filter: blur(16px);
+    pointer-events: auto;
+  }
+
+  .scholium-shell.has-document-tabs .mobile-editor-mode-toggle {
+    top: calc(var(--document-tab-bar-occupied-height) + 12px);
   }
 
   .document-search-backdrop {
@@ -7569,7 +7589,7 @@ button.document-tag-chip__label:focus-visible {
     left: 10px;
     z-index: 82;
     display: grid;
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 4px;
     min-height: 58px;
     border: 1px solid rgba(31, 41, 55, 0.12);

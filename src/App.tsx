@@ -697,9 +697,10 @@ function MobileLibraryIcon() {
 
 function SourceModeIcon({ className = "editor-mode-toggle__icon" }: { className?: string }) {
   return (
-    <svg aria-hidden="true" className={className} fill="none" viewBox="0 0 24 24">
-      <path d="m9 18-6-6 6-6" />
-      <path d="m15 6 6 6-6 6" />
+    <svg aria-hidden="true" className={className} fill="currentColor" viewBox="0 0 100 100">
+      <path d="m33.9036217 34.4969254c0-.8963165-.3560753-1.7558365-.9899292-2.3896942l-4.7803364-4.7803364c-.6338558-.6338558-1.494091-.9899311-2.3906384-.9899311-.8963146 0-1.7567825.3560753-2.3904037.9899311l-19.5648296 19.5648288c-1.7166502 1.7166519-1.7166429 4.4998932.0000162 6.2165337l19.5648134 19.5646095v.000473c.6336212.6338577 1.4940891.9899292 2.3904037.9899292.8965473 0 1.7558365-.3553696 2.3896942-.9892273l4.7803345-4.7803268c.6338577-.6338577.9901657-1.4940948.9901657-2.3904037 0-.896553-.356308-1.7567863-.9901657-2.3906403l-13.1124344-13.1124344 13.1133804-13.1126747c.633854-.6338539.9899293-1.4933815.9899293-2.3906364z" />
+      <path d="m74.2571182 26.3357868c-.8965454 0-1.7558365.3560715-2.3896942.9899292l-4.7803345 4.7803364c-.6338577.6338539-.9901581 1.4940872-.9901581 2.3906403 0 .8963089.3563004 1.756546.9901581 2.3903999l13.1124344 13.1126709-13.1133804 13.1124382c-.6338577.6338539-.9899216 1.4933815-.9899216 2.3906364 0 .8963089.3560638 1.7558441.9899216 2.3897018l4.7803421 4.7803268v.0007095c.6338577.6338577 1.4940872.9901657 2.3906326.9901657.8963089 0 1.7567825-.356308 2.3906403-.9901657l19.5647583-19.5647583c1.7165833-1.7165871 1.7166519-4.4997025.000145-6.2163696l-19.5649033-19.5667323c-.6338577-.6338577-1.4933853-.9899292-2.3906403-.9899292z" />
+      <path d="m59.4398537 9.4331808h-6.4828797c-.8003426 0-1.5747414.283679-2.1850128.801281-.6105118.5168953-1.0179939 1.233757-1.1493378 2.0232477l-12.3955726 74.3725014c-.163887.9800262.1122475 1.9829254.7552986 2.7412872.6423454.7583618 1.5853462 1.1953201 2.5792847 1.1953201h6.4826431c.8005753 0 1.5747414-.2836838 2.1852531-.8015213.610508-.5168915 1.0179901-1.2337494 1.1493378-2.0230103l12.3955689-74.3724975c.1636505-.9802608-.1124763-1.9829235-.7552986-2.7412872-.6423455-.7583656-1.5855828-1.1953211-2.5792847-1.1953211z" />
     </svg>
   );
 }
@@ -15730,6 +15731,27 @@ function App() {
                 </button>
               </form>
             ) : null}
+            {hasOpenDocument && !settingsViewOpen ? (
+              <button
+                aria-label={
+                  editorMode === "edit"
+                    ? t("toolbar.previewMode.open")
+                    : t("toolbar.sourceMode.open")
+                }
+                aria-pressed={editorMode === "edit"}
+                className={`editor-mode-toggle mobile-editor-mode-toggle ${
+                  editorMode === "edit" ? "is-active" : ""
+                }`}
+                onClick={() =>
+                  setEditorMode((currentMode) =>
+                    currentMode === "preview" ? "edit" : "preview",
+                  )
+                }
+                type="button"
+              >
+                <SourceModeIcon />
+              </button>
+            ) : null}
             {annotationToolsAvailable ? (
               <div
                 aria-label={t("app.editorTools")}
@@ -16158,23 +16180,6 @@ function App() {
           >
             <MobileFilesIcon />
             <span>{t("app.documents")}</span>
-          </button>
-          <button
-            aria-label={`${t("toolbar.editorMode")}: ${
-              editorMode === "edit" ? t("toolbar.sourceMode") : t("toolbar.previewMode")
-            }`}
-            aria-pressed={editorMode === "edit"}
-            className={editorMode === "edit" ? "is-active" : ""}
-            disabled={!hasOpenDocument}
-            onClick={() =>
-              setEditorMode((currentMode) =>
-                currentMode === "preview" ? "edit" : "preview",
-              )
-            }
-            type="button"
-          >
-            <SourceModeIcon className="mobile-command-bar__icon" />
-            <span>{t("toolbar.sourceMode")}</span>
           </button>
           <button
             aria-checked={noteModeEnabled}
