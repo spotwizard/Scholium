@@ -6896,6 +6896,8 @@ function App() {
     if (!window.matchMedia(mobileViewportQuery).matches) return "hidden";
     return readLastOpenedDropboxWorkspace() ? "restoring" : "welcome";
   });
+  const [mobileStartupLogoLoaded, setMobileStartupLogoLoaded] = useState(false);
+  const [mobileStartupLogoVisible, setMobileStartupLogoVisible] = useState(false);
   const notePanelRef = useRef<HTMLElement | null>(null);
   const floatingNoteCardRef = useRef<HTMLDivElement | null>(null);
   const settingsCloseButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -14701,6 +14703,31 @@ function App() {
   const mobileStartupActive =
     isMobileViewport && mobileStartupPhase !== "hidden" && !settingsViewOpen;
 
+  useEffect(() => {
+    let firstFrame = 0;
+    let secondFrame = 0;
+
+    function showStartupLogo() {
+      window.cancelAnimationFrame(firstFrame);
+      window.cancelAnimationFrame(secondFrame);
+      setMobileStartupLogoVisible(false);
+      if (!mobileStartupActive || !mobileStartupLogoLoaded || document.hidden) return;
+
+      firstFrame = window.requestAnimationFrame(() => {
+        secondFrame = window.requestAnimationFrame(() => setMobileStartupLogoVisible(true));
+      });
+    }
+
+    showStartupLogo();
+    document.addEventListener("visibilitychange", showStartupLogo);
+
+    return () => {
+      document.removeEventListener("visibilitychange", showStartupLogo);
+      window.cancelAnimationFrame(firstFrame);
+      window.cancelAnimationFrame(secondFrame);
+    };
+  }, [mobileStartupActive, mobileStartupLogoLoaded]);
+
   const shellClassName = [
     "scholium-shell",
     mobileStartupActive ? "has-mobile-startup" : "",
@@ -14792,7 +14819,14 @@ function App() {
       {mobileStartupActive ? (
         <section aria-label={t("mobileStartup.title")} className="mobile-startup">
           <div className="mobile-startup__center">
-            <img alt="Scholium" className="mobile-startup__logo" src={appIconUrl} />
+            <img
+              alt="Scholium"
+              className={`mobile-startup__logo ${
+                mobileStartupLogoVisible ? "is-visible" : ""
+              }`}
+              onLoad={() => setMobileStartupLogoLoaded(true)}
+              src={appIconUrl}
+            />
             {mobileStartupPhase === "welcome" ? (
               <button
                 className="mobile-startup__cloud-button"
