@@ -16,6 +16,7 @@
   --color-accent: #2f333b;
   --color-accent-strong: #171a20;
   --color-accent-ink: #252932;
+  --color-mobile-active: #45353d;
   --color-accent-soft: #f4ebdc;
   --color-accent-softer: rgba(114, 88, 52, 0.06);
   --color-accent-selection: rgba(32, 35, 41, 0.18);
@@ -6228,6 +6229,11 @@ button.document-tag-chip__label:focus-visible {
     pointer-events: auto;
   }
 
+  .mobile-editor-mode-toggle .editor-mode-toggle__icon {
+    width: 22px;
+    height: 22px;
+  }
+
   .scholium-shell.has-document-tabs .mobile-editor-mode-toggle {
     top: calc(var(--document-tab-bar-occupied-height) + 12px);
   }
@@ -7245,22 +7251,24 @@ button.document-tag-chip__label:focus-visible {
   }
 
   .mobile-tag-picker-create {
-    grid-template-columns: 16px minmax(0, 1fr);
-    gap: 8px;
+    grid-template-columns: minmax(0, 1fr);
+    justify-items: center;
+    gap: 0;
     width: calc(100% - 8px);
     min-height: 44px;
-    border: 1px dashed var(--color-border);
+    border: 1px solid var(--color-mobile-active);
     border-radius: 10px;
     margin: 8px 4px 4px;
     padding: 0 12px;
-    color: var(--color-accent-ink);
-    background: var(--color-surface);
+    color: #fffdf8;
+    background: var(--color-mobile-active);
     font-size: 0.86rem;
     font-weight: 740;
+    text-align: center;
   }
 
   .mobile-tag-picker-create:active {
-    background: var(--color-accent-soft);
+    background: color-mix(in srgb, var(--color-mobile-active) 82%, #000);
   }
 
   .mobile-tag-picker-empty {
@@ -7701,26 +7709,26 @@ button.document-tag-chip__label:focus-visible {
   .mobile-command-bar {
     box-sizing: border-box;
     position: fixed;
-    right: 0;
+    right: 8px;
     bottom: calc(8px + var(--mobile-safe-area-bottom));
-    left: 0;
+    left: 8px;
     z-index: 82;
     display: grid;
     grid-template-columns:
       repeat(2, minmax(0, 1fr))
-      90px
+      92px
       repeat(2, minmax(0, 1fr));
-    grid-template-rows: 56px;
-    gap: 8px;
+    grid-template-rows: 64px;
+    gap: 4px;
     height: 72px;
     min-height: 72px;
     align-items: center;
-    border: 1px solid rgba(31, 41, 55, 0.12);
-    border-radius: 0;
-    padding: 7px 6px;
-    background: color-mix(in srgb, var(--color-surface-raised) 92%, transparent);
-    box-shadow: 0 14px 34px rgba(32, 35, 41, 0.18);
-    backdrop-filter: blur(16px);
+    border: 1px solid color-mix(in srgb, var(--color-border) 72%, transparent);
+    border-radius: 18px;
+    padding: 3px 4px;
+    background: color-mix(in srgb, var(--color-surface-raised) 96%, transparent);
+    box-shadow: 0 8px 24px rgba(32, 35, 41, 0.12);
+    backdrop-filter: blur(18px);
     overflow: visible;
   }
 
@@ -7751,16 +7759,16 @@ button.document-tag-chip__label:focus-visible {
     display: grid;
     width: 100%;
     min-width: 0;
-    height: 52px;
-    min-height: 52px;
+    height: 62px;
+    min-height: 62px;
     grid-template-rows: 22px max-content;
     align-content: center;
     justify-self: center;
     place-items: center;
-    gap: 2px;
+    gap: 6px;
     border: 1px solid transparent;
-    border-radius: 8px;
-    padding: 3px 2px;
+    border-radius: 14px;
+    padding: 4px 2px;
     color: var(--color-muted);
     background: transparent;
     box-shadow: none;
@@ -7768,46 +7776,51 @@ button.document-tag-chip__label:focus-visible {
 
   .mobile-command-bar button.is-active {
     border-color: var(--color-selected-border);
-    color: var(--color-heading);
-    background: var(--color-selected-surface);
+    color: #fffdf8;
+    background: var(--color-mobile-active);
   }
 
   .mobile-command-bar button.mobile-command-bar__source {
-    display: grid;
+    display: flex;
+    position: relative;
     z-index: 1;
-    width: 80px;
-    height: 80px;
-    min-height: 80px;
+    width: 82px;
+    height: 82px;
+    min-height: 82px;
     align-self: center;
     justify-self: center;
-    place-items: center;
-    border: 1px solid var(--color-border);
+    align-items: center;
+    justify-content: center;
+    border-color: var(--color-border);
     border-radius: 999px;
     padding: 0;
     color: var(--color-heading);
     background: var(--color-surface-raised);
-    box-shadow:
-      0 8px 18px rgba(32, 35, 41, 0.2),
-      0 0 0 5px color-mix(in srgb, var(--color-surface-raised) 94%, transparent);
+    box-shadow: 0 6px 16px rgba(32, 35, 41, 0.16);
     transform: none;
   }
 
   .mobile-command-bar button.mobile-command-bar__source .mobile-command-bar__source-content {
-    display: flex;
+    display: grid;
+    width: 100%;
+    height: 100%;
     min-width: 0;
     max-width: 70px;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: 1px;
+    grid-template-rows: 25px 12px;
+    align-content: center;
+    justify-items: center;
+    row-gap: 6px;
     overflow: visible;
-    transform: translateY(-1px);
+    transform: none;
   }
 
   .mobile-command-bar button.mobile-command-bar__source.is-active {
-    border-color: var(--color-selected-border);
-    color: var(--color-heading);
-    background: var(--color-selected-surface);
+    border-color: color-mix(in srgb, var(--color-mobile-active) 72%, var(--color-border));
+    color: #fffdf8;
+    background: var(--color-mobile-active);
+    box-shadow:
+      0 8px 18px rgba(58, 43, 51, 0.22),
+      inset 0 0 0 1px rgba(255, 253, 248, 0.14);
   }
 
   .mobile-command-bar button.mobile-command-bar__source .mobile-command-bar__icon {
@@ -7815,15 +7828,60 @@ button.document-tag-chip__label:focus-visible {
     height: 25px;
   }
 
-  .mobile-command-bar button.mobile-command-bar__source .mobile-command-bar__source-title {
-    max-width: 70px;
-    font-size: 0.68rem;
+  .mobile-command-bar button.mobile-command-bar__source .mobile-command-bar__source-status {
+    position: static;
+    max-width: 68px;
+    margin: 0;
+    overflow: hidden;
+    border: 0;
+    padding: 0;
+    color: var(--color-muted);
+    background: transparent;
+    box-shadow: none;
+    font-size: 0.64rem;
+    font-weight: 650;
+    line-height: 12px;
+    text-align: center;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    transform: none;
   }
 
-  .mobile-command-bar button.mobile-command-bar__source .mobile-command-bar__source-status {
-    max-width: 70px;
-    color: var(--color-muted);
-    font-size: 0.56rem;
+  .mobile-command-bar button.mobile-command-bar__source.is-active
+    .mobile-command-bar__source-status {
+    color: rgba(255, 253, 248, 0.82);
+  }
+
+  .mobile-command-bar button.mobile-command-bar__source
+    .mobile-command-bar__source-status.is-connected {
+    overflow: hidden;
+    border: 0;
+    color: #ffe6a3;
+    background: transparent;
+    -webkit-text-fill-color: #ffe6a3;
+    font-weight: 500;
+    -webkit-text-stroke: 0;
+    text-shadow:
+      0 0 3px rgba(255, 230, 163, 0.9),
+      0 0 6px rgba(255, 230, 163, 0.55);
+    animation: mobile-source-neon-pulse 2.4s ease-in-out infinite;
+  }
+
+  @keyframes mobile-source-neon-pulse {
+    0%,
+    100% {
+      opacity: 1;
+      text-shadow:
+        0 0 3px rgba(255, 230, 163, 0.9),
+        0 0 6px rgba(255, 230, 163, 0.55);
+    }
+
+    50% {
+      opacity: 0.85;
+      text-shadow:
+        0 0 2px rgba(255, 230, 163, 0.8),
+        0 0 4px rgba(255, 230, 163, 0.46);
+    }
   }
 
   .mobile-command-bar button:disabled {
@@ -7841,10 +7899,8 @@ button.document-tag-chip__label:focus-visible {
     display: block;
     width: 21px;
     height: 21px;
-    stroke: currentColor;
-    stroke-linecap: round;
-    stroke-linejoin: round;
-    stroke-width: 1.9;
+    fill: currentColor;
+    stroke: none;
   }
 
   .mobile-command-bar span {

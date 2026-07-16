@@ -248,7 +248,8 @@ type WorkspaceEntry =
     };
 
 type NativeLocationKind = "directory" | "file";
-type WorkspaceSource = "local" | "dropbox";
+type CloudWorkspaceSource = "dropbox";
+type WorkspaceSource = "local" | CloudWorkspaceSource;
 type MobileDocumentBrowseMode = "files" | "tags";
 
 type DocumentTagGroup = {
@@ -672,11 +673,11 @@ function MobileFilesIcon() {
     <svg
       aria-hidden="true"
       className="mobile-command-bar__icon"
-      fill="none"
-      viewBox="0 0 24 24"
+      fill="currentColor"
+      viewBox="0 0 512 512"
     >
-      <path d="M3.5 6.5h6l2 2h9v9.5a2 2 0 0 1-2 2h-15z" />
-      <path d="M3.5 6.5v-2h5.4l2 2h6.6a2 2 0 0 1 2 2" />
+      <path d="m278.72 120h233.28v-45h-265.424z" />
+      <path d="m188.281 45h-188.281v422h512v-317h-248.719z" />
     </svg>
   );
 }
@@ -686,13 +687,15 @@ function MobileNoteIcon() {
     <svg
       aria-hidden="true"
       className="mobile-command-bar__icon"
-      fill="none"
-      viewBox="0 0 24 24"
+      fill="currentColor"
+      viewBox="0 0 511.8 511.8"
     >
-      <path d="M6 4.5h12v15H6z" />
-      <path d="M9 8h6" />
-      <path d="M9 11.5h6" />
-      <path d="M9 15h3.5" />
+      <path d="m0 360.875h37v30h-37z" />
+      <path d="m0 240.875h37v30h-37z" />
+      <path d="m0 120.875h37v30h-37z" />
+      <path d="m375 151.65v-107.78h-338v77h67v30h-67v90h67v30h-67v90h67v30h-67v77.06h338v-173.01l-114.23 113.98h-70.21v-73.22zm-219-30.78h136v30h-136zm0 90v-30h72v30z" />
+      <path d="m467.16 160.59c-52.453 52.332-165.63 165.257-218.8 218.31h-27.8v-30.78c44.053-43.953 175.388-174.99 217.31-216.82z" />
+      <path d="m511.8 116.05-23.4 23.34-29.29-29.29 23.46-23.4z" />
     </svg>
   );
 }
@@ -702,12 +705,15 @@ function MobileTermIcon() {
     <svg
       aria-hidden="true"
       className="mobile-command-bar__icon"
-      fill="none"
-      viewBox="0 0 24 24"
+      fill="currentColor"
+      viewBox="0 0 512 512"
     >
-      <path d="M5 6h14" />
-      <path d="M12 6v12" />
-      <path d="M8 18h8" />
+      <path d="m272.49 79.237h76.335v87.144h-76.335z" />
+      <path d="m142.5 347.286h6.131v-347.286h-12.869c-34.576 0-62.705 28.129-62.705 62.705v342.998c5.749-33.134 34.689-58.417 69.443-58.417z" />
+      <path d="m385.031 377.286v81h53.223v-29.967h-25.351v-51.033z" />
+      <path d="m142.5 458.286h113.5v-81h-113.5c-22.332 0-40.5 18.168-40.5 40.5s18.168 40.5 40.5 40.5z" />
+      <path d="m438.943 347.286v-347.286h-260.378v347.286zm-196.387-297.983h136.203v147.012h-136.203zm-.415 173.379h136.44v29.934h-136.44zm136.44 52.975v29.934h-136.44v-29.934z" />
+      <path d="m356.031 378.286h-71.031v133.25l35.903-20.828 35.128 21.292z" />
     </svg>
   );
 }
@@ -717,13 +723,25 @@ function MobileLibraryIcon() {
     <svg
       aria-hidden="true"
       className="mobile-command-bar__icon"
-      fill="none"
-      viewBox="0 0 24 24"
+      fill="currentColor"
+      viewBox="0 0 510 510"
     >
-      <path d="M5 4.5h10.5a2.5 2.5 0 0 1 2.5 2.5v12.5H7.5A2.5 2.5 0 0 1 5 17z" />
-      <path d="M8 8h7" />
-      <path d="M8 11.5h7" />
-      <path d="M8 15h4" />
+      <path d="m210.785 180h194.215v-180h-300v120h30.785zm74.215-135h60v60h-30v-30h-30zm0 90h-60v-30h60zm-120-90h60v30h-30v30h-30z" />
+      <path d="m0 510h510v-210h-510zm390-90h60v30h-60zm-330 0h30v30h-30z" />
+      <path d="m200.262 210-75-60h-125.262v120h510v-60z" />
+    </svg>
+  );
+}
+
+function MobileToolbarCloudIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      className="mobile-command-bar__icon"
+      fill="currentColor"
+      viewBox="0 0 512 512"
+    >
+      <path d="m406 361c57.891 0 106-47.109 106-105 0-52.808-40.185-96.636-91.015-103.931.015-.351.015-.717.015-1.069 0-66.167-53.833-120-120-120-34.321 0-66.914 14.897-89.59 40.415-14.165-6.841-29.634-10.415-45.41-10.415-56.382 0-102.524 44.678-104.897 100.488-36.373 17.227-61.103 53.907-61.103 94.512 0 57.891 48.109 105 106 105h135v60h-60v15h-181v30h181v15h150v-15h181v-30h-181v-15h-60v-60z" />
     </svg>
   );
 }
@@ -1009,10 +1027,128 @@ function previewAnnotationFrameHorizontalPaddingForKind(kind: AnnotationKind) {
   return kind === "glossary" ? 0 : previewAnnotationFrameHorizontalPadding;
 }
 
-const documentsSeed: MarkdownDocument[] = [];
-const notesSeed: SelectionNote[] = [];
-const glossaryTermsSeed: GlossaryTerm[] = [];
-const glossaryBindingsSeed: GlossaryBinding[] = [];
+const documentsSeed: MarkdownDocument[] = [
+  {
+    id: "roadmap",
+    title: "Scholium Roadmap",
+    path: "workspace/roadmap.md",
+    filePath: null,
+    notesPath: null,
+    updatedAt: "Today",
+    body: `# Scholium Roadmap
+
+Scholium is a Markdown writing space for reading, drafting, and keeping text-bound notes beside the source material.
+
+## MVP Scope
+
+The first product surface keeps documents, the editor, and notes visible at the same time.
+
+## Selection Notes
+
+Readers can highlight a passage, attach a note, and return later to see a thin marked range around the annotated text.`,
+  },
+  {
+    id: "research",
+    title: "Research Notes",
+    path: "workspace/research.md",
+    filePath: null,
+    notesPath: null,
+    updatedAt: "Yesterday",
+    body: `# Research Notes
+
+Markdown users often want plain files, fast editing, and a clean reading surface.
+
+## Annotation Pattern
+
+The note sidebar should show the context of each note without forcing the document to become a database.
+
+## Storage Direction
+
+The Markdown file can stay untouched while annotations live in a sidecar JSON file.`,
+  },
+  {
+    id: "meeting",
+    title: "Planning Meeting",
+    path: "workspace/meeting.md",
+    filePath: null,
+    notesPath: null,
+    updatedAt: "Jun 3",
+    body: `# Planning Meeting
+
+Define the first release around a calm editor, reliable local files, and notes that attach to selected text.
+
+## Decisions
+
+- Build the shell with Tauri
+- Keep the first editor simple
+- Let users rebind notes when edited text no longer matches`,
+  },
+];
+
+function makeAnchor(body: string, selectedText: string): TextSelectionAnchor {
+  const from = body.indexOf(selectedText);
+  const safeFrom = from >= 0 ? from : 0;
+  const safeTo = from >= 0 ? from + selectedText.length : selectedText.length;
+
+  return {
+    from: safeFrom,
+    to: safeTo,
+    selectedText,
+    prefix: body.slice(Math.max(0, safeFrom - 48), safeFrom),
+    suffix: body.slice(safeTo, Math.min(body.length, safeTo + 48)),
+  };
+}
+
+const notesSeed: SelectionNote[] = [
+  {
+    id: "note-1",
+    documentId: "roadmap",
+    status: "active",
+    selectedText: "text-bound notes",
+    anchor: makeAnchor(documentsSeed[0].body, "text-bound notes"),
+    body: "This wording should stay central to the product positioning.",
+    createdAt: "09:40",
+    updatedAt: "09:40",
+    deletedAt: null,
+  },
+  {
+    id: "note-2",
+    documentId: "research",
+    status: "active",
+    selectedText: "sidecar JSON file",
+    anchor: makeAnchor(documentsSeed[1].body, "sidecar JSON file"),
+    body: "Sidecar storage keeps the Markdown file portable for other tools.",
+    createdAt: "10:15",
+    updatedAt: "10:15",
+    deletedAt: null,
+  },
+];
+
+const glossaryTermsSeed: GlossaryTerm[] = [
+  {
+    id: "glossary-1",
+    term: "Markdown",
+    normalizedTerm: "markdown",
+    definition: "A lightweight plain-text markup format used for readable writing and publishing.",
+    createdAt: "10:30",
+    updatedAt: "10:30",
+  },
+];
+
+const glossaryBindingsSeed: GlossaryBinding[] = [
+  {
+    id: "glossary-binding-1",
+    documentId: "roadmap",
+    termId: "glossary-1",
+    term: "Markdown",
+    normalizedTerm: "markdown",
+    status: "active",
+    anchor: makeAnchor(documentsSeed[0].body, "Markdown"),
+    createdAt: "10:30",
+    updatedAt: "10:30",
+    deletedAt: null,
+  },
+];
 
 function nowLabel() {
   return new Date().toLocaleTimeString([], {
@@ -9298,6 +9434,11 @@ function App() {
 
       if (!settingsSnapshot["app.restoreLastOpenedFile"]) return;
 
+      if (lastOpenedDropboxWorkspace) {
+        void restoreLastOpenedDropboxWorkspace(lastOpenedDropboxWorkspace);
+        return;
+      }
+
       const lastOpenedPath = readLastOpenedMarkdownPath();
       const lastOpenedRootDirectoryPath = readLastOpenedMarkdownRootDirectoryPath();
       if (!lastOpenedPath && !lastOpenedRootDirectoryPath) return;
@@ -15329,8 +15470,28 @@ function App() {
   );
   const mobileRecentLocationShortcuts = savedLocations.recent;
   const mobileDropboxWorkspaceActive = workspaceSource === "dropbox";
+  const mobileCloudWorkspaceActive = workspaceSource !== null && workspaceSource !== "local";
   const mobileSavedLocationsVisible = nativeStorageAvailable;
-  const mobileDataSourceLabel = dropboxConnected ? "Dropbox" : t("mobileDataSource.label");
+  const mobileDataSources = [
+    {
+      id: "dropbox" as const,
+      label: t("dropbox.label"),
+      connected: dropboxConnected,
+      connecting: dropboxConnecting,
+      statusLabel: dropboxConnecting
+        ? t("dropbox.connecting")
+        : dropboxConnected
+          ? t("dropbox.connected")
+          : t("dropbox.disconnected"),
+      actionLabel: dropboxConnected
+        ? t("mobileDataSource.choose")
+        : t("mobileDataSource.connect"),
+      onSelect: selectMobileDropboxSource,
+    },
+  ];
+  const mobileConnectedDataSource = mobileDataSources.find((source) => source.connected);
+  const mobileDataSourceLabel =
+    mobileConnectedDataSource?.label ?? t("mobileDataSource.label");
   const mobileStartupActive =
     isMobileViewport && mobileStartupPhase !== "hidden" && !settingsViewOpen;
 
@@ -15993,12 +16154,7 @@ function App() {
                   onKeyDown={handleTagSuggestionKeyDown}
                   type="button"
                 >
-                  <span
-                    aria-hidden="true"
-                    className="mobile-tag-picker-create__icon"
-                    dangerouslySetInnerHTML={{ __html: plusSignIconSvg }}
-                  />
-                  <span>{t("tags.picker.create", { tag: normalizedTagDraft })}</span>
+                  <span>{t("tags.picker.createButton")}</span>
                 </button>
               ) : null}
               {mobileTagDraftAlreadySelected && normalizedTagDraft ? (
@@ -16633,7 +16789,7 @@ function App() {
                                   className="document-tags__suggestion-icon"
                                   dangerouslySetInnerHTML={{ __html: plusSignIconSvg }}
                                 />
-                                <span>{t("tags.picker.create", { tag: normalizedTagDraft })}</span>
+                                <span>{t("tags.picker.createButton")}</span>
                               </button>
                             ) : null}
                           </div>
@@ -16896,31 +17052,26 @@ function App() {
                 ×
               </button>
             </div>
-            <button
-              className="mobile-data-source-option"
-              disabled={dropboxConnecting}
-              onClick={() => void selectMobileDropboxSource()}
-              type="button"
-            >
-              <span className="mobile-data-source-option__icon">
-                <MobileCloudIcon />
-              </span>
-              <span className="mobile-data-source-option__text">
-                <strong>Dropbox</strong>
-                <span>
-                  {dropboxConnecting
-                    ? t("dropbox.connecting")
-                    : dropboxConnected
-                      ? t("dropbox.connected")
-                      : t("dropbox.disconnected")}
+            {mobileDataSources.map((source) => (
+              <button
+                className="mobile-data-source-option"
+                disabled={source.connecting}
+                key={source.id}
+                onClick={() => void source.onSelect()}
+                type="button"
+              >
+                <span className="mobile-data-source-option__icon">
+                  <MobileCloudIcon />
                 </span>
-              </span>
-              <span className="mobile-data-source-option__action">
-                {dropboxConnected
-                  ? t("mobileDataSource.choose")
-                  : t("mobileDataSource.connect")}
-              </span>
-            </button>
+                <span className="mobile-data-source-option__text">
+                  <strong>{source.label}</strong>
+                  <span>{source.statusLabel}</span>
+                </span>
+                <span className="mobile-data-source-option__action">
+                  {source.actionLabel}
+                </span>
+              </button>
+            ))}
           </section>
         </div>
       ) : null}
@@ -16955,17 +17106,18 @@ function App() {
             aria-expanded={mobileDataSourceOpen}
             aria-label={t("mobileDataSource.open", { source: mobileDataSourceLabel })}
             className={`mobile-command-bar__source ${
-              mobileDataSourceOpen || workspaceSource === "dropbox" ? "is-active" : ""
+              mobileDataSourceOpen || mobileCloudWorkspaceActive ? "is-active" : ""
             }`}
             onClick={() => setMobileDataSourceOpen((currentOpen) => !currentOpen)}
             type="button"
           >
             <span className="mobile-command-bar__source-content">
-              <MobileCloudIcon className="mobile-command-bar__icon" />
-              <span className="mobile-command-bar__source-title">
-                {t("mobileDataSource.title")}
-              </span>
-              <span className="mobile-command-bar__source-status">
+              <MobileToolbarCloudIcon />
+              <span
+                className={`mobile-command-bar__source-status ${
+                  mobileConnectedDataSource ? "is-connected" : ""
+                }`}
+              >
                 {mobileDataSourceLabel}
               </span>
             </span>
