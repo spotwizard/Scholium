@@ -251,11 +251,12 @@ type NativeLocationKind = "directory" | "file";
 type CloudWorkspaceSource = "dropbox";
 type WorkspaceSource = "local" | CloudWorkspaceSource;
 type MobileDocumentBrowseMode = "files" | "tags";
+type WorkspaceFileEntry = Extract<WorkspaceEntry, { kind: "file" }>;
 
 type DocumentTagGroup = {
   key: string;
   label: string;
-  documents: MarkdownDocument[];
+  entries: WorkspaceFileEntry[];
 };
 
 type DocumentTagSuggestionGroup = {
@@ -998,7 +999,6 @@ const previewAnnotationFrameCornerRadius = "4px";
 const annotationLayoutSettleDelaysMs = [80, 180, 360, 720];
 const noteLibraryFocusAlignmentRatio = 0.2;
 const notePanelAnimationMs = 180;
-const documentSearchMobileTransitionMs = 280;
 const selectionWarningAutoDismissMs = 2600;
 const appDrivenSelectionClearGuardMs = 1200;
 const autosaveDelayMs = 500;
@@ -6948,13 +6948,12 @@ function App() {
   const [fileSearchPending, setFileSearchPending] = useState(false);
   const [fileSearchError, setFileSearchError] = useState("");
   const [documentSearchOpen, setDocumentSearchOpen] = useState(false);
-  const [documentSearchTransitionPhase, setDocumentSearchTransitionPhase] = useState<
-    "closed" | "opening" | "open" | "closing"
-  >("closed");
   const [documentSearchQuery, setDocumentSearchQuery] = useState("");
   const [documentSearchActiveIndex, setDocumentSearchActiveIndex] = useState(0);
   const [documentSearchMatchCount, setDocumentSearchMatchCount] = useState(0);
   const [tagDraft, setTagDraft] = useState("");
+  const [documentTagsExpanded, setDocumentTagsExpanded] = useState(false);
+  const [hiddenDocumentTagCount, setHiddenDocumentTagCount] = useState(0);
   const [mobileTagPickerOpen, setMobileTagPickerOpen] = useState(false);
   const [mobileDataSourceOpen, setMobileDataSourceOpen] = useState(false);
   const [dropboxIndexedDocumentTags, setDropboxIndexedDocumentTags] = useState<
@@ -6962,6 +6961,7 @@ function App() {
   >([]);
   const [dropboxTagIndexLoading, setDropboxTagIndexLoading] = useState(false);
   const tagInputRef = useRef<HTMLInputElement>(null);
+  const documentTagsListRef = useRef<HTMLDivElement>(null);
   const [expandedDirectoryKeys, setExpandedDirectoryKeys] = useState<Set<string>>(() => new Set());
   const [loadingDirectoryKeys, setLoadingDirectoryKeys] = useState<Set<string>>(() => new Set());
   const [selectedDocumentId, setSelectedDocumentId] = useState(documentsSeed[0]?.id ?? "");
@@ -7142,7 +7142,6 @@ function App() {
   const duplicateFileInputRef = useRef<HTMLInputElement | null>(null);
   const renameInputRef = useRef<HTMLInputElement | null>(null);
   const documentSearchInputRef = useRef<HTMLInputElement | null>(null);
-  const documentSearchTransitionTimerRef = useRef(0);
   const noteEditorRootRef = useRef<HTMLDivElement | null>(null);
   const noteModeDefaultAppliedRef = useRef(noteModeEnabled);
   const returnToViewTimerRef = useRef(0);
@@ -7273,70 +7272,21 @@ function App() {
   );
   const documentsById = new Map(documents.map((document) => [document.id, document]));
   const documentTagGroups = useMemo(() => {
-    const workspaceDocumentIds = new Set(
-      workspaceEntries.flatMap((entry) => (entry.kind === "file" ? [entry.documentId] : [])),
-    );
-    const groups = new Map<string, DocumentTagGroup>();
-
-    documents.forEach((document) => {
-      if (!workspaceDocumentIds.has(document.id)) return;
-
-      readMarkdownTags(document.body).forEach((tag) => {
-        const label = normalizeTagInput(tag);
-        const key = tagDedupeKey(label);
-        if (!key) return;
-
-        const group = groups.get(key);
-        if (!group) {
-          groups.set(key, { key, label, documents: [document] });
-          return;
-        }
-        if (!group.documents.some((candidate) => candidate.id === document.id)) {
-          group.documents.push(document);
-        }
-      });
-    });
-
-    return Array.from(groups.values())
-      .map((group) => ({
-        ...group,
-        documents: [...group.documents].sort((left, right) =>
-          left.title.localeCompare(right.title),
-        ),
-      }))
-      .sort((left, right) => left.label.localeCompare(right.label));
-  }, [documents, workspaceEntries]);
-  const mobileSelectedTagGroup =
-    documentTagGroups.find((group) => group.key === mobileSelectedTagKey) ?? null;
-  const mobileTagBrowserActive = isMobileViewport && mobileDocumentBrowseMode === "tags";
-  const documentTagSuggestionGroups = useMemo<DocumentTagSuggestionGroup[]>(() => {
-    if (workspaceSource !== "dropbox") {
-      return documentTagGroups.map((group) => ({
-        key: group.key,
-        label: group.label,
-        documentCount: group.documents.length,
-      }));
-    }
-
     const loadedDocumentsById = new Map(
       documents.map((document) => [document.id, document]),
     );
     const indexedTagsByDocumentId = new Map(
-      dropboxIndexedDocumentTags.map((entry) => [entry.documentId, entry]),
+      dropboxIndexedDocumentTags.map((entry) => [entry.documentId, entry.tags]),
     );
-    const groups = new Map<
-      string,
-      { key: string; label: string; documentIds: Set<string> }
-    >();
+    const groups = new Map<string, DocumentTagGroup>();
 
     workspaceEntries.forEach((entry) => {
       if (entry.kind !== "file") return;
 
       const loadedDocument = loadedDocumentsById.get(entry.documentId);
-      const indexedEntry = indexedTagsByDocumentId.get(entry.documentId);
       const tags = loadedDocument
         ? readMarkdownTags(loadedDocument.body)
-        : indexedEntry?.tags ?? [];
+        : indexedTagsByDocumentId.get(entry.documentId) ?? [];
 
       tags.forEach((tag) => {
         const label = normalizeTagInput(tag);
@@ -7345,21 +7295,36 @@ function App() {
 
         const group = groups.get(key);
         if (!group) {
-          groups.set(key, { key, label, documentIds: new Set([entry.documentId]) });
+          groups.set(key, { key, label, entries: [entry] });
           return;
         }
-        group.documentIds.add(entry.documentId);
+        if (!group.entries.some((candidate) => candidate.documentId === entry.documentId)) {
+          group.entries.push(entry);
+        }
       });
     });
 
     return Array.from(groups.values())
       .map((group) => ({
-        key: group.key,
-        label: group.label,
-        documentCount: group.documentIds.size,
+        ...group,
+        entries: [...group.entries].sort((left, right) =>
+          left.title.localeCompare(right.title),
+        ),
       }))
       .sort((left, right) => left.label.localeCompare(right.label));
-  }, [documentTagGroups, documents, dropboxIndexedDocumentTags, workspaceEntries, workspaceSource]);
+  }, [documents, dropboxIndexedDocumentTags, workspaceEntries]);
+  const mobileSelectedTagGroup =
+    documentTagGroups.find((group) => group.key === mobileSelectedTagKey) ?? null;
+  const mobileTagBrowserActive = isMobileViewport && mobileDocumentBrowseMode === "tags";
+  const documentTagSuggestionGroups = useMemo<DocumentTagSuggestionGroup[]>(
+    () =>
+      documentTagGroups.map((group) => ({
+        key: group.key,
+        label: group.label,
+        documentCount: group.entries.length,
+      })),
+    [documentTagGroups],
+  );
   const selectedDocumentTagKeys = new Set(selectedDocumentTags.map(tagDedupeKey));
   const normalizedTagDraft = normalizeTagInput(tagDraft);
   const normalizedTagDraftKey = tagDedupeKey(tagDraft);
@@ -7388,6 +7353,41 @@ function App() {
   );
   const glossaryModeActive = noteModeEnabled && glossaryModeEnabled;
 
+  useEffect(() => {
+    setDocumentTagsExpanded(false);
+  }, [selectedDocument.id]);
+
+  useLayoutEffect(() => {
+    const list = documentTagsListRef.current;
+    if (!list) {
+      setHiddenDocumentTagCount(0);
+      return;
+    }
+
+    const updateHiddenTagCount = () => {
+      const chips = Array.from(
+        list.querySelectorAll<HTMLElement>(":scope > .document-tag-chip"),
+      );
+      const rowTops = Array.from(new Set(chips.map((chip) => chip.offsetTop))).sort(
+        (left, right) => left - right,
+      );
+      const thirdRowTop = rowTops[2];
+      const nextCount =
+        thirdRowTop === undefined
+          ? 0
+          : chips.filter((chip) => chip.offsetTop >= thirdRowTop).length;
+
+      setHiddenDocumentTagCount((currentCount) =>
+        currentCount === nextCount ? currentCount : nextCount,
+      );
+    };
+
+    updateHiddenTagCount();
+    const resizeObserver = new ResizeObserver(updateHiddenTagCount);
+    resizeObserver.observe(list);
+    return () => resizeObserver.disconnect();
+  }, [documentTagGroups, isMobileViewport, selectedDocumentTags]);
+
   const documentNotes = notes.filter(
     (note) => note.documentId === selectedDocument.id && note.status !== "deleted",
   );
@@ -7396,12 +7396,6 @@ function App() {
   );
   const nativeStorageAvailable = hasNativeStorageAccess();
   const documentSearchVisible = hasOpenDocument && !settingsViewOpen && (documentSearchOpen || isMobileViewport);
-  const mobileDocumentSearchTransitionActive =
-    isMobileViewport && documentSearchTransitionPhase !== "closed";
-  const mobileDocumentSearchTriggerVisible =
-    isMobileViewport && documentSearchTransitionPhase !== "open";
-  const mobileDocumentSearchPanelVisible =
-    isMobileViewport && documentSearchTransitionPhase !== "closed";
   const documentTabsVisible = !settingsViewOpen && openDocumentTabs.length > 1;
 
   useLayoutEffect(() => {
@@ -7918,7 +7912,6 @@ function App() {
   useEffect(
     () => () => {
       window.clearTimeout(returnToViewTimerRef.current);
-      window.clearTimeout(documentSearchTransitionTimerRef.current);
     },
     [],
   );
@@ -8693,9 +8686,7 @@ function App() {
 
   function targetIsInsideDocumentSearch(target: EventTarget | null) {
     const targetElement = elementFromEventTarget(target);
-    return Boolean(
-      targetElement?.closest(".document-search, .document-search__mobile-trigger"),
-    );
+    return Boolean(targetElement?.closest(".document-search"));
   }
 
   function moveEditableCaretToEnd(element: HTMLElement) {
@@ -8989,43 +8980,21 @@ function App() {
     });
   }
 
-  function clearDocumentSearchTransitionTimer() {
-    window.clearTimeout(documentSearchTransitionTimerRef.current);
-    documentSearchTransitionTimerRef.current = 0;
-  }
-
   function openDocumentSearch(selectText = true) {
     if (!hasOpenDocument || settingsViewOpen) return;
 
-    clearDocumentSearchTransitionTimer();
     setDocumentSearchOpen(true);
-
-    if (isMobileViewport) {
-      setDocumentSearchTransitionPhase("opening");
-      documentSearchTransitionTimerRef.current = window.setTimeout(() => {
-        setDocumentSearchTransitionPhase("open");
-        focusDocumentSearchInput(selectText);
-      }, documentSearchMobileTransitionMs);
-      return;
-    }
-
-    setDocumentSearchTransitionPhase("open");
     focusDocumentSearchInput(selectText);
   }
 
   function closeDocumentSearch() {
-    clearDocumentSearchTransitionTimer();
     setDocumentSearchOpen(false);
-
     if (isMobileViewport) {
-      setDocumentSearchTransitionPhase("closing");
-      documentSearchTransitionTimerRef.current = window.setTimeout(() => {
-        setDocumentSearchTransitionPhase("closed");
-      }, documentSearchMobileTransitionMs);
-      return;
+      const activeElement = document.activeElement;
+      if (activeElement instanceof HTMLElement && activeElement.closest(".document-search")) {
+        activeElement.blur();
+      }
     }
-
-    setDocumentSearchTransitionPhase("closed");
   }
 
   function clearDocumentSearch() {
@@ -9681,9 +9650,7 @@ function App() {
 
   useEffect(() => {
     if (!hasOpenDocument && documentSearchOpen) {
-      clearDocumentSearchTransitionTimer();
       setDocumentSearchOpen(false);
-      setDocumentSearchTransitionPhase("closed");
     }
   }, [documentSearchOpen, hasOpenDocument]);
 
@@ -13529,7 +13496,11 @@ function App() {
     setTagDraft("");
     if (existingTagKeys.has(tagDedupeKey(nextTag))) return false;
 
-    return updateSelectedDocumentTags([...selectedDocumentTags, nextTag]);
+    const added = updateSelectedDocumentTags([...selectedDocumentTags, nextTag]);
+    if (added) {
+      setDocumentTagsExpanded(true);
+    }
+    return added;
   }
 
   function closeMobileTagPicker() {
@@ -13604,18 +13575,13 @@ function App() {
     }
   }
 
-  function openMobileTagBrowser(tag = "") {
+  function openMobileTagBrowser(tag: string) {
     if (noteLibraryOpen) {
       closeNoteLibrary({ restoreDirectoryPane: false });
     }
     setMobileDocumentBrowseMode("tags");
     setMobileSelectedTagKey(tagDedupeKey(tag));
     setDirectoryPaneOpen(true);
-  }
-
-  function openMobileTaggedDocument(documentId: string) {
-    selectDocument(documentId);
-    setDirectoryPaneOpen(false);
   }
 
   function updateSelectedDocumentBody(
@@ -15904,27 +15870,27 @@ function App() {
                   <h2>{mobileSelectedTagGroup.label}</h2>
                   <p>
                     {t("tagBrowser.documentCount", {
-                      count: mobileSelectedTagGroup.documents.length,
+                      count: mobileSelectedTagGroup.entries.length,
                     })}
                   </p>
                 </div>
-                {mobileSelectedTagGroup.documents.map((document) => {
-                  const isSelected = document.id === selectedDocument.id;
+                {mobileSelectedTagGroup.entries.map((entry) => {
+                  const isSelected = entry.documentId === selectedDocument.id;
 
                   return (
                     <button
-                      aria-label={t("tagBrowser.openDocument", { title: document.title })}
+                      aria-label={t("tagBrowser.openDocument", { title: entry.title })}
                       className={`document-row mobile-tag-document ${
                         isSelected ? "is-selected" : ""
                       }`}
-                      key={document.id}
-                      onClick={() => openMobileTaggedDocument(document.id)}
-                      title={document.path}
+                      key={entry.documentId}
+                      onClick={() => openWorkspaceEntry(entry)}
+                      title={entry.path}
                       type="button"
                     >
                       <span className="document-disclosure is-placeholder" aria-hidden="true" />
                       <DocumentGlyphIcon kind="file" selected={isSelected} />
-                      <span className="document-title">{document.title}</span>
+                      <span className="document-title">{entry.title}</span>
                     </button>
                   );
                 })}
@@ -15934,7 +15900,7 @@ function App() {
                 <button
                   aria-label={t("tagBrowser.openTag", {
                     tag: group.label,
-                    count: group.documents.length,
+                    count: group.entries.length,
                   })}
                   className="mobile-tag-row"
                   key={group.key}
@@ -15942,7 +15908,7 @@ function App() {
                   type="button"
                 >
                   <span className="mobile-tag-row__label">{group.label}</span>
-                  <span className="mobile-tag-row__count">{group.documents.length}</span>
+                  <span className="mobile-tag-row__count">{group.entries.length}</span>
                 </button>
               ))
             ) : (
@@ -16524,34 +16490,21 @@ function App() {
       <section className="editor-pane" aria-label={t("app.markdownEditor")}>
         <div className="editor-grid">
           <div className="editor-surface" style={editorSurfaceStyle}>
-            {documentSearchVisible && mobileDocumentSearchTransitionActive ? (
-              <div
-                aria-hidden="true"
-                className="document-search-backdrop"
-                data-transition={documentSearchTransitionPhase}
-                onClick={closeDocumentSearch}
-              />
-            ) : null}
-            {documentSearchVisible && mobileDocumentSearchTriggerVisible ? (
-              <button
-                aria-label={t("documentSearch.label")}
-                className="document-search__mobile-trigger"
-                data-has-query={documentSearchQuery.trim() ? "true" : "false"}
-                data-transition={documentSearchTransitionPhase}
-                onClick={() => openDocumentSearch(false)}
-                type="button"
-              >
-                <SearchIcon className="document-search__mobile-trigger-icon" />
-                <span>{t("documentSearch.trigger")}</span>
-              </button>
-            ) : null}
-            {documentSearchVisible && (!isMobileViewport || mobileDocumentSearchPanelVisible) ? (
+            {documentSearchVisible ? (
               <form
                 aria-label={t("documentSearch.label")}
                 className="document-search"
                 data-has-query={documentSearchQuery.trim() ? "true" : "false"}
-                data-expanded={isMobileViewport ? "true" : documentSearchOpen ? "true" : "false"}
-                data-transition={isMobileViewport ? documentSearchTransitionPhase : undefined}
+                data-expanded={documentSearchOpen ? "true" : "false"}
+                onBlur={(event) => {
+                  const nextTarget = event.relatedTarget;
+                  if (
+                    isMobileViewport &&
+                    !(nextTarget instanceof Node && event.currentTarget.contains(nextTarget))
+                  ) {
+                    closeDocumentSearch();
+                  }
+                }}
                 onSubmit={(event) => {
                   event.preventDefault();
                   moveDocumentSearch(1);
@@ -16568,16 +16521,11 @@ function App() {
                     value={documentSearchQuery}
                     onChange={(event) => updateDocumentSearchQuery(event.target.value)}
                     onFocus={() => {
-                      if (isMobileViewport && documentSearchTransitionPhase === "closed") {
+                      if (isMobileViewport && !documentSearchOpen) {
                         openDocumentSearch(false);
                       }
                     }}
                     onKeyDown={handleDocumentSearchInputKeyDown}
-                    onPointerDown={() => {
-                      if (isMobileViewport && documentSearchTransitionPhase === "closed") {
-                        openDocumentSearch(false);
-                      }
-                    }}
                   />
                   {documentSearchQuery ? (
                     <button
@@ -16703,45 +16651,71 @@ function App() {
             <div className="editor-content-frame">
               {hasOpenDocument ? (
                 <section className="document-tags" aria-label={t("tags.label")}>
-                  <div className="document-tags__chips">
-                    {selectedDocumentTags.map((tag) => (
-                      <span className="document-tag-chip" key={tag}>
-                        {isMobileViewport ? (
+                  {selectedDocumentTags.length > 0 ? (
+                    <div
+                      className={`document-tags__chips ${
+                        documentTagsExpanded ? "is-expanded" : ""
+                      }`}
+                      ref={documentTagsListRef}
+                    >
+                      {selectedDocumentTags.map((tag) => (
+                        <span className="document-tag-chip" key={tag}>
+                          {isMobileViewport ? (
+                            <button
+                              aria-label={t("tags.open", { tag })}
+                              className="document-tag-chip__label"
+                              onClick={() => openMobileTagBrowser(tag)}
+                              type="button"
+                            >
+                              <span
+                                aria-hidden="true"
+                                className="document-tag-chip__icon"
+                                dangerouslySetInnerHTML={{ __html: priceTagIconSvg }}
+                              />
+                              {tag}
+                            </button>
+                          ) : (
+                            <span className="document-tag-chip__label">
+                              <span
+                                aria-hidden="true"
+                                className="document-tag-chip__icon"
+                                dangerouslySetInnerHTML={{ __html: priceTagIconSvg }}
+                              />
+                              {tag}
+                            </span>
+                          )}
                           <button
-                            aria-label={t("tags.open", { tag })}
-                            className="document-tag-chip__label"
-                            onClick={() => openMobileTagBrowser(tag)}
+                            aria-label={t("tags.remove", { tag })}
+                            className="document-tag-chip__remove"
+                            disabled={notePanelModalActive}
+                            onClick={() => removeSelectedDocumentTag(tag)}
+                            title={t("tags.remove", { tag })}
                             type="button"
                           >
-                            <span
-                              aria-hidden="true"
-                              className="document-tag-chip__icon"
-                              dangerouslySetInnerHTML={{ __html: priceTagIconSvg }}
-                            />
-                            {tag}
+                            ×
                           </button>
-                        ) : (
-                          <span className="document-tag-chip__label">
-                            <span
-                              aria-hidden="true"
-                              className="document-tag-chip__icon"
-                              dangerouslySetInnerHTML={{ __html: priceTagIconSvg }}
-                            />
-                            {tag}
-                          </span>
-                        )}
-                        <button
-                          aria-label={t("tags.remove", { tag })}
-                          className="document-tag-chip__remove"
-                          disabled={notePanelModalActive}
-                          onClick={() => removeSelectedDocumentTag(tag)}
-                          title={t("tags.remove", { tag })}
-                          type="button"
-                        >
-                          ×
-                        </button>
-                      </span>
-                    ))}
+                        </span>
+                      ))}
+                    </div>
+                  ) : null}
+                  <div className="document-tags__controls">
+                    {hiddenDocumentTagCount > 0 ? (
+                      <button
+                        aria-expanded={documentTagsExpanded}
+                        aria-label={
+                          documentTagsExpanded
+                            ? t("tags.collapse")
+                            : t("tags.expand", { count: hiddenDocumentTagCount })
+                        }
+                        className="document-tags__overflow-toggle"
+                        onClick={() => setDocumentTagsExpanded((expanded) => !expanded)}
+                        type="button"
+                      >
+                        {documentTagsExpanded
+                          ? t("tags.collapse")
+                          : t("tags.more", { count: hiddenDocumentTagCount })}
+                      </button>
+                    ) : null}
                     {isMobileViewport ? (
                       <button
                         aria-label={t("tags.add")}
@@ -16818,15 +16792,6 @@ function App() {
                         ) : null}
                       </form>
                     )}
-                    {isMobileViewport ? (
-                      <button
-                        className="document-tags__browse-all"
-                        onClick={() => openMobileTagBrowser()}
-                        type="button"
-                      >
-                        {t("tags.browseAll")}
-                      </button>
-                    ) : null}
                   </div>
                 </section>
               ) : null}
