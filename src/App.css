@@ -17,6 +17,9 @@
   --color-accent-strong: #171a20;
   --color-accent-ink: #252932;
   --color-mobile-active: #45353d;
+  --color-toolbar-active-bg: #d8b875;
+  --color-toolbar-active-bg-strong: #c69a4d;
+  --color-toolbar-active-text: #432e14;
   --color-accent-soft: #f4ebdc;
   --color-accent-softer: rgba(114, 88, 52, 0.06);
   --color-accent-selection: rgba(32, 35, 41, 0.18);
@@ -2545,12 +2548,12 @@ button.document-tag-chip__label:focus-visible {
 }
 
 .editor-mode-toggle.is-active {
-  border-color: color-mix(in srgb, var(--color-editor-mode-active-bg) 82%, transparent);
-  color: var(--color-editor-mode-active-text);
+  border-color: color-mix(in srgb, var(--color-toolbar-active-bg-strong) 82%, transparent);
+  color: var(--color-toolbar-active-text);
   background: linear-gradient(
     180deg,
-    var(--color-editor-mode-active-bg) 0%,
-    var(--color-editor-mode-active-bg-strong) 100%
+    var(--color-toolbar-active-bg) 0%,
+    var(--color-toolbar-active-bg-strong) 100%
   );
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.18),
@@ -2560,8 +2563,8 @@ button.document-tag-chip__label:focus-visible {
 .editor-mode-toggle.is-active:hover {
   background: linear-gradient(
     180deg,
-    color-mix(in srgb, var(--color-editor-mode-active-bg) 92%, white) 0%,
-    var(--color-editor-mode-active-bg-strong) 100%
+    color-mix(in srgb, var(--color-toolbar-active-bg) 88%, white) 0%,
+    var(--color-toolbar-active-bg-strong) 100%
   );
 }
 
@@ -2621,8 +2624,12 @@ button.document-tag-chip__label:focus-visible {
 .note-mode-switch[aria-checked="true"],
 .note-mode-switch[aria-expanded="true"] {
   border-color: transparent;
-  color: #fff7e3;
-  background: linear-gradient(180deg, #795925 0%, #5f3f1b 100%);
+  color: var(--color-toolbar-active-text);
+  background: linear-gradient(
+    180deg,
+    var(--color-toolbar-active-bg) 0%,
+    var(--color-toolbar-active-bg-strong) 100%
+  );
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.18),
     0 7px 16px rgba(72, 47, 20, 0.18);
@@ -2630,7 +2637,11 @@ button.document-tag-chip__label:focus-visible {
 
 .note-mode-switch[aria-checked="true"]:hover,
 .note-mode-switch[aria-expanded="true"]:hover {
-  background: linear-gradient(180deg, #84622b 0%, #69471f 100%);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--color-toolbar-active-bg) 88%, white) 0%,
+    var(--color-toolbar-active-bg-strong) 100%
+  );
 }
 
 .note-mode-switch--dependent {
@@ -7656,6 +7667,9 @@ button.document-tag-chip__label:focus-visible {
   }
 
   .mobile-command-bar {
+    --color-toolbar-active-bg: transparent;
+    --color-toolbar-active-bg-strong: transparent;
+    --color-toolbar-active-text: #8a5b22;
     box-sizing: border-box;
     position: fixed;
     right: 8px;
@@ -7711,7 +7725,7 @@ button.document-tag-chip__label:focus-visible {
     min-width: 0;
     height: 62px;
     min-height: 62px;
-    grid-template-rows: 22px max-content;
+    grid-template-rows: 23.1525px max-content;
     align-content: center;
     justify-self: center;
     place-items: center;
@@ -7722,27 +7736,35 @@ button.document-tag-chip__label:focus-visible {
     color: var(--color-muted);
     background: transparent;
     box-shadow: none;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-touch-callout: none;
   }
 
   .mobile-command-bar button.is-active {
-    border-color: var(--color-selected-border);
-    color: #fffdf8;
-    background: var(--color-mobile-active);
+    border-color: var(--color-toolbar-active-bg-strong);
+    color: var(--color-toolbar-active-text);
+    background: var(--color-toolbar-active-bg);
+    text-shadow: 0 0 5px rgba(198, 154, 77, 0.32);
+  }
+
+  .mobile-command-bar button.is-active .mobile-command-bar__icon {
+    filter: drop-shadow(0 0 3px rgba(198, 154, 77, 0.32));
   }
 
   .mobile-command-bar button.mobile-command-bar__source {
     display: flex;
     position: relative;
     z-index: 1;
-    width: 82px;
-    height: 82px;
-    min-height: 82px;
+    width: 86px;
+    height: 86px;
+    min-height: 86px;
     align-self: center;
     justify-self: center;
     align-items: center;
     justify-content: center;
     border-color: var(--color-border);
-    border-radius: 20px;
+    border-radius: 999px;
     padding: 0;
     color: var(--color-heading);
     background: var(--color-surface-raised);
@@ -7751,17 +7773,17 @@ button.document-tag-chip__label:focus-visible {
   }
 
   .mobile-command-bar button.mobile-command-bar__source .mobile-command-bar__source-content {
-    display: grid;
+    display: flex;
     width: 100%;
-    height: 100%;
+    height: auto;
     min-width: 0;
     max-width: 70px;
-    grid-template-rows: 25px 12px;
-    align-content: center;
-    justify-items: center;
-    row-gap: 6px;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
     overflow: visible;
-    transform: none;
+    transform: translateY(-5px);
   }
 
   .mobile-command-bar button.mobile-command-bar__source.is-active {
@@ -7774,8 +7796,8 @@ button.document-tag-chip__label:focus-visible {
   }
 
   .mobile-command-bar button.mobile-command-bar__source .mobile-command-bar__icon {
-    width: 25px;
-    height: 25px;
+    width: 27.5625px;
+    height: 27.5625px;
   }
 
   .mobile-command-bar button.mobile-command-bar__source .mobile-command-bar__source-status {
@@ -7788,7 +7810,7 @@ button.document-tag-chip__label:focus-visible {
     color: var(--color-muted);
     background: transparent;
     box-shadow: none;
-    font-size: 0.64rem;
+    font-size: 0.7056rem;
     font-weight: 650;
     line-height: 12px;
     text-align: center;
@@ -7800,6 +7822,13 @@ button.document-tag-chip__label:focus-visible {
   .mobile-command-bar button.mobile-command-bar__source.is-active
     .mobile-command-bar__source-status {
     color: rgba(255, 253, 248, 0.82);
+  }
+
+  .mobile-command-bar button.mobile-command-bar__source
+    .mobile-command-bar__source-status.is-disconnected {
+    color: #aeb1b8;
+    -webkit-text-fill-color: #aeb1b8;
+    text-shadow: none;
   }
 
   .mobile-command-bar button.mobile-command-bar__source
@@ -7847,8 +7876,8 @@ button.document-tag-chip__label:focus-visible {
 
   .mobile-command-bar__icon {
     display: block;
-    width: 21px;
-    height: 21px;
+    width: 23.1525px;
+    height: 23.1525px;
     fill: currentColor;
     stroke: none;
   }
@@ -7858,7 +7887,7 @@ button.document-tag-chip__label:focus-visible {
     max-width: 100%;
     overflow: hidden;
     color: inherit;
-    font-size: 0.74rem;
+    font-size: 0.81585rem;
     font-weight: 760;
     line-height: 1.05;
     text-overflow: ellipsis;

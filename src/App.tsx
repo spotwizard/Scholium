@@ -15478,7 +15478,7 @@ function App() {
   ];
   const mobileConnectedDataSource = mobileDataSources.find((source) => source.connected);
   const mobileDataSourceLabel =
-    mobileConnectedDataSource?.label ?? t("mobileDataSource.label");
+    mobileConnectedDataSource?.label ?? t("mobileDataSource.disconnectedLabel");
   const startupActive = mobileStartupPhase !== "hidden" && !settingsViewOpen;
 
   useEffect(() => {
@@ -17102,7 +17102,7 @@ function App() {
               <MobileToolbarCloudIcon />
               <span
                 className={`mobile-command-bar__source-status ${
-                  mobileConnectedDataSource ? "is-connected" : ""
+                  mobileConnectedDataSource ? "is-connected" : "is-disconnected"
                 }`}
               >
                 {mobileDataSourceLabel}
