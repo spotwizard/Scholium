@@ -15628,32 +15628,31 @@ function App() {
       onMouseDownCapture={handleShellMouseDownCapture}
       onPointerDownCapture={handleShellPointerDownCapture}
     >
-      {startupActive ? (
-        <section
-          aria-label={isMobileViewport ? t("mobileStartup.title") : "Scholium"}
-          className="mobile-startup"
-        >
-          <div className="mobile-startup__center">
-            <img
-              alt="Scholium"
-              className={`mobile-startup__logo ${
-                mobileStartupLogoVisible ? "is-visible" : ""
-              }`}
-              onLoad={() => setMobileStartupLogoLoaded(true)}
-              src={appIconUrl}
-            />
-            {mobileStartupPhase === "welcome" ? (
-              <button
-                className="mobile-startup__cloud-button"
-                onClick={() => void openDropboxCloudSource()}
-                type="button"
-              >
-                {t("mobileStartup.openCloudFiles")}
-              </button>
-            ) : null}
-          </div>
-        </section>
-      ) : null}
+      <section
+        aria-hidden={!startupActive}
+        aria-label={isMobileViewport ? t("mobileStartup.title") : "Scholium"}
+        className={`mobile-startup ${startupActive ? "is-active" : ""}`}
+      >
+        <div className="mobile-startup__center">
+          <img
+            alt="Scholium"
+            className={`mobile-startup__logo ${
+              mobileStartupLogoVisible ? "is-visible" : ""
+            }`}
+            onLoad={() => setMobileStartupLogoLoaded(true)}
+            src={appIconUrl}
+          />
+          {mobileStartupPhase === "welcome" ? (
+            <button
+              className="mobile-startup__cloud-button"
+              onClick={() => void openDropboxCloudSource()}
+              type="button"
+            >
+              {t("mobileStartup.openCloudFiles")}
+            </button>
+          ) : null}
+        </div>
+      </section>
       {!settingsViewOpen && noteLibraryFocusActive ? (
         <div
           aria-hidden="true"

@@ -3847,6 +3847,13 @@ pub fn run() {
         .manage(LocationMenuState::default())
         .manage(DropboxState::default())
         .manage(OpenedFileState::default())
+        .on_page_load(|webview, payload| {
+            if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
+                if let Err(error) = webview.window().show() {
+                    eprintln!("failed to show ready window: {error}");
+                }
+            }
+        })
         .setup(|app| {
             let mut location_store = read_location_store_from_disk(app.handle());
             let pruned_recent_locations = prune_missing_recent_locations(&mut location_store);
