@@ -7129,7 +7129,9 @@ function App() {
   const [dropboxDirectoryPicker, setDropboxDirectoryPicker] =
     useState<DropboxDirectoryPickerState | null>(null);
   const [mobileStartupPhase, setMobileStartupPhase] = useState<MobileStartupPhase>(() => {
-    if (!window.matchMedia(mobileViewportQuery).matches) return "hidden";
+    if (!window.matchMedia(mobileViewportQuery).matches) {
+      return hasNativeStorageAccess() ? "restoring" : "hidden";
+    }
     return readLastOpenedDropboxWorkspace() ? "restoring" : "welcome";
   });
   const [mobileStartupLogoLoaded, setMobileStartupLogoLoaded] = useState(false);
@@ -9432,16 +9434,24 @@ function App() {
         return;
       }
 
-      if (!settingsSnapshot["app.restoreLastOpenedFile"]) return;
+      if (!settingsSnapshot["app.restoreLastOpenedFile"]) {
+        setMobileStartupPhase("hidden");
+        return;
+      }
 
       if (lastOpenedDropboxWorkspace) {
-        void restoreLastOpenedDropboxWorkspace(lastOpenedDropboxWorkspace);
+        void restoreLastOpenedDropboxWorkspace(lastOpenedDropboxWorkspace).finally(() => {
+          if (!disposed) setMobileStartupPhase("hidden");
+        });
         return;
       }
 
       const lastOpenedPath = readLastOpenedMarkdownPath();
       const lastOpenedRootDirectoryPath = readLastOpenedMarkdownRootDirectoryPath();
-      if (!lastOpenedPath && !lastOpenedRootDirectoryPath) return;
+      if (!lastOpenedPath && !lastOpenedRootDirectoryPath) {
+        setMobileStartupPhase("hidden");
+        return;
+      }
 
       setStorageError(t("status.openingLastFile"));
 
@@ -9449,6 +9459,7 @@ function App() {
         if (!lastOpenedPath) {
           forgetLastOpenedMarkdownRootDirectoryPath();
           setStorageError("");
+          setMobileStartupPhase("hidden");
           return;
         }
 
@@ -9466,6 +9477,9 @@ function App() {
             forgetLastOpenedMarkdownRootDirectoryPath();
             console.error(error);
             setStorageError(t("error.couldNotReopenLastFile"));
+          })
+          .finally(() => {
+            if (!disposed) setMobileStartupPhase("hidden");
           });
       }
 
@@ -9476,6 +9490,7 @@ function App() {
         )
           .then(() => {
             setStorageError("");
+            if (!disposed) setMobileStartupPhase("hidden");
           })
           .catch(() => {
             forgetLastOpenedMarkdownRootDirectoryPath();
@@ -11854,6 +11869,8 @@ function App() {
       await openMarkdownFilePath(path);
     } catch {
       setStorageError(t("error.dropOneMdFile"));
+    } finally {
+      setMobileStartupPhase("hidden");
     }
   }
 
@@ -11920,9 +11937,13 @@ function App() {
       );
       applyOpenedDropboxDirectory(openedDirectory);
 
-      if (location.kind === "file") {
-        await openDropboxMarkdownFilePath(location.path, {
-          allowPendingConnection: options.allowPendingConnection,
+      const filePath =
+        location.kind === "file"
+          ? location.path
+          : firstDropboxMarkdownFileEntry(openedDirectory)?.path;
+      if (filePath) {
+        await openDropboxMarkdownFilePath(filePath, {
+          allowPendingConnection: connected,
         });
       }
     } catch (error) {
@@ -15492,8 +15513,7 @@ function App() {
   const mobileConnectedDataSource = mobileDataSources.find((source) => source.connected);
   const mobileDataSourceLabel =
     mobileConnectedDataSource?.label ?? t("mobileDataSource.label");
-  const mobileStartupActive =
-    isMobileViewport && mobileStartupPhase !== "hidden" && !settingsViewOpen;
+  const startupActive = mobileStartupPhase !== "hidden" && !settingsViewOpen;
 
   useEffect(() => {
     let firstFrame = 0;
@@ -15503,7 +15523,7 @@ function App() {
       window.cancelAnimationFrame(firstFrame);
       window.cancelAnimationFrame(secondFrame);
       setMobileStartupLogoVisible(false);
-      if (!mobileStartupActive || !mobileStartupLogoLoaded || document.hidden) return;
+      if (!startupActive || !mobileStartupLogoLoaded || document.hidden) return;
 
       firstFrame = window.requestAnimationFrame(() => {
         secondFrame = window.requestAnimationFrame(() => setMobileStartupLogoVisible(true));
@@ -15518,11 +15538,11 @@ function App() {
       window.cancelAnimationFrame(firstFrame);
       window.cancelAnimationFrame(secondFrame);
     };
-  }, [mobileStartupActive, mobileStartupLogoLoaded]);
+  }, [startupActive, mobileStartupLogoLoaded]);
 
   const shellClassName = [
     "scholium-shell",
-    mobileStartupActive ? "has-mobile-startup" : "",
+    startupActive ? "has-mobile-startup" : "",
     isMobileSafeLayoutViewport ? "is-mobile-safe-layout" : "",
     directoryPaneOpen ? "" : "is-directory-pane-closed",
     !settingsViewOpen && noteModeEnabled && noteLibraryOpen ? "is-note-library-open" : "",
@@ -15608,8 +15628,11 @@ function App() {
       onMouseDownCapture={handleShellMouseDownCapture}
       onPointerDownCapture={handleShellPointerDownCapture}
     >
-      {mobileStartupActive ? (
-        <section aria-label={t("mobileStartup.title")} className="mobile-startup">
+      {startupActive ? (
+        <section
+          aria-label={isMobileViewport ? t("mobileStartup.title") : "Scholium"}
+          className="mobile-startup"
+        >
           <div className="mobile-startup__center">
             <img
               alt="Scholium"
