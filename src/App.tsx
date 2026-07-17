@@ -12845,6 +12845,9 @@ function App() {
     try {
       const status = await invoke<DropboxOAuthStatusResult>("dropbox_oauth_status");
       setDropboxConnected(status.connected);
+      if (status.connected && isMobileViewport && !readLastOpenedDropboxWorkspace()) {
+        setMobileStartupPhase("hidden");
+      }
     } catch (error) {
       setDropboxConnected(false);
       setStorageError(translatedError(error, "dropbox.error.unexpected"));
@@ -12972,6 +12975,9 @@ function App() {
         });
       } else {
         setStorageError("");
+      }
+      if (status.connected && isMobileViewport) {
+        setMobileStartupPhase("hidden");
       }
     } catch (error) {
       setDropboxConnecting(false);
@@ -15603,8 +15609,7 @@ function App() {
   const mobileConnectedDataSource = mobileDataSources.find((source) => source.connected);
   const mobileDataSourceLabel =
     mobileConnectedDataSource?.label ?? t("mobileDataSource.disconnectedLabel");
-  const startupActive =
-    mobileStartupPhase !== "hidden" && !dropboxConnected && !settingsViewOpen;
+  const startupActive = mobileStartupPhase !== "hidden" && !settingsViewOpen;
 
   useEffect(() => {
     let firstFrame = 0;
