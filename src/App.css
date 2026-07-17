@@ -955,6 +955,28 @@ button:disabled {
   font-weight: 740;
 }
 
+.mobile-startup__actions {
+  display: grid;
+  gap: 10px;
+  justify-items: center;
+}
+
+.mobile-startup__skip-button {
+  min-height: 36px;
+  border: 0;
+  padding: 0 14px;
+  color: var(--color-muted);
+  background: transparent;
+  box-shadow: none;
+  font-size: 0.82rem;
+  font-weight: 680;
+}
+
+.mobile-startup__skip-button:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--color-accent) 32%, transparent);
+  outline-offset: 2px;
+}
+
 .dropbox-directory-dialog {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;

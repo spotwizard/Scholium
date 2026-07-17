@@ -7,16 +7,22 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs;
+#[cfg(not(mobile))]
 use std::io::{Read, Write};
+#[cfg(not(mobile))]
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 #[cfg(desktop)]
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+#[cfg(not(mobile))]
+use std::time::Instant;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 #[cfg(desktop)]
 use tauri::menu::{AboutMetadata, Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::{AppHandle, Emitter, Manager};
+#[cfg(mobile)]
+use tauri_plugin_deep_link::DeepLinkExt;
 use url::Url;
 
 #[cfg(desktop)]
@@ -41,6 +47,8 @@ const NOTES_STORE_DIRECTORY: &str = "notes";
 const DEFAULT_APP_LANGUAGE: &str = "zh-Hant";
 const DROPBOX_OAUTH_REDIRECT_PORT: u16 = 53682;
 const DROPBOX_OAUTH_CALLBACK_PATH: &str = "/dropbox/oauth/callback";
+#[cfg(any(mobile, test))]
+const DROPBOX_MOBILE_URL_SCHEME: &str = "db-bdv6guwbi6ol9mg";
 const DROPBOX_OAUTH_AUTHORIZE_URL: &str = "https://www.dropbox.com/oauth2/authorize";
 const DROPBOX_OAUTH_TOKEN_URL: &str = "https://api.dropboxapi.com/oauth2/token";
 const DROPBOX_LIST_FOLDER_URL: &str = "https://api.dropboxapi.com/2/files/list_folder";
@@ -287,7 +295,7 @@ struct LocalImageFile {
     data_url: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DropboxOAuthStatus {
     connected: bool,
@@ -701,8 +709,14 @@ fn urlencoded_form_body(params: &[(&str, &str)]) -> String {
     serializer.finish()
 }
 
+#[cfg(not(mobile))]
 fn dropbox_redirect_uri() -> String {
     format!("http://127.0.0.1:{DROPBOX_OAUTH_REDIRECT_PORT}{DROPBOX_OAUTH_CALLBACK_PATH}")
+}
+
+#[cfg(mobile)]
+fn dropbox_redirect_uri() -> String {
+    format!("{DROPBOX_MOBILE_URL_SCHEME}://2/token")
 }
 
 fn dropbox_token_store_path(app_handle: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -782,6 +796,41 @@ fn dropbox_oauth_callback_payload(error: String) -> DropboxOAuthCallbackPayload 
     }
 }
 
+fn dropbox_oauth_callback_from_url(url: &Url) -> DropboxOAuthCallbackPayload {
+    let query_pairs: HashMap<String, String> = url.query_pairs().into_owned().collect();
+    let code = query_pairs.get("code").cloned();
+    let state = query_pairs.get("state").cloned();
+    let error = query_pairs
+        .get("error_description")
+        .or_else(|| query_pairs.get("error"))
+        .cloned();
+
+    if let Some(error) = error {
+        return dropbox_oauth_callback_payload(error);
+    }
+
+    if code.is_none() {
+        return dropbox_oauth_callback_payload(
+            "Dropbox callback did not include an authorization code".to_string(),
+        );
+    }
+
+    DropboxOAuthCallbackPayload {
+        status: "success".to_string(),
+        code,
+        state,
+        error: None,
+    }
+}
+
+#[cfg(mobile)]
+fn is_dropbox_mobile_callback(url: &Url) -> bool {
+    url.scheme() == DROPBOX_MOBILE_URL_SCHEME
+        && url.host_str() == Some("2")
+        && url.path() == "/token"
+}
+
+#[cfg(not(mobile))]
 fn write_dropbox_oauth_http_response(
     stream: &mut std::net::TcpStream,
     ok: bool,
@@ -800,6 +849,7 @@ fn write_dropbox_oauth_http_response(
     stream.write_all(response.as_bytes())
 }
 
+#[cfg(not(mobile))]
 fn wait_for_dropbox_oauth_callback(listener: TcpListener) -> DropboxOAuthCallbackPayload {
     if let Err(error) = listener.set_nonblocking(true) {
         return dropbox_oauth_callback_payload(format!(
@@ -840,33 +890,10 @@ fn wait_for_dropbox_oauth_callback(listener: TcpListener) -> DropboxOAuthCallbac
                         "Dropbox callback URL could not be parsed".to_string(),
                     );
                 };
-                let query_pairs: std::collections::HashMap<String, String> =
-                    url.query_pairs().into_owned().collect();
-                let code = query_pairs.get("code").cloned();
-                let state = query_pairs.get("state").cloned();
-                let error = query_pairs
-                    .get("error_description")
-                    .or_else(|| query_pairs.get("error"))
-                    .cloned();
-                let is_success = code.is_some() && error.is_none();
+                let payload = dropbox_oauth_callback_from_url(&url);
+                let is_success = payload.status == "success";
                 let _ = write_dropbox_oauth_http_response(&mut stream, is_success);
-
-                if let Some(error) = error {
-                    return dropbox_oauth_callback_payload(error);
-                }
-
-                if code.is_none() {
-                    return dropbox_oauth_callback_payload(
-                        "Dropbox callback did not include an authorization code".to_string(),
-                    );
-                }
-
-                return DropboxOAuthCallbackPayload {
-                    status: "success".to_string(),
-                    code,
-                    state,
-                    error: None,
-                };
+                return payload;
             }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 if Instant::now() >= deadline {
@@ -2873,6 +2900,7 @@ fn start_dropbox_oauth(
         return Err("Dropbox app key is required.".to_string());
     }
 
+    #[cfg(not(mobile))]
     let listener = TcpListener::bind(("127.0.0.1", DROPBOX_OAUTH_REDIRECT_PORT))
         .map_err(|error| format!("failed to start Dropbox callback listener: {error}"))?;
     let redirect_uri = dropbox_redirect_uri();
@@ -2908,11 +2936,14 @@ fn start_dropbox_oauth(
         .append_pair("redirect_uri", &redirect_uri)
         .append_pair("state", &state);
 
-    let app_for_callback = app.clone();
-    std::thread::spawn(move || {
-        let payload = wait_for_dropbox_oauth_callback(listener);
-        let _ = app_for_callback.emit("scholium-dropbox-oauth-callback", payload);
-    });
+    #[cfg(not(mobile))]
+    {
+        let app_for_callback = app.clone();
+        std::thread::spawn(move || {
+            let payload = wait_for_dropbox_oauth_callback(listener);
+            let _ = app_for_callback.emit("scholium-dropbox-oauth-callback", payload);
+        });
+    }
 
     Ok(DropboxOAuthStart {
         auth_url: authorize_url.to_string(),
@@ -2948,7 +2979,11 @@ async fn complete_dropbox_oauth(
         oauth_session.take().expect("Dropbox OAuth session exists")
     };
 
-    let response = reqwest::Client::new()
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(45))
+        .build()
+        .map_err(|error| format!("failed to prepare Dropbox authorization exchange: {error}"))?;
+    let response = client
         .post(DROPBOX_OAUTH_TOKEN_URL)
         .header(
             "Content-Type",
@@ -2980,7 +3015,10 @@ async fn complete_dropbox_oauth(
     replace_dropbox_tokens(&app, Some(tokens.clone()))?;
     write_dropbox_tokens(&app, &tokens)?;
 
-    Ok(DropboxOAuthStatus { connected: true })
+    let status = DropboxOAuthStatus { connected: true };
+    let _ = app.emit("scholium-dropbox-oauth-connected", status.clone());
+
+    Ok(status)
 }
 
 #[tauri::command]
@@ -3844,6 +3882,7 @@ fn handle_opened_file_urls(app_handle: &AppHandle, urls: Vec<Url>) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default()
+        .plugin(tauri_plugin_deep_link::init())
         .manage(LocationMenuState::default())
         .manage(DropboxState::default())
         .manage(OpenedFileState::default())
@@ -3855,6 +3894,19 @@ pub fn run() {
             }
         })
         .setup(|app| {
+            #[cfg(mobile)]
+            {
+                let app_handle = app.handle().clone();
+                app.deep_link().on_open_url(move |event| {
+                    for url in event.urls() {
+                        if is_dropbox_mobile_callback(&url) {
+                            let payload = dropbox_oauth_callback_from_url(&url);
+                            let _ = app_handle.emit("scholium-dropbox-oauth-callback", payload);
+                        }
+                    }
+                });
+            }
+
             let mut location_store = read_location_store_from_disk(app.handle());
             let pruned_recent_locations = prune_missing_recent_locations(&mut location_store);
             if pruned_recent_locations {
@@ -4019,5 +4071,19 @@ mod tests {
         assert!(dropped_markdown_path(&["draft.txt".to_string()]).is_err());
         assert!(dropped_markdown_path(&[]).is_err());
         assert!(dropped_markdown_path(&["one.md".to_string(), "two.md".to_string()]).is_err());
+    }
+
+    #[test]
+    fn parses_dropbox_mobile_callback() {
+        let callback =
+            Url::parse("db-bdv6guwbi6ol9mg://2/token?code=authorization-code&state=csrf-state")
+                .unwrap();
+        let payload = dropbox_oauth_callback_from_url(&callback);
+
+        assert_eq!(callback.scheme(), DROPBOX_MOBILE_URL_SCHEME);
+        assert_eq!(payload.status, "success");
+        assert_eq!(payload.code.as_deref(), Some("authorization-code"));
+        assert_eq!(payload.state.as_deref(), Some("csrf-state"));
+        assert!(payload.error.is_none());
     }
 }
