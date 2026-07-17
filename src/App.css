@@ -3563,7 +3563,7 @@ button.document-tag-chip__label:focus-visible {
   margin: 0 0 1em;
   border: 1px solid var(--color-border);
   border-radius: 8px;
-  padding: var(--code-block-toolbar-reserved-space) 12px 12px;
+  padding: var(--code-block-toolbar-reserved-space) 12px;
   background: var(--color-surface-soft);
 }
 
@@ -7662,7 +7662,7 @@ button.document-tag-chip__label:focus-visible {
     box-sizing: border-box;
     max-width: 100%;
     overflow: hidden;
-    padding: var(--code-block-toolbar-reserved-space) 10px 10px;
+    padding: var(--code-block-toolbar-reserved-space) 10px;
   }
 
   .milkdown-markdown-editor .milkdown .milkdown-code-block .tools {
