@@ -2749,6 +2749,7 @@ button.document-tag-chip__label:focus-visible {
   font-weight: 560;
   line-height: 1.2;
   outline: none;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .document-search__field input::placeholder {
@@ -7812,10 +7813,17 @@ button.document-tag-chip__label:focus-visible {
   .mobile-command-bar button.mobile-command-bar__source.is-active {
     border-color: color-mix(in srgb, var(--color-mobile-active) 72%, var(--color-border));
     color: #fffdf8;
-    background: var(--color-mobile-active);
+    background: linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--color-mobile-active) 84%, white) 0%,
+      var(--color-mobile-active) 52%,
+      color-mix(in srgb, var(--color-mobile-active) 82%, black) 100%
+    );
     box-shadow:
       0 8px 18px rgba(58, 43, 51, 0.22),
-      inset 0 0 0 1px rgba(255, 253, 248, 0.14);
+      inset 0 1px 0 rgba(255, 253, 248, 0.22),
+      inset 0 -1px 0 rgba(24, 17, 21, 0.18),
+      inset 0 0 0 1px rgba(255, 253, 248, 0.1);
   }
 
   .mobile-command-bar button.mobile-command-bar__source .mobile-command-bar__icon {
