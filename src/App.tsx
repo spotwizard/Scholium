@@ -70,6 +70,8 @@ const markdownOrderedListLinePattern = /^(\s*)\d+[.)]\s+(.*)$/;
 const inlineBreakPattern = /<br\s*\/?>/gi;
 const annotationClickDelayMs = 500;
 const libraryAnnotationClickSuppressionMs = annotationClickDelayMs + 350;
+const mobileWorkspaceFileLongPressMs = 500;
+const mobileWorkspaceFileLongPressMoveTolerancePx = 10;
 const pendingAnchorAnnotationId = "__scholium_pending_anchor__";
 
 function shouldClearTouchButtonFocus() {
@@ -482,6 +484,12 @@ type RenameDialogState = WorkspaceActionTarget & {
   isSubmitting: boolean;
 };
 
+type CreateEntryDialogState = {
+  kind: "file" | "folder";
+  name: string;
+  isSubmitting: boolean;
+};
+
 function DocumentGlyphIcon({ kind, selected = false }: { kind: "file" | "folder"; selected?: boolean }) {
   const glyphSvg =
     kind === "folder"
@@ -789,68 +797,6 @@ function SearchCloseIcon() {
     <svg aria-hidden="true" className="document-search__button-icon" fill="none" viewBox="0 0 24 24">
       <path d="M6 6l12 12" />
       <path d="M18 6 6 18" />
-    </svg>
-  );
-}
-
-function MobileNewFileIcon() {
-  return (
-    <svg
-      aria-hidden="true"
-      className="mobile-source-action__icon"
-      fill="none"
-      viewBox="0 0 24 24"
-    >
-      <path d="M7 4.5h7l3 3v12H7z" />
-      <path d="M14 4.5v3h3" />
-      <path d="M12 11v5" />
-      <path d="M9.5 13.5h5" />
-    </svg>
-  );
-}
-
-function MobileNewFolderIcon() {
-  return (
-    <svg
-      aria-hidden="true"
-      className="mobile-source-action__icon"
-      fill="none"
-      viewBox="0 0 24 24"
-    >
-      <path d="M3.5 7h6l2 2h9v8.5a2 2 0 0 1-2 2h-15z" />
-      <path d="M3.5 7v-2h5.4l2 2h4.6" />
-      <path d="M12 11.5v5" />
-      <path d="M9.5 14h5" />
-    </svg>
-  );
-}
-
-function MobileOpenFileIcon() {
-  return (
-    <svg
-      aria-hidden="true"
-      className="mobile-source-action__icon"
-      fill="none"
-      viewBox="0 0 24 24"
-    >
-      <path d="M7 4.5h7l3 3v12H7z" />
-      <path d="M14 4.5v3h3" />
-      <path d="M9.5 11h5" />
-      <path d="M9.5 14.5h4" />
-    </svg>
-  );
-}
-
-function MobileOpenFolderIcon() {
-  return (
-    <svg
-      aria-hidden="true"
-      className="mobile-source-action__icon"
-      fill="none"
-      viewBox="0 0 24 24"
-    >
-      <path d="M3.5 7h6l2 2h9v8.5a2 2 0 0 1-2 2h-15z" />
-      <path d="M3.5 7v-2h5.4l2 2h4.6" />
     </svg>
   );
 }
@@ -1946,6 +1892,10 @@ function normalizeLocalPathForCompare(path: string | null | undefined) {
 
 function localPathsMatch(left: string | null | undefined, right: string | null | undefined) {
   return normalizeLocalPathForCompare(left) === normalizeLocalPathForCompare(right);
+}
+
+function nativeLocationKey(location: Pick<NativeLocation, "source" | "kind" | "path">) {
+  return `${location.source}:${location.kind}:${location.path}`;
 }
 
 function localPathIsInsideDirectory(path: string, directoryPath: string) {
@@ -7131,6 +7081,8 @@ function App() {
   const [duplicateFileDialog, setDuplicateFileDialog] =
     useState<DuplicateFileDialogState | null>(null);
   const [renameDialog, setRenameDialog] = useState<RenameDialogState | null>(null);
+  const [createEntryDialog, setCreateEntryDialog] =
+    useState<CreateEntryDialogState | null>(null);
   const [dropboxConnected, setDropboxConnected] = useState(false);
   const [dropboxConnectionChecked, setDropboxConnectionChecked] = useState(false);
   const [dropboxConnecting, setDropboxConnecting] = useState(false);
@@ -7149,6 +7101,7 @@ function App() {
   const settingsCloseButtonRef = useRef<HTMLButtonElement | null>(null);
   const duplicateFileInputRef = useRef<HTMLInputElement | null>(null);
   const renameInputRef = useRef<HTMLInputElement | null>(null);
+  const createEntryInputRef = useRef<HTMLInputElement | null>(null);
   const documentSearchInputRef = useRef<HTMLInputElement | null>(null);
   const noteEditorRootRef = useRef<HTMLDivElement | null>(null);
   const noteModeDefaultAppliedRef = useRef(noteModeEnabled);
@@ -7171,6 +7124,16 @@ function App() {
   const noteEditModalActiveRef = useRef(false);
   const copiedNoteActionTimerRef = useRef(0);
   const ignoreNextWorkspaceClickRef = useRef(false);
+  const workspaceFileLongPressTimerRef = useRef(0);
+  const workspaceFileLongPressStartRef = useRef<{
+    pointerId: number;
+    clientX: number;
+    clientY: number;
+  } | null>(null);
+  const suppressedWorkspaceFileClickRef = useRef<{
+    entryId: string;
+    until: number;
+  } | null>(null);
   const suppressedLibraryAnnotationClickRef = useRef<{
     noteId: string;
     until: number;
@@ -7216,6 +7179,9 @@ function App() {
   const lastOpenedFileRestoreAttemptedRef = useRef(false);
   const dropboxPickerModeAfterAuthRef = useRef<DropboxPickerMode | null>(null);
   const pendingDropboxLocationAfterAuthRef = useRef<NativeLocation | null>(null);
+  const dropboxPickerSessionRevisionRef = useRef(0);
+  const returnToMobileDataSourceOnPickerCancelRef = useRef(false);
+  const returnToMobileDataSourceAfterDropboxAuthRef = useRef(false);
   const openSettingsHandlerRef = useRef<() => void>(() => undefined);
   const newMarkdownFileHandlerRef = useRef<() => void>(() => undefined);
   const newMarkdownFolderHandlerRef = useRef<() => void>(() => undefined);
@@ -7268,6 +7234,7 @@ function App() {
   useEffect(() => {
     return () => {
       window.clearTimeout(copiedNoteActionTimerRef.current);
+      window.clearTimeout(workspaceFileLongPressTimerRef.current);
     };
   }, []);
 
@@ -9200,6 +9167,15 @@ function App() {
   }, [renameDialog?.path]);
 
   useEffect(() => {
+    if (!createEntryDialog) return;
+
+    window.setTimeout(() => {
+      createEntryInputRef.current?.focus();
+      createEntryInputRef.current?.select();
+    });
+  }, [createEntryDialog?.kind]);
+
+  useEffect(() => {
     if (!settingsViewOpen) return;
 
     window.setTimeout(() => {
@@ -9228,10 +9204,10 @@ function App() {
       setSavedLocations(emptySavedLocations);
       return;
     }
-    if (!isMobileViewport || !directoryPaneOpen) return;
+    if (!isMobileViewport || !mobileDataSourceOpen) return;
 
     void refreshSavedLocations();
-  }, [directoryPaneOpen, isMobileViewport, nativeStorageAvailable]);
+  }, [isMobileViewport, mobileDataSourceOpen, nativeStorageAvailable]);
 
   useEffect(() => {
     const query = fileSearchQuery.trim();
@@ -9676,7 +9652,13 @@ function App() {
         ((event.metaKey && !event.ctrlKey) || (event.ctrlKey && !event.metaKey));
 
       if (isFindShortcut) {
-        if (!hasOpenDocument || settingsViewOpen || duplicateFileDialog || dropboxDirectoryPicker) {
+        if (
+          !hasOpenDocument ||
+          settingsViewOpen ||
+          createEntryDialog ||
+          duplicateFileDialog ||
+          dropboxDirectoryPicker
+        ) {
           return;
         }
 
@@ -9687,7 +9669,9 @@ function App() {
       }
 
       if (event.key !== "Escape" || !documentSearchOpen) return;
-      if (settingsViewOpen || duplicateFileDialog || dropboxDirectoryPicker) return;
+      if (settingsViewOpen || createEntryDialog || duplicateFileDialog || dropboxDirectoryPicker) {
+        return;
+      }
 
       event.preventDefault();
       event.stopPropagation();
@@ -9701,6 +9685,7 @@ function App() {
     };
   }, [
     documentSearchOpen,
+    createEntryDialog,
     dropboxDirectoryPicker,
     duplicateFileDialog,
     hasOpenDocument,
@@ -9774,6 +9759,15 @@ function App() {
         return;
       }
 
+      if (createEntryDialog) {
+        if (event.key === "Escape" && !createEntryDialog.isSubmitting) {
+          event.preventDefault();
+          setCreateEntryDialog(null);
+          setStorageError("");
+        }
+        return;
+      }
+
       if (duplicateFileDialog) {
         if (event.key === "Escape" && !duplicateFileDialog.isSubmitting) {
           event.preventDefault();
@@ -9793,7 +9787,7 @@ function App() {
       if (dropboxDirectoryPicker) {
         if (event.key === "Escape" && !dropboxDirectoryPicker.isOpening) {
           event.preventDefault();
-          setDropboxDirectoryPicker(null);
+          closeDropboxDirectoryPicker();
         }
         return;
       }
@@ -9886,6 +9880,7 @@ function App() {
     activeNoteId,
     annotationToolsAvailable,
     closeNotePanel,
+    createEntryDialog,
     duplicateFileDialog,
     dropboxDirectoryPicker,
     glossaryModeEnabled,
@@ -10448,6 +10443,7 @@ function App() {
       (loadedFile) => loadedFile.glossaryTerms ?? [],
     );
     const firstDocument = loadedDocuments[0];
+    const rootPath = parentDirectoryPath(firstDocument.filePath);
     const nextDocuments = [
       ...loadedDocuments,
       ...documentsRef.current.filter((document) => !loadedDocumentIds.has(document.id)),
@@ -10471,7 +10467,8 @@ function App() {
 
       return options.sortEntries ? sortWorkspaceEntriesForDirectory(nextEntries) : nextEntries;
     });
-    setWorkspaceRootPath(parentDirectoryPath(firstDocument.filePath));
+    setWorkspaceTitle(fileNameFromPath(rootPath) || rootPath || "Scholium");
+    setWorkspaceRootPath(rootPath);
     setWorkspaceSource("local");
     resetFileSearch();
     setNotes((currentNotes) => [
@@ -10497,7 +10494,7 @@ function App() {
     setActiveGlossaryMode("view");
     markLoadedDocumentsClean(loadedDocuments);
     rememberLastOpenedMarkdownPath(firstDocument.filePath);
-    rememberLastOpenedMarkdownRootDirectoryPath(parentDirectoryPath(firstDocument.filePath));
+    rememberLastOpenedMarkdownRootDirectoryPath(rootPath);
     if (options.rememberRecent !== false) {
       loadedFiles.forEach((loadedFile) => {
         rememberNativeRecentLocation({
@@ -11250,15 +11247,26 @@ function App() {
   ) {
     if (!nativeStorageAvailable) {
       setStorageError(t("error.nativeRuntimeRequired"));
+      cancelMobileLocationPicker();
       return;
     }
-    if (dropboxConnecting && !options.allowPendingConnection) return;
+    if (dropboxConnecting && !options.allowPendingConnection) {
+      cancelMobileLocationPicker();
+      return;
+    }
     if (isMobileViewport && browserAppearsOffline()) {
       setStorageError(t("dropbox.error.offline"));
+      cancelMobileLocationPicker();
       return;
     }
 
+    const pickerSessionRevision = dropboxPickerSessionRevisionRef.current + 1;
+    dropboxPickerSessionRevisionRef.current = pickerSessionRevision;
+
     setFileContextMenu(null);
+    if (!createEntryDialog?.isSubmitting) {
+      setCreateEntryDialog(null);
+    }
     if (!duplicateFileDialog?.isSubmitting) {
       setDuplicateFileDialog(null);
     }
@@ -11275,9 +11283,12 @@ function App() {
 
     try {
       const status = await invoke<DropboxOAuthStatusResult>("dropbox_oauth_status");
+      if (pickerSessionRevision !== dropboxPickerSessionRevisionRef.current) return;
       setDropboxConnected(status.connected);
 
       if (!status.connected && !options.allowPendingConnection) {
+        completeMobileLocationPicker();
+        invalidateDropboxDirectoryPickerSession();
         setDropboxDirectoryPicker(null);
         dropboxPickerModeAfterAuthRef.current = null;
         openSettingsView("cloud");
@@ -11287,11 +11298,14 @@ function App() {
         throw new Error(t("dropbox.error.notConnected"));
       }
 
-      await loadDropboxDirectoryPickerRoot(pickerMode);
+      await loadDropboxDirectoryPickerRoot(pickerMode, pickerSessionRevision);
     } catch (error) {
+      if (pickerSessionRevision !== dropboxPickerSessionRevisionRef.current) return;
       const message = error instanceof Error ? error.message : String(error);
       const displayMessage = dropboxUserFacingError(message);
       if (dropboxErrorNeedsAuthorization(message)) {
+        completeMobileLocationPicker();
+        invalidateDropboxDirectoryPickerSession();
         setDropboxDirectoryPicker(null);
         setDropboxConnected(false);
         openSettingsView("cloud");
@@ -11310,7 +11324,12 @@ function App() {
     }
   }
 
-  async function loadDropboxDirectoryPickerRoot(mode: DropboxPickerMode) {
+  async function loadDropboxDirectoryPickerRoot(
+    mode: DropboxPickerMode,
+    pickerSessionRevision: number,
+  ) {
+    if (pickerSessionRevision !== dropboxPickerSessionRevisionRef.current) return;
+
     setDropboxDirectoryPicker((currentPicker) =>
       currentPicker
         ? {
@@ -11328,6 +11347,7 @@ function App() {
         "list_dropbox_markdown_directory",
         { path: "" },
       );
+      if (pickerSessionRevision !== dropboxPickerSessionRevisionRef.current) return;
       const directories = dropboxPickerNodesFromOpenedDirectory(openedDirectory, mode);
       const selectedPath =
         mode === "file"
@@ -11347,9 +11367,12 @@ function App() {
       });
       setStorageError("");
     } catch (error) {
+      if (pickerSessionRevision !== dropboxPickerSessionRevisionRef.current) return;
       const message = error instanceof Error ? error.message : String(error);
       const displayMessage = dropboxUserFacingError(message);
       if (dropboxErrorNeedsAuthorization(message)) {
+        completeMobileLocationPicker();
+        invalidateDropboxDirectoryPickerSession();
         setDropboxDirectoryPicker(null);
         setDropboxConnected(false);
         openSettingsView("cloud");
@@ -11371,11 +11394,17 @@ function App() {
     }
   }
 
+  function invalidateDropboxDirectoryPickerSession() {
+    dropboxPickerSessionRevisionRef.current += 1;
+  }
+
   function closeDropboxDirectoryPicker() {
     if (dropboxDirectoryPicker?.isOpening) return;
 
+    invalidateDropboxDirectoryPickerSession();
     setDropboxDirectoryPicker(null);
     setStorageError("");
+    cancelMobileLocationPicker();
   }
 
   function handleDropboxDirectoryBackdropWheel(event: ReactWheelEvent<HTMLDivElement>) {
@@ -11390,6 +11419,7 @@ function App() {
   async function toggleDropboxPickerDirectory(path: string) {
     const picker = dropboxDirectoryPicker;
     if (!picker || picker.isLoadingRoot || picker.isOpening) return;
+    const pickerSessionRevision = dropboxPickerSessionRevisionRef.current;
 
     const directory = flattenDropboxDirectoryPickerNodes(picker.directories).find(
       ({ node }) => node.path === path,
@@ -11459,6 +11489,7 @@ function App() {
         "list_dropbox_markdown_directory",
         { path },
       );
+      if (pickerSessionRevision !== dropboxPickerSessionRevisionRef.current) return;
       const childDirectories = dropboxPickerNodesFromOpenedDirectory(
         openedDirectory,
         picker.mode,
@@ -11492,9 +11523,12 @@ function App() {
       );
       setStorageError("");
     } catch (error) {
+      if (pickerSessionRevision !== dropboxPickerSessionRevisionRef.current) return;
       const message = error instanceof Error ? error.message : String(error);
       const displayMessage = dropboxUserFacingError(message);
       if (dropboxErrorNeedsAuthorization(message)) {
+        completeMobileLocationPicker();
+        invalidateDropboxDirectoryPickerSession();
         setDropboxDirectoryPicker(null);
         setDropboxConnected(false);
         openSettingsView("cloud");
@@ -11525,6 +11559,7 @@ function App() {
 
   async function openSelectedDropboxPickerItem(pathOverride?: string) {
     const picker = dropboxDirectoryPicker;
+    const pickerSessionRevision = dropboxPickerSessionRevisionRef.current;
     const selectedPath = pathOverride ?? picker?.selectedPath;
     if (!selectedPath || !picker || picker.isLoadingRoot || picker.isOpening) {
       return;
@@ -11543,6 +11578,8 @@ function App() {
 
     try {
       if (selectedEntry.kind === "file") {
+        completeMobileLocationPicker();
+        invalidateDropboxDirectoryPickerSession();
         setDropboxDirectoryPicker(null);
         await openDropboxLocation({
           kind: "file",
@@ -11562,7 +11599,10 @@ function App() {
         "list_dropbox_markdown_directory",
         { path: selectedPath },
       );
+      if (pickerSessionRevision !== dropboxPickerSessionRevisionRef.current) return;
       applyOpenedDropboxDirectory(openedDirectory);
+      completeMobileLocationPicker();
+      invalidateDropboxDirectoryPickerSession();
       setDropboxDirectoryPicker(null);
       const firstFile = firstDropboxMarkdownFileEntry(openedDirectory);
       if (firstFile) {
@@ -11575,6 +11615,7 @@ function App() {
         setMobileStartupPhase("hidden");
       }
     } catch (error) {
+      if (pickerSessionRevision !== dropboxPickerSessionRevisionRef.current) return;
       const message = error instanceof Error ? error.message : String(error);
       const displayMessage = dropboxUserFacingError(message);
       setDropboxDirectoryPicker((currentPicker) =>
@@ -11622,6 +11663,15 @@ function App() {
   }
 
   function openWorkspaceEntry(entry: WorkspaceEntry, event?: MouseEvent<HTMLButtonElement>) {
+    const suppressedClick = suppressedWorkspaceFileClickRef.current;
+    if (suppressedClick?.entryId === entry.id && Date.now() < suppressedClick.until) {
+      suppressedWorkspaceFileClickRef.current = null;
+      return;
+    }
+    if (suppressedClick && Date.now() >= suppressedClick.until) {
+      suppressedWorkspaceFileClickRef.current = null;
+    }
+
     if (ignoreNextWorkspaceClickRef.current) {
       ignoreNextWorkspaceClickRef.current = false;
       return;
@@ -11679,26 +11729,18 @@ function App() {
     return orderedSelectedIds.length > 0 ? orderedSelectedIds : [entry.documentId];
   }
 
-  function openFileContextMenu(
+  function showFileContextMenu(
     entry: Extract<WorkspaceEntry, { kind: "file" | "directory" }>,
-    event: MouseEvent<HTMLButtonElement>,
+    left: number,
+    top: number,
   ) {
-    event.preventDefault();
-    event.stopPropagation();
-
-    if (entry.kind === "file" && event.ctrlKey && event.button === 0) {
-      ignoreNextWorkspaceClickRef.current = true;
-      toggleWorkspaceExportSelection(entry.documentId);
-      return;
-    }
-
     const exportDocumentIds = entry.kind === "file" ? workspaceExportDocumentIdsForContext(entry) : [];
     if (entry.kind === "file") {
       setSelectedWorkspaceDocumentIds(new Set(exportDocumentIds));
     } else {
       setSelectedWorkspaceDocumentIds(new Set());
     }
-    const position = { left: event.clientX, top: event.clientY };
+    const position = { left, top };
     setFileContextMenu(
       entry.kind === "file"
         ? {
@@ -11719,6 +11761,73 @@ function App() {
             ...position,
           },
     );
+  }
+
+  function openFileContextMenu(
+    entry: Extract<WorkspaceEntry, { kind: "file" | "directory" }>,
+    event: MouseEvent<HTMLButtonElement>,
+  ) {
+    event.preventDefault();
+    event.stopPropagation();
+
+    if (entry.kind === "file" && event.ctrlKey && event.button === 0) {
+      ignoreNextWorkspaceClickRef.current = true;
+      toggleWorkspaceExportSelection(entry.documentId);
+      return;
+    }
+
+    if (isMobileViewport && entry.kind === "file") {
+      suppressedWorkspaceFileClickRef.current = {
+        entryId: entry.id,
+        until: Date.now() + 1000,
+      };
+    }
+    showFileContextMenu(entry, event.clientX, event.clientY);
+  }
+
+  function cancelWorkspaceFileLongPress(pointerId?: number) {
+    const start = workspaceFileLongPressStartRef.current;
+    if (pointerId !== undefined && start?.pointerId !== pointerId) return;
+
+    window.clearTimeout(workspaceFileLongPressTimerRef.current);
+    workspaceFileLongPressTimerRef.current = 0;
+    workspaceFileLongPressStartRef.current = null;
+  }
+
+  function startWorkspaceFileLongPress(
+    entry: Extract<WorkspaceEntry, { kind: "file" | "directory" }>,
+    event: ReactPointerEvent<HTMLButtonElement>,
+  ) {
+    if (!isMobileViewport || entry.kind !== "file" || event.pointerType === "mouse") return;
+
+    cancelWorkspaceFileLongPress();
+    const start = {
+      pointerId: event.pointerId,
+      clientX: event.clientX,
+      clientY: event.clientY,
+    };
+    workspaceFileLongPressStartRef.current = start;
+    workspaceFileLongPressTimerRef.current = window.setTimeout(() => {
+      if (workspaceFileLongPressStartRef.current !== start) return;
+
+      workspaceFileLongPressTimerRef.current = 0;
+      workspaceFileLongPressStartRef.current = null;
+      suppressedWorkspaceFileClickRef.current = {
+        entryId: entry.id,
+        until: Date.now() + 1000,
+      };
+      showFileContextMenu(entry, start.clientX, start.clientY);
+    }, mobileWorkspaceFileLongPressMs);
+  }
+
+  function moveWorkspaceFileLongPress(event: ReactPointerEvent<HTMLButtonElement>) {
+    const start = workspaceFileLongPressStartRef.current;
+    if (!start || start.pointerId !== event.pointerId) return;
+
+    const moved = Math.hypot(event.clientX - start.clientX, event.clientY - start.clientY);
+    if (moved > mobileWorkspaceFileLongPressMoveTolerancePx) {
+      cancelWorkspaceFileLongPress(event.pointerId);
+    }
   }
 
   async function openFileInNewTab(target: FileActionTarget) {
@@ -12002,7 +12111,7 @@ function App() {
   async function openMarkdownFolder() {
     if (!nativeStorageAvailable) {
       setStorageError(t("error.nativeRuntimeRequired"));
-      return;
+      return true;
     }
 
     setStorageError("");
@@ -12012,18 +12121,21 @@ function App() {
         directory: true,
         multiple: false,
       });
-      if (!selectedPath || Array.isArray(selectedPath)) return;
+      if (!selectedPath) return false;
+      if (Array.isArray(selectedPath)) return true;
 
       await openDirectoryPath(selectedPath);
+      return true;
     } catch (error) {
       setStorageError(translatedError(error, "error.openFolderFailed"));
+      return true;
     }
   }
 
   async function openMarkdownFileFromPicker() {
     if (!nativeStorageAvailable) {
       setStorageError(t("error.nativeRuntimeRequired"));
-      return;
+      return true;
     }
 
     setStorageError(t("status.openingFile"));
@@ -12034,14 +12146,20 @@ function App() {
         multiple: false,
         filters: markdownFilters,
       });
-      if (!selectedPath || Array.isArray(selectedPath)) {
+      if (!selectedPath) {
         setStorageError("");
-        return;
+        return false;
+      }
+      if (Array.isArray(selectedPath)) {
+        setStorageError("");
+        return true;
       }
 
       await openMarkdownFilePath(selectedPath);
+      return true;
     } catch (error) {
       setStorageError(translatedError(error, "error.openFileFailed"));
+      return true;
     }
   }
 
@@ -12201,6 +12319,40 @@ function App() {
     }
   }
 
+  async function createDropboxMarkdownFile(fileName: string) {
+    if (!nativeStorageAvailable) {
+      setStorageError(t("error.nativeRuntimeRequired"));
+      return false;
+    }
+    if (workspaceSource !== "dropbox" || workspaceRootPath === null) {
+      setStorageError(t("dropbox.error.noWorkspace"));
+      return false;
+    }
+
+    const trimmedFileName = fileName.trim();
+    if (!trimmedFileName) {
+      setStorageError(t("error.fileNameRequired"));
+      return false;
+    }
+
+    try {
+      const loaded = await invoke<OpenDropboxMarkdownFileResult>(
+        "create_dropbox_markdown_file",
+        {
+          parentPath: workspaceRootPath,
+          fileName: trimmedFileName,
+        },
+      );
+      applyLoadedDropboxFile(loaded);
+      setActiveDocumentModeState({ editorMode: "edit" });
+      setStorageError("");
+      return true;
+    } catch (error) {
+      setStorageError(translatedError(error, "error.createFileFailed"));
+      return false;
+    }
+  }
+
   async function newMarkdownFile() {
     if (!nativeStorageAvailable) {
       setStorageError(t("error.nativeRuntimeRequired"));
@@ -12209,35 +12361,12 @@ function App() {
 
     setStorageError("");
 
+    if (workspaceSource === "dropbox") {
+      openCreateEntryDialog("file");
+      return;
+    }
+
     try {
-      if (workspaceSource === "dropbox") {
-        if (!workspaceRootPath) {
-          setStorageError(t("dropbox.error.noWorkspace"));
-          return;
-        }
-
-        const fileName = window.prompt(t("newFile.namePrompt"), t("app.untitledFile"));
-        if (fileName === null) return;
-
-        const trimmedFileName = fileName.trim();
-        if (!trimmedFileName) {
-          setStorageError(t("error.fileNameRequired"));
-          return;
-        }
-
-        const loaded = await invoke<OpenDropboxMarkdownFileResult>(
-          "create_dropbox_markdown_file",
-          {
-            parentPath: workspaceRootPath,
-            fileName: trimmedFileName,
-          },
-        );
-        applyLoadedDropboxFile(loaded);
-        setActiveDocumentModeState({ editorMode: "edit" });
-        setStorageError("");
-        return;
-      }
-
       const defaultFileName = t("app.untitledFile");
       const selectedPath = await save({
         defaultPath:
@@ -12268,36 +12397,34 @@ function App() {
     }
   }
 
-  async function newMarkdownFolder() {
+  async function createWorkspaceFolder(name: string) {
     if (!nativeStorageAvailable) {
       setStorageError(t("error.nativeRuntimeRequired"));
-      return;
+      return false;
     }
-    if (!workspaceRootPath || !workspaceSource) {
+    if (workspaceRootPath === null || workspaceSource === null) {
       setStorageError(t("newFolder.noWorkspace"));
-      return;
+      return false;
     }
-
-    const name = window.prompt(t("newFolder.namePrompt"));
-    if (name === null) return;
 
     const trimmedName = name.trim();
     if (!trimmedName) {
       setStorageError(t("newFolder.nameRequired"));
-      return;
+      return false;
     }
 
+    const parentPath = workspaceRootPath;
+    const source = workspaceSource;
     try {
       const created = await invoke<RenamePathResult>(
-        workspaceSource === "dropbox"
+        source === "dropbox"
           ? "create_dropbox_markdown_directory"
           : "create_markdown_directory",
         {
-          parentPath: workspaceRootPath,
+          parentPath,
           name: trimmedName,
         },
       );
-      const source = workspaceSource;
       const createdEntry: WorkspaceEntry = {
         kind: "directory",
         id: source === "dropbox" ? `dropbox-directory:${created.path}` : `directory:${created.path}`,
@@ -12320,9 +12447,75 @@ function App() {
         ]),
       );
       setStorageError("");
+      return true;
     } catch (error) {
       setStorageError(translatedError(error, "newFolder.createFailed"));
+      return false;
     }
+  }
+
+  function newMarkdownFolder() {
+    if (!nativeStorageAvailable) {
+      setStorageError(t("error.nativeRuntimeRequired"));
+      return;
+    }
+    if (workspaceRootPath === null || workspaceSource === null) {
+      setStorageError(t("newFolder.noWorkspace"));
+      return;
+    }
+
+    openCreateEntryDialog("folder");
+  }
+
+  function openCreateEntryDialog(kind: CreateEntryDialogState["kind"]) {
+    if (!nativeStorageAvailable) {
+      setStorageError(t("error.nativeRuntimeRequired"));
+      return;
+    }
+    if (workspaceRootPath === null || workspaceSource === null) {
+      setStorageError(kind === "file" ? t("dropbox.error.noWorkspace") : t("newFolder.noWorkspace"));
+      return;
+    }
+    if (kind === "file" && workspaceSource !== "dropbox") {
+      void newMarkdownFile();
+      return;
+    }
+
+    setStorageError("");
+    setCreateEntryDialog({
+      kind,
+      name: kind === "file" ? stripMarkdownExtension(t("app.untitledFile")) : "",
+      isSubmitting: false,
+    });
+  }
+
+  async function submitCreateEntry(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!createEntryDialog || createEntryDialog.isSubmitting) return;
+
+    setCreateEntryDialog((currentDialog) =>
+      currentDialog ? { ...currentDialog, isSubmitting: true } : currentDialog,
+    );
+
+    const created =
+      createEntryDialog.kind === "file"
+        ? await createDropboxMarkdownFile(createEntryDialog.name)
+        : await createWorkspaceFolder(createEntryDialog.name);
+    if (created) {
+      setCreateEntryDialog(null);
+      return;
+    }
+
+    setCreateEntryDialog((currentDialog) =>
+      currentDialog ? { ...currentDialog, isSubmitting: false } : currentDialog,
+    );
+  }
+
+  function closeCreateEntryDialog() {
+    if (createEntryDialog?.isSubmitting) return;
+
+    setCreateEntryDialog(null);
+    setStorageError("");
   }
 
   function isTransientEmptySelectionNote(note: SelectionNote) {
@@ -12761,6 +12954,9 @@ function App() {
 
   function openSettingsView(category: SettingCategory = "app") {
     setFileContextMenu(null);
+    if (!createEntryDialog?.isSubmitting) {
+      setCreateEntryDialog(null);
+    }
     if (!duplicateFileDialog?.isSubmitting) {
       setDuplicateFileDialog(null);
     }
@@ -12890,21 +13086,44 @@ function App() {
     forgetLastOpenedMarkdownRootDirectoryPath();
   }
 
+  function restoreMobileDataSourceAfterDropboxAuthFailure() {
+    const shouldReturn = returnToMobileDataSourceAfterDropboxAuthRef.current;
+    returnToMobileDataSourceAfterDropboxAuthRef.current = false;
+    if (!shouldReturn) return;
+
+    returnToMobileDataSourceOnPickerCancelRef.current = true;
+    cancelMobileLocationPicker();
+  }
+
+  function transferMobileDataSourceReturnToDropboxPicker() {
+    returnToMobileDataSourceOnPickerCancelRef.current =
+      returnToMobileDataSourceAfterDropboxAuthRef.current;
+    returnToMobileDataSourceAfterDropboxAuthRef.current = false;
+  }
+
   async function connectDropbox(
     options: { pickerModeAfterAuth?: DropboxPickerMode } = {},
   ) {
     if (!nativeStorageAvailable) {
       setStorageError(t("error.nativeRuntimeRequired"));
+      returnToMobileDataSourceAfterDropboxAuthRef.current = false;
+      cancelMobileLocationPicker();
       return;
     }
 
     if (!configuredDropboxAppKey) {
       dropboxPickerModeAfterAuthRef.current = null;
       pendingDropboxLocationAfterAuthRef.current = null;
+      returnToMobileDataSourceAfterDropboxAuthRef.current = false;
+      cancelMobileLocationPicker();
       setStorageError(t("dropbox.error.notConfigured"));
       return;
     }
 
+    returnToMobileDataSourceAfterDropboxAuthRef.current =
+      Boolean(options.pickerModeAfterAuth) &&
+      returnToMobileDataSourceOnPickerCancelRef.current;
+    completeMobileLocationPicker();
     dropboxPickerModeAfterAuthRef.current = options.pickerModeAfterAuth ?? null;
     setDropboxConnecting(true);
     setStorageError(t("dropbox.status.openingAuth"));
@@ -12918,6 +13137,7 @@ function App() {
       setDropboxConnecting(false);
       dropboxPickerModeAfterAuthRef.current = null;
       pendingDropboxLocationAfterAuthRef.current = null;
+      restoreMobileDataSourceAfterDropboxAuthFailure();
       setStorageError(translatedError(error, "dropbox.error.unexpected"));
     }
   }
@@ -12927,6 +13147,7 @@ function App() {
       setDropboxConnecting(false);
       dropboxPickerModeAfterAuthRef.current = null;
       pendingDropboxLocationAfterAuthRef.current = null;
+      restoreMobileDataSourceAfterDropboxAuthFailure();
       console.error(payload.error ?? "Dropbox OAuth callback failed");
       setStorageError(t("dropbox.error.oauthCallback"));
       return;
@@ -12967,13 +13188,16 @@ function App() {
       const pickerModeAfterAuth = dropboxPickerModeAfterAuthRef.current;
       dropboxPickerModeAfterAuthRef.current = null;
       if (pendingLocation) {
+        returnToMobileDataSourceAfterDropboxAuthRef.current = false;
         await openDropboxLocation(pendingLocation, { allowPendingConnection: status.connected });
       } else if (pickerModeAfterAuth) {
+        transferMobileDataSourceReturnToDropboxPicker();
         await openDropboxCloudSource({
           allowPendingConnection: status.connected,
           pickerMode: pickerModeAfterAuth,
         });
       } else {
+        returnToMobileDataSourceAfterDropboxAuthRef.current = false;
         setStorageError("");
       }
       if (status.connected && isMobileViewport) {
@@ -12984,6 +13208,7 @@ function App() {
       setDropboxConnected(false);
       dropboxPickerModeAfterAuthRef.current = null;
       pendingDropboxLocationAfterAuthRef.current = null;
+      restoreMobileDataSourceAfterDropboxAuthFailure();
       setStorageError(translatedError(error, "dropbox.error.oauthCallback"));
     } finally {
       unlistenDropboxOAuthConnected?.();
@@ -13018,9 +13243,12 @@ function App() {
     try {
       const status = await invoke<DropboxOAuthStatusResult>("disconnect_dropbox");
       setDropboxConnected(status.connected);
+      completeMobileLocationPicker();
+      invalidateDropboxDirectoryPickerSession();
       setDropboxDirectoryPicker(null);
       dropboxPickerModeAfterAuthRef.current = null;
       pendingDropboxLocationAfterAuthRef.current = null;
+      returnToMobileDataSourceAfterDropboxAuthRef.current = false;
       resetDropboxWorkspaceAfterAuthorizationRemoval();
       forgetLastOpenedDropboxWorkspace();
       setStorageError(t("dropbox.status.authorizationRemoved"));
@@ -14299,6 +14527,7 @@ function App() {
     if (!hasOpenDocument) return false;
     if (
       settingsViewOpen ||
+      createEntryDialog ||
       duplicateFileDialog ||
       dropboxDirectoryPicker ||
       notePanelModalActive ||
@@ -15299,10 +15528,6 @@ function App() {
 
   function toggleMobileFilesPane() {
     if (isMobileViewport) {
-      if (directoryPaneOpen && mobileDocumentBrowseMode !== "files") {
-        showMobileDocumentBrowseMode("files");
-        return;
-      }
       if (!directoryPaneOpen) {
         showMobileDocumentBrowseMode("files");
       }
@@ -15311,6 +15536,8 @@ function App() {
   }
 
   async function selectMobileDropboxSource() {
+    returnToMobileDataSourceOnPickerCancelRef.current =
+      isMobileViewport && mobileDataSourceOpen;
     setMobileDataSourceOpen(false);
     if (dropboxConnected) {
       await openDropboxCloudSource();
@@ -15325,7 +15552,12 @@ function App() {
 
   async function openMobileFileFromCurrentSource() {
     if (!mobileOpenUsesDropbox()) {
-      await openMarkdownFileFromPicker();
+      const selected = await openMarkdownFileFromPicker();
+      if (selected) {
+        completeMobileLocationPicker();
+      } else {
+        cancelMobileLocationPicker();
+      }
       return;
     }
     if (!dropboxConnected) {
@@ -15338,7 +15570,12 @@ function App() {
 
   async function openMobileFolderFromCurrentSource() {
     if (!mobileOpenUsesDropbox()) {
-      await openMarkdownFolder();
+      const selected = await openMarkdownFolder();
+      if (selected) {
+        completeMobileLocationPicker();
+      } else {
+        cancelMobileLocationPicker();
+      }
       return;
     }
     if (!dropboxConnected) {
@@ -15360,6 +15597,24 @@ function App() {
     }
 
     void action();
+  }
+
+  function runMobileLocationPickerAction(action: () => Promise<void> | void) {
+    returnToMobileDataSourceOnPickerCancelRef.current =
+      isMobileViewport && mobileDataSourceOpen;
+    runMobileSourceAction(action);
+  }
+
+  function completeMobileLocationPicker() {
+    returnToMobileDataSourceOnPickerCancelRef.current = false;
+  }
+
+  function cancelMobileLocationPicker() {
+    const shouldReturn = returnToMobileDataSourceOnPickerCancelRef.current;
+    returnToMobileDataSourceOnPickerCancelRef.current = false;
+    if (shouldReturn && isMobileViewport) {
+      setMobileDataSourceOpen(true);
+    }
   }
 
   const floatingNotePanelStyle: CSSProperties = floatingNotePanelExpanded
@@ -15548,28 +15803,41 @@ function App() {
     {
       id: "open-file",
       label: t("mobileSource.openFile"),
-      icon: <MobileOpenFileIcon />,
-      onSelect: () => runMobileSourceAction(openMobileFileFromCurrentSource),
+      icon: <DocumentGlyphIcon kind="file" />,
+      onSelect: () => runMobileLocationPickerAction(openMobileFileFromCurrentSource),
     },
     {
       id: "open-folder",
       label: t("mobileSource.openFolder"),
-      icon: <MobileOpenFolderIcon />,
-      onSelect: () => runMobileSourceAction(openMobileFolderFromCurrentSource),
+      icon: <DocumentGlyphIcon kind="folder" />,
+      onSelect: () => runMobileLocationPickerAction(openMobileFolderFromCurrentSource),
     },
     {
       id: "new-file",
       label: t("mobileSource.newFile"),
-      icon: <MobileNewFileIcon />,
+      icon: <DocumentGlyphIcon kind="file" />,
       onSelect: () => runMobileSourceAction(newMarkdownFile),
     },
     {
       id: "new-folder",
       label: t("mobileSource.newFolder"),
-      icon: <MobileNewFolderIcon />,
+      icon: <DocumentGlyphIcon kind="folder" />,
       onSelect: () => void newMarkdownFolder(),
     },
   ];
+  const mobileLocationActions = mobileSourceActions.filter((action) =>
+    action.id.startsWith("open-"),
+  );
+  const mobileWorkspaceActions = mobileSourceActions.filter((action) =>
+    action.id.startsWith("new-"),
+  );
+  const mobileWorkspaceActive = workspaceSource !== null;
+  const mobileWorkspaceCanCreate = mobileWorkspaceActive && workspaceRootPath !== null;
+  const mobileFilePanelCreateActions = mobileWorkspaceCanCreate
+    ? mobileWorkspaceActions
+    : workspaceSource === null
+      ? mobileWorkspaceActions.slice(0, 1)
+      : [];
   const mobileEmptyActions = [
     {
       id: "dropbox",
@@ -15580,14 +15848,29 @@ function App() {
       icon: <MobileCloudIcon />,
       onSelect: () => runMobileSourceAction(openDropboxCloudSource),
     },
-    ...mobileSourceActions.filter((action) => action.id !== "new-folder"),
+    ...mobileLocationActions,
+    mobileWorkspaceActions[0],
   ];
   const mobileFavoriteDirectoryShortcuts = savedLocations.favoriteDirectories.filter(
     (location) => location.kind === "directory",
   );
-  const mobileRecentLocationShortcuts = savedLocations.recent;
-  const mobileDropboxWorkspaceActive = workspaceSource === "dropbox";
-  const mobileCloudWorkspaceActive = workspaceSource !== null && workspaceSource !== "local";
+  const mobileCurrentWorkspaceLocationKey =
+    workspaceSource === null
+      ? ""
+      : nativeLocationKey({
+          kind: "directory",
+          path: workspaceRootPath ?? "",
+          source: workspaceSource,
+        });
+  const mobileQuickLocationShortcuts = [
+    ...mobileFavoriteDirectoryShortcuts,
+    ...savedLocations.recent,
+  ].filter(
+    (location, index, locations) =>
+      locations.findIndex(
+        (candidate) => nativeLocationKey(candidate) === nativeLocationKey(location),
+      ) === index && nativeLocationKey(location) !== mobileCurrentWorkspaceLocationKey,
+  );
   const mobileSavedLocationsVisible = nativeStorageAvailable;
   const mobileDataSources = [
     {
@@ -15606,9 +15889,22 @@ function App() {
       onSelect: selectMobileDropboxSource,
     },
   ];
+  const visibleMobileDataSources = mobileDataSources.filter(
+    (source) => !source.connected || workspaceSource === "local",
+  );
   const mobileConnectedDataSource = mobileDataSources.find((source) => source.connected);
+  const mobileLocationAvailable =
+    nativeStorageAvailable || mobileWorkspaceActive || Boolean(mobileConnectedDataSource);
   const mobileDataSourceLabel =
-    mobileConnectedDataSource?.label ?? t("mobileDataSource.disconnectedLabel");
+    workspaceSource === "local"
+      ? t("mobileDataSource.local")
+      : workspaceSource === "dropbox"
+        ? t("dropbox.label")
+        : mobileConnectedDataSource?.label ?? t("mobileDataSource.choose");
+  const mobileWorkspaceDisplayTitle =
+    workspaceSource === "local"
+      ? `${mobileDataSourceLabel} / ${workspaceTitle}`
+      : workspaceTitle;
   const startupActive = mobileStartupPhase !== "hidden" && !settingsViewOpen;
 
   useEffect(() => {
@@ -15836,14 +16132,6 @@ function App() {
           <div>
             <h1>{t("app.documents")}</h1>
           </div>
-          <button
-            aria-label={t("directory.bookmark.close")}
-            className="mobile-panel-close"
-            onClick={toggleDirectoryPane}
-            type="button"
-          >
-            {t("mobilePanel.done")}
-          </button>
         </div>
 
         <div className="document-browser-controls">
@@ -15898,104 +16186,44 @@ function App() {
           ) : null}
         </div>
 
-        {!mobileTagBrowserActive ? (
-          <div className="mobile-source-actions" aria-label={t("mobileSource.label")}>
-            {mobileSourceActions.map((action) => (
-              <button key={action.id} onClick={action.onSelect} type="button">
-                {action.icon}
-                <span>{action.label}</span>
-              </button>
-            ))}
-          </div>
-        ) : null}
-
-        {!mobileTagBrowserActive && mobileDropboxWorkspaceActive ? (
+        {!mobileTagBrowserActive &&
+        isMobileViewport &&
+        (mobileWorkspaceActive || mobileFilePanelCreateActions.length > 0) ? (
           <section
-            className="mobile-workspace-summary"
-            aria-label={t("mobileSource.currentDropboxFolder")}
+            className="mobile-workspace-section"
+            aria-label={
+              mobileWorkspaceActive
+                ? t("mobileDataSource.currentLocation")
+                : t("mobileSource.newFile")
+            }
           >
-            <DocumentGlyphIcon kind="folder" selected={false} />
-            <span className="mobile-workspace-summary__text">
-              <span className="mobile-workspace-summary__label">
-                {t("mobileSource.currentDropboxFolder")}
-              </span>
-              <span className="mobile-workspace-summary__title">{workspaceTitle}</span>
-            </span>
+            {mobileWorkspaceActive ? (
+              <div
+                className="document-tree-root"
+                title={mobileWorkspaceDisplayTitle}
+              >
+                <DocumentGlyphIcon kind="folder" selected />
+                <span className="document-tree-root__title">{mobileWorkspaceDisplayTitle}</span>
+              </div>
+            ) : null}
+            {mobileFilePanelCreateActions.length > 0 ? (
+              <div
+                className="mobile-workspace-actions"
+                aria-label={
+                  mobileWorkspaceActive
+                    ? t("mobileSource.createInCurrentLocation")
+                    : t("mobileSource.newFile")
+                }
+              >
+                {mobileFilePanelCreateActions.map((action) => (
+                  <button key={action.id} onClick={action.onSelect} type="button">
+                    {action.icon}
+                    <span>{action.label}</span>
+                  </button>
+                ))}
+              </div>
+            ) : null}
           </section>
-        ) : null}
-
-        {!mobileTagBrowserActive && mobileSavedLocationsVisible ? (
-          <div
-            className="mobile-location-shortcuts"
-            aria-label={t("mobileSource.savedLocations")}
-          >
-            <section className="mobile-location-shortcuts__section">
-              <h2>{t("mobileSource.favoriteDirectories")}</h2>
-              {mobileFavoriteDirectoryShortcuts.length > 0 ? (
-                <div className="mobile-location-shortcuts__list">
-                  {mobileFavoriteDirectoryShortcuts.map((location) => (
-                    <button
-                      aria-label={t("mobileSource.openLocation", { title: location.title })}
-                      className="mobile-location-shortcut"
-                      key={`${location.source}:${location.kind}:${location.path}`}
-                      onClick={() => runMobileSourceAction(() => openNativeMenuLocation(location))}
-                      title={location.path}
-                      type="button"
-                    >
-                      <DocumentGlyphIcon kind="folder" selected={false} />
-                      <span className="mobile-location-shortcut__text">
-                        <span className="mobile-location-shortcut__title">{location.title}</span>
-                        <span className="mobile-location-shortcut__path">
-                          {location.source === "dropbox"
-                            ? `Dropbox · ${location.path}`
-                            : location.path}
-                        </span>
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              ) : (
-                <p className="mobile-location-shortcuts__empty">
-                  {t("mobileSource.noFavoriteDirectories")}
-                </p>
-              )}
-            </section>
-
-            <section className="mobile-location-shortcuts__section">
-              <h2>{t("mobileSource.recentLocations")}</h2>
-              {mobileRecentLocationShortcuts.length > 0 ? (
-                <div className="mobile-location-shortcuts__list">
-                  {mobileRecentLocationShortcuts.map((location) => (
-                    <button
-                      aria-label={t("mobileSource.openLocation", { title: location.title })}
-                      className="mobile-location-shortcut"
-                      key={`${location.source}:${location.kind}:${location.path}`}
-                      onClick={() => runMobileSourceAction(() => openNativeMenuLocation(location))}
-                      title={location.path}
-                      type="button"
-                    >
-                      <DocumentGlyphIcon
-                        kind={location.kind === "directory" ? "folder" : "file"}
-                        selected={false}
-                      />
-                      <span className="mobile-location-shortcut__text">
-                        <span className="mobile-location-shortcut__title">{location.title}</span>
-                        <span className="mobile-location-shortcut__path">
-                          {location.source === "dropbox"
-                            ? `Dropbox · ${location.path}`
-                            : location.path}
-                        </span>
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              ) : (
-                <p className="mobile-location-shortcuts__empty">
-                  {t("mobileSource.noRecentLocations")}
-                </p>
-              )}
-            </section>
-          </div>
         ) : null}
 
         {mobileTagBrowserActive ? (
@@ -16056,10 +16284,12 @@ function App() {
           </div>
         ) : (
           <div className="document-list">
-          <div className="document-tree-root" title={workspaceTitle}>
-            <DocumentGlyphIcon kind="folder" selected />
-            <span className="document-tree-root__title">{workspaceTitle}</span>
-          </div>
+          {!isMobileViewport ? (
+            <div className="document-tree-root" title={workspaceTitle}>
+              <DocumentGlyphIcon kind="folder" selected />
+              <span className="document-tree-root__title">{workspaceTitle}</span>
+            </div>
+          ) : null}
 
           {localRecursiveFileSearchActive ? (
             <>
@@ -16130,8 +16360,10 @@ function App() {
                 <button
                   aria-expanded={isDirectory ? isExpanded : undefined}
                   className={`document-row ${isDirectory ? "is-folder" : ""} ${
-                    isExpanded ? "is-expanded" : ""
-                  } ${isLoading ? "is-loading" : ""} ${rowIsSelected ? "is-selected" : ""} ${
+                    entry.kind === "file" ? "is-file" : ""
+                  } ${isExpanded ? "is-expanded" : ""} ${isLoading ? "is-loading" : ""} ${
+                    rowIsSelected ? "is-selected" : ""
+                  } ${
                     isBatchSelected ? "is-batch-selected" : ""
                   }`}
                   key={entry.id}
@@ -16142,7 +16374,20 @@ function App() {
                   onContextMenu={(event) => {
                     if (entry.kind === "parent-directory") return;
 
+                    cancelWorkspaceFileLongPress();
                     openFileContextMenu(entry, event);
+                  }}
+                  onPointerCancel={(event) => {
+                    cancelWorkspaceFileLongPress(event.pointerId);
+                  }}
+                  onPointerDown={(event) => {
+                    if (entry.kind === "parent-directory") return;
+
+                    startWorkspaceFileLongPress(entry, event);
+                  }}
+                  onPointerMove={moveWorkspaceFileLongPress}
+                  onPointerUp={(event) => {
+                    cancelWorkspaceFileLongPress(event.pointerId);
                   }}
                   title={entry.title}
                   type="button"
@@ -16318,6 +16563,106 @@ function App() {
               <span>{action.label}</span>
             </button>
           ))}
+        </div>
+      ) : null}
+
+      {createEntryDialog ? (
+        <div
+          className="duplicate-file-dialog-backdrop"
+          onMouseDown={closeCreateEntryDialog}
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          <form
+            aria-labelledby="create-entry-dialog-title"
+            aria-modal="true"
+            className="duplicate-file-dialog"
+            onMouseDown={(event) => event.stopPropagation()}
+            onSubmit={submitCreateEntry}
+            role="dialog"
+          >
+            <div className="duplicate-file-dialog__header">
+              <h2 id="create-entry-dialog-title">
+                {t(
+                  createEntryDialog.kind === "file"
+                    ? "mobileSource.newFile"
+                    : "mobileSource.newFolder",
+                )}
+              </h2>
+              <button
+                aria-label={t("dialog.close")}
+                className="duplicate-file-dialog__close"
+                disabled={createEntryDialog.isSubmitting}
+                onClick={closeCreateEntryDialog}
+                type="button"
+              >
+                ×
+              </button>
+            </div>
+            <label className="duplicate-file-dialog__field">
+              <span>
+                {t(
+                  createEntryDialog.kind === "file"
+                    ? "newFile.namePrompt"
+                    : "newFolder.namePrompt",
+                )}
+              </span>
+              <span className="duplicate-file-dialog__file-name-control">
+                <input
+                  aria-describedby={
+                    createEntryDialog.kind === "file"
+                      ? "create-entry-dialog-extension"
+                      : undefined
+                  }
+                  disabled={createEntryDialog.isSubmitting}
+                  enterKeyHint="done"
+                  ref={createEntryInputRef}
+                  spellCheck={false}
+                  type="text"
+                  value={createEntryDialog.name}
+                  onChange={(event) => {
+                    const nextName =
+                      createEntryDialog.kind === "file"
+                        ? stripMarkdownExtension(event.target.value)
+                        : event.target.value;
+                    setCreateEntryDialog((currentDialog) =>
+                      currentDialog ? { ...currentDialog, name: nextName } : currentDialog,
+                    );
+                  }}
+                />
+                {createEntryDialog.kind === "file" ? (
+                  <span
+                    className="duplicate-file-dialog__extension"
+                    id="create-entry-dialog-extension"
+                  >
+                    .md
+                  </span>
+                ) : null}
+              </span>
+            </label>
+            {storageError ? (
+              <p className="duplicate-file-dialog__message" role="status">
+                {storageError}
+              </p>
+            ) : null}
+            <div className="note-actions duplicate-file-dialog__actions">
+              <button
+                disabled={createEntryDialog.isSubmitting}
+                onClick={closeCreateEntryDialog}
+                type="button"
+              >
+                {t("duplicate.cancel")}
+              </button>
+              <button
+                className="is-primary"
+                disabled={createEntryDialog.isSubmitting}
+                type="submit"
+              >
+                {createEntryDialog.isSubmitting
+                  ? t("duplicate.submitting")
+                  : t("duplicate.submit")}
+              </button>
+            </div>
+          </form>
         </div>
       ) : null}
 
@@ -17214,26 +17559,92 @@ function App() {
                 ×
               </button>
             </div>
-            {mobileDataSources.map((source) => (
-              <button
-                className="mobile-data-source-option"
-                disabled={source.connecting}
-                key={source.id}
-                onClick={() => void source.onSelect()}
-                type="button"
+            <div className="mobile-data-source-sheet__body">
+              {mobileWorkspaceActive ? (
+                <section
+                  className="mobile-location-current"
+                  aria-label={t("mobileDataSource.currentLocation")}
+                >
+                  <DocumentGlyphIcon kind="folder" selected />
+                  <span className="mobile-location-current__text">
+                    <span className="mobile-location-current__label">
+                      {t("mobileDataSource.currentLocation")}
+                    </span>
+                    <strong className="mobile-location-current__title">{workspaceTitle}</strong>
+                    {workspaceRootPath ? (
+                      <span className="mobile-location-current__path">{workspaceRootPath}</span>
+                    ) : null}
+                  </span>
+                </section>
+              ) : null}
+
+              <div
+                className="mobile-location-actions"
+                aria-label={t("mobileDataSource.openActions")}
               >
-                <span className="mobile-data-source-option__icon">
-                  <MobileCloudIcon />
-                </span>
-                <span className="mobile-data-source-option__text">
-                  <strong>{source.label}</strong>
-                  <span>{source.statusLabel}</span>
-                </span>
-                <span className="mobile-data-source-option__action">
-                  {source.actionLabel}
-                </span>
-              </button>
-            ))}
+                {mobileLocationActions.map((action) => (
+                  <button key={action.id} onClick={action.onSelect} type="button">
+                    {action.icon}
+                    <span>{action.label}</span>
+                  </button>
+                ))}
+              </div>
+
+              {visibleMobileDataSources.map((source) => (
+                <button
+                  className="mobile-data-source-option"
+                  disabled={source.connecting}
+                  key={source.id}
+                  onClick={() => void source.onSelect()}
+                  type="button"
+                >
+                  <span className="mobile-data-source-option__icon">
+                    <MobileCloudIcon />
+                  </span>
+                  <span className="mobile-data-source-option__text">
+                    <strong>{source.label}</strong>
+                    <span>{source.statusLabel}</span>
+                  </span>
+                  <span className="mobile-data-source-option__action">
+                    {source.actionLabel}
+                  </span>
+                </button>
+              ))}
+
+              {mobileSavedLocationsVisible && mobileQuickLocationShortcuts.length > 0 ? (
+                <section
+                  className="mobile-location-list"
+                  aria-label={t("mobileSource.savedLocations")}
+                >
+                  <h3>{t("mobileSource.savedLocations")}</h3>
+                  {mobileQuickLocationShortcuts.map((location) => (
+                    <button
+                      aria-label={t("mobileSource.openLocation", { title: location.title })}
+                      className="mobile-location-shortcut"
+                      key={nativeLocationKey(location)}
+                      onClick={() => runMobileSourceAction(() => openNativeMenuLocation(location))}
+                      title={location.path}
+                      type="button"
+                    >
+                      <DocumentGlyphIcon
+                        kind={location.kind === "directory" ? "folder" : "file"}
+                        selected={false}
+                      />
+                      <span className="mobile-location-shortcut__text">
+                        <span className="mobile-location-shortcut__title">{location.title}</span>
+                        <span className="mobile-location-shortcut__path">
+                          {location.source === "dropbox"
+                            ? location.path
+                              ? `${t("dropbox.label")} ${location.path}`
+                              : t("dropbox.label")
+                            : location.path}
+                        </span>
+                      </span>
+                    </button>
+                  ))}
+                </section>
+              ) : null}
+            </div>
           </section>
         </div>
       ) : null}
@@ -17268,9 +17679,7 @@ function App() {
             aria-expanded={mobileDataSourceOpen}
             aria-label={t("mobileDataSource.open", { source: mobileDataSourceLabel })}
             className={`mobile-command-bar__source ${
-              mobileDataSourceOpen || mobileCloudWorkspaceActive || mobileConnectedDataSource
-                ? "is-active"
-                : ""
+              mobileDataSourceOpen || mobileLocationAvailable ? "is-active" : ""
             }`}
             onClick={() => setMobileDataSourceOpen((currentOpen) => !currentOpen)}
             type="button"
@@ -17279,7 +17688,7 @@ function App() {
               <MobileToolbarCloudIcon />
               <span
                 className={`mobile-command-bar__source-status ${
-                  mobileConnectedDataSource ? "is-connected" : "is-disconnected"
+                  mobileLocationAvailable ? "is-connected" : "is-disconnected"
                 }`}
               >
                 {mobileDataSourceLabel}
