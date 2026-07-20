@@ -7027,6 +7027,8 @@ function App() {
     useState<FloatingNotePosition | null>(null);
   const [selectionWarningPosition, setSelectionWarningPosition] =
     useState<SelectionWarningPosition | null>(null);
+  const [mobileNoteSelectionHintVisible, setMobileNoteSelectionHintVisible] =
+    useState(false);
   const [isNotePanelClosing, setIsNotePanelClosing] = useState(false);
   const [isMobileViewport, setIsMobileViewport] = useState(() =>
     window.matchMedia(mobileViewportQuery).matches,
@@ -7171,6 +7173,7 @@ function App() {
     startY: number;
   } | null>(null);
   const noteModeEnabledRef = useRef(noteModeEnabled);
+  const previousNoteModeEnabledRef = useRef(noteModeEnabled);
   const glossaryModeEnabledRef = useRef(glossaryModeEnabled);
   const editorModeRef = useRef(editorMode);
   const documentModeStatesRef = useRef(documentModeStates);
@@ -7724,6 +7727,55 @@ function App() {
       glossaryModeEnabled,
     });
   }, [glossaryModeEnabled, noteModeEnabled, selectedDocumentId]);
+
+  useEffect(() => {
+    setMobileNoteSelectionHintVisible(false);
+  }, [selectedDocumentId]);
+
+  useEffect(() => {
+    const noteModeJustEnabled = noteModeEnabled && !previousNoteModeEnabledRef.current;
+    previousNoteModeEnabledRef.current = noteModeEnabled;
+
+    if (
+      !noteModeJustEnabled ||
+      !mobileAnnotationKeyboardShouldStayClosed ||
+      settingsViewOpen
+    ) {
+      if (!noteModeEnabled || settingsViewOpen) {
+        setMobileNoteSelectionHintVisible(false);
+      }
+      return;
+    }
+
+    setMobileNoteSelectionHintVisible(false);
+    let secondFrame = 0;
+    const firstFrame = window.requestAnimationFrame(() => {
+      secondFrame = window.requestAnimationFrame(() => {
+        setMobileNoteSelectionHintVisible(true);
+      });
+    });
+
+    return () => {
+      window.cancelAnimationFrame(firstFrame);
+      window.cancelAnimationFrame(secondFrame);
+    };
+  }, [mobileAnnotationKeyboardShouldStayClosed, noteModeEnabled, settingsViewOpen]);
+
+  useEffect(() => {
+    if (!mobileNoteSelectionHintVisible) return undefined;
+
+    const hideTimer = window.setTimeout(
+      () => setMobileNoteSelectionHintVisible(false),
+      3000,
+    );
+    const hideOnPointerDown = () => setMobileNoteSelectionHintVisible(false);
+    window.addEventListener("pointerdown", hideOnPointerDown, true);
+
+    return () => {
+      window.clearTimeout(hideTimer);
+      window.removeEventListener("pointerdown", hideOnPointerDown, true);
+    };
+  }, [mobileNoteSelectionHintVisible]);
 
   useEffect(() => {
     if (noteModeEnabled) return;
@@ -16005,6 +16057,12 @@ function App() {
     workspaceSource === "local"
       ? `${mobileDataSourceLabel} / ${workspaceTitle}`
       : workspaceTitle;
+  const mobileFileLoading = [
+    t("status.openingFile"),
+    t("status.openingLastFile"),
+    t("dropbox.status.openingFile"),
+    t("dropbox.status.restoringLastFile"),
+  ].includes(storageError);
   const startupActive = mobileStartupPhase !== "hidden" && !settingsViewOpen;
 
   useEffect(() => {
@@ -17305,6 +17363,17 @@ function App() {
                 <h1 className="editor-document-title__text">{selectedDocument.title}</h1>
               </div>
             ) : null}
+            {mobileAnnotationKeyboardShouldStayClosed && noteModeEnabled ? (
+              <p
+                aria-hidden={!mobileNoteSelectionHintVisible}
+                className={`mobile-feedback-surface mobile-note-selection-hint ${
+                  mobileNoteSelectionHintVisible ? "is-visible" : ""
+                }`}
+                role="status"
+              >
+                {t("selection.mobileNoteModeHint")}
+              </p>
+            ) : null}
             <div className="editor-content-frame">
               {hasOpenDocument ? (
                 <section className="document-tags" aria-label={t("tags.label")}>
@@ -17858,8 +17927,21 @@ function App() {
         </nav>
       ) : null}
 
-      {!settingsViewOpen && storageError ? (
-        <p className="mobile-storage-status" role="status">
+      {!settingsViewOpen && storageError && mobileFileLoading ? (
+        <div className="mobile-storage-loading-overlay">
+          <p className="mobile-feedback-surface mobile-storage-status is-loading" role="status">
+            {storageError}
+          </p>
+        </div>
+      ) : null}
+
+      {!settingsViewOpen && storageError && !mobileFileLoading ? (
+        <p
+          className={`mobile-feedback-surface mobile-storage-status ${
+            dropboxConnecting ? "is-informational" : "is-error"
+          }`}
+          role="status"
+        >
           {storageError}
         </p>
       ) : null}
