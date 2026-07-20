@@ -249,6 +249,7 @@ struct SearchMarkdownFile {
     parent_path: Option<String>,
     title: String,
     relative_path: String,
+    matched_tags: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -2090,10 +2091,161 @@ fn file_search_matches(path: &Path, root: &Path, query: &str) -> bool {
         .all(|term| searchable_text.contains(term))
 }
 
+fn normalize_tag_search_value(value: &str) -> String {
+    value
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+fn yaml_scalar_without_comment(value: &str) -> &str {
+    let mut quote = None;
+    let mut previous = None;
+
+    for (index, character) in value.char_indices() {
+        if let Some(active_quote) = quote {
+            if character == active_quote && previous != Some('\\') {
+                quote = None;
+            }
+        } else if character == '"' || character == '\'' {
+            quote = Some(character);
+        } else if character == '#' && previous.map_or(true, char::is_whitespace) {
+            return value[..index].trim();
+        }
+        previous = Some(character);
+    }
+
+    value.trim()
+}
+
+fn parse_yaml_tag_scalar(value: &str) -> String {
+    let value = yaml_scalar_without_comment(value).trim();
+    if value.len() >= 2 && value.starts_with('"') && value.ends_with('"') {
+        return serde_json::from_str(value).unwrap_or_else(|_| value[1..value.len() - 1].into());
+    }
+    if value.len() >= 2 && value.starts_with('\'') && value.ends_with('\'') {
+        return value[1..value.len() - 1].replace("''", "'");
+    }
+    value.to_string()
+}
+
+fn split_yaml_inline_tags(value: &str) -> Vec<String> {
+    let value = value.trim().trim_start_matches('[').trim_end_matches(']');
+    let mut items = Vec::new();
+    let mut current = String::new();
+    let mut quote = None;
+    let mut previous = None;
+
+    for character in value.chars() {
+        if let Some(active_quote) = quote {
+            current.push(character);
+            if character == active_quote && previous != Some('\\') {
+                quote = None;
+            }
+        } else if character == '"' || character == '\'' {
+            quote = Some(character);
+            current.push(character);
+        } else if character == ',' {
+            items.push(parse_yaml_tag_scalar(&current));
+            current.clear();
+        } else {
+            current.push(character);
+        }
+        previous = Some(character);
+    }
+    if !current.trim().is_empty() {
+        items.push(parse_yaml_tag_scalar(&current));
+    }
+
+    items
+}
+
+fn unique_markdown_tags(tags: Vec<String>) -> Vec<String> {
+    let mut keys = std::collections::HashSet::new();
+    tags.into_iter()
+        .filter_map(|tag| {
+            let tag = tag.split_whitespace().collect::<Vec<_>>().join(" ");
+            let key = tag.to_lowercase();
+            (!tag.is_empty() && keys.insert(key)).then_some(tag)
+        })
+        .collect()
+}
+
+fn markdown_tags(markdown: &str) -> Vec<String> {
+    let normalized = markdown.replace("\r\n", "\n");
+    let mut lines = normalized.lines();
+    if lines.next() != Some("---") {
+        return Vec::new();
+    }
+
+    let mut frontmatter = Vec::new();
+    let mut closed = false;
+    for line in lines {
+        if line.trim() == "---" || line.trim() == "..." {
+            closed = true;
+            break;
+        }
+        frontmatter.push(line);
+    }
+    if !closed {
+        return Vec::new();
+    }
+
+    for (index, line) in frontmatter.iter().enumerate() {
+        let Some(inline_value) = line.strip_prefix("tags:") else {
+            continue;
+        };
+        let inline_value = yaml_scalar_without_comment(inline_value).trim();
+        if inline_value.starts_with('[') && inline_value.ends_with(']') {
+            return unique_markdown_tags(split_yaml_inline_tags(inline_value));
+        }
+        if !inline_value.is_empty() {
+            return unique_markdown_tags(vec![parse_yaml_tag_scalar(inline_value)]);
+        }
+
+        let mut tags = Vec::new();
+        for continuation in frontmatter.iter().skip(index + 1) {
+            if continuation.trim().is_empty() {
+                continue;
+            }
+            if !continuation.chars().next().is_some_and(char::is_whitespace) {
+                break;
+            }
+            let Some(item) = continuation.trim_start().strip_prefix('-') else {
+                break;
+            };
+            tags.push(parse_yaml_tag_scalar(item.trim_start()));
+        }
+        return unique_markdown_tags(tags);
+    }
+
+    Vec::new()
+}
+
+fn matching_markdown_tags(path: &Path, query: &str, exact: bool) -> Vec<String> {
+    let Ok(markdown) = fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    markdown_tags(&markdown)
+        .into_iter()
+        .filter(|tag| {
+            let key = normalize_tag_search_value(tag);
+            if exact {
+                key == query
+            } else {
+                key.contains(query)
+            }
+        })
+        .collect()
+}
+
 fn search_markdown_directory(
     root: &Path,
     directory: &Path,
     query: &str,
+    search_tags: bool,
+    exact_tag: bool,
     results: &mut Vec<SearchMarkdownFile>,
 ) -> Result<(), String> {
     if results.len() >= MAX_FILE_SEARCH_RESULTS {
@@ -2121,9 +2273,17 @@ fn search_markdown_directory(
             continue;
         }
 
-        if !file_type.is_file()
-            || !is_markdown_path(&path)
-            || !file_search_matches(&path, root, query)
+        if !file_type.is_file() || !is_markdown_path(&path) {
+            continue;
+        }
+
+        let matched_tags = if search_tags {
+            matching_markdown_tags(&path, query, exact_tag)
+        } else {
+            Vec::new()
+        };
+        if (search_tags && matched_tags.is_empty())
+            || (!search_tags && !file_search_matches(&path, root, query))
         {
             continue;
         }
@@ -2139,6 +2299,7 @@ fn search_markdown_directory(
                 .unwrap_or(&path)
                 .to_string_lossy()
                 .replace('\\', "/"),
+            matched_tags,
         });
 
         if results.len() >= MAX_FILE_SEARCH_RESULTS {
@@ -2149,7 +2310,7 @@ fn search_markdown_directory(
     child_paths.sort_by_key(|path| path.to_string_lossy().to_lowercase());
 
     for child_path in child_paths {
-        search_markdown_directory(root, &child_path, query, results)?;
+        search_markdown_directory(root, &child_path, query, search_tags, exact_tag, results)?;
         if results.len() >= MAX_FILE_SEARCH_RESULTS {
             return Ok(());
         }
@@ -2488,19 +2649,33 @@ fn open_markdown_directory(app: AppHandle, path: String) -> Result<OpenMarkdownD
 fn search_markdown_files(
     root_path: String,
     query: String,
+    search_tags: Option<bool>,
+    exact_tag: Option<bool>,
 ) -> Result<Vec<SearchMarkdownFile>, String> {
     let root = PathBuf::from(root_path);
     if !root.is_dir() {
         return Err("selected path is not a directory".to_string());
     }
 
-    let normalized_query = query.trim().to_lowercase();
+    let search_tags = search_tags.unwrap_or(false);
+    let normalized_query = if search_tags {
+        normalize_tag_search_value(&query)
+    } else {
+        query.trim().to_lowercase()
+    };
     if normalized_query.is_empty() {
         return Ok(Vec::new());
     }
 
     let mut results = Vec::new();
-    search_markdown_directory(&root, &root, &normalized_query, &mut results)?;
+    search_markdown_directory(
+        &root,
+        &root,
+        &normalized_query,
+        search_tags,
+        exact_tag.unwrap_or(false),
+        &mut results,
+    )?;
     results.sort_by_key(|result| result.relative_path.to_lowercase());
     results.truncate(MAX_FILE_SEARCH_RESULTS);
 
@@ -4071,6 +4246,30 @@ mod tests {
         assert!(dropped_markdown_path(&["draft.txt".to_string()]).is_err());
         assert!(dropped_markdown_path(&[]).is_err());
         assert!(dropped_markdown_path(&["one.md".to_string(), "two.md".to_string()]).is_err());
+    }
+
+    #[test]
+    fn parses_and_matches_frontmatter_tags() {
+        assert_eq!(
+            markdown_tags("---\ntags: [旅行, \"日本 行程\", 旅行]\n---\n內容"),
+            vec!["旅行", "日本 行程"]
+        );
+        assert_eq!(
+            markdown_tags("---\ntags:\n  - 旅行\n  - '日本 行程'\n---\n內容"),
+            vec!["旅行", "日本 行程"]
+        );
+
+        let tags = markdown_tags("---\ntags: [旅行, 旅行規劃]\n---\n內容");
+        let partial_matches = tags
+            .iter()
+            .filter(|tag| normalize_tag_search_value(tag).contains("旅行"))
+            .collect::<Vec<_>>();
+        let exact_matches = tags
+            .iter()
+            .filter(|tag| normalize_tag_search_value(tag) == "旅行")
+            .collect::<Vec<_>>();
+        assert_eq!(partial_matches.len(), 2);
+        assert_eq!(exact_matches.len(), 1);
     }
 
     #[test]

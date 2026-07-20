@@ -181,10 +181,12 @@ type OpenMarkdownDirectoryResult = {
 };
 
 type SearchMarkdownFileResult = {
+  entry?: WorkspaceFileEntry;
   path: string;
   parentPath: string | null;
   title: string;
   relativePath: string;
+  matchedTags: string[];
 };
 
 type OpenMarkdownFileContextResult = {
@@ -252,7 +254,7 @@ type WorkspaceEntry =
 type NativeLocationKind = "directory" | "file";
 type CloudWorkspaceSource = "dropbox";
 type WorkspaceSource = "local" | CloudWorkspaceSource;
-type MobileDocumentBrowseMode = "files" | "tags";
+type FileSearchMode = "files" | "tags";
 type WorkspaceFileEntry = Extract<WorkspaceEntry, { kind: "file" }>;
 
 type DocumentTagGroup = {
@@ -6899,6 +6901,9 @@ function App() {
   const [workspaceRootPath, setWorkspaceRootPath] = useState<string | null>(null);
   const [workspaceSource, setWorkspaceSource] = useState<WorkspaceSource | null>(null);
   const [fileSearchQuery, setFileSearchQuery] = useState("");
+  const [fileSearchMode, setFileSearchMode] = useState<FileSearchMode>("files");
+  const [fileSearchFocused, setFileSearchFocused] = useState(false);
+  const [exactTagSearchKey, setExactTagSearchKey] = useState("");
   const [localFileSearchResults, setLocalFileSearchResults] = useState<
     SearchMarkdownFileResult[]
   >([]);
@@ -7002,9 +7007,6 @@ function App() {
     };
   }, []);
   const [mobileSelectedWorkspaceEntryKey, setMobileSelectedWorkspaceEntryKey] = useState("");
-  const [mobileDocumentBrowseMode, setMobileDocumentBrowseMode] =
-    useState<MobileDocumentBrowseMode>("files");
-  const [mobileSelectedTagKey, setMobileSelectedTagKey] = useState("");
   const [savedLocations, setSavedLocations] =
     useState<SavedLocationsResult>(emptySavedLocations);
   const [notes, setNotes] = useState(notesSeed);
@@ -7288,9 +7290,6 @@ function App() {
       }))
       .sort((left, right) => left.label.localeCompare(right.label));
   }, [documents, dropboxIndexedDocumentTags, workspaceEntries]);
-  const mobileSelectedTagGroup =
-    documentTagGroups.find((group) => group.key === mobileSelectedTagKey) ?? null;
-  const mobileTagBrowserActive = isMobileViewport && mobileDocumentBrowseMode === "tags";
   const documentTagSuggestionGroups = useMemo<DocumentTagSuggestionGroup[]>(
     () =>
       documentTagGroups.map((group) => ({
@@ -9231,8 +9230,14 @@ function App() {
 
     const searchTimer = window.setTimeout(() => {
       void invoke<SearchMarkdownFileResult[]>("search_markdown_files", {
+        exactTag: Boolean(
+          fileSearchMode === "tags" &&
+            exactTagSearchKey &&
+            exactTagSearchKey === tagDedupeKey(query),
+        ),
         rootPath: workspaceRootPath,
         query,
+        searchTags: fileSearchMode === "tags",
       })
         .then((results) => {
           if (cancelled) return;
@@ -9254,7 +9259,14 @@ function App() {
       cancelled = true;
       window.clearTimeout(searchTimer);
     };
-  }, [fileSearchQuery, nativeStorageAvailable, workspaceRootPath, workspaceSource]);
+  }, [
+    exactTagSearchKey,
+    fileSearchMode,
+    fileSearchQuery,
+    nativeStorageAvailable,
+    workspaceRootPath,
+    workspaceSource,
+  ]);
 
   useEffect(() => {
     const interfaceFontSize = settingsSnapshot["app.interfaceFontSize"];
@@ -10074,6 +10086,9 @@ function App() {
 
   function resetFileSearch() {
     setFileSearchQuery("");
+    setFileSearchMode("files");
+    setFileSearchFocused(false);
+    setExactTagSearchKey("");
     setLocalFileSearchResults([]);
     setFileSearchPending(false);
     setFileSearchError("");
@@ -13911,19 +13926,23 @@ function App() {
     );
   }
 
-  function showMobileDocumentBrowseMode(mode: MobileDocumentBrowseMode) {
-    setMobileDocumentBrowseMode(mode);
-    if (mode === "files") {
-      setMobileSelectedTagKey("");
-    }
+  function showFileSearchMode(mode: FileSearchMode) {
+    setFileSearchMode(mode);
+    setExactTagSearchKey("");
+    setLocalFileSearchResults([]);
+    setFileSearchError("");
   }
 
-  function openMobileTagBrowser(tag: string) {
+  function openTagSearch(tag: string) {
     if (noteLibraryOpen) {
       closeNoteLibrary({ restoreDirectoryPane: false });
     }
-    setMobileDocumentBrowseMode("tags");
-    setMobileSelectedTagKey(tagDedupeKey(tag));
+    setFileSearchMode("tags");
+    setFileSearchQuery(tag);
+    setExactTagSearchKey(tagDedupeKey(tag));
+    setLocalFileSearchResults([]);
+    setFileSearchError("");
+    setMobileSelectedWorkspaceEntryKey("");
     setDirectoryPaneOpen(true);
   }
 
@@ -15546,8 +15565,8 @@ function App() {
 
   function toggleMobileFilesPane() {
     if (isMobileViewport) {
-      if (!directoryPaneOpen) {
-        showMobileDocumentBrowseMode("files");
+      if (!directoryPaneOpen && fileSearchMode === "tags") {
+        resetFileSearch();
       }
     }
     toggleDirectoryPane();
@@ -15790,22 +15809,85 @@ function App() {
     : t("selection.warning.note");
   const trimmedFileSearchQuery = fileSearchQuery.trim();
   const fileSearchActive = trimmedFileSearchQuery.length > 0;
+  const normalizedFileSearchTagKey = tagDedupeKey(trimmedFileSearchQuery);
+  const exactTagSearchActive =
+    Boolean(exactTagSearchKey) && exactTagSearchKey === normalizedFileSearchTagKey;
+  const matchingDocumentTagGroups = documentTagGroups.filter((group) =>
+    exactTagSearchActive
+      ? group.key === normalizedFileSearchTagKey
+      : group.key.includes(normalizedFileSearchTagKey),
+  );
+  const indexedTagSearchResults = new Map<
+    string,
+    { entry: WorkspaceFileEntry; matchedTags: string[] }
+  >();
+  matchingDocumentTagGroups.forEach((group) => {
+    group.entries.forEach((entry) => {
+      const result = indexedTagSearchResults.get(entry.documentId);
+      if (result) {
+        result.matchedTags.push(group.label);
+      } else {
+        indexedTagSearchResults.set(entry.documentId, {
+          entry,
+          matchedTags: [group.label],
+        });
+      }
+    });
+  });
   const localRecursiveFileSearchActive =
     fileSearchActive &&
     workspaceSource === "local" &&
     Boolean(workspaceRootPath) &&
     nativeStorageAvailable;
   const visibleWorkspaceEntries =
-    fileSearchActive && !localRecursiveFileSearchActive
+    fileSearchMode === "files" && fileSearchActive && !localRecursiveFileSearchActive
       ? filterWorkspaceEntriesForSearch(workspaceEntries, trimmedFileSearchQuery)
       : workspaceEntries;
+  const visibleTagSearchResultsByPath = new Map<string, SearchMarkdownFileResult>();
+  if (workspaceSource === "local") {
+    localFileSearchResults.forEach((result) => {
+      visibleTagSearchResultsByPath.set(result.path, result);
+    });
+  }
+  indexedTagSearchResults.forEach(({ entry, matchedTags }) => {
+    const indexedResult: SearchMarkdownFileResult = {
+      entry,
+      matchedTags,
+      parentPath: null,
+      path: entry.path,
+      relativePath: entry.path,
+      title: entry.title,
+    };
+    const existingResult = visibleTagSearchResultsByPath.get(entry.path);
+    visibleTagSearchResultsByPath.set(
+      entry.path,
+      existingResult
+        ? {
+            ...existingResult,
+            matchedTags: Array.from(
+              new Set([...existingResult.matchedTags, ...indexedResult.matchedTags]),
+            ),
+          }
+        : indexedResult,
+    );
+  });
+  const visibleTagSearchResults = Array.from(visibleTagSearchResultsByPath.values()).sort(
+    (left, right) => left.relativePath.localeCompare(right.relativePath),
+  );
+  const tagSearchPending =
+    fileSearchMode === "tags" && workspaceSource === "dropbox" && dropboxTagIndexLoading;
+  const activeFileSearchPending = fileSearchPending || tagSearchPending;
   const fileSearchHasNoResults =
     fileSearchActive &&
-    !fileSearchPending &&
+    !activeFileSearchPending &&
     !fileSearchError &&
-    (localRecursiveFileSearchActive
-      ? localFileSearchResults.length === 0
-      : visibleWorkspaceEntries.length === 0);
+    (fileSearchMode === "tags"
+      ? visibleTagSearchResults.length === 0
+      : localRecursiveFileSearchActive
+        ? localFileSearchResults.length === 0
+        : visibleWorkspaceEntries.length === 0);
+  const fileSearchModesVisible =
+    fileSearchFocused || fileSearchActive || fileSearchMode === "tags";
   const visibleDropboxPickerEntries = dropboxDirectoryPicker
     ? flattenDropboxDirectoryPickerNodes(dropboxDirectoryPicker.directories)
     : [];
@@ -16143,7 +16225,7 @@ function App() {
         </nav>
       ) : null}
       <aside
-        className={`document-pane ${mobileTagBrowserActive ? "is-tag-browser" : ""}`}
+        className="document-pane"
         aria-label={t("app.documents")}
       >
         <div className="pane-header">
@@ -16152,43 +16234,28 @@ function App() {
           </div>
         </div>
 
-        <div className="document-browser-controls">
-          {isMobileViewport ? (
-            <div
-              aria-label={t("documentBrowser.label")}
-              className="mobile-document-browser-tabs"
-              role="tablist"
-            >
-              <button
-                aria-selected={mobileDocumentBrowseMode === "files"}
-                className={mobileDocumentBrowseMode === "files" ? "is-active" : ""}
-                onClick={() => showMobileDocumentBrowseMode("files")}
-                role="tab"
-                type="button"
-              >
-                {t("documentBrowser.files")}
-              </button>
-              <button
-                aria-selected={mobileDocumentBrowseMode === "tags"}
-                className={mobileDocumentBrowseMode === "tags" ? "is-active" : ""}
-                onClick={() => showMobileDocumentBrowseMode("tags")}
-                role="tab"
-                type="button"
-              >
-                {t("documentBrowser.tags")}
-              </button>
-            </div>
-          ) : null}
-
-          {!mobileTagBrowserActive ? (
+        <div
+          className="document-browser-search"
+          onBlurCapture={(event) => {
+            const nextFocused = event.relatedTarget;
+            if (!(nextFocused instanceof Node) || !event.currentTarget.contains(nextFocused)) {
+              setFileSearchFocused(false);
+            }
+          }}
+        >
+          <div className="document-browser-controls">
             <label className="file-search" aria-label={t("fileSearch.label")}>
               <input
                 aria-label={t("fileSearch.label")}
                 autoComplete="off"
-                placeholder={t("fileSearch.placeholder")}
+                placeholder={t("fileSearch.label")}
                 type="search"
                 value={fileSearchQuery}
-                onChange={(event) => setFileSearchQuery(event.target.value)}
+                onChange={(event) => {
+                  setExactTagSearchKey("");
+                  setFileSearchQuery(event.target.value);
+                }}
+                onFocus={() => setFileSearchFocused(true)}
               />
               {fileSearchQuery ? (
                 <button
@@ -16201,115 +16268,168 @@ function App() {
                 </button>
               ) : null}
             </label>
-          ) : null}
-        </div>
+          </div>
 
-        {!mobileTagBrowserActive &&
-        isMobileViewport &&
-        (mobileWorkspaceActive || mobileFilePanelCreateActions.length > 0) ? (
-          <section
-            className="mobile-workspace-section"
-            aria-label={
-              mobileWorkspaceActive
-                ? t("mobileDataSource.currentLocation")
-                : t("mobileSource.newFile")
-            }
-          >
-            {mobileWorkspaceActive ? (
-              <div
-                className="document-tree-root"
-                title={mobileWorkspaceDisplayTitle}
-              >
-                <DocumentGlyphIcon kind="folder" selected />
-                <span className="document-tree-root__title">{mobileWorkspaceDisplayTitle}</span>
-              </div>
-            ) : null}
-            {mobileFilePanelCreateActions.length > 0 ? (
-              <div
-                className="mobile-workspace-actions"
+          <div className="document-browser-context">
+            {isMobileViewport &&
+            (mobileWorkspaceActive || mobileFilePanelCreateActions.length > 0) ? (
+              <section
+                className="mobile-workspace-section"
                 aria-label={
                   mobileWorkspaceActive
-                    ? t("mobileSource.createInCurrentLocation")
+                    ? t("mobileDataSource.currentLocation")
                     : t("mobileSource.newFile")
                 }
               >
-                {mobileFilePanelCreateActions.map((action) => (
-                  <button key={action.id} onClick={action.onSelect} type="button">
-                    {action.icon}
-                    <span>{action.label}</span>
-                  </button>
-                ))}
+                {mobileWorkspaceActive ? (
+                  <div
+                    className="document-tree-root"
+                    title={mobileWorkspaceDisplayTitle}
+                  >
+                    <DocumentGlyphIcon kind="folder" selected />
+                    <span className="document-tree-root__title">{mobileWorkspaceDisplayTitle}</span>
+                  </div>
+                ) : null}
+                {mobileFilePanelCreateActions.length > 0 ? (
+                  <div
+                    className="mobile-workspace-actions"
+                    aria-label={
+                      mobileWorkspaceActive
+                        ? t("mobileSource.createInCurrentLocation")
+                        : t("mobileSource.newFile")
+                    }
+                  >
+                    {mobileFilePanelCreateActions.map((action) => (
+                      <button key={action.id} onClick={action.onSelect} type="button">
+                        {action.icon}
+                        <span>{action.label}</span>
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+              </section>
+            ) : null}
+
+            {!isMobileViewport ? (
+              <div className="document-tree-root" title={workspaceTitle}>
+                <DocumentGlyphIcon kind="folder" selected />
+                <span className="document-tree-root__title">{workspaceTitle}</span>
               </div>
             ) : null}
-          </section>
-        ) : null}
 
-        {mobileTagBrowserActive ? (
-          <div className="document-list mobile-tag-browser" aria-label={t("tagBrowser.label")}>
-            {mobileSelectedTagGroup ? (
-              <>
-                <div className="mobile-tag-browser__header">
-                  <button onClick={() => setMobileSelectedTagKey("")} type="button">
-                    ‹ {t("tagBrowser.allTags")}
-                  </button>
-                  <h2>{mobileSelectedTagGroup.label}</h2>
-                  <p>
-                    {t("tagBrowser.documentCount", {
-                      count: mobileSelectedTagGroup.entries.length,
-                    })}
-                  </p>
-                </div>
-                {mobileSelectedTagGroup.entries.map((entry) => {
-                  const isSelected = entry.documentId === selectedDocument.id;
-
-                  return (
-                    <button
-                      aria-label={t("tagBrowser.openDocument", { title: entry.title })}
-                      className={`document-row mobile-tag-document ${
-                        isSelected ? "is-selected" : ""
-                      }`}
-                      key={entry.documentId}
-                      onClick={() => openWorkspaceEntry(entry)}
-                      title={entry.path}
-                      type="button"
-                    >
-                      <span className="document-disclosure is-placeholder" aria-hidden="true" />
-                      <DocumentGlyphIcon kind="file" selected={isSelected} />
-                      <span className="document-title">{entry.title}</span>
-                    </button>
-                  );
-                })}
-              </>
-            ) : documentTagGroups.length > 0 ? (
-              documentTagGroups.map((group) => (
+            {fileSearchModesVisible ? (
+              <div
+                aria-label={t("documentBrowser.label")}
+                className="file-search-mode-tabs"
+                role="tablist"
+              >
                 <button
-                  aria-label={t("tagBrowser.openTag", {
-                    tag: group.label,
-                    count: group.entries.length,
-                  })}
-                  className="mobile-tag-row"
-                  key={group.key}
-                  onClick={() => setMobileSelectedTagKey(group.key)}
+                  aria-selected={fileSearchMode === "files"}
+                  className={fileSearchMode === "files" ? "is-active" : ""}
+                  onClick={() => showFileSearchMode("files")}
+                  role="tab"
                   type="button"
                 >
-                  <span className="mobile-tag-row__label">{group.label}</span>
-                  <span className="mobile-tag-row__count">{group.entries.length}</span>
+                  {t("documentBrowser.files")}
                 </button>
-              ))
-            ) : (
-              <p className="mobile-tag-browser__empty">{t("tagBrowser.empty")}</p>
-            )}
+                <button
+                  aria-selected={fileSearchMode === "tags"}
+                  className={fileSearchMode === "tags" ? "is-active" : ""}
+                  onClick={() => showFileSearchMode("tags")}
+                  role="tab"
+                  type="button"
+                >
+                  {t("documentBrowser.tags")}
+                </button>
+              </div>
+            ) : null}
           </div>
-        ) : (
-          <div className="document-list">
-          {!isMobileViewport ? (
-            <div className="document-tree-root" title={workspaceTitle}>
-              <DocumentGlyphIcon kind="folder" selected />
-              <span className="document-tree-root__title">{workspaceTitle}</span>
-            </div>
-          ) : null}
+        </div>
 
-          {localRecursiveFileSearchActive ? (
+        <div
+          aria-label={fileSearchMode === "tags" ? t("tagBrowser.label") : undefined}
+          className={`document-list ${
+            fileSearchMode === "tags" && !fileSearchActive ? "tag-search-browser" : ""
+          }`}
+        >
+          {fileSearchMode === "tags" ? (
+            <>
+              {activeFileSearchPending ? (
+                <p className="file-search-status" role="status">
+                  {t("fileSearch.searching")}
+                </p>
+              ) : null}
+              {fileSearchError ? (
+                <p className="file-search-status is-error" role="status">
+                  {fileSearchError}
+                </p>
+              ) : null}
+              {!fileSearchActive && !activeFileSearchPending && !fileSearchError ? (
+                documentTagGroups.length > 0 ? (
+                  documentTagGroups.map((group) => (
+                    <button
+                      aria-label={t("tagBrowser.openTag", {
+                        tag: group.label,
+                        count: group.entries.length,
+                      })}
+                      className="tag-search-row"
+                      key={group.key}
+                      onClick={() => {
+                        setFileSearchQuery(group.label);
+                        setExactTagSearchKey(group.key);
+                      }}
+                      type="button"
+                    >
+                      <span className="tag-search-row__label">{group.label}</span>
+                      <span className="tag-search-row__count">{group.entries.length}</span>
+                    </button>
+                  ))
+                ) : (
+                  <p className="tag-search-empty">{t("tagBrowser.empty")}</p>
+                )
+              ) : null}
+              {fileSearchActive && !activeFileSearchPending && !fileSearchError
+                ? visibleTagSearchResults.map((result) => {
+                    const isSelected =
+                      hasOpenDocument &&
+                      (result.entry
+                        ? result.entry.documentId === selectedDocument.id
+                        : localPathsMatch(result.path, selectedDocument.id));
+
+                    return (
+                      <button
+                        className={`document-row file-search-result ${
+                          isSelected ? "is-selected" : ""
+                        }`}
+                        key={result.path}
+                        onClick={() => {
+                          if (result.entry) {
+                            openWorkspaceEntry(result.entry);
+                          } else {
+                            void openLocalFileSearchResult(result);
+                          }
+                        }}
+                        title={result.relativePath}
+                        type="button"
+                      >
+                        <span
+                          className="document-disclosure is-placeholder"
+                          aria-hidden="true"
+                        />
+                        <DocumentGlyphIcon kind="file" selected={isSelected} />
+                        <span className="document-title">
+                          <span className="document-title__primary">{result.title}</span>
+                          <span className="document-title__meta">{result.relativePath}</span>
+                          <span className="document-title__tags">
+                            {result.matchedTags.map((tag) => `#${tag}`).join(" · ")}
+                          </span>
+                        </span>
+                      </button>
+                    );
+                  })
+                : null}
+            </>
+          ) : localRecursiveFileSearchActive ? (
             <>
               {fileSearchPending ? (
                 <p className="file-search-status" role="status">
@@ -16435,8 +16555,7 @@ function App() {
               {t("fileSearch.noResults")}
             </p>
           ) : null}
-          </div>
-        )}
+        </div>
 
         {storageError ? <p className="storage-error">{storageError}</p> : null}
 
@@ -17198,30 +17317,19 @@ function App() {
                     >
                       {selectedDocumentTags.map((tag) => (
                         <span className="document-tag-chip" key={tag}>
-                          {isMobileViewport ? (
-                            <button
-                              aria-label={t("tags.open", { tag })}
-                              className="document-tag-chip__label"
-                              onClick={() => openMobileTagBrowser(tag)}
-                              type="button"
-                            >
-                              <span
-                                aria-hidden="true"
-                                className="document-tag-chip__icon"
-                                dangerouslySetInnerHTML={{ __html: priceTagIconSvg }}
-                              />
-                              {tag}
-                            </button>
-                          ) : (
-                            <span className="document-tag-chip__label">
-                              <span
-                                aria-hidden="true"
-                                className="document-tag-chip__icon"
-                                dangerouslySetInnerHTML={{ __html: priceTagIconSvg }}
-                              />
-                              {tag}
-                            </span>
-                          )}
+                          <button
+                            aria-label={t("tags.open", { tag })}
+                            className="document-tag-chip__label"
+                            onClick={() => openTagSearch(tag)}
+                            type="button"
+                          >
+                            <span
+                              aria-hidden="true"
+                              className="document-tag-chip__icon"
+                              dangerouslySetInnerHTML={{ __html: priceTagIconSvg }}
+                            />
+                            {tag}
+                          </button>
                           <button
                             aria-label={t("tags.remove", { tag })}
                             className="document-tag-chip__remove"
