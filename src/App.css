@@ -6587,11 +6587,11 @@ button.document-tag-chip__label:focus-visible {
     align-items: center;
     justify-content: center;
     gap: 7px;
-    border: 1px solid var(--color-border);
+    border: 1px solid var(--color-selected-border);
     border-radius: 9px;
     padding: 7px 8px;
     color: var(--color-heading);
-    background: var(--color-surface-raised);
+    background: var(--color-selected-surface);
     box-shadow: none;
     text-align: center;
   }
@@ -6657,10 +6657,14 @@ button.document-tag-chip__label:focus-visible {
   }
 
   .mobile-location-shortcut__path {
+    display: -webkit-box;
+    overflow: hidden;
     color: var(--color-muted);
     font-size: 12px;
     font-weight: 580;
     line-height: 1.1;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
   }
 
   .mobile-empty-actions {
@@ -6687,7 +6691,16 @@ button.document-tag-chip__label:focus-visible {
   .mobile-workspace-actions button:hover,
   .mobile-workspace-actions button:focus-visible,
   .mobile-location-actions button:hover,
-  .mobile-location-actions button:focus-visible,
+  .mobile-location-actions button:focus-visible {
+    border-color: var(--color-selected-border);
+    background: color-mix(
+      in srgb,
+      var(--color-selected-surface) 88%,
+      var(--color-accent)
+    );
+    outline: none;
+  }
+
   .mobile-empty-actions button:hover,
   .mobile-empty-actions button:focus-visible {
     border-color: var(--color-selected-border);
@@ -7019,7 +7032,7 @@ button.document-tag-chip__label:focus-visible {
     box-sizing: border-box;
     display: grid;
     width: 100%;
-    max-height: min(82%, calc(var(--visual-viewport-height, 100svh) - 12px));
+    max-height: min(72%, calc(var(--visual-viewport-height, 100svh) - 12px));
     grid-template-rows: auto minmax(0, 1fr);
     gap: 12px;
     overflow: hidden;

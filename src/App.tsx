@@ -11203,18 +11203,19 @@ function App() {
       tabBehavior?: DocumentTabBehavior;
       userInitiated?: boolean;
     } = {},
-  ) {
-    if (options.userInitiated !== false) {
-      manualDocumentSelectionRevisionRef.current += 1;
-    }
+  ): Promise<boolean> {
+    const selectionRevision =
+      options.userInitiated !== false
+        ? ++manualDocumentSelectionRevisionRef.current
+        : manualDocumentSelectionRevisionRef.current;
 
     if (!nativeStorageAvailable) {
       setStorageError(t("error.nativeRuntimeRequired"));
-      return;
+      return false;
     }
     if (!dropboxConnected && !options.allowPendingConnection) {
       setStorageError(t("dropbox.error.notConnected"));
-      return;
+      return false;
     }
 
     setStorageError(t("dropbox.status.openingFile"));
@@ -11223,11 +11224,17 @@ function App() {
       const loaded = await invoke<OpenDropboxMarkdownFileResult>("open_dropbox_markdown_file", {
         path,
       });
+      if (selectionRevision !== manualDocumentSelectionRevisionRef.current) return false;
+
       applyLoadedDropboxFile(loaded, { tabBehavior: options.tabBehavior });
       setStorageError("");
+      return true;
     } catch (error) {
+      if (selectionRevision !== manualDocumentSelectionRevisionRef.current) return false;
+
       const message = error instanceof Error ? error.message : String(error);
       setStorageError(dropboxUserFacingError(message));
+      return false;
     }
   }
 
@@ -11699,7 +11706,12 @@ function App() {
       if (loadedDocument) {
         selectDocument(entry.documentId, { tabBehavior: "add" });
       } else {
-        void openDropboxMarkdownFilePath(entry.path, { tabBehavior: "add" });
+        void openDropboxMarkdownFilePath(entry.path, { tabBehavior: "add" }).then((opened) => {
+          if (opened && isMobileViewport) {
+            setDirectoryPaneOpen(false);
+          }
+        });
+        return;
       }
       if (isMobileViewport) {
         setDirectoryPaneOpen(false);
@@ -11846,8 +11858,8 @@ function App() {
     }
 
     if (target.source === "dropbox" || isDropboxDocumentId(target.documentId)) {
-      await openDropboxMarkdownFilePath(target.path, { tabBehavior: "add" });
-      if (isMobileViewport) {
+      const opened = await openDropboxMarkdownFilePath(target.path, { tabBehavior: "add" });
+      if (opened && isMobileViewport) {
         setDirectoryPaneOpen(false);
       }
       return;
@@ -12392,6 +12404,9 @@ function App() {
 
       applyLoadedFiles([loaded], { sortEntries: true });
       setActiveDocumentModeState({ editorMode: "edit" });
+      if (isMobileViewport) {
+        setDirectoryPaneOpen(false);
+      }
     } catch (error) {
       setStorageError(translatedError(error, "error.createFileFailed"));
     }
@@ -12502,6 +12517,9 @@ function App() {
         ? await createDropboxMarkdownFile(createEntryDialog.name)
         : await createWorkspaceFolder(createEntryDialog.name);
     if (created) {
+      if (createEntryDialog.kind === "file" && isMobileViewport) {
+        setDirectoryPaneOpen(false);
+      }
       setCreateEntryDialog(null);
       return;
     }
@@ -15816,7 +15834,7 @@ function App() {
       id: "new-file",
       label: t("mobileSource.newFile"),
       icon: <DocumentGlyphIcon kind="file" />,
-      onSelect: () => runMobileSourceAction(newMarkdownFile),
+      onSelect: () => void newMarkdownFile(),
     },
     {
       id: "new-folder",
