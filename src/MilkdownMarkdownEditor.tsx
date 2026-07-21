@@ -37,6 +37,11 @@ import {
   splitMarkdownFrontmatter,
   stripMarkdownFrontmatter,
 } from "./markdownFrontmatter";
+import {
+  appendInlineMarkdownTextMap,
+  appendTextMap,
+  type MarkdownTextMap as MilkdownTextMap,
+} from "./markdownInlineTextMap";
 import { loadScholiumMermaid } from "./mermaid";
 
 type MilkdownMarkdownEditorProps = {
@@ -188,11 +193,6 @@ type MilkdownAnnotationSource = {
   isFocusTarget?: boolean;
   kind: "note" | "glossary";
   tone: AnnotationTone;
-};
-
-type MilkdownTextMap = {
-  text: string;
-  sourceOffsets: (number | null)[];
 };
 
 type ClientSelectionRect = {
@@ -466,81 +466,6 @@ function renderMilkdownMermaidPreview(
         ),
       );
     });
-}
-
-function appendTextMap(target: MilkdownTextMap, text: string, sourceStart: number | null) {
-  target.text += text;
-  for (let index = 0; index < text.length; index += 1) {
-    target.sourceOffsets.push(sourceStart === null ? null : sourceStart + index);
-  }
-}
-
-function appendInlineMarkdownTextMap(
-  target: MilkdownTextMap,
-  text: string,
-  sourceStart: number,
-) {
-  let index = 0;
-
-  while (index < text.length) {
-    const twoCharacterMarker = text.slice(index, index + 2);
-
-    if (twoCharacterMarker === "**" || twoCharacterMarker === "__") {
-      const endIndex = text.indexOf(twoCharacterMarker, index + 2);
-      if (endIndex > index + 2) {
-        appendInlineMarkdownTextMap(
-          target,
-          text.slice(index + 2, endIndex),
-          sourceStart + index + 2,
-        );
-        index = endIndex + 2;
-        continue;
-      }
-    }
-
-    const character = text[index];
-
-    if (character === "*" || character === "_") {
-      const endIndex = text.indexOf(character, index + 1);
-      if (endIndex > index + 1) {
-        appendInlineMarkdownTextMap(
-          target,
-          text.slice(index + 1, endIndex),
-          sourceStart + index + 1,
-        );
-        index = endIndex + 1;
-        continue;
-      }
-    }
-
-    if (character === "`") {
-      const endIndex = text.indexOf("`", index + 1);
-      if (endIndex > index + 1) {
-        appendTextMap(target, text.slice(index + 1, endIndex), sourceStart + index + 1);
-        index = endIndex + 1;
-        continue;
-      }
-    }
-
-    if (character === "[") {
-      const labelEndIndex = text.indexOf("](", index + 1);
-      if (labelEndIndex > index + 1) {
-        const linkEndIndex = text.indexOf(")", labelEndIndex + 2);
-        if (linkEndIndex > labelEndIndex + 2) {
-          appendInlineMarkdownTextMap(
-            target,
-            text.slice(index + 1, labelEndIndex),
-            sourceStart + index + 1,
-          );
-          index = linkEndIndex + 1;
-          continue;
-        }
-      }
-    }
-
-    appendTextMap(target, character, sourceStart + index);
-    index += 1;
-  }
 }
 
 function lineVisibleStartOffset(line: string) {
@@ -1749,7 +1674,8 @@ function visibleTextIndexFromProsePosition(doc: ProseMirrorNode, position: numbe
   return index >= 0 ? index : visibleTextIndex.text.length;
 }
 
-function buildProseNonWhitespacePositionIndex(doc: ProseMirrorNode) {
+function buildProseNonWhitespaceTextIndex(doc: ProseMirrorNode) {
+  const characters: string[] = [];
   const positions: number[] = [];
 
   doc.descendants((node, position) => {
@@ -1757,6 +1683,7 @@ function buildProseNonWhitespacePositionIndex(doc: ProseMirrorNode) {
 
     for (let offset = 0; offset < node.text.length; offset += 1) {
       if (!/\s/.test(node.text[offset])) {
+        characters.push(node.text[offset]);
         positions.push(position + offset);
       }
     }
@@ -1764,7 +1691,7 @@ function buildProseNonWhitespacePositionIndex(doc: ProseMirrorNode) {
     return true;
   });
 
-  return positions;
+  return { positions, text: characters.join("") };
 }
 
 function proseRangeFromMarkdownSourceRange(
@@ -1774,28 +1701,40 @@ function proseRangeFromMarkdownSourceRange(
   to: number,
 ) {
   const textMap = buildMarkdownVisibleTextMap(markdown);
-  let firstVisibleOrdinal: number | null = null;
-  let lastVisibleOrdinal: number | null = null;
-  let visibleOrdinal = 0;
+  const sourceCharacters: string[] = [];
+  let firstSourceIndex: number | null = null;
+  let lastSourceIndex: number | null = null;
 
   for (let index = 0; index < textMap.text.length; index += 1) {
     const character = textMap.text[index];
     const sourceOffset = textMap.sourceOffsets[index];
     if (sourceOffset === null || /\s/.test(character)) continue;
 
-    if (sourceOffset >= from && sourceOffset < to) {
-      firstVisibleOrdinal ??= visibleOrdinal;
-      lastVisibleOrdinal = visibleOrdinal;
-    }
+    const sourceIndex = sourceCharacters.length;
+    sourceCharacters.push(character);
 
-    visibleOrdinal += 1;
+    if (sourceOffset >= from && sourceOffset < to) {
+      firstSourceIndex ??= sourceIndex;
+      lastSourceIndex = sourceIndex;
+    }
   }
 
-  if (firstVisibleOrdinal === null || lastVisibleOrdinal === null) return null;
+  if (firstSourceIndex === null || lastSourceIndex === null) return null;
 
-  const prosePositions = buildProseNonWhitespacePositionIndex(doc);
-  const proseFrom = prosePositions[firstVisibleOrdinal];
-  const proseTo = prosePositions[lastVisibleOrdinal];
+  const sourceText = sourceCharacters.join("");
+  const target = sourceText.slice(firstSourceIndex, lastSourceIndex + 1);
+  const sourceOccurrence = textIndices(sourceText, target).indexOf(firstSourceIndex);
+  const proseTextIndex = buildProseNonWhitespaceTextIndex(doc);
+  const matchedProseIndex =
+    sourceOccurrence >= 0
+      ? indexOfOccurrence(proseTextIndex.text, target, sourceOccurrence)
+      : -1;
+  const proseStartIndex = matchedProseIndex >= 0 ? matchedProseIndex : firstSourceIndex;
+  const proseEndIndex =
+    matchedProseIndex >= 0 ? matchedProseIndex + target.length - 1 : lastSourceIndex;
+
+  const proseFrom = proseTextIndex.positions[proseStartIndex];
+  const proseTo = proseTextIndex.positions[proseEndIndex];
   if (proseFrom === undefined || proseTo === undefined || proseTo < proseFrom) return null;
 
   return {
@@ -3758,9 +3697,11 @@ export function MilkdownMarkdownEditor({
   ): MilkdownTouchBlockSelectionPreviewRect[] {
     if (!clientSelectionRectHasDrag(selectionRect)) return [];
 
-    const blockPreviewRects = touchBlockElementsFromSelectionRect(selectionRect).flatMap(
-      (blockElement, blockIndex) =>
-        touchBlockSelectionPreviewRectsFromElement(blockElement, `block:${blockIndex}`),
+    const blockPreviewRects = touchBlockSelectionPreviewRectsFromAnnotationRects(
+      touchBlockElementsFromSelectionRect(selectionRect).flatMap((blockElement) =>
+        touchBlockSelectionAnnotationRectsFromElement(blockElement),
+      ),
+      "block",
     );
     const root = rootRef.current;
     if (!root) return blockPreviewRects;
@@ -3831,8 +3772,16 @@ export function MilkdownMarkdownEditor({
       window.getSelection()?.removeAllRanges();
     }, 0);
     suppressSelectionPublishAfterTouchBlockSelection();
+    const containerRect = containerRef.current?.getBoundingClientRect();
+    const committedPreviewRects = containerRect
+      ? previewRects.map((rect) => ({
+          ...rect,
+          left: roundFrameValue(rect.left - containerRect.left),
+          top: roundFrameValue(rect.top - containerRect.top),
+        }))
+      : previewRects;
     setTouchBlockCommittedSelectionOverlay(
-      previewRects.length > 0 ? { previewRects } : null,
+      committedPreviewRects.length > 0 ? { previewRects: committedPreviewRects } : null,
     );
     blurReadonlyEditorFocus();
     scheduleAnnotationFrameUpdate();

@@ -4010,6 +4010,12 @@ button.document-tag-chip__label:focus-visible {
   background: color-mix(in srgb, var(--color-annotation-surface) 74%, transparent);
 }
 
+.milkdown-touch-block-selection-overlay.is-committed,
+.milkdown-touch-block-selection-overlay.is-committed
+  .milkdown-touch-block-selection-preview {
+  position: absolute;
+}
+
 .milkdown-touch-block-selection-overlay[data-note-tone="1"]
   .milkdown-touch-block-selection-preview {
   background: color-mix(in srgb, var(--color-annotation-surface-alt) 74%, transparent);
