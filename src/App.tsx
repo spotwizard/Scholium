@@ -12195,10 +12195,16 @@ function App() {
     setStorageError("");
 
     try {
-      const selectedPath = await openDialog({
-        directory: true,
-        multiple: false,
-      });
+      await invoke("set_native_folder_picker_list_view", { enabled: true });
+      let selectedPath: string | string[] | null;
+      try {
+        selectedPath = await openDialog({
+          directory: true,
+          multiple: false,
+        });
+      } finally {
+        await invoke("set_native_folder_picker_list_view", { enabled: false });
+      }
       if (!selectedPath) return false;
       if (Array.isArray(selectedPath)) return true;
 

@@ -25,6 +25,9 @@ use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_deep_link::DeepLinkExt;
 use url::Url;
 
+#[cfg(target_os = "macos")]
+use objc2_foundation::{NSString, NSUserDefaults};
+
 #[cfg(desktop)]
 const MENU_NEW_WINDOW: &str = "file:new-window";
 const MENU_NEW_FILE: &str = "file:new-file";
@@ -4028,6 +4031,28 @@ fn take_opened_file_paths(state: tauri::State<'_, OpenedFileState>) -> Result<Ve
     Ok(std::mem::take(&mut queue.pending_paths))
 }
 
+#[tauri::command]
+fn set_native_folder_picker_list_view(enabled: bool) {
+    #[cfg(target_os = "macos")]
+    {
+        let defaults = NSUserDefaults::standardUserDefaults();
+        for key in [
+            "NSNavPanelFileLastListModeForOpenModeKey",
+            "NSNavPanelFileListModeForOpenMode2",
+        ] {
+            let key = NSString::from_str(key);
+            if enabled {
+                defaults.setInteger_forKey(2, &key);
+            } else {
+                defaults.removeObjectForKey(&key);
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    let _ = enabled;
+}
+
 #[cfg(target_os = "macos")]
 fn handle_opened_file_urls(app_handle: &AppHandle, urls: Vec<Url>) {
     let paths = urls
@@ -4174,6 +4199,7 @@ pub fn run() {
             greet,
             validate_dropped_markdown_file,
             take_opened_file_paths,
+            set_native_folder_picker_list_view,
             open_markdown_directory,
             open_markdown_file,
             open_markdown_file_context,
