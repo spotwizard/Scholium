@@ -890,6 +890,10 @@ button:disabled {
   box-shadow: var(--shadow-high);
 }
 
+.document-tab-context-menu {
+  z-index: 90;
+}
+
 .file-context-menu button {
   display: grid;
   grid-template-columns: 18px minmax(0, 1fr);
@@ -2537,6 +2541,7 @@ button.document-tag-chip__label:focus-visible {
   justify-content: center;
   width: 100%;
   padding: 0 34px;
+  -webkit-touch-callout: none;
 }
 
 .document-tab__close {
