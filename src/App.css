@@ -3258,12 +3258,18 @@ button.document-tag-chip__label:focus-visible {
 }
 
 .markdown-preview img,
-.bottom-note-body img,
-.milkdown-markdown-editor .ProseMirror img {
+.bottom-note-body img {
   display: block;
   max-width: 100%;
   height: auto;
   margin: 0.35em 0 1em;
+}
+
+.milkdown-markdown-editor .ProseMirror > img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 4px 0;
 }
 
 .milkdown-markdown-editor .ProseMirror img[data-scholium-local-image-error="true"] {
@@ -3540,6 +3546,12 @@ button.document-tag-chip__label:focus-visible {
   line-height: var(--settings-editor-line-height-px) !important;
 }
 
+.milkdown-markdown-editor
+  .milkdown
+  :is(.milkdown-image-block, .milkdown-code-block, .milkdown-table-block) {
+  margin: 4px 0;
+}
+
 .milkdown-markdown-editor .milkdown .milkdown-list-item-block {
   --milkdown-list-marker-gap: 0.58em;
   --milkdown-list-marker-width: 1.05em;
@@ -3710,7 +3722,6 @@ button.document-tag-chip__label:focus-visible {
   --code-block-toolbar-reserved-space: 42px;
   isolation: isolate;
   overflow: visible;
-  margin: 0 0 1em;
   border: 1px solid var(--color-border);
   border-radius: 8px;
   padding: var(--code-block-toolbar-reserved-space) 12px;
