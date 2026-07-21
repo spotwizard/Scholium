@@ -15744,6 +15744,7 @@ function App() {
     notePanelModalActive || (noteModeEnabled && mobileAnnotationKeyboardShouldStayClosed);
   const mobileCommittedSelectionAnchor = pendingAnchor ?? activeNote?.anchor ?? null;
   const mobileCommittedSelectionKey =
+    mobileAnnotationKeyboardShouldStayClosed &&
     noteModeEnabled &&
     mobileCommittedSelectionAnchor &&
     hasRenderableAnchor(mobileCommittedSelectionAnchor)
@@ -17543,7 +17544,6 @@ function App() {
               ) : editorMode === "preview" ? (
                 <MilkdownMarkdownEditor
                   annotations={annotations}
-                  desktopBlockSelectionEnabled={!mobileAnnotationKeyboardShouldStayClosed}
                   documentFilePath={selectedDocument.filePath}
                   key={selectedDocument.id}
                   mobileBlockSelectionEnabled={mobileAnnotationKeyboardShouldStayClosed}
