@@ -5,23 +5,33 @@ use base64::{
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
+#[cfg(not(mobile))]
 use std::io::{Read, Write};
+#[cfg(not(mobile))]
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 #[cfg(desktop)]
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+#[cfg(not(mobile))]
+use std::time::Instant;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 #[cfg(desktop)]
 use tauri::menu::{AboutMetadata, Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::{AppHandle, Emitter, Manager};
+#[cfg(mobile)]
+use tauri_plugin_deep_link::DeepLinkExt;
 use url::Url;
+
+#[cfg(target_os = "macos")]
+use objc2_foundation::{NSString, NSUserDefaults};
 
 #[cfg(desktop)]
 const MENU_NEW_WINDOW: &str = "file:new-window";
 const MENU_NEW_FILE: &str = "file:new-file";
+const MENU_NEW_FOLDER: &str = "file:new-folder";
 const MENU_OPEN_FILE: &str = "file:open-file";
 const MENU_OPEN_FOLDER: &str = "file:open-folder";
 const MENU_CLOUD_DROPBOX: &str = "file:cloud:dropbox";
@@ -40,6 +50,8 @@ const NOTES_STORE_DIRECTORY: &str = "notes";
 const DEFAULT_APP_LANGUAGE: &str = "zh-Hant";
 const DROPBOX_OAUTH_REDIRECT_PORT: u16 = 53682;
 const DROPBOX_OAUTH_CALLBACK_PATH: &str = "/dropbox/oauth/callback";
+#[cfg(any(mobile, test))]
+const DROPBOX_MOBILE_URL_SCHEME: &str = "db-bdv6guwbi6ol9mg";
 const DROPBOX_OAUTH_AUTHORIZE_URL: &str = "https://www.dropbox.com/oauth2/authorize";
 const DROPBOX_OAUTH_TOKEN_URL: &str = "https://api.dropboxapi.com/oauth2/token";
 const DROPBOX_LIST_FOLDER_URL: &str = "https://api.dropboxapi.com/2/files/list_folder";
@@ -49,8 +61,12 @@ const DROPBOX_DOWNLOAD_URL: &str = "https://content.dropboxapi.com/2/files/downl
 const DROPBOX_UPLOAD_URL: &str = "https://content.dropboxapi.com/2/files/upload";
 const DROPBOX_COPY_URL: &str = "https://api.dropboxapi.com/2/files/copy_v2";
 const DROPBOX_DELETE_URL: &str = "https://api.dropboxapi.com/2/files/delete_v2";
+const DROPBOX_MOVE_URL: &str = "https://api.dropboxapi.com/2/files/move_v2";
+const DROPBOX_CREATE_FOLDER_URL: &str = "https://api.dropboxapi.com/2/files/create_folder_v2";
 const DROPBOX_REQUIRED_SCOPES: &str =
     "files.metadata.read files.content.read files.metadata.write files.content.write";
+const DROPBOX_TOKEN_REFRESH_ATTEMPTS: usize = 3;
+const DROPBOX_TOKEN_REFRESH_RETRY_DELAY: Duration = Duration::from_millis(500);
 #[cfg(desktop)]
 static NEW_WINDOW_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
@@ -60,6 +76,12 @@ struct LocationEntry {
     kind: String,
     path: String,
     title: String,
+    #[serde(default = "default_location_source")]
+    source: String,
+}
+
+fn default_location_source() -> String {
+    "local".to_string()
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -110,14 +132,25 @@ struct DropboxState {
     tokens: Mutex<Option<DropboxTokenStore>>,
 }
 
+#[derive(Default)]
+struct OpenedFileQueue {
+    frontend_ready: bool,
+    pending_paths: Vec<String>,
+}
+
+#[derive(Default)]
+struct OpenedFileState(Mutex<OpenedFileQueue>);
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct OpenLocationPayload {
     kind: String,
     path: String,
+    source: String,
+    title: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct TextSelectionAnchor {
     from: usize,
@@ -127,7 +160,7 @@ struct TextSelectionAnchor {
     suffix: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SelectionNote {
     id: String,
@@ -135,13 +168,14 @@ struct SelectionNote {
     status: String,
     selected_text: String,
     anchor: TextSelectionAnchor,
+    tone: Option<u8>,
     body: String,
     created_at: String,
     updated_at: String,
     deleted_at: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct GlossaryTerm {
     id: String,
@@ -152,7 +186,7 @@ struct GlossaryTerm {
     updated_at: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct GlossaryBinding {
     id: String,
@@ -167,7 +201,7 @@ struct GlossaryBinding {
     deleted_at: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct NotesFile {
     version: u32,
@@ -185,6 +219,7 @@ struct OpenMarkdownFile {
     path: String,
     notes_path: String,
     title: String,
+    modified_at: Option<i64>,
     body: String,
     notes: Vec<SelectionNote>,
     glossary_terms: Vec<GlossaryTerm>,
@@ -197,6 +232,7 @@ struct OpenDirectoryEntry {
     kind: String,
     path: String,
     title: String,
+    modified_at: Option<i64>,
     file: Option<OpenMarkdownFile>,
 }
 
@@ -216,6 +252,7 @@ struct SearchMarkdownFile {
     parent_path: Option<String>,
     title: String,
     relative_path: String,
+    matched_tags: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -230,6 +267,7 @@ struct OpenMarkdownFileContext {
 struct SaveMarkdownFile {
     path: String,
     notes_path: String,
+    modified_at: Option<i64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -237,6 +275,14 @@ struct SaveMarkdownFile {
 struct DeleteMarkdownFile {
     path: String,
     notes_path: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RenamedPath {
+    path: String,
+    title: String,
+    notes_path: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -253,7 +299,7 @@ struct LocalImageFile {
     data_url: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DropboxOAuthStatus {
     connected: bool,
@@ -403,6 +449,24 @@ fn validate_markdown_file_name(file_name: &str) -> Result<PathBuf, String> {
     Ok(file_name_path)
 }
 
+fn validate_path_name(
+    name: &str,
+    empty_error: &str,
+    folders_error: &str,
+) -> Result<PathBuf, String> {
+    let trimmed_name = name.trim();
+    if trimmed_name.is_empty() {
+        return Err(empty_error.to_string());
+    }
+
+    let name_path = PathBuf::from(trimmed_name);
+    if name_path.components().count() != 1 {
+        return Err(folders_error.to_string());
+    }
+
+    Ok(name_path)
+}
+
 fn legacy_sidecar_path(markdown_path: &Path) -> Result<PathBuf, String> {
     let file_name = markdown_path
         .file_name()
@@ -447,6 +511,82 @@ fn dropbox_notes_markdown_path(dropbox_path: &str) -> PathBuf {
     PathBuf::from(format!("dropbox:{normalized_path}"))
 }
 
+fn dropbox_notes_sidecar_path(dropbox_path: &str) -> String {
+    let normalized_path = normalize_dropbox_path(dropbox_path);
+
+    format!("{normalized_path}.notes.json")
+}
+
+fn visible_notes_from_file(
+    notes_file: NotesFile,
+) -> (Vec<SelectionNote>, Vec<GlossaryTerm>, Vec<GlossaryBinding>) {
+    (
+        notes_file
+            .notes
+            .into_iter()
+            .filter(|note| note.status != "deleted")
+            .collect(),
+        notes_file.glossary_terms,
+        notes_file
+            .glossary_bindings
+            .into_iter()
+            .filter(|binding| binding.status != "deleted")
+            .collect(),
+    )
+}
+
+fn notes_file_for_document(
+    document_path: String,
+    notes: Vec<SelectionNote>,
+    glossary_terms: Vec<GlossaryTerm>,
+    glossary_bindings: Vec<GlossaryBinding>,
+) -> NotesFile {
+    NotesFile {
+        version: 1,
+        markdown_path: document_path,
+        notes: notes
+            .into_iter()
+            .filter(|note| note.status != "deleted")
+            .collect(),
+        glossary_terms,
+        glossary_bindings: glossary_bindings
+            .into_iter()
+            .filter(|binding| binding.status != "deleted")
+            .collect(),
+    }
+}
+
+fn path_is_local_dropbox_synced_path(markdown_path: &Path) -> bool {
+    let normalized_path = normalized_markdown_path_string(markdown_path).replace('\\', "/");
+    let normalized_path = normalized_path.to_lowercase();
+
+    normalized_path.contains("/dropbox/")
+        || normalized_path.contains("/library/cloudstorage/dropbox/")
+}
+
+fn mirror_notes_file_to_local_dropbox_sidecar(
+    markdown_path: &Path,
+    notes_file: &NotesFile,
+) -> Result<(), String> {
+    if !path_is_local_dropbox_synced_path(markdown_path) {
+        return Ok(());
+    }
+
+    let sidecar_path = legacy_sidecar_path(markdown_path)?;
+    if notes_file_is_empty(notes_file) {
+        if sidecar_path.exists() {
+            fs::remove_file(&sidecar_path)
+                .map_err(|error| format!("failed to remove Dropbox sidecar notes: {error}"))?;
+        }
+        return Ok(());
+    }
+
+    let serialized = serde_json::to_string_pretty(notes_file)
+        .map_err(|error| format!("failed to serialize Dropbox sidecar notes: {error}"))?;
+    fs::write(&sidecar_path, serialized)
+        .map_err(|error| format!("failed to write Dropbox sidecar notes: {error}"))
+}
+
 fn read_document_notes(
     app: &AppHandle,
     markdown_path: &Path,
@@ -461,23 +601,13 @@ fn read_document_notes(
 > {
     let notes_path = notes_store_path(app, markdown_path)?;
     let notes_file = read_notes_file(app, markdown_path)?;
-    let (notes, glossary_terms, glossary_bindings) = notes_file
-        .map(|parsed| {
-            (
-                parsed
-                    .notes
-                    .into_iter()
-                    .filter(|note| note.status != "deleted")
-                    .collect(),
-                parsed.glossary_terms,
-                parsed
-                    .glossary_bindings
-                    .into_iter()
-                    .filter(|binding| binding.status != "deleted")
-                    .collect(),
-            )
-        })
-        .unwrap_or_else(|| (Vec::new(), Vec::new(), Vec::new()));
+    let (notes, glossary_terms, glossary_bindings) = match notes_file {
+        Some(notes_file) => {
+            mirror_notes_file_to_local_dropbox_sidecar(markdown_path, &notes_file)?;
+            visible_notes_from_file(notes_file)
+        }
+        None => (Vec::new(), Vec::new(), Vec::new()),
+    };
 
     Ok((
         notes_path.to_string_lossy().to_string(),
@@ -495,21 +625,13 @@ fn write_document_notes(
     glossary_terms: Vec<GlossaryTerm>,
     glossary_bindings: Vec<GlossaryBinding>,
 ) -> Result<PathBuf, String> {
-    let notes_file = NotesFile {
-        version: 1,
-        markdown_path: document_path,
-        notes: notes
-            .into_iter()
-            .filter(|note| note.status != "deleted")
-            .collect(),
-        glossary_terms,
-        glossary_bindings: glossary_bindings
-            .into_iter()
-            .filter(|binding| binding.status != "deleted")
-            .collect(),
-    };
+    let notes_file =
+        notes_file_for_document(document_path, notes, glossary_terms, glossary_bindings);
+    let notes_path = write_notes_file(app, markdown_path, notes_file.clone())?;
 
-    write_notes_file(app, markdown_path, notes_file)
+    mirror_notes_file_to_local_dropbox_sidecar(markdown_path, &notes_file)?;
+
+    Ok(notes_path)
 }
 
 fn remove_document_notes(app: &AppHandle, markdown_path: &Path) -> Result<PathBuf, String> {
@@ -591,8 +713,14 @@ fn urlencoded_form_body(params: &[(&str, &str)]) -> String {
     serializer.finish()
 }
 
+#[cfg(not(mobile))]
 fn dropbox_redirect_uri() -> String {
     format!("http://127.0.0.1:{DROPBOX_OAUTH_REDIRECT_PORT}{DROPBOX_OAUTH_CALLBACK_PATH}")
+}
+
+#[cfg(mobile)]
+fn dropbox_redirect_uri() -> String {
+    format!("{DROPBOX_MOBILE_URL_SCHEME}://2/token")
 }
 
 fn dropbox_token_store_path(app_handle: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -672,6 +800,41 @@ fn dropbox_oauth_callback_payload(error: String) -> DropboxOAuthCallbackPayload 
     }
 }
 
+fn dropbox_oauth_callback_from_url(url: &Url) -> DropboxOAuthCallbackPayload {
+    let query_pairs: HashMap<String, String> = url.query_pairs().into_owned().collect();
+    let code = query_pairs.get("code").cloned();
+    let state = query_pairs.get("state").cloned();
+    let error = query_pairs
+        .get("error_description")
+        .or_else(|| query_pairs.get("error"))
+        .cloned();
+
+    if let Some(error) = error {
+        return dropbox_oauth_callback_payload(error);
+    }
+
+    if code.is_none() {
+        return dropbox_oauth_callback_payload(
+            "Dropbox callback did not include an authorization code".to_string(),
+        );
+    }
+
+    DropboxOAuthCallbackPayload {
+        status: "success".to_string(),
+        code,
+        state,
+        error: None,
+    }
+}
+
+#[cfg(mobile)]
+fn is_dropbox_mobile_callback(url: &Url) -> bool {
+    url.scheme() == DROPBOX_MOBILE_URL_SCHEME
+        && url.host_str() == Some("2")
+        && url.path() == "/token"
+}
+
+#[cfg(not(mobile))]
 fn write_dropbox_oauth_http_response(
     stream: &mut std::net::TcpStream,
     ok: bool,
@@ -690,6 +853,7 @@ fn write_dropbox_oauth_http_response(
     stream.write_all(response.as_bytes())
 }
 
+#[cfg(not(mobile))]
 fn wait_for_dropbox_oauth_callback(listener: TcpListener) -> DropboxOAuthCallbackPayload {
     if let Err(error) = listener.set_nonblocking(true) {
         return dropbox_oauth_callback_payload(format!(
@@ -730,33 +894,10 @@ fn wait_for_dropbox_oauth_callback(listener: TcpListener) -> DropboxOAuthCallbac
                         "Dropbox callback URL could not be parsed".to_string(),
                     );
                 };
-                let query_pairs: std::collections::HashMap<String, String> =
-                    url.query_pairs().into_owned().collect();
-                let code = query_pairs.get("code").cloned();
-                let state = query_pairs.get("state").cloned();
-                let error = query_pairs
-                    .get("error_description")
-                    .or_else(|| query_pairs.get("error"))
-                    .cloned();
-                let is_success = code.is_some() && error.is_none();
+                let payload = dropbox_oauth_callback_from_url(&url);
+                let is_success = payload.status == "success";
                 let _ = write_dropbox_oauth_http_response(&mut stream, is_success);
-
-                if let Some(error) = error {
-                    return dropbox_oauth_callback_payload(error);
-                }
-
-                if code.is_none() {
-                    return dropbox_oauth_callback_payload(
-                        "Dropbox callback did not include an authorization code".to_string(),
-                    );
-                }
-
-                return DropboxOAuthCallbackPayload {
-                    status: "success".to_string(),
-                    code,
-                    state,
-                    error: None,
-                };
+                return payload;
             }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 if Instant::now() >= deadline {
@@ -808,6 +949,10 @@ fn dropbox_error_message(status: reqwest::StatusCode, raw_body: &str, context: &
     }
 }
 
+fn dropbox_error_is_not_found(status: reqwest::StatusCode, raw_body: &str) -> bool {
+    status == StatusCode::CONFLICT && raw_body.contains("not_found")
+}
+
 async fn parse_dropbox_token_response(
     response: reqwest::Response,
     context: &str,
@@ -845,6 +990,11 @@ fn tokens_expire_soon(tokens: &DropboxTokenStore) -> bool {
         .unwrap_or(false)
 }
 
+fn dropbox_token_refresh_retry_delay(failed_attempt: usize) -> Option<Duration> {
+    (failed_attempt < DROPBOX_TOKEN_REFRESH_ATTEMPTS)
+        .then(|| DROPBOX_TOKEN_REFRESH_RETRY_DELAY * failed_attempt as u32)
+}
+
 async fn refresh_dropbox_access_token(
     app_handle: &tauri::AppHandle,
     tokens: DropboxTokenStore,
@@ -853,20 +1003,43 @@ async fn refresh_dropbox_access_token(
         .refresh_token
         .clone()
         .ok_or_else(|| "Dropbox session expired; reconnect Dropbox.".to_string())?;
-    let response = reqwest::Client::new()
-        .post(DROPBOX_OAUTH_TOKEN_URL)
-        .header(
-            "Content-Type",
-            "application/x-www-form-urlencoded; charset=utf-8",
-        )
-        .body(urlencoded_form_body(&[
-            ("grant_type", "refresh_token"),
-            ("refresh_token", refresh_token.as_str()),
-            ("client_id", tokens.app_key.as_str()),
-        ]))
-        .send()
-        .await
-        .map_err(|error| format!("failed to refresh Dropbox token: {error}"))?;
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .map_err(|error| format!("failed to prepare Dropbox token refresh: {error}"))?;
+    let form_body = urlencoded_form_body(&[
+        ("grant_type", "refresh_token"),
+        ("refresh_token", refresh_token.as_str()),
+        ("client_id", tokens.app_key.as_str()),
+    ]);
+    let mut failed_attempt = 0;
+    let response = loop {
+        failed_attempt += 1;
+        match client
+            .post(DROPBOX_OAUTH_TOKEN_URL)
+            .header(
+                "Content-Type",
+                "application/x-www-form-urlencoded; charset=utf-8",
+            )
+            .body(form_body.clone())
+            .send()
+            .await
+        {
+            Ok(response) => break response,
+            Err(error) => {
+                let Some(delay) = dropbox_token_refresh_retry_delay(failed_attempt) else {
+                    return Err(format!("failed to refresh Dropbox token: {error}"));
+                };
+                tauri::async_runtime::spawn_blocking(move || std::thread::sleep(delay))
+                    .await
+                    .map_err(|wait_error| {
+                        format!(
+                            "failed to wait before retrying Dropbox token refresh: {wait_error}"
+                        )
+                    })?;
+            }
+        }
+    };
 
     let token_response =
         parse_dropbox_token_response(response, "failed to refresh Dropbox token").await?;
@@ -1047,6 +1220,202 @@ fn dropbox_file_with_notes(
     })
 }
 
+async fn download_dropbox_notes_file(
+    app: &tauri::AppHandle,
+    dropbox_path: &str,
+) -> Result<Option<NotesFile>, String> {
+    let notes_sidecar_path = dropbox_notes_sidecar_path(dropbox_path);
+    let access_token = dropbox_access_token(app).await?;
+    let response = reqwest::Client::new()
+        .post(DROPBOX_DOWNLOAD_URL)
+        .bearer_auth(access_token)
+        .header(
+            "Dropbox-API-Arg",
+            serde_json::json!({ "path": notes_sidecar_path }).to_string(),
+        )
+        .send()
+        .await
+        .map_err(|error| format!("failed to download Dropbox notes file: {error}"))?;
+
+    if response.status() == StatusCode::UNAUTHORIZED {
+        return Err("Dropbox authorization failed; reconnect Dropbox.".to_string());
+    }
+
+    let status = response.status();
+    if !status.is_success() {
+        let raw_body = response
+            .text()
+            .await
+            .unwrap_or_else(|error| format!("failed to read Dropbox error response: {error}"));
+        if dropbox_error_is_not_found(status, &raw_body) {
+            return Ok(None);
+        }
+
+        return Err(dropbox_error_message(
+            status,
+            &raw_body,
+            "failed to download Dropbox notes file",
+        ));
+    }
+
+    let raw_notes = response
+        .text()
+        .await
+        .map_err(|error| format!("failed to read Dropbox notes file: {error}"))?;
+    let notes_file = serde_json::from_str::<NotesFile>(&raw_notes)
+        .map_err(|error| format!("failed to parse Dropbox notes file: {error}"))?;
+    let notes_markdown_path = dropbox_notes_markdown_path(dropbox_path);
+
+    write_notes_file(app, &notes_markdown_path, notes_file.clone())?;
+
+    Ok(Some(notes_file))
+}
+
+async fn read_dropbox_document_notes(
+    app: &tauri::AppHandle,
+    dropbox_path: &str,
+) -> Result<
+    (
+        String,
+        Vec<SelectionNote>,
+        Vec<GlossaryTerm>,
+        Vec<GlossaryBinding>,
+    ),
+    String,
+> {
+    if let Some(notes_file) = download_dropbox_notes_file(app, dropbox_path).await? {
+        let notes_markdown_path = dropbox_notes_markdown_path(dropbox_path);
+        let notes_path = notes_store_path(app, &notes_markdown_path)?;
+        let (notes, glossary_terms, glossary_bindings) = visible_notes_from_file(notes_file);
+
+        return Ok((
+            notes_path.to_string_lossy().to_string(),
+            notes,
+            glossary_terms,
+            glossary_bindings,
+        ));
+    }
+
+    let notes_markdown_path = dropbox_notes_markdown_path(dropbox_path);
+    if let Some(notes_file) = read_notes_file(app, &notes_markdown_path)? {
+        let notes_path = notes_store_path(app, &notes_markdown_path)?;
+        if !notes_file_is_empty(&notes_file) {
+            upload_dropbox_notes_file(app, dropbox_path, notes_file.clone()).await?;
+        }
+        let (notes, glossary_terms, glossary_bindings) = visible_notes_from_file(notes_file);
+
+        return Ok((
+            notes_path.to_string_lossy().to_string(),
+            notes,
+            glossary_terms,
+            glossary_bindings,
+        ));
+    }
+
+    read_document_notes(app, &notes_markdown_path)
+}
+
+async fn dropbox_file_with_remote_notes(
+    app: &tauri::AppHandle,
+    path: String,
+    title: String,
+    body: String,
+    rev: Option<String>,
+    server_modified: Option<String>,
+) -> Result<DropboxMarkdownFile, String> {
+    let (notes_path, notes, glossary_terms, glossary_bindings) =
+        read_dropbox_document_notes(app, &path).await?;
+
+    Ok(DropboxMarkdownFile {
+        path,
+        notes_path,
+        title,
+        body,
+        notes,
+        glossary_terms,
+        glossary_bindings,
+        rev,
+        server_modified,
+    })
+}
+
+async fn upload_dropbox_notes_file(
+    app: &tauri::AppHandle,
+    dropbox_path: &str,
+    notes_file: NotesFile,
+) -> Result<(), String> {
+    let notes_sidecar_path = dropbox_notes_sidecar_path(dropbox_path);
+    let serialized = serde_json::to_string_pretty(&notes_file)
+        .map_err(|error| format!("failed to serialize Dropbox notes: {error}"))?;
+    let access_token = dropbox_access_token(app).await?;
+    let response = reqwest::Client::new()
+        .post(DROPBOX_UPLOAD_URL)
+        .bearer_auth(access_token)
+        .header("Content-Type", "application/octet-stream")
+        .header(
+            "Dropbox-API-Arg",
+            serde_json::json!({
+                "path": notes_sidecar_path,
+                "mode": "overwrite",
+                "autorename": false,
+                "mute": false,
+                "strict_conflict": false
+            })
+            .to_string(),
+        )
+        .body(serialized)
+        .send()
+        .await
+        .map_err(|error| format!("failed to upload Dropbox notes file: {error}"))?;
+
+    if response.status() == StatusCode::UNAUTHORIZED {
+        return Err("Dropbox authorization failed; reconnect Dropbox.".to_string());
+    }
+    if !response.status().is_success() {
+        return Err(dropbox_response_error(response, "failed to upload Dropbox notes file").await);
+    }
+
+    Ok(())
+}
+
+async fn delete_dropbox_notes_file(
+    app: &tauri::AppHandle,
+    dropbox_path: &str,
+) -> Result<(), String> {
+    let notes_sidecar_path = dropbox_notes_sidecar_path(dropbox_path);
+    let access_token = dropbox_access_token(app).await?;
+    let response = reqwest::Client::new()
+        .post(DROPBOX_DELETE_URL)
+        .bearer_auth(access_token)
+        .json(&serde_json::json!({ "path": notes_sidecar_path }))
+        .send()
+        .await
+        .map_err(|error| format!("failed to delete Dropbox notes file: {error}"))?;
+
+    if response.status() == StatusCode::UNAUTHORIZED {
+        return Err("Dropbox authorization failed; reconnect Dropbox.".to_string());
+    }
+
+    let status = response.status();
+    if !status.is_success() {
+        let raw_body = response
+            .text()
+            .await
+            .unwrap_or_else(|error| format!("failed to read Dropbox error response: {error}"));
+        if dropbox_error_is_not_found(status, &raw_body) {
+            return Ok(());
+        }
+
+        return Err(dropbox_error_message(
+            status,
+            &raw_body,
+            "failed to delete Dropbox notes file",
+        ));
+    }
+
+    Ok(())
+}
+
 async fn upload_dropbox_markdown_file(
     app: &tauri::AppHandle,
     path: String,
@@ -1163,17 +1532,18 @@ fn current_app_language(app_handle: &tauri::AppHandle) -> String {
 
 fn menu_text(language: &str, key: &str) -> &'static str {
     match (normalize_app_language(language), key) {
-        ("en", "directoryFallback") => "Directory",
+        ("en", "directoryFallback") => "Folder",
         ("en", "markdownFileFallback") => "Markdown file",
-        ("en", "favoriteDirectories") => "Favorite Directories",
-        ("en", "addCurrentDirectory") => "Add Current Directory",
-        ("en", "noFavoriteDirectories") => "No favorite directories",
-        ("en", "clearFavoriteDirectories") => "Clear Favorite Directories",
+        ("en", "favoriteDirectories") => "Favorite Folders",
+        ("en", "addCurrentDirectory") => "Add Current Folder",
+        ("en", "noFavoriteDirectories") => "No favorite folders",
+        ("en", "clearFavoriteDirectories") => "Clear Favorite Folders",
         ("en", "recentLocations") => "Recent",
         ("en", "noRecentLocations") => "No recent items",
         ("en", "clearItems") => "Clear Items",
         ("en", "newWindow") => "New Window",
         ("en", "newFile") => "New File",
+        ("en", "newFolder") => "New Folder",
         ("en", "openFile") => "Open File",
         ("en", "openFolder") => "Open Folder",
         ("en", "cloud") => "Cloud",
@@ -1184,19 +1554,20 @@ fn menu_text(language: &str, key: &str) -> &'static str {
         ("en", "viewMenu") => "View",
         ("en", "windowMenu") => "Window",
         ("en", "helpMenu") => "Help",
-        ("zh-Hans", "directoryFallback") => "目录",
+        ("zh-Hans", "directoryFallback") => "文件夹",
         ("zh-Hans", "markdownFileFallback") => "Markdown 文件",
-        ("zh-Hans", "favoriteDirectories") => "常用目录",
-        ("zh-Hans", "addCurrentDirectory") => "加入目前目录",
-        ("zh-Hans", "noFavoriteDirectories") => "尚未加入常用目录",
-        ("zh-Hans", "clearFavoriteDirectories") => "清除常用目录",
+        ("zh-Hans", "favoriteDirectories") => "收藏的文件夹",
+        ("zh-Hans", "addCurrentDirectory") => "收藏当前文件夹",
+        ("zh-Hans", "noFavoriteDirectories") => "尚未收藏文件夹",
+        ("zh-Hans", "clearFavoriteDirectories") => "清除收藏的文件夹",
         ("zh-Hans", "recentLocations") => "最近打开",
         ("zh-Hans", "noRecentLocations") => "尚无最近打开项目",
         ("zh-Hans", "clearItems") => "清除项目",
-        ("zh-Hans", "newWindow") => "新增窗口",
-        ("zh-Hans", "newFile") => "新增文件",
+        ("zh-Hans", "newWindow") => "新建窗口",
+        ("zh-Hans", "newFile") => "新建文件",
+        ("zh-Hans", "newFolder") => "新建文件夹",
         ("zh-Hans", "openFile") => "打开文件",
-        ("zh-Hans", "openFolder") => "打开目录",
+        ("zh-Hans", "openFolder") => "打开文件夹",
         ("zh-Hans", "cloud") => "云端",
         ("zh-Hans", "dropbox") => "Dropbox",
         ("zh-Hans", "settings") => "设置...",
@@ -1205,19 +1576,20 @@ fn menu_text(language: &str, key: &str) -> &'static str {
         ("zh-Hans", "viewMenu") => "视图",
         ("zh-Hans", "windowMenu") => "窗口",
         ("zh-Hans", "helpMenu") => "帮助",
-        (_, "directoryFallback") => "目錄",
+        (_, "directoryFallback") => "資料夾",
         (_, "markdownFileFallback") => "Markdown 檔案",
-        (_, "favoriteDirectories") => "常用目錄",
-        (_, "addCurrentDirectory") => "加入目前目錄",
-        (_, "noFavoriteDirectories") => "尚未加入常用目錄",
-        (_, "clearFavoriteDirectories") => "清除常用目錄",
+        (_, "favoriteDirectories") => "常用資料夾",
+        (_, "addCurrentDirectory") => "加入目前資料夾",
+        (_, "noFavoriteDirectories") => "尚未加入常用資料夾",
+        (_, "clearFavoriteDirectories") => "清除常用資料夾",
         (_, "recentLocations") => "最近開啟",
         (_, "noRecentLocations") => "尚無最近開啟項目",
         (_, "clearItems") => "清除項目",
         (_, "newWindow") => "新增視窗",
         (_, "newFile") => "新增檔案",
+        (_, "newFolder") => "新增資料夾",
         (_, "openFile") => "開啟檔案",
-        (_, "openFolder") => "開啟目錄",
+        (_, "openFolder") => "開啟資料夾",
         (_, "cloud") => "雲端",
         (_, "dropbox") => "Dropbox",
         (_, "settings") => "設定...",
@@ -1328,6 +1700,7 @@ fn sanitize_location_entry(
     kind: &str,
     path: String,
     title: String,
+    source: String,
     language: &str,
 ) -> Result<LocationEntry, String> {
     if kind != "directory" && kind != "file" {
@@ -1338,6 +1711,11 @@ fn sanitize_location_entry(
     if trimmed_path.is_empty() {
         return Err("location path is empty".to_string());
     }
+    let normalized_source = match source.trim() {
+        "" | "local" => "local",
+        "dropbox" => "dropbox",
+        _ => return Err("unsupported location source".to_string()),
+    };
 
     let fallback_title = if kind == "directory" {
         location_title(
@@ -1360,6 +1738,7 @@ fn sanitize_location_entry(
         } else {
             trimmed_title.to_string()
         },
+        source: normalized_source.to_string(),
     })
 }
 
@@ -1422,6 +1801,10 @@ fn write_location_store(
 }
 
 fn recent_location_exists(location: &LocationEntry) -> bool {
+    if location.source == "dropbox" {
+        return true;
+    }
+
     let path = Path::new(&location.path);
 
     match location.kind.as_str() {
@@ -1445,9 +1828,11 @@ fn remember_recent_location_entry(
 ) -> Result<(), String> {
     let mut store = current_location_store(app_handle);
 
-    store
-        .recent
-        .retain(|location| location.kind != entry.kind || location.path != entry.path);
+    store.recent.retain(|location| {
+        location.source != entry.source
+            || location.kind != entry.kind
+            || location.path != entry.path
+    });
     store.recent.insert(0, entry);
     store.recent.truncate(MAX_RECENT_LOCATIONS);
 
@@ -1464,7 +1849,7 @@ fn remember_favorite_directory_entry(
 
     store
         .favorite_directories
-        .retain(|location| location.path != entry.path);
+        .retain(|location| location.source != entry.source || location.path != entry.path);
     store.favorite_directories.insert(0, entry);
 
     replace_current_location_store(app_handle, store.clone())?;
@@ -1497,9 +1882,17 @@ fn location_menu_label(location: &LocationEntry) -> String {
         .and_then(|parent| parent.to_str())
         .filter(|parent| !parent.is_empty());
 
-    match parent {
-        Some(parent) => format!("{} — {}", location.title, parent),
-        None => location.title.clone(),
+    let location_detail = match (location.source.as_str(), parent) {
+        ("dropbox", Some(parent)) => format!("Dropbox {parent}"),
+        ("dropbox", None) => "Dropbox".to_string(),
+        (_, Some(parent)) => parent.to_string(),
+        _ => String::new(),
+    };
+
+    if location_detail.is_empty() {
+        location.title.clone()
+    } else {
+        format!("{} — {}", location.title, location_detail)
     }
 }
 
@@ -1523,6 +1916,23 @@ fn is_markdown_path(path: &Path) -> bool {
             )
         })
         .unwrap_or(false)
+}
+
+fn dropped_markdown_path(paths: &[String]) -> Result<&Path, String> {
+    let [path] = paths else {
+        return Err("drop requires exactly one .md file".to_string());
+    };
+    let path = Path::new(path);
+
+    if !path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
+    {
+        return Err("dropped file must use the .md extension".to_string());
+    }
+
+    Ok(path)
 }
 
 fn hex_digit_value(byte: u8) -> Option<u8> {
@@ -1621,14 +2031,49 @@ fn is_hidden_path(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-fn entry_sort_key(entry: &OpenDirectoryEntry) -> (u8, String, String) {
-    let kind_order = if entry.kind == "directory" { 0 } else { 1 };
+fn modified_time_millis(path: &Path) -> Option<i64> {
+    path.metadata()
+        .ok()
+        .and_then(|metadata| metadata.modified().ok())
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_millis() as i64)
+}
 
-    (
-        kind_order,
-        entry.title.to_lowercase(),
-        entry.path.to_lowercase(),
-    )
+fn entry_kind_order(kind: &str) -> u8 {
+    if kind == "directory" {
+        0
+    } else {
+        1
+    }
+}
+
+fn entry_sort_key(entry: &OpenDirectoryEntry) -> (String, String) {
+    (entry.title.to_lowercase(), entry.path.to_lowercase())
+}
+
+fn compare_directory_entries(
+    left: &OpenDirectoryEntry,
+    right: &OpenDirectoryEntry,
+) -> std::cmp::Ordering {
+    entry_kind_order(&left.kind)
+        .cmp(&entry_kind_order(&right.kind))
+        .then_with(|| {
+            right
+                .modified_at
+                .unwrap_or(i64::MIN)
+                .cmp(&left.modified_at.unwrap_or(i64::MIN))
+        })
+        .then_with(|| entry_sort_key(left).cmp(&entry_sort_key(right)))
+}
+
+fn compare_dropbox_entries(
+    left: &DropboxDirectoryEntry,
+    right: &DropboxDirectoryEntry,
+) -> std::cmp::Ordering {
+    entry_kind_order(&left.kind)
+        .cmp(&entry_kind_order(&right.kind))
+        .then_with(|| right.server_modified.cmp(&left.server_modified))
+        .then_with(|| dropbox_entry_sort_key(left).cmp(&dropbox_entry_sort_key(right)))
 }
 
 fn file_search_matches(path: &Path, root: &Path, query: &str) -> bool {
@@ -1649,10 +2094,161 @@ fn file_search_matches(path: &Path, root: &Path, query: &str) -> bool {
         .all(|term| searchable_text.contains(term))
 }
 
+fn normalize_tag_search_value(value: &str) -> String {
+    value
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+fn yaml_scalar_without_comment(value: &str) -> &str {
+    let mut quote = None;
+    let mut previous = None;
+
+    for (index, character) in value.char_indices() {
+        if let Some(active_quote) = quote {
+            if character == active_quote && previous != Some('\\') {
+                quote = None;
+            }
+        } else if character == '"' || character == '\'' {
+            quote = Some(character);
+        } else if character == '#' && previous.map_or(true, char::is_whitespace) {
+            return value[..index].trim();
+        }
+        previous = Some(character);
+    }
+
+    value.trim()
+}
+
+fn parse_yaml_tag_scalar(value: &str) -> String {
+    let value = yaml_scalar_without_comment(value).trim();
+    if value.len() >= 2 && value.starts_with('"') && value.ends_with('"') {
+        return serde_json::from_str(value).unwrap_or_else(|_| value[1..value.len() - 1].into());
+    }
+    if value.len() >= 2 && value.starts_with('\'') && value.ends_with('\'') {
+        return value[1..value.len() - 1].replace("''", "'");
+    }
+    value.to_string()
+}
+
+fn split_yaml_inline_tags(value: &str) -> Vec<String> {
+    let value = value.trim().trim_start_matches('[').trim_end_matches(']');
+    let mut items = Vec::new();
+    let mut current = String::new();
+    let mut quote = None;
+    let mut previous = None;
+
+    for character in value.chars() {
+        if let Some(active_quote) = quote {
+            current.push(character);
+            if character == active_quote && previous != Some('\\') {
+                quote = None;
+            }
+        } else if character == '"' || character == '\'' {
+            quote = Some(character);
+            current.push(character);
+        } else if character == ',' {
+            items.push(parse_yaml_tag_scalar(&current));
+            current.clear();
+        } else {
+            current.push(character);
+        }
+        previous = Some(character);
+    }
+    if !current.trim().is_empty() {
+        items.push(parse_yaml_tag_scalar(&current));
+    }
+
+    items
+}
+
+fn unique_markdown_tags(tags: Vec<String>) -> Vec<String> {
+    let mut keys = std::collections::HashSet::new();
+    tags.into_iter()
+        .filter_map(|tag| {
+            let tag = tag.split_whitespace().collect::<Vec<_>>().join(" ");
+            let key = tag.to_lowercase();
+            (!tag.is_empty() && keys.insert(key)).then_some(tag)
+        })
+        .collect()
+}
+
+fn markdown_tags(markdown: &str) -> Vec<String> {
+    let normalized = markdown.replace("\r\n", "\n");
+    let mut lines = normalized.lines();
+    if lines.next() != Some("---") {
+        return Vec::new();
+    }
+
+    let mut frontmatter = Vec::new();
+    let mut closed = false;
+    for line in lines {
+        if line.trim() == "---" || line.trim() == "..." {
+            closed = true;
+            break;
+        }
+        frontmatter.push(line);
+    }
+    if !closed {
+        return Vec::new();
+    }
+
+    for (index, line) in frontmatter.iter().enumerate() {
+        let Some(inline_value) = line.strip_prefix("tags:") else {
+            continue;
+        };
+        let inline_value = yaml_scalar_without_comment(inline_value).trim();
+        if inline_value.starts_with('[') && inline_value.ends_with(']') {
+            return unique_markdown_tags(split_yaml_inline_tags(inline_value));
+        }
+        if !inline_value.is_empty() {
+            return unique_markdown_tags(vec![parse_yaml_tag_scalar(inline_value)]);
+        }
+
+        let mut tags = Vec::new();
+        for continuation in frontmatter.iter().skip(index + 1) {
+            if continuation.trim().is_empty() {
+                continue;
+            }
+            if !continuation.chars().next().is_some_and(char::is_whitespace) {
+                break;
+            }
+            let Some(item) = continuation.trim_start().strip_prefix('-') else {
+                break;
+            };
+            tags.push(parse_yaml_tag_scalar(item.trim_start()));
+        }
+        return unique_markdown_tags(tags);
+    }
+
+    Vec::new()
+}
+
+fn matching_markdown_tags(path: &Path, query: &str, exact: bool) -> Vec<String> {
+    let Ok(markdown) = fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    markdown_tags(&markdown)
+        .into_iter()
+        .filter(|tag| {
+            let key = normalize_tag_search_value(tag);
+            if exact {
+                key == query
+            } else {
+                key.contains(query)
+            }
+        })
+        .collect()
+}
+
 fn search_markdown_directory(
     root: &Path,
     directory: &Path,
     query: &str,
+    search_tags: bool,
+    exact_tag: bool,
     results: &mut Vec<SearchMarkdownFile>,
 ) -> Result<(), String> {
     if results.len() >= MAX_FILE_SEARCH_RESULTS {
@@ -1680,9 +2276,17 @@ fn search_markdown_directory(
             continue;
         }
 
-        if !file_type.is_file()
-            || !is_markdown_path(&path)
-            || !file_search_matches(&path, root, query)
+        if !file_type.is_file() || !is_markdown_path(&path) {
+            continue;
+        }
+
+        let matched_tags = if search_tags {
+            matching_markdown_tags(&path, query, exact_tag)
+        } else {
+            Vec::new()
+        };
+        if (search_tags && matched_tags.is_empty())
+            || (!search_tags && !file_search_matches(&path, root, query))
         {
             continue;
         }
@@ -1698,6 +2302,7 @@ fn search_markdown_directory(
                 .unwrap_or(&path)
                 .to_string_lossy()
                 .replace('\\', "/"),
+            matched_tags,
         });
 
         if results.len() >= MAX_FILE_SEARCH_RESULTS {
@@ -1708,7 +2313,7 @@ fn search_markdown_directory(
     child_paths.sort_by_key(|path| path.to_string_lossy().to_lowercase());
 
     for child_path in child_paths {
-        search_markdown_directory(root, &child_path, query, results)?;
+        search_markdown_directory(root, &child_path, query, search_tags, exact_tag, results)?;
         if results.len() >= MAX_FILE_SEARCH_RESULTS {
             return Ok(());
         }
@@ -1738,6 +2343,7 @@ fn read_markdown_directory(
                 kind: "directory".to_string(),
                 title: directory_title(&path),
                 path: path.to_string_lossy().to_string(),
+                modified_at: modified_time_millis(&path),
                 file: None,
             });
         } else if is_markdown_path(&path) {
@@ -1745,12 +2351,13 @@ fn read_markdown_directory(
                 kind: "file".to_string(),
                 title: document_title(&path),
                 path: path.to_string_lossy().to_string(),
+                modified_at: modified_time_millis(&path),
                 file: Some(read_markdown_file(app, path)?),
             });
         }
     }
 
-    entries.sort_by_key(entry_sort_key);
+    entries.sort_by(compare_directory_entries);
 
     Ok(OpenMarkdownDirectory {
         title: directory_title(&directory),
@@ -1774,6 +2381,130 @@ fn notes_file_is_empty(notes_file: &NotesFile) -> bool {
     notes_file.notes.is_empty()
         && notes_file.glossary_terms.is_empty()
         && notes_file.glossary_bindings.is_empty()
+}
+
+fn random_sidecar_id(prefix: &str, used_ids: &mut HashSet<String>) -> Result<String, String> {
+    for _ in 0..8 {
+        let token = random_url_token(18)?;
+        let id = format!("{prefix}-{token}");
+        if used_ids.insert(id.clone()) {
+            return Ok(id);
+        }
+    }
+
+    Err("failed to generate unique sidecar id".to_string())
+}
+
+fn duplicate_notes_file_for_document(
+    mut notes_file: NotesFile,
+    target_document_id: &str,
+) -> Result<NotesFile, String> {
+    let mut used_ids = HashSet::new();
+    let mut glossary_term_id_map = HashMap::new();
+    let target_document_id = target_document_id.to_string();
+
+    for note in notes_file.notes.iter() {
+        used_ids.insert(note.id.clone());
+    }
+    for term in notes_file.glossary_terms.iter() {
+        used_ids.insert(term.id.clone());
+    }
+    for binding in notes_file.glossary_bindings.iter() {
+        used_ids.insert(binding.id.clone());
+    }
+
+    notes_file.markdown_path = target_document_id.clone();
+
+    for term in notes_file.glossary_terms.iter_mut() {
+        let source_id = term.id.clone();
+        let copied_id = random_sidecar_id("glossary", &mut used_ids)?;
+
+        term.id = copied_id.clone();
+        glossary_term_id_map.insert(source_id, copied_id);
+    }
+
+    for note in notes_file.notes.iter_mut() {
+        note.id = random_sidecar_id("note", &mut used_ids)?;
+        note.document_id = target_document_id.clone();
+    }
+
+    for binding in notes_file.glossary_bindings.iter_mut() {
+        let source_term_id = binding.term_id.clone();
+        let copied_term_id = match glossary_term_id_map.get(&source_term_id) {
+            Some(copied_id) => copied_id.clone(),
+            None => {
+                let copied_id = random_sidecar_id("glossary", &mut used_ids)?;
+                glossary_term_id_map.insert(source_term_id, copied_id.clone());
+                copied_id
+            }
+        };
+
+        binding.id = random_sidecar_id("glossary-binding", &mut used_ids)?;
+        binding.document_id = target_document_id.clone();
+        binding.term_id = copied_term_id;
+    }
+
+    Ok(notes_file)
+}
+
+fn move_notes_file_for_document(mut notes_file: NotesFile, target_document_id: &str) -> NotesFile {
+    let target_document_id = target_document_id.to_string();
+    notes_file.markdown_path = target_document_id.clone();
+
+    for note in notes_file.notes.iter_mut() {
+        note.document_id = target_document_id.clone();
+    }
+    for binding in notes_file.glossary_bindings.iter_mut() {
+        binding.document_id = target_document_id.clone();
+    }
+
+    notes_file
+}
+
+fn move_notes_for_renamed_markdown_path(
+    app: &AppHandle,
+    source_path: &Path,
+    target_path: &Path,
+) -> Result<(), String> {
+    if let Some(notes_file) = read_notes_file(app, source_path)? {
+        let target_path_string = target_path.to_string_lossy().to_string();
+        let notes_file = move_notes_file_for_document(notes_file, &target_path_string);
+        write_notes_file(app, target_path, notes_file)?;
+        remove_document_notes(app, source_path)?;
+    }
+
+    Ok(())
+}
+
+fn move_notes_for_renamed_directory(
+    app: &AppHandle,
+    source_directory: &Path,
+    target_directory: &Path,
+) -> Result<(), String> {
+    if !target_directory.is_dir() {
+        return Ok(());
+    }
+
+    for entry in fs::read_dir(target_directory)
+        .map_err(|error| format!("failed to read renamed directory: {error}"))?
+    {
+        let entry =
+            entry.map_err(|error| format!("failed to read renamed directory item: {error}"))?;
+        let target_path = entry.path();
+        let relative_path = match target_path.strip_prefix(target_directory) {
+            Ok(relative_path) => relative_path,
+            Err(_) => continue,
+        };
+        let source_path = source_directory.join(relative_path);
+
+        if target_path.is_dir() {
+            move_notes_for_renamed_directory(app, &source_path, &target_path)?;
+        } else if is_markdown_path(&target_path) {
+            move_notes_for_renamed_markdown_path(app, &source_path, &target_path)?;
+        }
+    }
+
+    Ok(())
 }
 
 fn read_notes_file(app: &AppHandle, markdown_path: &Path) -> Result<Option<NotesFile>, String> {
@@ -1838,6 +2569,7 @@ fn read_markdown_file(app: &AppHandle, markdown_path: PathBuf) -> Result<OpenMar
         path: markdown_path.to_string_lossy().to_string(),
         notes_path,
         title: document_title(&markdown_path),
+        modified_at: modified_time_millis(&markdown_path),
         body,
         notes,
         glossary_terms,
@@ -1920,19 +2652,33 @@ fn open_markdown_directory(app: AppHandle, path: String) -> Result<OpenMarkdownD
 fn search_markdown_files(
     root_path: String,
     query: String,
+    search_tags: Option<bool>,
+    exact_tag: Option<bool>,
 ) -> Result<Vec<SearchMarkdownFile>, String> {
     let root = PathBuf::from(root_path);
     if !root.is_dir() {
         return Err("selected path is not a directory".to_string());
     }
 
-    let normalized_query = query.trim().to_lowercase();
+    let search_tags = search_tags.unwrap_or(false);
+    let normalized_query = if search_tags {
+        normalize_tag_search_value(&query)
+    } else {
+        query.trim().to_lowercase()
+    };
     if normalized_query.is_empty() {
         return Ok(Vec::new());
     }
 
     let mut results = Vec::new();
-    search_markdown_directory(&root, &root, &normalized_query, &mut results)?;
+    search_markdown_directory(
+        &root,
+        &root,
+        &normalized_query,
+        search_tags,
+        exact_tag.unwrap_or(false),
+        &mut results,
+    )?;
     results.sort_by_key(|result| result.relative_path.to_lowercase());
     results.truncate(MAX_FILE_SEARCH_RESULTS);
 
@@ -1965,6 +2711,7 @@ fn save_markdown_file(
     Ok(SaveMarkdownFile {
         path: markdown_path.to_string_lossy().to_string(),
         notes_path: notes_path.to_string_lossy().to_string(),
+        modified_at: modified_time_millis(&markdown_path),
     })
 }
 
@@ -1994,16 +2741,9 @@ fn duplicate_markdown_file(
     fs::copy(&source_path, &target_path)
         .map_err(|error| format!("failed to duplicate Markdown file: {error}"))?;
 
-    if let Some(mut parsed) = read_notes_file(&app, &source_path)? {
+    if let Some(parsed) = read_notes_file(&app, &source_path)? {
         let target_path_string = target_path.to_string_lossy().to_string();
-
-        parsed.markdown_path = target_path_string.clone();
-        for note in parsed.notes.iter_mut() {
-            note.document_id = target_path_string.clone();
-        }
-        for binding in parsed.glossary_bindings.iter_mut() {
-            binding.document_id = target_path_string.clone();
-        }
+        let parsed = duplicate_notes_file_for_document(parsed, &target_path_string)?;
 
         write_notes_file(&app, &target_path, parsed)?;
     }
@@ -2029,6 +2769,106 @@ fn delete_markdown_file(app: AppHandle, path: String) -> Result<DeleteMarkdownFi
     Ok(DeleteMarkdownFile {
         path: markdown_path.to_string_lossy().to_string(),
         notes_path: notes_path.to_string_lossy().to_string(),
+    })
+}
+
+#[tauri::command]
+fn rename_markdown_file(
+    app: AppHandle,
+    path: String,
+    name: String,
+) -> Result<OpenMarkdownFile, String> {
+    let source_path = PathBuf::from(path);
+    if !source_path.is_file() {
+        return Err("selected path is not a file".to_string());
+    }
+    if !is_markdown_path(&source_path) {
+        return Err("selected file is not a Markdown file".to_string());
+    }
+
+    let target_file_name = normalized_markdown_file_name(&name)?;
+    let target_path = source_path.with_file_name(target_file_name);
+    if source_path == target_path {
+        return read_markdown_file(&app, target_path);
+    }
+    if target_path.exists() {
+        return Err("rename target already exists".to_string());
+    }
+
+    let notes_file = read_notes_file(&app, &source_path)?;
+
+    fs::rename(&source_path, &target_path)
+        .map_err(|error| format!("failed to rename Markdown file: {error}"))?;
+
+    if notes_file.is_some() {
+        move_notes_for_renamed_markdown_path(&app, &source_path, &target_path)?;
+    }
+
+    read_markdown_file(&app, target_path)
+}
+
+#[tauri::command]
+fn rename_markdown_directory(
+    app: AppHandle,
+    path: String,
+    name: String,
+) -> Result<RenamedPath, String> {
+    let source_path = PathBuf::from(path);
+    if !source_path.is_dir() {
+        return Err("selected path is not a directory".to_string());
+    }
+
+    let target_name = validate_path_name(
+        &name,
+        "rename name is empty",
+        "rename name must not include folders",
+    )?;
+    let target_path = source_path.with_file_name(target_name);
+    if source_path == target_path {
+        return Ok(RenamedPath {
+            title: directory_title(&target_path),
+            path: target_path.to_string_lossy().to_string(),
+            notes_path: None,
+        });
+    }
+    if target_path.exists() {
+        return Err("rename target already exists".to_string());
+    }
+
+    fs::rename(&source_path, &target_path)
+        .map_err(|error| format!("failed to rename directory: {error}"))?;
+    move_notes_for_renamed_directory(&app, &source_path, &target_path)?;
+
+    Ok(RenamedPath {
+        title: directory_title(&target_path),
+        path: target_path.to_string_lossy().to_string(),
+        notes_path: None,
+    })
+}
+
+#[tauri::command]
+fn create_markdown_directory(parent_path: String, name: String) -> Result<RenamedPath, String> {
+    let parent_path = PathBuf::from(parent_path);
+    if !parent_path.is_dir() {
+        return Err("parent path is not a directory".to_string());
+    }
+
+    let directory_name = validate_path_name(
+        &name,
+        "folder name is empty",
+        "folder name must not include folders",
+    )?;
+    let target_path = parent_path.join(directory_name);
+    if target_path.exists() {
+        return Err("folder already exists".to_string());
+    }
+
+    fs::create_dir(&target_path).map_err(|error| format!("failed to create directory: {error}"))?;
+
+    Ok(RenamedPath {
+        title: directory_title(&target_path),
+        path: target_path.to_string_lossy().to_string(),
+        notes_path: None,
     })
 }
 
@@ -2156,11 +2996,25 @@ fn remember_recent_location(
     kind: String,
     path: String,
     title: String,
+    source: String,
 ) -> Result<(), String> {
     let language = current_app_language(&app);
-    let entry = sanitize_location_entry(&kind, path, title, &language)?;
+    let entry = sanitize_location_entry(&kind, path, title, source, &language)?;
 
     remember_recent_location_entry(&app, entry)
+}
+
+#[tauri::command]
+fn saved_locations(app: tauri::AppHandle) -> Result<LocationStore, String> {
+    let mut store = current_location_store(&app);
+
+    if prune_missing_recent_locations(&mut store) {
+        replace_current_location_store(&app, store.clone())?;
+        write_location_store(&app, &store)?;
+        refresh_app_menu(&app)?;
+    }
+
+    Ok(store)
 }
 
 #[tauri::command]
@@ -2169,9 +3023,10 @@ fn set_current_directory_location(
     window: tauri::WebviewWindow,
     path: String,
     title: String,
+    source: String,
 ) -> Result<(), String> {
     let language = current_app_language(&app);
-    let entry = sanitize_location_entry("directory", path, title, &language)?;
+    let entry = sanitize_location_entry("directory", path, title, source, &language)?;
     let state = app.state::<LocationMenuState>();
 
     {
@@ -2223,6 +3078,7 @@ fn start_dropbox_oauth(
         return Err("Dropbox app key is required.".to_string());
     }
 
+    #[cfg(not(mobile))]
     let listener = TcpListener::bind(("127.0.0.1", DROPBOX_OAUTH_REDIRECT_PORT))
         .map_err(|error| format!("failed to start Dropbox callback listener: {error}"))?;
     let redirect_uri = dropbox_redirect_uri();
@@ -2258,11 +3114,14 @@ fn start_dropbox_oauth(
         .append_pair("redirect_uri", &redirect_uri)
         .append_pair("state", &state);
 
-    let app_for_callback = app.clone();
-    std::thread::spawn(move || {
-        let payload = wait_for_dropbox_oauth_callback(listener);
-        let _ = app_for_callback.emit("scholium-dropbox-oauth-callback", payload);
-    });
+    #[cfg(not(mobile))]
+    {
+        let app_for_callback = app.clone();
+        std::thread::spawn(move || {
+            let payload = wait_for_dropbox_oauth_callback(listener);
+            let _ = app_for_callback.emit("scholium-dropbox-oauth-callback", payload);
+        });
+    }
 
     Ok(DropboxOAuthStart {
         auth_url: authorize_url.to_string(),
@@ -2298,7 +3157,11 @@ async fn complete_dropbox_oauth(
         oauth_session.take().expect("Dropbox OAuth session exists")
     };
 
-    let response = reqwest::Client::new()
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(45))
+        .build()
+        .map_err(|error| format!("failed to prepare Dropbox authorization exchange: {error}"))?;
+    let response = client
         .post(DROPBOX_OAUTH_TOKEN_URL)
         .header(
             "Content-Type",
@@ -2330,7 +3193,10 @@ async fn complete_dropbox_oauth(
     replace_dropbox_tokens(&app, Some(tokens.clone()))?;
     write_dropbox_tokens(&app, &tokens)?;
 
-    Ok(DropboxOAuthStatus { connected: true })
+    let status = DropboxOAuthStatus { connected: true };
+    let _ = app.emit("scholium-dropbox-oauth-connected", status.clone());
+
+    Ok(status)
 }
 
 #[tauri::command]
@@ -2338,6 +3204,46 @@ fn disconnect_dropbox(app: tauri::AppHandle) -> Result<DropboxOAuthStatus, Strin
     remove_dropbox_tokens(&app)?;
 
     Ok(DropboxOAuthStatus { connected: false })
+}
+
+#[tauri::command]
+async fn check_dropbox_connection(app: tauri::AppHandle) -> Result<DropboxOAuthStatus, String> {
+    let access_token = dropbox_access_token(&app).await?;
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .map_err(|error| format!("failed to prepare Dropbox connection check: {error}"))?;
+    let response = client
+        .post(DROPBOX_LIST_FOLDER_URL)
+        .bearer_auth(access_token)
+        .json(&serde_json::json!({
+            "path": "",
+            "recursive": false,
+            "include_media_info": false,
+            "include_deleted": false,
+            "include_has_explicit_shared_members": false,
+            "include_mounted_folders": true,
+            "include_non_downloadable_files": true,
+            "limit": 1
+        }))
+        .send()
+        .await
+        .map_err(|error| {
+            if error.is_timeout() {
+                "Dropbox connection timed out.".to_string()
+            } else {
+                format!("failed to check Dropbox connection: {error}")
+            }
+        })?;
+
+    if response.status() == StatusCode::UNAUTHORIZED {
+        return Err("Dropbox authorization failed; reconnect Dropbox.".to_string());
+    }
+    if !response.status().is_success() {
+        return Err(dropbox_response_error(response, "failed to check Dropbox connection").await);
+    }
+
+    Ok(DropboxOAuthStatus { connected: true })
 }
 
 #[tauri::command]
@@ -2359,6 +3265,10 @@ async fn list_dropbox_markdown_directory(
                     path_display,
                     path_lower,
                 } => {
+                    if name.starts_with('.') {
+                        continue;
+                    }
+
                     entries.push(DropboxDirectoryEntry {
                         kind: "directory".to_string(),
                         path: dropbox_metadata_path(path_display, path_lower, &name),
@@ -2375,6 +3285,10 @@ async fn list_dropbox_markdown_directory(
                     size,
                     is_downloadable,
                 } => {
+                    if name.starts_with('.') {
+                        continue;
+                    }
+
                     let path = dropbox_metadata_path(path_display, path_lower, &name);
                     if is_downloadable == Some(false) || !is_markdown_dropbox_path(&path) {
                         continue;
@@ -2399,7 +3313,7 @@ async fn list_dropbox_markdown_directory(
         page = read_dropbox_list_continue_page(&client, &access_token, &page.cursor).await?;
     }
 
-    entries.sort_by_key(dropbox_entry_sort_key);
+    entries.sort_by(compare_dropbox_entries);
 
     Ok(DropboxMarkdownDirectory {
         title: dropbox_path_title(&normalized_path),
@@ -2466,7 +3380,7 @@ async fn open_dropbox_markdown_file(
         .map(|metadata| document_title(Path::new(&metadata.name)))
         .unwrap_or_else(|| document_title(Path::new(&path)));
 
-    dropbox_file_with_notes(
+    dropbox_file_with_remote_notes(
         &app,
         path,
         title,
@@ -2474,6 +3388,43 @@ async fn open_dropbox_markdown_file(
         metadata.as_ref().and_then(|metadata| metadata.rev.clone()),
         metadata.and_then(|metadata| metadata.server_modified),
     )
+    .await
+}
+
+#[tauri::command]
+async fn read_dropbox_markdown_body(app: tauri::AppHandle, path: String) -> Result<String, String> {
+    let normalized_path = normalize_dropbox_path(&path);
+    if !is_markdown_dropbox_path(&normalized_path) {
+        return Err("selected Dropbox file is not a Markdown file".to_string());
+    }
+
+    let access_token = dropbox_access_token(&app).await?;
+    let response = reqwest::Client::new()
+        .post(DROPBOX_DOWNLOAD_URL)
+        .bearer_auth(access_token)
+        .header(
+            "Dropbox-API-Arg",
+            serde_json::json!({ "path": normalized_path }).to_string(),
+        )
+        .send()
+        .await
+        .map_err(|error| format!("failed to download Dropbox Markdown file: {error}"))?;
+
+    if response.status() == StatusCode::UNAUTHORIZED {
+        return Err("Dropbox authorization failed; reconnect Dropbox.".to_string());
+    }
+    if !response.status().is_success() {
+        return Err(
+            dropbox_response_error(response, "failed to download Dropbox Markdown file").await,
+        );
+    }
+
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|error| format!("failed to read Dropbox Markdown response: {error}"))?;
+    String::from_utf8(bytes.to_vec())
+        .map_err(|error| format!("Dropbox Markdown file is not valid UTF-8: {error}"))
 }
 
 #[tauri::command]
@@ -2498,14 +3449,15 @@ async fn save_dropbox_markdown_file(
 
     let saved = upload_dropbox_markdown_file(&app, path, body, mode).await?;
     let notes_markdown_path = dropbox_notes_markdown_path(&saved.path);
-    write_document_notes(
-        &app,
-        &notes_markdown_path,
+    let notes_file = notes_file_for_document(
         format!("dropbox:{}", saved.path),
         notes,
         glossary_terms,
         glossary_bindings,
-    )?;
+    );
+
+    write_notes_file(&app, &notes_markdown_path, notes_file.clone())?;
+    upload_dropbox_notes_file(&app, &saved.path, notes_file).await?;
 
     dropbox_file_with_notes(
         &app,
@@ -2527,6 +3479,48 @@ async fn create_dropbox_markdown_file(
     let target_path = dropbox_child_path(&parent_path, &target_file_name);
 
     upload_dropbox_markdown_file(&app, target_path, String::new(), serde_json::json!("add")).await
+}
+
+#[tauri::command]
+async fn create_dropbox_markdown_directory(
+    app: tauri::AppHandle,
+    parent_path: String,
+    name: String,
+) -> Result<RenamedPath, String> {
+    let directory_name = validate_path_name(
+        &name,
+        "folder name is empty",
+        "folder name must not include folders",
+    )?;
+    let directory_name = directory_name
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "folder name is empty".to_string())?;
+    let target_path = dropbox_child_path(&parent_path, directory_name);
+    let access_token = dropbox_access_token(&app).await?;
+    let response = reqwest::Client::new()
+        .post(DROPBOX_CREATE_FOLDER_URL)
+        .bearer_auth(access_token)
+        .json(&serde_json::json!({
+            "path": target_path,
+            "autorename": false
+        }))
+        .send()
+        .await
+        .map_err(|error| format!("failed to create Dropbox directory: {error}"))?;
+
+    if response.status() == StatusCode::UNAUTHORIZED {
+        return Err("Dropbox authorization failed; reconnect Dropbox.".to_string());
+    }
+    if !response.status().is_success() {
+        return Err(dropbox_response_error(response, "failed to create Dropbox directory").await);
+    }
+
+    Ok(RenamedPath {
+        title: dropbox_path_title(&target_path),
+        path: target_path,
+        notes_path: None,
+    })
 }
 
 #[tauri::command]
@@ -2568,19 +3562,18 @@ async fn duplicate_dropbox_markdown_file(
     }
 
     let source_notes_markdown_path = dropbox_notes_markdown_path(&source_path);
-    if let Some(mut parsed) = read_notes_file(&app, &source_notes_markdown_path)? {
+    let source_notes_file = match download_dropbox_notes_file(&app, &source_path).await? {
+        Some(parsed) => Some(parsed),
+        None => read_notes_file(&app, &source_notes_markdown_path)?,
+    };
+
+    if let Some(parsed) = source_notes_file {
         let target_notes_markdown_path = dropbox_notes_markdown_path(&target_path);
-        let target_document_id = format!("dropbox-file:{target_path}");
+        let target_document_id = format!("dropbox:{target_path}");
+        let parsed = duplicate_notes_file_for_document(parsed, &target_document_id)?;
 
-        parsed.markdown_path = format!("dropbox:{target_path}");
-        for note in parsed.notes.iter_mut() {
-            note.document_id = target_document_id.clone();
-        }
-        for binding in parsed.glossary_bindings.iter_mut() {
-            binding.document_id = target_document_id.clone();
-        }
-
-        write_notes_file(&app, &target_notes_markdown_path, parsed)?;
+        write_notes_file(&app, &target_notes_markdown_path, parsed.clone())?;
+        upload_dropbox_notes_file(&app, &target_path, parsed).await?;
     }
 
     open_dropbox_markdown_file(app, target_path).await
@@ -2616,9 +3609,115 @@ async fn delete_dropbox_markdown_file(
     }
 
     let notes_markdown_path = dropbox_notes_markdown_path(&normalized_path);
+    delete_dropbox_notes_file(&app, &normalized_path).await?;
     remove_document_notes(&app, &notes_markdown_path)?;
 
     Ok(deleted_file)
+}
+
+async fn move_dropbox_path(
+    app: &tauri::AppHandle,
+    from_path: String,
+    to_path: String,
+) -> Result<(), String> {
+    let access_token = dropbox_access_token(app).await?;
+    let response = reqwest::Client::new()
+        .post(DROPBOX_MOVE_URL)
+        .bearer_auth(access_token)
+        .json(&serde_json::json!({
+            "from_path": from_path,
+            "to_path": to_path,
+            "autorename": false,
+            "allow_shared_folder": false,
+            "allow_ownership_transfer": false
+        }))
+        .send()
+        .await
+        .map_err(|error| format!("failed to rename Dropbox item: {error}"))?;
+
+    if response.status() == StatusCode::UNAUTHORIZED {
+        return Err("Dropbox authorization failed; reconnect Dropbox.".to_string());
+    }
+    if !response.status().is_success() {
+        return Err(dropbox_response_error(response, "failed to rename Dropbox item").await);
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+async fn rename_dropbox_markdown_file(
+    app: tauri::AppHandle,
+    path: String,
+    name: String,
+) -> Result<DropboxMarkdownFile, String> {
+    let source_path = normalize_dropbox_path(&path);
+    if !is_markdown_dropbox_path(&source_path) {
+        return Err("selected Dropbox file is not a Markdown file".to_string());
+    }
+
+    let target_file_name = normalized_markdown_file_name(&name)?;
+    let parent_path = dropbox_parent_path(&source_path).unwrap_or_default();
+    let target_path = dropbox_child_path(&parent_path, &target_file_name);
+    if source_path == target_path {
+        return open_dropbox_markdown_file(app, target_path).await;
+    }
+
+    let source_notes_markdown_path = dropbox_notes_markdown_path(&source_path);
+    let source_notes_file = match download_dropbox_notes_file(&app, &source_path).await? {
+        Some(parsed) => Some(parsed),
+        None => read_notes_file(&app, &source_notes_markdown_path)?,
+    };
+
+    move_dropbox_path(&app, source_path.clone(), target_path.clone()).await?;
+
+    if let Some(notes_file) = source_notes_file {
+        let target_notes_markdown_path = dropbox_notes_markdown_path(&target_path);
+        let target_document_id = format!("dropbox:{target_path}");
+        let notes_file = move_notes_file_for_document(notes_file, &target_document_id);
+
+        write_notes_file(&app, &target_notes_markdown_path, notes_file.clone())?;
+        upload_dropbox_notes_file(&app, &target_path, notes_file).await?;
+        delete_dropbox_notes_file(&app, &source_path).await?;
+        remove_document_notes(&app, &source_notes_markdown_path)?;
+    }
+
+    open_dropbox_markdown_file(app, target_path).await
+}
+
+#[tauri::command]
+async fn rename_dropbox_markdown_directory(
+    app: tauri::AppHandle,
+    path: String,
+    name: String,
+) -> Result<RenamedPath, String> {
+    let source_path = normalize_dropbox_path(&path);
+    let target_name = validate_path_name(
+        &name,
+        "rename name is empty",
+        "rename name must not include folders",
+    )?;
+    let target_name = target_name
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "rename name is empty".to_string())?;
+    let parent_path = dropbox_parent_path(&source_path).unwrap_or_default();
+    let target_path = dropbox_child_path(&parent_path, target_name);
+    if source_path == target_path {
+        return Ok(RenamedPath {
+            title: dropbox_path_title(&target_path),
+            path: target_path,
+            notes_path: None,
+        });
+    }
+
+    move_dropbox_path(&app, source_path, target_path.clone()).await?;
+
+    Ok(RenamedPath {
+        title: dropbox_path_title(&target_path),
+        path: target_path,
+        notes_path: None,
+    })
 }
 
 #[cfg(desktop)]
@@ -2751,6 +3850,13 @@ fn build_app_menu(app_handle: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wr
         true,
         Some("CmdOrCtrl+N"),
     )?;
+    let new_folder = MenuItem::with_id(
+        app_handle,
+        MENU_NEW_FOLDER,
+        menu_text(&language, "newFolder"),
+        true,
+        None::<&str>,
+    )?;
     let open_file = MenuItem::with_id(
         app_handle,
         MENU_OPEN_FILE,
@@ -2815,6 +3921,7 @@ fn build_app_menu(app_handle: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wr
                 &[
                     &new_window,
                     &new_file,
+                    &new_folder,
                     &open_file,
                     &open_folder,
                     &PredefinedMenuItem::separator(app_handle)?,
@@ -2902,12 +4009,104 @@ fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
 }
 
+#[tauri::command]
+fn validate_dropped_markdown_file(paths: Vec<String>) -> Result<String, String> {
+    let path = dropped_markdown_path(&paths)?;
+
+    if !path.is_file() {
+        return Err("dropped path is not an existing file".to_string());
+    }
+
+    Ok(path.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+fn take_opened_file_paths(state: tauri::State<'_, OpenedFileState>) -> Result<Vec<String>, String> {
+    let mut queue = state
+        .0
+        .lock()
+        .map_err(|_| "failed to access pending opened files".to_string())?;
+    queue.frontend_ready = true;
+
+    Ok(std::mem::take(&mut queue.pending_paths))
+}
+
+#[tauri::command]
+fn set_native_folder_picker_list_view(enabled: bool) {
+    #[cfg(target_os = "macos")]
+    {
+        let defaults = NSUserDefaults::standardUserDefaults();
+        for key in [
+            "NSNavPanelFileLastListModeForOpenModeKey",
+            "NSNavPanelFileListModeForOpenMode2",
+        ] {
+            let key = NSString::from_str(key);
+            if enabled {
+                defaults.setInteger_forKey(2, &key);
+            } else {
+                defaults.removeObjectForKey(&key);
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    let _ = enabled;
+}
+
+#[cfg(target_os = "macos")]
+fn handle_opened_file_urls(app_handle: &AppHandle, urls: Vec<Url>) {
+    let paths = urls
+        .into_iter()
+        .filter_map(|url| url.to_file_path().ok())
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+
+    if paths.is_empty() {
+        return;
+    }
+
+    let should_emit = match app_handle.state::<OpenedFileState>().0.lock() {
+        Ok(queue) if queue.frontend_ready => true,
+        Ok(mut queue) => {
+            queue.pending_paths.extend(paths.clone());
+            false
+        }
+        Err(_) => true,
+    };
+
+    if should_emit {
+        let _ = emit_to_target_webview_window(app_handle, "scholium-open-file-paths", paths);
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default()
+        .plugin(tauri_plugin_deep_link::init())
         .manage(LocationMenuState::default())
         .manage(DropboxState::default())
+        .manage(OpenedFileState::default())
+        .on_page_load(|webview, payload| {
+            if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
+                if let Err(error) = webview.window().show() {
+                    eprintln!("failed to show ready window: {error}");
+                }
+            }
+        })
         .setup(|app| {
+            #[cfg(mobile)]
+            {
+                let app_handle = app.handle().clone();
+                app.deep_link().on_open_url(move |event| {
+                    for url in event.urls() {
+                        if is_dropbox_mobile_callback(&url) {
+                            let payload = dropbox_oauth_callback_from_url(&url);
+                            let _ = app_handle.emit("scholium-dropbox-oauth-callback", payload);
+                        }
+                    }
+                });
+            }
+
             let mut location_store = read_location_store_from_disk(app.handle());
             let pruned_recent_locations = prune_missing_recent_locations(&mut location_store);
             if pruned_recent_locations {
@@ -2945,6 +4144,9 @@ pub fn run() {
         } else if event_id == MENU_NEW_FILE {
             let _ = emit_to_target_webview_window(app, "menu:new-file", ());
             let _ = emit_to_target_webview_window(app, "scholium-new-file", ());
+        } else if event_id == MENU_NEW_FOLDER {
+            let _ = emit_to_target_webview_window(app, "menu:new-folder", ());
+            let _ = emit_to_target_webview_window(app, "scholium-new-folder", ());
         } else if event_id == MENU_OPEN_SETTINGS {
             let _ = emit_to_target_webview_window(app, "menu:open-settings", ());
             let _ = emit_to_target_webview_window(app, "scholium-open-settings", ());
@@ -2980,6 +4182,8 @@ pub fn run() {
                 let payload = OpenLocationPayload {
                     kind: location.kind.clone(),
                     path: location.path.clone(),
+                    source: location.source.clone(),
+                    title: location.title.clone(),
                 };
                 let _ = emit_to_target_webview_window(app, "menu:open-location", &payload);
                 let _ = emit_to_target_webview_window(app, "scholium-open-location", payload);
@@ -2987,12 +4191,15 @@ pub fn run() {
         }
     });
 
-    builder
+    let app = builder
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             create_new_window,
             greet,
+            validate_dropped_markdown_file,
+            take_opened_file_paths,
+            set_native_folder_picker_list_view,
             open_markdown_directory,
             open_markdown_file,
             open_markdown_file_context,
@@ -3000,23 +4207,108 @@ pub fn run() {
             search_markdown_files,
             duplicate_markdown_file,
             delete_markdown_file,
+            rename_markdown_file,
+            rename_markdown_directory,
+            create_markdown_directory,
             write_pdf_file,
             write_pdf_file_to_directory,
             save_markdown_file,
             remember_recent_location,
+            saved_locations,
             set_current_directory_location,
             set_app_language,
             dropbox_oauth_status,
             start_dropbox_oauth,
             complete_dropbox_oauth,
             disconnect_dropbox,
+            check_dropbox_connection,
             list_dropbox_markdown_directory,
             open_dropbox_markdown_file,
+            read_dropbox_markdown_body,
             save_dropbox_markdown_file,
             create_dropbox_markdown_file,
+            create_dropbox_markdown_directory,
             duplicate_dropbox_markdown_file,
-            delete_dropbox_markdown_file
+            delete_dropbox_markdown_file,
+            rename_dropbox_markdown_file,
+            rename_dropbox_markdown_directory
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+
+    app.run(|_app_handle, _event| {
+        #[cfg(target_os = "macos")]
+        if let tauri::RunEvent::Opened { urls } = _event {
+            handle_opened_file_urls(_app_handle, urls);
+        }
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dropbox_token_refresh_retries_twice_with_backoff() {
+        assert_eq!(
+            dropbox_token_refresh_retry_delay(1),
+            Some(Duration::from_millis(500))
+        );
+        assert_eq!(
+            dropbox_token_refresh_retry_delay(2),
+            Some(Duration::from_millis(1_000))
+        );
+        assert_eq!(dropbox_token_refresh_retry_delay(3), None);
+    }
+
+    #[test]
+    fn dropped_file_must_be_one_md_path() {
+        let markdown = vec!["draft.MD".to_string()];
+        assert_eq!(
+            dropped_markdown_path(&markdown).unwrap(),
+            Path::new("draft.MD")
+        );
+
+        assert!(dropped_markdown_path(&["draft.txt".to_string()]).is_err());
+        assert!(dropped_markdown_path(&[]).is_err());
+        assert!(dropped_markdown_path(&["one.md".to_string(), "two.md".to_string()]).is_err());
+    }
+
+    #[test]
+    fn parses_and_matches_frontmatter_tags() {
+        assert_eq!(
+            markdown_tags("---\ntags: [旅行, \"日本 行程\", 旅行]\n---\n內容"),
+            vec!["旅行", "日本 行程"]
+        );
+        assert_eq!(
+            markdown_tags("---\ntags:\n  - 旅行\n  - '日本 行程'\n---\n內容"),
+            vec!["旅行", "日本 行程"]
+        );
+
+        let tags = markdown_tags("---\ntags: [旅行, 旅行規劃]\n---\n內容");
+        let partial_matches = tags
+            .iter()
+            .filter(|tag| normalize_tag_search_value(tag).contains("旅行"))
+            .collect::<Vec<_>>();
+        let exact_matches = tags
+            .iter()
+            .filter(|tag| normalize_tag_search_value(tag) == "旅行")
+            .collect::<Vec<_>>();
+        assert_eq!(partial_matches.len(), 2);
+        assert_eq!(exact_matches.len(), 1);
+    }
+
+    #[test]
+    fn parses_dropbox_mobile_callback() {
+        let callback =
+            Url::parse("db-bdv6guwbi6ol9mg://2/token?code=authorization-code&state=csrf-state")
+                .unwrap();
+        let payload = dropbox_oauth_callback_from_url(&callback);
+
+        assert_eq!(callback.scheme(), DROPBOX_MOBILE_URL_SCHEME);
+        assert_eq!(payload.status, "success");
+        assert_eq!(payload.code.as_deref(), Some("authorization-code"));
+        assert_eq!(payload.state.as_deref(), Some("csrf-state"));
+        assert!(payload.error.is_none());
+    }
 }

@@ -14,7 +14,9 @@
       {
         "title": "Scholium",
         "width": 800,
-        "height": 600
+        "height": 600,
+        "backgroundColor": "#fffdf8",
+        "visible": false
       }
     ],
     "security": {
@@ -31,5 +33,15 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "deep-link": {
+      "mobile": [
+        {
+          "scheme": ["db-bdv6guwbi6ol9mg"],
+          "appLink": false
+        }
+      ]
+    }
   }
 }

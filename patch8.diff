@@ -1,0 +1,26 @@
+--- src/App.tsx
++++ src/App.tsx
+@@ -6433,18 +6433,20 @@
+   const maximumHeight = lineHeight * 10;
+ 
+   const container = textarea.parentElement;
+   if (container) {
+-    container.style.minHeight = `${container.offsetHeight}px`;
++    container.style.alignItems = "start";
+   }
+ 
++  textarea.style.minHeight = "0px";
+   textarea.style.height = "auto";
+   const contentHeight = textarea.scrollHeight;
+   const nextHeight = Math.min(contentHeight, maximumHeight);
+ 
+-  textarea.style.height = `${nextHeight}px`;
++  textarea.style.minHeight = `${nextHeight}px`;
++  textarea.style.height = "";
+   textarea.style.overflowY = contentHeight > maximumHeight + 1 ? "auto" : "hidden";
+ 
+   if (container) {
+-    container.style.minHeight = "";
++    container.style.alignItems = "";
+   }
+ }

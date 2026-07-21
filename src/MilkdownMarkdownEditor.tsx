@@ -4,7 +4,8 @@ import { codeBlockConfig } from "@milkdown/kit/component/code-block";
 import { listItemBlockConfig } from "@milkdown/kit/component/list-item-block";
 import { editorViewCtx, prosePluginsCtx } from "@milkdown/kit/core";
 import { hardbreakAttr, hardbreakSchema } from "@milkdown/kit/preset/commonmark";
-import type { Node as ProseMirrorNode } from "@milkdown/prose/model";
+import { splitBlock } from "@milkdown/prose/commands";
+import type { Node as ProseMirrorNode, ResolvedPos } from "@milkdown/prose/model";
 import { Plugin, PluginKey } from "@milkdown/prose/state";
 import { Decoration, DecorationSet, type EditorView } from "@milkdown/prose/view";
 import "@milkdown/crepe/theme/common/style.css";
@@ -22,6 +23,8 @@ import type {
   EditorChangeSource,
   TextAnnotation,
   TextSelectionAnchor,
+  TextSelectionEnterContext,
+  TextSelectionViewportRect,
 } from "./MarkdownEditor";
 import {
   findNormalizedSearchMatchIndexes,
@@ -42,12 +45,25 @@ type MilkdownMarkdownEditorProps = {
   documentFilePath?: string | null;
   noteModeEnabled: boolean;
   readOnly?: boolean;
+  desktopBlockSelectionEnabled?: boolean;
+  mobileBlockSelectionEnabled?: boolean;
+  mobileBlockSelectionHint: string;
+  mobileCommittedSelectionKey?: string;
+  mobileCommittedSelectionTone?: AnnotationTone;
+  mobileSelectionToneForAnchor?: (anchor: TextSelectionAnchor) => AnnotationTone;
   search?: DocumentSearchState;
   onSearchMatchCountChange?: (count: number) => void;
   toolbarEnabled?: boolean;
+  codeBlockCopiedLabel: string;
+  mermaidEmptyDefinitionLabel: string;
+  mermaidErrorLabel: string;
+  mermaidLoadingLabel: string;
   onChange: (value: string, source: EditorChangeSource) => void;
   onSelectionChange: (anchor: TextSelectionAnchor | null) => void;
-  onSelectionEnter: (anchor: TextSelectionAnchor) => boolean;
+  onSelectionEnter: (
+    anchor: TextSelectionAnchor,
+    context?: TextSelectionEnterContext,
+  ) => boolean;
   onAnnotationClick: (noteId: string) => void;
   onAnnotationDoubleClick: (noteId: string) => void;
   onFocusTargetAnnotationPress?: (noteId: string) => void;
@@ -57,6 +73,31 @@ const milkdownAnnotationPluginKey = new PluginKey<DecorationSet>(
   "scholium-milkdown-annotations",
 );
 const milkdownSearchPluginKey = new PluginKey<DecorationSet>("scholium-milkdown-search");
+const milkdownTouchBlockSelectionPluginKey = new PluginKey(
+  "scholium-milkdown-touch-block-selection",
+);
+const milkdownReadonlyGuardPluginKey = new PluginKey(
+  "scholium-milkdown-readonly-guard",
+);
+const milkdownPlainEnterHardBreakPluginKey = new PluginKey(
+  "scholium-milkdown-plain-enter-hard-break",
+);
+const codeBlockCopyFeedbackDurationMs = 2200;
+const milkdownStructuredTextAncestorNames = new Set([
+  "list_item",
+  "listItem",
+  "bullet_list",
+  "bulletList",
+  "ordered_list",
+  "orderedList",
+  "table",
+  "table_row",
+  "tableRow",
+  "table_cell",
+  "tableCell",
+  "table_header",
+  "tableHeader",
+]);
 const milkdownAnnotationFramePadding = 4;
 const milkdownAnnotationFrameHorizontalPadding = 12;
 const milkdownAnnotationLineJoinMaxGap = 20;
@@ -64,9 +105,34 @@ const milkdownAnnotationLineEndTolerance = 2;
 const milkdownAnnotationFrameCornerRadius = "4px";
 const milkdownAnnotationClassPrefix = "scholium-milkdown-annotation-";
 const milkdownSelectionFallbackMs = 220;
+const milkdownTouchBlockLongPressMs = 2000;
+const milkdownTouchBlockActivationMoveTolerancePx = 12;
+const milkdownTouchBlockMinimumDragPx = 8;
+const milkdownTouchBlockHintVisibleMs = 1200;
+const milkdownTouchSelectionPublishSuppressionMs = 900;
+const milkdownTouchBlockDomSelector =
+  "p, h1, h2, h3, h4, h5, h6, li, blockquote, pre, .milkdown-code-block";
+const milkdownReadonlyFocusableSelector =
+  ".ProseMirror, .cm-content[contenteditable], .cm-editor [contenteditable], [contenteditable='true'], [contenteditable='plaintext-only']";
+const milkdownNoteModeCodeBlockFocusableSelector =
+  ".milkdown-code-block .cm-content[contenteditable], .milkdown-code-block .cm-editor [contenteditable], .milkdown-code-block [contenteditable='true'], .milkdown-code-block [contenteditable='plaintext-only']";
 const annotationClickDelayMs = 500;
 const annotationFocusTargetPressSuppressionMs = annotationClickDelayMs + 350;
 const imeSelectionSuppressionMs = 350;
+
+function shouldClearTouchButtonFocus() {
+  return Boolean(
+    typeof window !== "undefined" &&
+      window.matchMedia?.("(hover: none), (pointer: coarse)").matches,
+  );
+}
+
+type ReadonlyDomFocusSnapshot = {
+  ariaReadonly: string | null;
+  contenteditable: string | null;
+  inputmode: string | null;
+  tabindex: string | null;
+};
 const annotationLayoutSettleDelaysMs = [80, 180, 360, 720];
 const escapeListLabelHtml = (label: string) =>
   label
@@ -92,6 +158,7 @@ type MilkdownAnnotationFrame = {
   borderRadius: string;
   frameKey: string;
   isFocusTarget?: boolean;
+  layer: "background" | "foreground";
   noteId: string;
   kind: "note" | "glossary";
   tone: AnnotationTone;
@@ -103,11 +170,17 @@ type MilkdownAnnotationFrame = {
 
 type MilkdownAnnotationRect = {
   canExtendRight: boolean;
+  clipLeft?: number;
+  clipRight?: number;
   left: number;
   lineRight: number;
   top: number;
   right: number;
   bottom: number;
+};
+
+type MilkdownCodeBlockAnnotationRect = MilkdownAnnotationRect & {
+  codeBlock: HTMLElement;
 };
 
 type MilkdownAnnotationSource = {
@@ -120,6 +193,84 @@ type MilkdownAnnotationSource = {
 type MilkdownTextMap = {
   text: string;
   sourceOffsets: (number | null)[];
+};
+
+type ClientSelectionRect = {
+  bottom: number;
+  height: number;
+  left: number;
+  right: number;
+  top: number;
+  width: number;
+};
+
+type MilkdownTouchBlockSelectionPreviewRect = {
+  borderRadius: string;
+  key: string;
+  height: number;
+  left: number;
+  top: number;
+  width: number;
+};
+
+type MilkdownTouchBlockSelectionOverlay = {
+  hintPhase: "entering" | "visible" | "hiding";
+  previewRects: MilkdownTouchBlockSelectionPreviewRect[];
+  rect: ClientSelectionRect;
+  tone: AnnotationTone;
+};
+
+type MilkdownTouchBlockCommittedSelectionOverlay = {
+  previewRects: MilkdownTouchBlockSelectionPreviewRect[];
+};
+
+function viewportAnchorRectFromTouchBlockPreviewRects(
+  previewRects: MilkdownTouchBlockSelectionPreviewRect[],
+): TextSelectionViewportRect | null {
+  const rects = previewRects
+    .map((rect) => ({
+      bottom: rect.top + rect.height,
+      height: rect.height,
+      left: rect.left,
+      right: rect.left + rect.width,
+      top: rect.top,
+      width: rect.width,
+    }))
+    .filter((rect) => rect.width > 0 && rect.height > 0)
+    .sort((left, right) => left.top - right.top || left.left - right.left);
+  if (rects.length === 0) return null;
+
+  const left = Math.min(...rects.map((rect) => rect.left));
+  const top = Math.min(...rects.map((rect) => rect.top));
+  const right = Math.max(...rects.map((rect) => rect.right));
+  const bottom = Math.max(...rects.map((rect) => rect.bottom));
+  const referenceMiddleX = left + (right - left) / 2;
+  const linesCoveringMiddle = rects.filter(
+    (rect) => rect.left <= referenceMiddleX && rect.right >= referenceMiddleX,
+  );
+  const targetLine = linesCoveringMiddle[linesCoveringMiddle.length - 1] ?? rects[rects.length - 1];
+
+  return {
+    bottom,
+    height: bottom - top,
+    left,
+    right,
+    targetBottom: targetLine.bottom,
+    targetTop: targetLine.top,
+    targetX: targetLine.left + targetLine.width / 2,
+    targetY: targetLine.top + targetLine.height / 2,
+    top,
+    width: right - left,
+  };
+}
+
+type MilkdownTouchBlockSelectionSession = {
+  active: boolean;
+  currentClientX: number;
+  currentClientY: number;
+  startClientX: number;
+  startClientY: number;
+  target: EventTarget | null;
 };
 
 type MarkdownImageFileResult = {
@@ -282,17 +433,18 @@ function renderMilkdownMermaidFrame(content: string) {
 function renderMilkdownMermaidPreview(
   definition: string,
   applyPreview: MilkdownCodeBlockApplyPreview,
+  labels: { empty: string; error: string; loading: string },
 ) {
   const trimmedDefinition = definition.trim();
   if (!trimmedDefinition) {
     return renderMilkdownMermaidFrame(
-      '<pre class="milkdown-mermaid-diagram__error">Mermaid diagram is empty.</pre>',
+      `<pre class="milkdown-mermaid-diagram__error">${escapeHtml(labels.empty)}</pre>`,
     );
   }
 
   applyPreview(
     renderMilkdownMermaidFrame(
-      '<div class="milkdown-mermaid-diagram__loading">Rendering diagram...</div>',
+      `<div class="milkdown-mermaid-diagram__loading">${escapeHtml(labels.loading)}</div>`,
     ),
   );
 
@@ -307,18 +459,13 @@ function renderMilkdownMermaidPreview(
       );
     })
     .catch((error: unknown) => {
-      const errorMessage =
-        error instanceof Error ? error.message : "Unable to render Mermaid diagram.";
+      console.error(error);
       applyPreview(
         renderMilkdownMermaidFrame(
-          `<pre class="milkdown-mermaid-diagram__error">${escapeHtml(errorMessage)}</pre>`,
+          `<pre class="milkdown-mermaid-diagram__error">${escapeHtml(labels.error)}</pre>`,
         ),
       );
     });
-}
-
-function renderMilkdownCodeBlockPreview(content: string) {
-  return `<pre class="milkdown-code-block-preview"><code>${escapeHtml(content)}</code></pre>`;
 }
 
 function appendTextMap(target: MilkdownTextMap, text: string, sourceStart: number | null) {
@@ -530,6 +677,134 @@ function roundFrameValue(value: number) {
   return Math.round(value * 100) / 100;
 }
 
+function clientSelectionRectFromPoints(
+  startClientX: number,
+  startClientY: number,
+  currentClientX: number,
+  currentClientY: number,
+): ClientSelectionRect {
+  const left = Math.min(startClientX, currentClientX);
+  const top = Math.min(startClientY, currentClientY);
+  const right = Math.max(startClientX, currentClientX);
+  const bottom = Math.max(startClientY, currentClientY);
+
+  return {
+    bottom,
+    height: bottom - top,
+    left,
+    right,
+    top,
+    width: right - left,
+  };
+}
+
+function clientSelectionRectHasDrag(rect: ClientSelectionRect) {
+  return (
+    rect.width >= milkdownTouchBlockMinimumDragPx ||
+    rect.height >= milkdownTouchBlockMinimumDragPx
+  );
+}
+
+function domRectOverlapsClientSelectionRect(
+  domRect: DOMRect,
+  selectionRect: ClientSelectionRect,
+) {
+  return (
+    domRect.width > 0 &&
+    domRect.height > 0 &&
+    domRect.right >= selectionRect.left &&
+    domRect.left <= selectionRect.right &&
+    domRect.bottom >= selectionRect.top &&
+    domRect.top <= selectionRect.bottom
+  );
+}
+
+function elementBoxOverlapsClientSelectionRect(
+  element: HTMLElement,
+  selectionRect: ClientSelectionRect,
+) {
+  return Array.from(element.getClientRects()).some((rect) =>
+    domRectOverlapsClientSelectionRect(rect, selectionRect),
+  );
+}
+
+function elementTextNodeClientRects(element: HTMLElement) {
+  const ownerDocument = element.ownerDocument;
+  const ignoredTextSelector =
+    ".tools, button, input, textarea, select, script, style, .milkdown-code-block-annotation-layer";
+  const walker = ownerDocument.createTreeWalker(element, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      const parentElement = node.parentElement;
+      if (!parentElement || parentElement.closest(ignoredTextSelector)) {
+        return NodeFilter.FILTER_REJECT;
+      }
+
+      return normalizeSelectedText(node.textContent ?? "")
+        ? NodeFilter.FILTER_ACCEPT
+        : NodeFilter.FILTER_REJECT;
+    },
+  });
+  const range = ownerDocument.createRange();
+  const rects: DOMRect[] = [];
+
+  try {
+    let currentNode = walker.nextNode();
+    while (currentNode) {
+      range.selectNodeContents(currentNode);
+      rects.push(
+        ...Array.from(range.getClientRects()).filter(
+          (rect) => rect.width > 0 && rect.height > 0,
+        ),
+      );
+      currentNode = walker.nextNode();
+    }
+  } finally {
+    range.detach();
+  }
+
+  return rects;
+}
+
+function mergedClientTextLineRects(rects: DOMRect[]) {
+  const sortedRects = rects
+    .slice()
+    .sort((left, right) => left.top - right.top || left.left - right.left);
+  const lineRects: Array<{ bottom: number; left: number; right: number; top: number }> = [];
+
+  sortedRects.forEach((rect) => {
+    const existingLine = lineRects.find(
+      (lineRect) =>
+        rect.top <= lineRect.bottom + 1 && rect.bottom >= lineRect.top - 1,
+    );
+
+    if (existingLine) {
+      existingLine.bottom = Math.max(existingLine.bottom, rect.bottom);
+      existingLine.left = Math.min(existingLine.left, rect.left);
+      existingLine.right = Math.max(existingLine.right, rect.right);
+      existingLine.top = Math.min(existingLine.top, rect.top);
+      return;
+    }
+
+    lineRects.push({
+      bottom: rect.bottom,
+      left: rect.left,
+      right: rect.right,
+      top: rect.top,
+    });
+  });
+
+  return lineRects;
+}
+
+function elementTextOverlapsClientSelectionRect(
+  element: HTMLElement,
+  selectionRect: ClientSelectionRect,
+) {
+  return elementTextNodeClientRects(element).some((rect) =>
+    domRectOverlapsClientSelectionRect(rect, selectionRect),
+  );
+}
+
 function milkdownAnnotationKindLayer(kind: "note" | "glossary") {
   return kind === "glossary" ? 1 : 0;
 }
@@ -588,8 +863,410 @@ function annotationSourcesFromElement(
   ];
 }
 
+function textRangeRectsForMatch(root: HTMLElement, target: string, occurrence = 0) {
+  const normalizedTarget = normalizeSelectedText(target);
+  if (!normalizedTarget) return [];
+
+  const textPoints: Array<{ node: Text; offset: number } | null> = [];
+  let text = "";
+  let hasPendingWhitespace = false;
+
+  function appendTextNode(node: Text) {
+    for (let offset = 0; offset < node.data.length; offset += 1) {
+      const character = node.data[offset];
+      if (/\s/.test(character)) {
+        hasPendingWhitespace = true;
+        continue;
+      }
+
+      if (hasPendingWhitespace && text.length > 0) {
+        text += " ";
+        textPoints.push(null);
+      }
+
+      text += character;
+      textPoints.push({ node, offset });
+      hasPendingWhitespace = false;
+    }
+  }
+
+  function appendTextFrom(element: HTMLElement) {
+    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT, {
+      acceptNode(node) {
+        const parentElement = node.parentElement;
+        if (
+          parentElement?.closest(
+            ".tools, button, input, textarea, select, .cm-gutters, .cm-lineNumbers, [aria-hidden='true']",
+          )
+        ) {
+          return NodeFilter.FILTER_REJECT;
+        }
+
+        return NodeFilter.FILTER_ACCEPT;
+      },
+    });
+    let currentNode = walker.nextNode();
+
+    while (currentNode) {
+      appendTextNode(currentNode as Text);
+      currentNode = walker.nextNode();
+    }
+  }
+
+  const codeMirrorLines = root.matches(".cm-content")
+    ? Array.from(root.querySelectorAll<HTMLElement>(":scope > .cm-line"))
+    : [];
+  if (codeMirrorLines.length > 0) {
+    codeMirrorLines.forEach((line, lineIndex) => {
+      if (lineIndex > 0) hasPendingWhitespace = true;
+      appendTextFrom(line);
+    });
+  } else {
+    appendTextFrom(root);
+  }
+
+  const matchStart = indexOfOccurrence(text, normalizedTarget, Math.max(0, occurrence));
+  if (matchStart < 0) return [];
+
+  const matchEnd = matchStart + normalizedTarget.length;
+  const startPoint = textPoints[matchStart];
+  const endPoint = textPoints[matchEnd - 1];
+  if (!startPoint || !endPoint) return [];
+
+  const range = document.createRange();
+  range.setStart(startPoint.node, startPoint.offset);
+  range.setEnd(endPoint.node, endPoint.offset + 1);
+
+  const rects = Array.from(range.getClientRects()).filter(
+    (rect) => rect.width > 0 && rect.height > 0,
+  );
+  range.detach();
+  return rects;
+}
+
+function fencedCodeBlockIndexForSourceRange(markdown: string, from: number, to: number) {
+  const normalizedMarkdown = markdown.replace(/\r\n/g, "\n");
+  const lines = normalizedMarkdown.split("\n");
+  const lineStartOffsets = markdownLineStartOffsets(normalizedMarkdown);
+  let openBlock:
+    | {
+        contentStart: number;
+        fence: string;
+        index: number;
+      }
+    | null = null;
+  let codeBlockIndex = 0;
+
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+    const line = lines[lineIndex];
+    const lineStart = lineStartOffsets[lineIndex] ?? 0;
+    const lineEnd = lineStart + line.length;
+    const fenceMatch = line.match(/^ {0,3}(```|~~~)/);
+
+    if (!openBlock) {
+      if (fenceMatch) {
+        openBlock = {
+          contentStart: lineEnd + 1,
+          fence: fenceMatch[1],
+          index: codeBlockIndex,
+        };
+      }
+      continue;
+    }
+
+    if (from >= openBlock.contentStart && to <= lineEnd) {
+      return {
+        contentStart: openBlock.contentStart,
+        index: openBlock.index,
+      };
+    }
+
+    if (fenceMatch && fenceMatch[1] === openBlock.fence) {
+      codeBlockIndex += 1;
+      openBlock = null;
+    }
+  }
+
+  if (openBlock && from >= openBlock.contentStart && to <= normalizedMarkdown.length) {
+    return {
+      contentStart: openBlock.contentStart,
+      index: openBlock.index,
+    };
+  }
+
+  return null;
+}
+
+function fencedCodeBlockContentLineSourceRange(
+  markdown: string,
+  codeBlockIndex: number,
+  fromLineIndex: number,
+  toLineIndex: number,
+) {
+  const normalizedMarkdown = markdown.replace(/\r\n/g, "\n");
+  const lines = normalizedMarkdown.split("\n");
+  const lineStartOffsets = markdownLineStartOffsets(normalizedMarkdown);
+  let openBlock:
+    | {
+        contentLineStart: number;
+        fence: string;
+        index: number;
+      }
+    | null = null;
+  let currentCodeBlockIndex = 0;
+
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+    const line = lines[lineIndex] ?? "";
+    const fenceMatch = line.match(/^ {0,3}(```|~~~)/);
+
+    if (!openBlock) {
+      if (fenceMatch) {
+        openBlock = {
+          contentLineStart: lineIndex + 1,
+          fence: fenceMatch[1],
+          index: currentCodeBlockIndex,
+        };
+      }
+      continue;
+    }
+
+    const isClosingFence = Boolean(fenceMatch && fenceMatch[1] === openBlock.fence);
+    if (!isClosingFence && lineIndex < lines.length - 1) {
+      continue;
+    }
+
+    const contentLineEnd = isClosingFence ? lineIndex : lineIndex + 1;
+    if (openBlock.index === codeBlockIndex) {
+      const boundedFromLine = Math.max(0, fromLineIndex);
+      const boundedToLine = Math.max(boundedFromLine, toLineIndex);
+      const sourceFromLine = openBlock.contentLineStart + boundedFromLine;
+      const sourceToLine = Math.min(openBlock.contentLineStart + boundedToLine, contentLineEnd);
+      if (sourceFromLine >= sourceToLine) return null;
+
+      const from = lineStartOffsets[sourceFromLine] ?? null;
+      const toLineStart = lineStartOffsets[sourceToLine - 1] ?? null;
+      const toLine = lines[sourceToLine - 1] ?? "";
+      if (from === null || toLineStart === null) return null;
+
+      return {
+        from,
+        to: toLineStart + toLine.length,
+      };
+    }
+
+    currentCodeBlockIndex += 1;
+    openBlock = null;
+  }
+
+  return null;
+}
+
+function textRootsFromCodeBlock(codeBlock: HTMLElement) {
+  const roots = Array.from(
+    codeBlock.querySelectorAll<HTMLElement>(
+      [
+        ".codemirror-host:not(.hidden) .cm-content",
+        ".milkdown-code-block-preview code",
+        "pre",
+        "code",
+      ].join(", "),
+    ),
+  ).filter((element) => {
+    const rect = element.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  });
+
+  return roots.length > 0 ? roots : [codeBlock];
+}
+
+function codeBlockTextVisibleBounds(
+  container: HTMLDivElement,
+  codeBlock: HTMLElement,
+  codeRoot: HTMLElement,
+) {
+  const containerRect = container.getBoundingClientRect();
+  const codeBlockRect = codeBlock.getBoundingClientRect();
+  const clipElement =
+    codeRoot.closest<HTMLElement>(".cm-scroller") ??
+    codeRoot.closest<HTMLElement>(".codemirror-host") ??
+    codeRoot.closest<HTMLElement>(".milkdown-code-block-preview") ??
+    codeBlock;
+  const clipRect = clipElement.getBoundingClientRect();
+
+  return {
+    left: Math.max(containerRect.left, codeBlockRect.left, clipRect.left),
+    top: Math.max(containerRect.top, codeBlockRect.top, clipRect.top),
+    right: Math.min(containerRect.right, codeBlockRect.right, clipRect.right),
+    bottom: Math.min(containerRect.bottom, codeBlockRect.bottom, clipRect.bottom),
+  };
+}
+
+function clipTextRectToBounds(
+  rect: DOMRect,
+  bounds: { left: number; top: number; right: number; bottom: number },
+): MilkdownAnnotationRect | null {
+  const left = Math.max(rect.left, bounds.left);
+  const top = Math.max(rect.top, bounds.top);
+  const right = Math.min(rect.right, bounds.right);
+  const bottom = Math.min(rect.bottom, bounds.bottom);
+
+  if (right <= left || bottom <= top) return null;
+
+  return {
+    canExtendRight: false,
+    clipLeft: bounds.left,
+    clipRight: bounds.right,
+    left,
+    lineRight: right,
+    top,
+    right,
+    bottom,
+  };
+}
+
+function codeBlockAnnotationRects(
+  container: HTMLDivElement,
+  annotation: TextAnnotation,
+  markdown: string,
+) {
+  const target = annotation.selectedText?.trim();
+  if (!target) return [];
+
+  const codeBlocks = Array.from(container.querySelectorAll<HTMLElement>(".milkdown-code-block"));
+  const sourceCodeBlock = fencedCodeBlockIndexForSourceRange(
+    markdown,
+    annotation.from,
+    annotation.to,
+  );
+  const candidateCodeBlocks =
+    sourceCodeBlock && codeBlocks[sourceCodeBlock.index]
+      ? [codeBlocks[sourceCodeBlock.index]]
+      : codeBlocks;
+  const occurrenceInCodeBlock = sourceCodeBlock
+    ? countOccurrencesBefore(
+        markdown.slice(sourceCodeBlock.contentStart),
+        {
+          ...annotation,
+          from: annotation.from - sourceCodeBlock.contentStart,
+          to: annotation.to - sourceCodeBlock.contentStart,
+        },
+        target,
+      )
+    : 0;
+
+  for (const codeBlock of candidateCodeBlocks) {
+    for (const codeRoot of textRootsFromCodeBlock(codeBlock)) {
+      const rects = textRangeRectsForMatch(codeRoot, target, occurrenceInCodeBlock);
+      const visibleBounds = codeBlockTextVisibleBounds(container, codeBlock, codeRoot);
+      const clippedRects = rects
+        .map((rect) => clipTextRectToBounds(rect, visibleBounds))
+        .filter((rect): rect is MilkdownAnnotationRect => Boolean(rect))
+        .map((rect): MilkdownCodeBlockAnnotationRect => ({ ...rect, codeBlock }));
+      if (clippedRects.length > 0) return clippedRects;
+    }
+  }
+
+  return [];
+}
+
+function clearMilkdownCodeBlockAnnotationLayers(container: HTMLDivElement) {
+  container
+    .querySelectorAll<HTMLElement>(".milkdown-code-block-annotation-layer")
+    .forEach((layer) => {
+      layer.remove();
+    });
+}
+
+function createMilkdownCodeBlockAnnotationFrame({
+  annotation,
+  codeBlock,
+  rect,
+  rectIndex,
+}: {
+  annotation: TextAnnotation;
+  codeBlock: HTMLElement;
+  rect: MilkdownCodeBlockAnnotationRect;
+  rectIndex: number;
+}) {
+  const codeBlockRect = codeBlock.getBoundingClientRect();
+  const kind = annotation.kind === "glossary" ? "glossary" : "note";
+  const framePadding = milkdownAnnotationFramePaddingForKind(kind);
+  const frameHorizontalPadding = milkdownAnnotationFrameHorizontalPaddingForKind(kind);
+  const frameLeft = Math.max(0, rect.left - codeBlockRect.left - frameHorizontalPadding);
+  const frameRight = Math.min(
+    codeBlockRect.width,
+    rect.right - codeBlockRect.left + frameHorizontalPadding,
+  );
+  const frameTop = Math.max(0, rect.top - codeBlockRect.top - framePadding);
+  const frameBottom = Math.min(codeBlockRect.height, rect.bottom - codeBlockRect.top + framePadding);
+
+  if (frameRight <= frameLeft || frameBottom <= frameTop) return null;
+
+  const frame = document.createElement("div");
+  frame.className = [
+    "milkdown-annotation-frame",
+    "is-code-block-frame",
+    annotation.isFocusTarget ? "is-focus-target" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+  frame.dataset.annotationKind = kind;
+  frame.dataset.focusTarget = annotation.isFocusTarget ? "true" : "false";
+  frame.dataset.noteId = annotation.id;
+  frame.dataset.noteTone = String(annotation.tone ?? 0);
+  frame.style.borderRadius = milkdownAnnotationFrameCornerRadius;
+  frame.style.height = `${roundFrameValue(frameBottom - frameTop)}px`;
+  frame.style.left = `${roundFrameValue(frameLeft)}px`;
+  frame.style.top = `${roundFrameValue(frameTop)}px`;
+  frame.style.width = `${roundFrameValue(frameRight - frameLeft)}px`;
+  frame.setAttribute("data-frame-key", `code:${annotation.id}:${rectIndex}`);
+
+  return frame;
+}
+
+function syncMilkdownCodeBlockAnnotationLayers(
+  container: HTMLDivElement,
+  markdown: string,
+  annotations: TextAnnotation[],
+  renderedNoteIds: Set<string>,
+) {
+  clearMilkdownCodeBlockAnnotationLayers(container);
+
+  const framesByCodeBlock = new Map<HTMLElement, HTMLElement[]>();
+  annotations.forEach((annotation) => {
+    if (renderedNoteIds.has(annotation.id)) return;
+
+    const codeRects = codeBlockAnnotationRects(container, annotation, markdown);
+    codeRects.forEach((rect, rectIndex) => {
+      const frame = createMilkdownCodeBlockAnnotationFrame({
+        annotation,
+        codeBlock: rect.codeBlock,
+        rect,
+        rectIndex,
+      });
+      if (!frame) return;
+
+      framesByCodeBlock.set(rect.codeBlock, [
+        ...(framesByCodeBlock.get(rect.codeBlock) ?? []),
+        frame,
+      ]);
+    });
+  });
+
+  framesByCodeBlock.forEach((frames, codeBlock) => {
+    if (frames.length === 0) return;
+
+    const layer = document.createElement("div");
+    layer.className = "milkdown-code-block-annotation-layer";
+    layer.setAttribute("aria-hidden", "true");
+    frames.forEach((frame) => layer.append(frame));
+    codeBlock.insertBefore(layer, codeBlock.firstChild);
+  });
+}
+
 function measureMilkdownAnnotationFrames(
   container: HTMLDivElement,
+  markdown: string,
   annotations: TextAnnotation[],
 ): MilkdownAnnotationFrame[] {
   const containerRect = container.getBoundingClientRect();
@@ -707,6 +1384,13 @@ function measureMilkdownAnnotationFrames(
       });
     });
 
+  syncMilkdownCodeBlockAnnotationLayers(
+    container,
+    markdown,
+    annotations,
+    new Set(rectsByNoteId.keys()),
+  );
+
   return Array.from(rectsByNoteId.entries())
     .flatMap(([noteId, rects]) => {
       const kind = kindsByNoteId.get(noteId) ?? "note";
@@ -767,7 +1451,7 @@ function measureMilkdownAnnotationFrames(
         flushRectGroup();
       }
 
-      return sortedRects.map((rect, rectIndex) => {
+      return sortedRects.flatMap((rect, rectIndex) => {
         const framePadding = milkdownAnnotationFramePaddingForKind(kind);
         const frameHorizontalPadding = milkdownAnnotationFrameHorizontalPaddingForKind(kind);
         const shouldJoinFrameLines = kind !== "glossary";
@@ -790,21 +1474,33 @@ function measureMilkdownAnnotationFrames(
           }
         }
 
+        const frameLeft = Math.max(
+          containerRect.left,
+          rect.clipLeft ?? containerRect.left,
+          rect.left - frameHorizontalPadding,
+        );
+        const frameRight = Math.min(
+          containerRect.right,
+          rect.clipRight ?? containerRect.right,
+          (extensionRightByRect.get(rect) ?? rect.right) + frameHorizontalPadding,
+        );
+        const frameTop = Math.max(containerRect.top, top);
+        const frameBottom = Math.min(containerRect.bottom, bottom);
+
+        if (frameRight <= frameLeft || frameBottom <= frameTop) return [];
+
         return {
           borderRadius: borderRadiusByRect.get(rect) ?? milkdownAnnotationFrameCornerRadius,
           frameKey: `${kind}:${noteId}:milkdown:${rectIndex}`,
           isFocusTarget,
+          layer: "background" as const,
           noteId,
           kind,
           tone,
-          left: roundFrameValue(rect.left - containerRect.left - frameHorizontalPadding),
-          top: roundFrameValue(Math.max(0, top - containerRect.top)),
-          width: roundFrameValue(
-            (extensionRightByRect.get(rect) ?? rect.right) -
-              rect.left +
-              frameHorizontalPadding * 2,
-          ),
-          height: roundFrameValue(bottom - top),
+          left: roundFrameValue(frameLeft - containerRect.left),
+          top: roundFrameValue(frameTop - containerRect.top),
+          width: roundFrameValue(frameRight - frameLeft),
+          height: roundFrameValue(frameBottom - frameTop),
         };
       });
     })
@@ -1109,17 +1805,18 @@ function proseRangeFromMarkdownSourceRange(
 }
 
 function countOccurrencesBefore(markdown: string, annotation: TextAnnotation, target: string) {
-  if (!target) return 0;
+  const normalizedTarget = normalizeSelectedText(target);
+  if (!normalizedTarget) return 0;
 
   const beforeAnnotation = normalizeSelectedText(markdown.slice(0, annotation.from));
   let count = 0;
   let searchFrom = 0;
 
   while (searchFrom < beforeAnnotation.length) {
-    const nextIndex = beforeAnnotation.indexOf(target, searchFrom);
+    const nextIndex = beforeAnnotation.indexOf(normalizedTarget, searchFrom);
     if (nextIndex < 0) break;
     count += 1;
-    searchFrom = nextIndex + target.length;
+    searchFrom = nextIndex + normalizedTarget.length;
   }
 
   return count;
@@ -1207,7 +1904,9 @@ function annotationSourceFromAnnotationTarget(
       : target instanceof Node
         ? target.parentElement
         : null;
-  const annotationElement = targetElement?.closest<HTMLElement>(".milkdown-note-annotation");
+  const annotationElement = targetElement?.closest<HTMLElement>(
+    ".milkdown-note-annotation, .milkdown-annotation-frame[data-note-id]",
+  );
   if (!annotationElement) return null;
 
   const sources = annotationSourcesFromElement(annotationElement, annotations);
@@ -1216,6 +1915,19 @@ function annotationSourceFromAnnotationTarget(
       (left, right) =>
         milkdownAnnotationKindLayer(right.kind) - milkdownAnnotationKindLayer(left.kind),
     )[0] ?? null
+  );
+}
+
+function targetIsMilkdownAnnotationFrame(target: EventTarget | null) {
+  const targetElement =
+    target instanceof HTMLElement
+      ? target
+      : target instanceof Node
+        ? target.parentElement
+        : null;
+
+  return Boolean(
+    targetElement?.closest<HTMLElement>(".milkdown-annotation-frame[data-note-id]"),
   );
 }
 
@@ -1259,7 +1971,10 @@ function createAnnotationPlugin({
         },
         click(_view, event) {
           const source = annotationSourceFromAnnotationTarget(event.target, getAnnotations());
-          if (!source || !window.getSelection()?.isCollapsed) return false;
+          if (!source) return false;
+          if (!targetIsMilkdownAnnotationFrame(event.target) && !window.getSelection()?.isCollapsed) {
+            return false;
+          }
 
           event.preventDefault();
           if (source.isFocusTarget && onFocusTargetAnnotationPress(source.noteId)) {
@@ -1322,9 +2037,19 @@ export function MilkdownMarkdownEditor({
   documentFilePath = null,
   noteModeEnabled,
   readOnly = false,
+  desktopBlockSelectionEnabled = false,
+  mobileBlockSelectionEnabled = false,
+  mobileBlockSelectionHint,
+  mobileCommittedSelectionKey = "",
+  mobileCommittedSelectionTone = 0,
+  mobileSelectionToneForAnchor,
   search = { activeIndex: 0, query: "" },
   onSearchMatchCountChange,
   toolbarEnabled = true,
+  codeBlockCopiedLabel,
+  mermaidEmptyDefinitionLabel,
+  mermaidErrorLabel,
+  mermaidLoadingLabel,
   onChange,
   onSelectionChange,
   onSelectionEnter,
@@ -1345,7 +2070,20 @@ export function MilkdownMarkdownEditor({
   const documentFilePathRef = useRef(documentFilePath);
   const noteModeEnabledRef = useRef(noteModeEnabled);
   const readOnlyRef = useRef(readOnly);
+  const desktopBlockSelectionEnabledRef = useRef(desktopBlockSelectionEnabled);
+  const mobileBlockSelectionEnabledRef = useRef(mobileBlockSelectionEnabled);
+  const mobileCommittedSelectionKeyRef = useRef(mobileCommittedSelectionKey);
+  const mobileSelectionToneForAnchorRef = useRef(mobileSelectionToneForAnchor);
   const onChangeRef = useRef(onChange);
+  const codeBlockCopiedLabelRef = useRef(codeBlockCopiedLabel);
+  const mermaidLabelsRef = useRef({
+    empty: mermaidEmptyDefinitionLabel,
+    error: mermaidErrorLabel,
+    loading: mermaidLoadingLabel,
+  });
+  const pendingCodeBlockCopyButtonRef = useRef<HTMLElement | null>(null);
+  const pendingCodeBlockCopyClearTimerRef = useRef(0);
+  const codeBlockCopyFeedbackTimersRef = useRef(new Map<HTMLElement, number>());
   const onSearchMatchCountChangeRef = useRef(onSearchMatchCountChange);
   const onSelectionChangeRef = useRef(onSelectionChange);
   const onSelectionEnterRef = useRef(onSelectionEnter);
@@ -1356,16 +2094,33 @@ export function MilkdownMarkdownEditor({
   const annotationLayoutSettleTimersRef = useRef<number[]>([]);
   const selectionFrameRef = useRef(0);
   const selectionFallbackTimerRef = useRef(0);
+  const touchBlockSelectionPublishSuppressedUntilRef = useRef(0);
+  const touchBlockLongPressTimerRef = useRef(0);
+  const touchBlockHintFrameRef = useRef(0);
+  const touchBlockHintHideTimerRef = useRef(0);
+  const touchBlockHintUnmountTimerRef = useRef(0);
+  const touchBlockSelectionSessionRef =
+    useRef<MilkdownTouchBlockSelectionSession | null>(null);
+  const readonlyDomFocusFrameRef = useRef(0);
+  const readonlyDomFocusSnapshotsRef = useRef(
+    new WeakMap<HTMLElement, ReadonlyDomFocusSnapshot>(),
+  );
+  const readonlyDomFocusElementsRef = useRef(new Set<HTMLElement>());
   const annotationClickTimerRef = useRef(0);
   const suppressedFocusTargetAnnotationPressRef = useRef<{
     noteId: string;
     until: number;
   } | null>(null);
+  const codeBlockAnnotationHoverBlockRef = useRef<HTMLElement | null>(null);
   const mouseSelectionStartedRef = useRef(false);
   const imeCompositionActiveRef = useRef(false);
   const imeSelectionSuppressedUntilRef = useRef(0);
   const [editorRevision, setEditorRevision] = useState(0);
   const [annotationFrames, setAnnotationFrames] = useState<MilkdownAnnotationFrame[]>([]);
+  const [touchBlockSelectionOverlay, setTouchBlockSelectionOverlay] =
+    useState<MilkdownTouchBlockSelectionOverlay | null>(null);
+  const [touchBlockCommittedSelectionOverlay, setTouchBlockCommittedSelectionOverlay] =
+    useState<MilkdownTouchBlockCommittedSelectionOverlay | null>(null);
   const searchSignature = `${search.query}\n${search.activeIndex}`;
   const annotationSignature = useMemo(
     () =>
@@ -1380,23 +2135,173 @@ export function MilkdownMarkdownEditor({
     [annotations],
   );
 
+  function clearCodeBlockCopyFeedbackTimers() {
+    window.clearTimeout(pendingCodeBlockCopyClearTimerRef.current);
+    pendingCodeBlockCopyClearTimerRef.current = 0;
+    codeBlockCopyFeedbackTimersRef.current.forEach((timer) => window.clearTimeout(timer));
+    codeBlockCopyFeedbackTimersRef.current.clear();
+  }
+
+  function rememberPendingCodeBlockCopyButton(button: HTMLElement) {
+    pendingCodeBlockCopyButtonRef.current = button;
+    window.clearTimeout(pendingCodeBlockCopyClearTimerRef.current);
+    pendingCodeBlockCopyClearTimerRef.current = window.setTimeout(() => {
+      if (pendingCodeBlockCopyButtonRef.current === button) {
+        pendingCodeBlockCopyButtonRef.current = null;
+      }
+      pendingCodeBlockCopyClearTimerRef.current = 0;
+    }, codeBlockCopyFeedbackDurationMs);
+  }
+
+  function codeBlockCopyButtonTextNode(button: HTMLElement) {
+    return (
+      Array.from(button.childNodes).find(
+        (node): node is Text =>
+          node.nodeType === Node.TEXT_NODE && Boolean(node.textContent?.trim()),
+      ) ?? null
+    );
+  }
+
+  function showCodeBlockCopyFeedback(button: HTMLElement) {
+    const label = codeBlockCopiedLabelRef.current;
+    const previousTimer = codeBlockCopyFeedbackTimersRef.current.get(button);
+    if (previousTimer) {
+      window.clearTimeout(previousTimer);
+    }
+
+    if (!button.hasAttribute("data-copy-original-aria-label")) {
+      const originalAriaLabel = button.getAttribute("aria-label");
+      if (originalAriaLabel !== null) {
+        button.setAttribute("data-copy-original-aria-label", originalAriaLabel);
+      }
+    }
+
+    if (!button.hasAttribute("data-copy-original-title")) {
+      const originalTitle = button.getAttribute("title");
+      if (originalTitle !== null) {
+        button.setAttribute("data-copy-original-title", originalTitle);
+      }
+    }
+
+    button.classList.add("is-copy-success");
+    button.setAttribute("aria-label", label);
+    button.setAttribute("title", label);
+    if (shouldClearTouchButtonFocus()) {
+      button.blur();
+    }
+
+    const textNode = codeBlockCopyButtonTextNode(button);
+    if (textNode) {
+      if (!button.hasAttribute("data-copy-original-text")) {
+        button.setAttribute("data-copy-original-text", textNode.textContent ?? "");
+      }
+      textNode.textContent = label;
+    }
+
+    const timer = window.setTimeout(() => {
+      button.classList.remove("is-copy-success");
+
+      const restoredTextNode = codeBlockCopyButtonTextNode(button);
+      const originalText = button.getAttribute("data-copy-original-text");
+      if (restoredTextNode && originalText !== null) {
+        restoredTextNode.textContent = originalText;
+        button.removeAttribute("data-copy-original-text");
+      }
+
+      const originalAriaLabel = button.getAttribute("data-copy-original-aria-label");
+      if (originalAriaLabel !== null) {
+        button.setAttribute("aria-label", originalAriaLabel);
+        button.removeAttribute("data-copy-original-aria-label");
+      } else {
+        button.removeAttribute("aria-label");
+      }
+
+      const originalTitle = button.getAttribute("data-copy-original-title");
+      if (originalTitle !== null) {
+        button.setAttribute("title", originalTitle);
+        button.removeAttribute("data-copy-original-title");
+      } else {
+        button.removeAttribute("title");
+      }
+
+      codeBlockCopyFeedbackTimersRef.current.delete(button);
+      if (shouldClearTouchButtonFocus()) {
+        button.blur();
+      }
+    }, codeBlockCopyFeedbackDurationMs);
+
+    codeBlockCopyFeedbackTimersRef.current.set(button, timer);
+  }
+
   useEffect(
     () => () => {
       window.clearTimeout(annotationClickTimerRef.current);
+      clearCodeBlockCopyFeedbackTimers();
+      clearTouchBlockSelectionSession();
     },
     [],
   );
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const preventFocus = (e: Event) => {
+      const target = e.target as HTMLElement;
+      const button = target.closest(".milkdown-code-block .tools button") as HTMLButtonElement | null;
+      if (button) {
+        e.preventDefault();
+      }
+    };
+
+    const handleTouchEnd = (e: TouchEvent) => {
+      const target = e.target as HTMLElement;
+      const button = target.closest(".milkdown-code-block .tools button") as HTMLButtonElement | null;
+      if (button) {
+        e.preventDefault();
+        button.click();
+        if (shouldClearTouchButtonFocus()) {
+          button.blur();
+        }
+      }
+    };
+
+    const handleCodeBlockCopyClick = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      const button = target.closest<HTMLElement>(".milkdown-code-block .copy-button");
+      if (!button) return;
+
+      rememberPendingCodeBlockCopyButton(button);
+    };
+
+    container.addEventListener("mousedown", preventFocus, { capture: true });
+    container.addEventListener("touchstart", preventFocus, { capture: true, passive: false });
+    container.addEventListener("touchend", handleTouchEnd, { capture: true, passive: false });
+    container.addEventListener("click", handleCodeBlockCopyClick, true);
+
+    return () => {
+      container.removeEventListener("mousedown", preventFocus, { capture: true });
+      container.removeEventListener("touchstart", preventFocus, { capture: true });
+      container.removeEventListener("touchend", handleTouchEnd, { capture: true });
+      container.removeEventListener("click", handleCodeBlockCopyClick, true);
+    };
+  }, []);
 
   function updateAnnotationFrames() {
     const container = containerRef.current;
     if (!container) return;
 
     if (!noteModeEnabledRef.current) {
+      clearMilkdownCodeBlockAnnotationLayers(container);
       setAnnotationFrames((currentFrames) => (currentFrames.length === 0 ? currentFrames : []));
       return;
     }
 
-    const nextFrames = measureMilkdownAnnotationFrames(container, editorAnnotationsRef.current);
+    const nextFrames = measureMilkdownAnnotationFrames(
+      container,
+      currentMarkdownRef.current,
+      editorAnnotationsRef.current,
+    );
     setAnnotationFrames((currentFrames) =>
       milkdownAnnotationFramesAreEqual(currentFrames, nextFrames)
         ? currentFrames
@@ -1533,6 +2438,306 @@ export function MilkdownMarkdownEditor({
     return nativeIsComposing || selectionPublishSuppressedByIme();
   }
 
+  function resolvedPositionHasAncestor(
+    $from: ResolvedPos,
+    nodeTypeNames: Set<string>,
+  ) {
+    for (let depth = $from.depth; depth > 0; depth -= 1) {
+      if (nodeTypeNames.has($from.node(depth).type.name)) return true;
+    }
+
+    return false;
+  }
+
+  function shouldInsertPlainEnterHardBreak(view: EditorView, event: KeyboardEvent) {
+    const isPlainEnter =
+      event.key === "Enter" &&
+      !event.metaKey &&
+      !event.ctrlKey &&
+      !event.altKey &&
+      !event.shiftKey;
+    if (!isPlainEnter) return false;
+    if (keyboardEventIsComposing(event)) return false;
+    if (readOnlyRef.current) return false;
+
+    const { selection, schema } = view.state;
+    if (!selection.empty) return false;
+
+    const { $from } = selection;
+    const parent = $from.parent;
+    if (!parent.isTextblock || parent.content.size === 0) return false;
+    if (parent.type.name === "code_block" || parent.type.name === "heading") {
+      return false;
+    }
+    if (resolvedPositionHasAncestor($from, milkdownStructuredTextAncestorNames)) {
+      return false;
+    }
+
+    const hardbreakType = schema.nodes.hardbreak;
+    if (!hardbreakType) return false;
+
+    return parent.canReplaceWith($from.index(), $from.index(), hardbreakType);
+  }
+
+  function insertPlainEnterHardBreak(view: EditorView) {
+    const hardbreakType = view.state.schema.nodes.hardbreak;
+    if (!hardbreakType) return false;
+
+    view.dispatch(
+      view.state.tr
+        .setMeta("hardbreak", true)
+        .replaceSelectionWith(hardbreakType.create())
+        .scrollIntoView(),
+    );
+
+    return true;
+  }
+
+  function shouldSplitParagraphWithShiftEnter(view: EditorView, event: KeyboardEvent) {
+    const isShiftEnter =
+      event.key === "Enter" &&
+      event.shiftKey &&
+      !event.metaKey &&
+      !event.ctrlKey &&
+      !event.altKey;
+    if (!isShiftEnter) return false;
+    if (keyboardEventIsComposing(event)) return false;
+    if (readOnlyRef.current) return false;
+
+    const { selection } = view.state;
+    if (!selection.empty) return false;
+
+    const { $from } = selection;
+    const parent = $from.parent;
+    if (!parent.isTextblock || parent.type.name !== "paragraph") return false;
+    if (resolvedPositionHasAncestor($from, milkdownStructuredTextAncestorNames)) {
+      return false;
+    }
+
+    return true;
+  }
+
+  function splitParagraphWithShiftEnter(view: EditorView) {
+    return splitBlock(view.state, (transaction) => view.dispatch(transaction), view);
+  }
+
+  function createPlainEnterHardBreakPlugin() {
+    return new Plugin({
+      key: milkdownPlainEnterHardBreakPluginKey,
+      props: {
+        handleKeyDown(view, event) {
+          if (shouldInsertPlainEnterHardBreak(view, event)) {
+            event.preventDefault();
+            return insertPlainEnterHardBreak(view);
+          }
+
+          if (!shouldSplitParagraphWithShiftEnter(view, event)) return false;
+
+          event.preventDefault();
+          return splitParagraphWithShiftEnter(view);
+        },
+      },
+    });
+  }
+
+  function setDomAttribute(
+    element: HTMLElement,
+    name: keyof ReadonlyDomFocusSnapshot,
+    value: string | null,
+  ) {
+    const attributeName = name === "ariaReadonly" ? "aria-readonly" : name;
+
+    if (value === null) {
+      element.removeAttribute(attributeName);
+      return;
+    }
+
+    element.setAttribute(attributeName, value);
+  }
+
+  function setDomAttributeIfChanged(
+    element: HTMLElement,
+    name: string,
+    value: string,
+  ) {
+    if (element.getAttribute(name) === value) return;
+
+    element.setAttribute(name, value);
+  }
+
+  function rememberReadonlyDomFocusElement(element: HTMLElement) {
+    if (!readonlyDomFocusSnapshotsRef.current.has(element)) {
+      readonlyDomFocusSnapshotsRef.current.set(element, {
+        ariaReadonly: element.getAttribute("aria-readonly"),
+        contenteditable: element.getAttribute("contenteditable"),
+        inputmode: element.getAttribute("inputmode"),
+        tabindex: element.getAttribute("tabindex"),
+      });
+    }
+
+    readonlyDomFocusElementsRef.current.add(element);
+  }
+
+  function restoreReadonlyDomFocusElements() {
+    readonlyDomFocusElementsRef.current.forEach((element) => {
+      const snapshot = readonlyDomFocusSnapshotsRef.current.get(element);
+      if (!snapshot) return;
+
+      setDomAttribute(element, "ariaReadonly", snapshot.ariaReadonly);
+      if (element.classList.contains("ProseMirror") || element.classList.contains("cm-content")) {
+        element.setAttribute("contenteditable", "true");
+      } else {
+        setDomAttribute(element, "contenteditable", snapshot.contenteditable);
+      }
+      setDomAttribute(element, "inputmode", snapshot.inputmode);
+      setDomAttribute(element, "tabindex", snapshot.tabindex);
+      readonlyDomFocusSnapshotsRef.current.delete(element);
+    });
+
+    readonlyDomFocusElementsRef.current.clear();
+  }
+
+  function blurReadonlyEditorFocus() {
+    const root = rootRef.current;
+    if (!root || !(document.activeElement instanceof Node)) return;
+    if (!root.contains(document.activeElement)) return;
+    const activeElement =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const shouldBlur =
+      readOnlyRef.current ||
+      Boolean(noteModeEnabledRef.current && activeElement?.closest(".milkdown-code-block"));
+    if (!shouldBlur) return;
+
+    (document.activeElement as HTMLElement).blur();
+  }
+
+  function applyReadonlyDomFocusState() {
+    if (!readOnlyRef.current && !noteModeEnabledRef.current) {
+      restoreReadonlyDomFocusElements();
+      return;
+    }
+
+    const root = rootRef.current;
+    if (!root) return;
+    const blockedFocusableSelector = readOnlyRef.current
+      ? milkdownReadonlyFocusableSelector
+      : milkdownNoteModeCodeBlockFocusableSelector;
+
+    root
+      .querySelectorAll<HTMLElement>(blockedFocusableSelector)
+      .forEach((element) => {
+        rememberReadonlyDomFocusElement(element);
+        setDomAttributeIfChanged(element, "contenteditable", "false");
+        setDomAttributeIfChanged(element, "inputmode", "none");
+        setDomAttributeIfChanged(element, "aria-readonly", "true");
+        setDomAttributeIfChanged(element, "tabindex", "-1");
+      });
+
+    blurReadonlyEditorFocus();
+  }
+
+  function scheduleReadonlyDomFocusSync() {
+    window.cancelAnimationFrame(readonlyDomFocusFrameRef.current);
+    readonlyDomFocusFrameRef.current = window.requestAnimationFrame(() => {
+      readonlyDomFocusFrameRef.current = 0;
+      applyReadonlyDomFocusState();
+    });
+  }
+
+  function createReadonlyGuardPlugin() {
+    function contentMutationBlocked() {
+      return readOnlyRef.current || noteModeEnabledRef.current;
+    }
+
+    function blockReadonlyDomMutation(event: Event) {
+      if (!contentMutationBlocked()) return false;
+
+      event.preventDefault();
+      event.stopPropagation();
+      return true;
+    }
+
+    return new Plugin({
+      key: milkdownReadonlyGuardPluginKey,
+      props: {
+        attributes() {
+          if (!readOnlyRef.current) return {} as Record<string, string>;
+
+          return {
+            "aria-readonly": "true",
+            inputmode: "none",
+            tabindex: "-1",
+          } as Record<string, string>;
+        },
+        editable() {
+          return !readOnlyRef.current;
+        },
+        handleDOMEvents: {
+          beforeinput(_view, event) {
+            return blockReadonlyDomMutation(event);
+          },
+          compositionstart(_view, event) {
+            return blockReadonlyDomMutation(event);
+          },
+          cut(_view, event) {
+            return blockReadonlyDomMutation(event);
+          },
+          drop(_view, event) {
+            return blockReadonlyDomMutation(event);
+          },
+          focus(_view, event) {
+            const target = event.target as HTMLElement | null;
+            if (
+              !readOnlyRef.current &&
+              !(noteModeEnabledRef.current && target?.closest(".milkdown-code-block"))
+            ) {
+              return false;
+            }
+
+            target?.blur();
+            return true;
+          },
+          input(_view, event) {
+            return blockReadonlyDomMutation(event);
+          },
+          paste(_view, event) {
+            return blockReadonlyDomMutation(event);
+          },
+        },
+      },
+      filterTransaction(transaction) {
+        return !(contentMutationBlocked() && transaction.docChanged);
+      },
+    });
+  }
+
+  function readonlyDomEventShouldBeBlocked(event: Event) {
+    if (!readOnlyRef.current && !noteModeEnabledRef.current) return false;
+
+    const root = rootRef.current;
+    if (!root || !(event.target instanceof Node) || !root.contains(event.target)) {
+      return false;
+    }
+
+    const targetElement = elementFromEventTarget(event.target);
+    if (!targetElement) return false;
+    if (targetElement.closest(".copy-button, .tools button")) return false;
+
+    return Boolean(targetElement.closest(".ProseMirror, .milkdown-code-block, .cm-editor"));
+  }
+
+  function blockReadonlyDomEvent(event: Event) {
+    if (!readonlyDomEventShouldBeBlocked(event)) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.cancelBubble !== true) {
+      event.stopImmediatePropagation();
+    }
+    applyReadonlyDomFocusState();
+    blurReadonlyEditorFocus();
+  }
+
   function clearQueuedAnnotationClick() {
     window.clearTimeout(annotationClickTimerRef.current);
     annotationClickTimerRef.current = 0;
@@ -1589,9 +2794,204 @@ export function MilkdownMarkdownEditor({
     }, annotationClickDelayMs);
   }
 
+  function codeBlockAnnotationHitFromPoint(clientX: number, clientY: number) {
+    const root = rootRef.current;
+    if (!root || !noteModeEnabledRef.current) return null;
+
+    const frames = Array.from(
+      root.querySelectorAll<HTMLElement>(
+        ".milkdown-code-block-annotation-layer .milkdown-annotation-frame[data-note-id]",
+      ),
+    );
+    const hits = frames.filter((frame) => {
+      const rect = frame.getBoundingClientRect();
+      return (
+        clientX >= rect.left &&
+        clientX <= rect.right &&
+        clientY >= rect.top &&
+        clientY <= rect.bottom
+      );
+    });
+    if (hits.length === 0) return null;
+
+    const hitSources = hits
+      .flatMap((frame) =>
+        annotationSourcesFromElement(frame, annotationsRef.current).map((source) => ({
+          frame,
+          source,
+        })),
+      )
+      .sort(
+        (left, right) =>
+          milkdownAnnotationKindLayer(right.source.kind) -
+            milkdownAnnotationKindLayer(left.source.kind) ||
+          hits.indexOf(right.frame) - hits.indexOf(left.frame),
+      );
+
+    return hitSources[0] ?? null;
+  }
+
+  function clearCodeBlockAnnotationHover() {
+    codeBlockAnnotationHoverBlockRef.current?.classList.remove("is-annotation-hit-hovered");
+    codeBlockAnnotationHoverBlockRef.current = null;
+  }
+
+  function updateCodeBlockAnnotationHover(clientX: number, clientY: number) {
+    const hit = codeBlockAnnotationHitFromPoint(clientX, clientY);
+    const nextBlock =
+      hit?.frame.closest<HTMLElement>(".milkdown-code-block") ?? null;
+    if (codeBlockAnnotationHoverBlockRef.current === nextBlock) return;
+
+    clearCodeBlockAnnotationHover();
+    if (!nextBlock) return;
+
+    nextBlock.classList.add("is-annotation-hit-hovered");
+    codeBlockAnnotationHoverBlockRef.current = nextBlock;
+  }
+
+  function consumeCodeBlockAnnotationEvent(event: Event) {
+    event.preventDefault();
+    event.stopPropagation();
+    event.stopImmediatePropagation();
+  }
+
+  function codeBlockContentTarget(target: EventTarget | null) {
+    if (!noteModeEnabledRef.current) return null;
+
+    const root = rootRef.current;
+    const targetElement = elementFromEventTarget(target);
+    if (!root || !targetElement || !root.contains(targetElement)) return null;
+    if (targetElement.closest(".milkdown-code-block .tools button, .copy-button")) {
+      return null;
+    }
+
+    const codeBlock = targetElement.closest<HTMLElement>(".milkdown-code-block");
+    return codeBlock && root.contains(codeBlock) ? codeBlock : null;
+  }
+
+  function handleCodeBlockAnnotationPointerPress(event: MouseEvent | PointerEvent) {
+    if (event.button !== 0) return;
+    if (!codeBlockContentTarget(event.target)) return;
+
+    const hit = codeBlockAnnotationHitFromPoint(event.clientX, event.clientY);
+    if (!hit && event.detail <= 1) {
+      scheduleReadonlyDomFocusSync();
+      return;
+    }
+
+    consumeCodeBlockAnnotationEvent(event);
+    mouseSelectionStartedRef.current = false;
+    setTimeout(() => {
+      window.getSelection()?.removeAllRanges();
+    }, 0);
+
+    if (hit?.source.isFocusTarget) {
+      handleFocusTargetAnnotationPress(hit.source.noteId);
+    }
+  }
+
+  function handleCodeBlockAnnotationPointerRelease(event: MouseEvent | PointerEvent) {
+    if (event.button !== 0) return;
+    if (!codeBlockContentTarget(event.target)) return;
+
+    const hit = codeBlockAnnotationHitFromPoint(event.clientX, event.clientY);
+    if (!hit && event.detail <= 1) {
+      scheduleReadonlyDomFocusSync();
+      return;
+    }
+
+    consumeCodeBlockAnnotationEvent(event);
+    mouseSelectionStartedRef.current = false;
+    setTimeout(() => {
+      window.getSelection()?.removeAllRanges();
+    }, 0);
+  }
+
+  function handleCodeBlockAnnotationClick(event: MouseEvent) {
+    if (event.button !== 0) return;
+    if (!codeBlockContentTarget(event.target)) return;
+
+    const hit = codeBlockAnnotationHitFromPoint(event.clientX, event.clientY);
+    if (!hit && event.detail <= 1) {
+      scheduleReadonlyDomFocusSync();
+      return;
+    }
+
+    consumeCodeBlockAnnotationEvent(event);
+    mouseSelectionStartedRef.current = false;
+    setTimeout(() => {
+      window.getSelection()?.removeAllRanges();
+    }, 0);
+    if (!hit) return;
+
+    if (hit.source.isFocusTarget && handleFocusTargetAnnotationPress(hit.source.noteId)) {
+      return;
+    }
+
+    queueAnnotationClick(hit.source.noteId);
+  }
+
+  function handleCodeBlockAnnotationDoubleClick(event: MouseEvent) {
+    if (event.button !== 0) return;
+    if (!codeBlockContentTarget(event.target)) return;
+
+    const hit = codeBlockAnnotationHitFromPoint(event.clientX, event.clientY);
+    consumeCodeBlockAnnotationEvent(event);
+    mouseSelectionStartedRef.current = false;
+    setTimeout(() => {
+      window.getSelection()?.removeAllRanges();
+    }, 0);
+    clearQueuedAnnotationClick();
+    if (!hit) return;
+
+    onAnnotationDoubleClickRef.current(hit.source.noteId);
+  }
+
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root) return undefined;
+
+    const handlePointerMove = (event: PointerEvent) => {
+      updateCodeBlockAnnotationHover(event.clientX, event.clientY);
+    };
+
+    root.addEventListener("pointermove", handlePointerMove, true);
+    root.addEventListener("pointerdown", handleCodeBlockAnnotationPointerPress, true);
+    root.addEventListener("mousedown", handleCodeBlockAnnotationPointerPress, true);
+    root.addEventListener("pointerup", handleCodeBlockAnnotationPointerRelease, true);
+    root.addEventListener("mouseup", handleCodeBlockAnnotationPointerRelease, true);
+    root.addEventListener("click", handleCodeBlockAnnotationClick, true);
+    root.addEventListener("dblclick", handleCodeBlockAnnotationDoubleClick, true);
+    root.addEventListener("pointerleave", clearCodeBlockAnnotationHover, true);
+
+    return () => {
+      root.removeEventListener("pointermove", handlePointerMove, true);
+      root.removeEventListener("pointerdown", handleCodeBlockAnnotationPointerPress, true);
+      root.removeEventListener("mousedown", handleCodeBlockAnnotationPointerPress, true);
+      root.removeEventListener("pointerup", handleCodeBlockAnnotationPointerRelease, true);
+      root.removeEventListener("mouseup", handleCodeBlockAnnotationPointerRelease, true);
+      root.removeEventListener("click", handleCodeBlockAnnotationClick, true);
+      root.removeEventListener("dblclick", handleCodeBlockAnnotationDoubleClick, true);
+      root.removeEventListener("pointerleave", clearCodeBlockAnnotationHover, true);
+      clearCodeBlockAnnotationHover();
+    };
+  }, [editorRevision]);
+
   useEffect(() => {
     onChangeRef.current = onChange;
   }, [onChange]);
+
+  useEffect(() => {
+    codeBlockCopiedLabelRef.current = codeBlockCopiedLabel;
+  }, [codeBlockCopiedLabel]);
+
+  useEffect(() => {
+    mermaidLabelsRef.current = {
+      empty: mermaidEmptyDefinitionLabel,
+      error: mermaidErrorLabel,
+      loading: mermaidLoadingLabel,
+    };
+  }, [mermaidEmptyDefinitionLabel, mermaidErrorLabel, mermaidLoadingLabel]);
 
   useEffect(() => {
     onSearchMatchCountChangeRef.current = onSearchMatchCountChange;
@@ -1619,7 +3019,10 @@ export function MilkdownMarkdownEditor({
 
   useEffect(() => {
     noteModeEnabledRef.current = noteModeEnabled;
+    scheduleReadonlyDomFocusSync();
     if (!noteModeEnabled) {
+      clearTouchBlockSelectionSession();
+      setTouchBlockCommittedSelectionOverlay(null);
       onSelectionChangeRef.current(null);
       setAnnotationFrames([]);
     } else {
@@ -1628,17 +3031,65 @@ export function MilkdownMarkdownEditor({
   }, [noteModeEnabled]);
 
   useEffect(() => {
-    readOnlyRef.current = readOnly;
-    crepeRef.current?.setReadonly(readOnly);
-
-    if (!readOnly) return;
-
-    const root = rootRef.current;
-    if (root && document.activeElement instanceof Node && root.contains(document.activeElement)) {
-      (document.activeElement as HTMLElement).blur();
+    desktopBlockSelectionEnabledRef.current = desktopBlockSelectionEnabled;
+    mobileBlockSelectionEnabledRef.current = mobileBlockSelectionEnabled;
+    if (!desktopBlockSelectionEnabled && !mobileBlockSelectionEnabled) {
+      clearTouchBlockSelectionSession();
+      setTouchBlockCommittedSelectionOverlay(null);
     }
-    window.getSelection()?.removeAllRanges();
+  }, [desktopBlockSelectionEnabled, mobileBlockSelectionEnabled]);
+
+  useEffect(() => {
+    mobileCommittedSelectionKeyRef.current = mobileCommittedSelectionKey;
+    if (!mobileCommittedSelectionKey) {
+      setTouchBlockCommittedSelectionOverlay(null);
+    }
+  }, [mobileCommittedSelectionKey]);
+
+  useEffect(() => {
+    mobileSelectionToneForAnchorRef.current = mobileSelectionToneForAnchor;
+  }, [mobileSelectionToneForAnchor]);
+
+  useEffect(() => {
+    readOnlyRef.current = readOnly;
+    syncMilkdownReadOnlyState();
   }, [readOnly]);
+
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root) return undefined;
+
+    const observer = new MutationObserver(() => {
+      if (readOnlyRef.current || noteModeEnabledRef.current) {
+        scheduleReadonlyDomFocusSync();
+      }
+    });
+    observer.observe(root, {
+      attributeFilter: ["contenteditable", "tabindex"],
+      attributes: true,
+      childList: true,
+      subtree: true,
+    });
+
+    scheduleReadonlyDomFocusSync();
+
+    const blockedEvents = ["beforeinput", "input", "compositionstart", "cut", "paste", "drop"];
+    blockedEvents.forEach((eventName) => {
+      root.addEventListener(eventName, blockReadonlyDomEvent, {
+        capture: true,
+      });
+    });
+
+    return () => {
+      observer.disconnect();
+      blockedEvents.forEach((eventName) => {
+        root.removeEventListener(eventName, blockReadonlyDomEvent, true);
+      });
+      window.cancelAnimationFrame(readonlyDomFocusFrameRef.current);
+      readonlyDomFocusFrameRef.current = 0;
+      restoreReadonlyDomFocusElements();
+    };
+  }, [editorRevision]);
 
   useEffect(() => {
     annotationsRef.current = annotations;
@@ -1738,6 +3189,7 @@ export function MilkdownMarkdownEditor({
       annotationsRef.current,
       normalizedValue,
     );
+    setTouchBlockCommittedSelectionOverlay(null);
     setEditorRevision((revision) => revision + 1);
   }, [value]);
 
@@ -1755,6 +3207,31 @@ export function MilkdownMarkdownEditor({
     }
 
     return view;
+  }
+
+  function syncMilkdownReadOnlyState() {
+    const readOnlyState = readOnlyRef.current;
+    if (readOnlyState) {
+      applyReadonlyDomFocusState();
+    }
+
+    crepeRef.current?.setReadonly(readOnlyState);
+
+    const view = currentEditorView();
+    if (view) {
+      view.setProps({
+        editable: () => !readOnlyRef.current,
+      });
+    }
+
+    applyReadonlyDomFocusState();
+
+    if (!readOnlyState) return;
+
+    blurReadonlyEditorFocus();
+    setTimeout(() => {
+      window.getSelection()?.removeAllRanges();
+    }, 0);
   }
 
   function reportSearchMatchCount(view: EditorView | null = currentEditorView()) {
@@ -1874,12 +3351,871 @@ export function MilkdownMarkdownEditor({
     );
   }
 
+  function touchBlockSelectionEnabled() {
+    return (
+      noteModeEnabledRef.current &&
+      mobileBlockSelectionEnabledRef.current &&
+      !selectionPublishSuppressedByIme()
+    );
+  }
+
+  function desktopBlockSelectionEnabledNow() {
+    return (
+      noteModeEnabledRef.current &&
+      desktopBlockSelectionEnabledRef.current &&
+      !selectionPublishSuppressedByIme()
+    );
+  }
+
+  function blockSelectionEnabled() {
+    return touchBlockSelectionEnabled() || desktopBlockSelectionEnabledNow();
+  }
+
+  function touchBlockSelectionPublishSuppressed() {
+    return Date.now() < touchBlockSelectionPublishSuppressedUntilRef.current;
+  }
+
+  function suppressSelectionPublishAfterTouchBlockSelection() {
+    touchBlockSelectionPublishSuppressedUntilRef.current =
+      Date.now() + milkdownTouchSelectionPublishSuppressionMs;
+    window.clearTimeout(selectionFallbackTimerRef.current);
+    window.cancelAnimationFrame(selectionFrameRef.current);
+    selectionFrameRef.current = 0;
+    mouseSelectionStartedRef.current = false;
+  }
+
+  function elementFromEventTarget(target: EventTarget | null) {
+    return target instanceof HTMLElement
+      ? target
+      : target instanceof Node
+        ? target.parentElement
+        : null;
+  }
+
+  function targetSupportsTouchBlockSelection(target: EventTarget | null) {
+    const root = rootRef.current;
+    if (!root || !(target instanceof Node) || !root.contains(target)) return false;
+
+    const targetElement = elementFromEventTarget(target);
+    if (!targetElement) return false;
+    if (
+      targetElement.closest(
+        ".milkdown-note-annotation, .milkdown-annotation-frame[data-note-id]",
+      )
+    ) {
+      return false;
+    }
+    if (targetElement.closest("button, input, textarea, select, a")) return false;
+
+    const editorElement = targetElement.closest(".ProseMirror");
+    return Boolean(editorElement && root.contains(editorElement));
+  }
+
+  function visibleTextFromTouchBlockElement(blockElement: HTMLElement) {
+    const clone = blockElement.cloneNode(true) as HTMLElement;
+    clone
+      .querySelectorAll(
+        ".tools, button, input, textarea, select, .milkdown-code-block-annotation-layer",
+      )
+      .forEach((element) => element.remove());
+
+    return clone.innerText.replace(/\u00a0/g, " ");
+  }
+
+  function sourceAnchorFromTouchBlockElement(view: EditorView, blockElement: HTMLElement) {
+    const selectedText = visibleTextFromTouchBlockElement(blockElement);
+    if (!normalizeSelectedText(selectedText)) return null;
+
+    let approximateVisibleStart = 0;
+    try {
+      approximateVisibleStart = visibleTextIndexFromProsePosition(
+        view.state.doc,
+        view.posAtDOM(blockElement, 0),
+      );
+    } catch {
+      approximateVisibleStart = 0;
+    }
+
+    return sourceAnchorFromEditorAnchor(
+      currentMarkdownRef.current,
+      buildAnchor(editorMarkdownRef.current, selectedText, approximateVisibleStart),
+    );
+  }
+
+  function sourceAnchorFromCodeBlockLineSelection(
+    codeBlockIndex: number,
+    lineIndexes: number[],
+  ) {
+    const firstLineIndex = Math.min(...lineIndexes);
+    const lastLineIndex = Math.max(...lineIndexes);
+    const sourceRange = fencedCodeBlockContentLineSourceRange(
+      editorMarkdownRef.current,
+      codeBlockIndex,
+      firstLineIndex,
+      lastLineIndex + 1,
+    );
+    if (!sourceRange) return null;
+
+    const selectedText = editorMarkdownRef.current.slice(sourceRange.from, sourceRange.to);
+    if (!normalizeSelectedText(selectedText)) return null;
+
+    return sourceAnchorFromEditorAnchor(
+      currentMarkdownRef.current,
+      makeAnchorFromSourceRange(editorMarkdownRef.current, sourceRange.from, sourceRange.to),
+    );
+  }
+
+  function sourceAnchorsFromCodeBlockSelectionRect(selectionRect: ClientSelectionRect) {
+    const root = rootRef.current;
+    const view = currentEditorView();
+    if (!root || !view) return [];
+
+    const codeBlocks = Array.from(root.querySelectorAll<HTMLElement>(".milkdown-code-block"));
+    return codeBlocks.flatMap((codeBlock, codeBlockIndex) => {
+      if (!domRectOverlapsClientSelectionRect(codeBlock.getBoundingClientRect(), selectionRect)) {
+        return [];
+      }
+      if (!elementTextOverlapsClientSelectionRect(codeBlock, selectionRect)) {
+        return [];
+      }
+
+      const lineElements = Array.from(codeBlock.querySelectorAll<HTMLElement>(".cm-line"));
+      const selectedLineIndexes = lineElements
+        .map((lineElement, lineIndex) =>
+          elementTextNodeClientRects(lineElement).length > 0 &&
+          elementBoxOverlapsClientSelectionRect(lineElement, selectionRect)
+            ? lineIndex
+            : null,
+        )
+        .filter((lineIndex): lineIndex is number => lineIndex !== null);
+
+      if (selectedLineIndexes.length > 0) {
+        const lineAnchor = sourceAnchorFromCodeBlockLineSelection(
+          codeBlockIndex,
+          selectedLineIndexes,
+        );
+        return lineAnchor ? [lineAnchor] : [];
+      }
+
+      const fallbackAnchor = sourceAnchorFromTouchBlockElement(view, codeBlock);
+      return fallbackAnchor ? [fallbackAnchor] : [];
+    });
+  }
+
+  function touchBlockElementsFromSelectionRect(selectionRect: ClientSelectionRect) {
+    const root = rootRef.current;
+    if (!root) return [];
+    if (!elementTextOverlapsClientSelectionRect(root, selectionRect)) return [];
+
+    const candidates = Array.from(
+      root.querySelectorAll<HTMLElement>(milkdownTouchBlockDomSelector),
+    ).filter((element) => {
+      if (element.closest(".milkdown-code-block")) return false;
+      if (!normalizeSelectedText(visibleTextFromTouchBlockElement(element))) return false;
+
+      return elementBoxOverlapsClientSelectionRect(element, selectionRect);
+    });
+
+    return candidates
+      .filter(
+        (element) =>
+          !candidates.some(
+            (candidate) => candidate !== element && candidate.contains(element),
+          ),
+      )
+      .sort((left, right) =>
+        left.compareDocumentPosition(right) & Node.DOCUMENT_POSITION_PRECEDING ? 1 : -1,
+      );
+  }
+
+  function sourceAnchorsFromTouchBlockSelectionRect(
+    view: EditorView,
+    selectionRect: ClientSelectionRect,
+  ) {
+    const blockAnchors = touchBlockElementsFromSelectionRect(selectionRect)
+      .map((blockElement) => sourceAnchorFromTouchBlockElement(view, blockElement))
+      .filter((anchor): anchor is TextSelectionAnchor => Boolean(anchor));
+    const codeAnchors = sourceAnchorsFromCodeBlockSelectionRect(selectionRect);
+
+    return [...blockAnchors, ...codeAnchors]
+      .filter((anchor) => normalizeSelectedText(anchor.selectedText))
+      .sort((left, right) => left.from - right.from || left.to - right.to);
+  }
+
+  function touchBlockSelectionPreviewBoundsForElement(element: HTMLElement) {
+    const viewportBounds = {
+      bottom: window.innerHeight,
+      left: 0,
+      right: window.innerWidth,
+      top: 0,
+    };
+    const clipElements = [
+      containerRef.current,
+      element.closest<HTMLElement>(".cm-scroller"),
+      element.closest<HTMLElement>(".codemirror-host"),
+      element.closest<HTMLElement>(".milkdown-code-block-preview"),
+      element.closest<HTMLElement>(".milkdown-code-block"),
+    ].filter((clipElement): clipElement is HTMLElement => Boolean(clipElement));
+
+    return clipElements.reduce((bounds, clipElement) => {
+      const clipRect = clipElement.getBoundingClientRect();
+      return {
+        bottom: Math.min(bounds.bottom, clipRect.bottom),
+        left: Math.max(bounds.left, clipRect.left),
+        right: Math.min(bounds.right, clipRect.right),
+        top: Math.max(bounds.top, clipRect.top),
+      };
+    }, viewportBounds);
+  }
+
+  function touchBlockSelectionPreviewLineMetrics(
+    scope: HTMLElement,
+    rect: { bottom: number; right: number; top: number },
+    bounds: { bottom: number; left: number; right: number; top: number },
+  ) {
+    const range = scope.ownerDocument.createRange();
+    try {
+      range.selectNodeContents(scope);
+      const rectMidY = (rect.top + rect.bottom) / 2;
+      const lineRects = Array.from(range.getClientRects()).filter(
+        (lineRect) =>
+          lineRect.width > 0 &&
+          lineRect.height > 0 &&
+          rectMidY >= lineRect.top - 1 &&
+          rectMidY <= lineRect.bottom + 1,
+      );
+
+      if (lineRects.length === 0) {
+        return {
+          canExtendRight: true,
+          lineRight: Math.min(rect.right, bounds.right),
+        };
+      }
+
+      const lineRight = Math.min(
+        bounds.right,
+        Math.max(...lineRects.map((lineRect) => lineRect.right)),
+      );
+
+      return {
+        canExtendRight: rect.right >= lineRight - milkdownAnnotationLineEndTolerance,
+        lineRight,
+      };
+    } finally {
+      range.detach();
+    }
+  }
+
+  function touchBlockSelectionAnnotationRectsFromElement(element: HTMLElement) {
+    const bounds = touchBlockSelectionPreviewBoundsForElement(element);
+    return mergedClientTextLineRects(elementTextNodeClientRects(element))
+      .map((domRect): MilkdownAnnotationRect | null => {
+        const left = Math.max(domRect.left, bounds.left);
+        const top = Math.max(domRect.top, bounds.top);
+        const right = Math.min(domRect.right, bounds.right);
+        const bottom = Math.min(domRect.bottom, bounds.bottom);
+
+        if (right <= left || bottom <= top) return null;
+
+        const lineMetrics = touchBlockSelectionPreviewLineMetrics(
+          element,
+          { bottom, right, top },
+          bounds,
+        );
+
+        return {
+          canExtendRight: lineMetrics.canExtendRight,
+          clipLeft: bounds.left,
+          clipRight: bounds.right,
+          left,
+          lineRight: Math.max(right, lineMetrics.lineRight),
+          top,
+          right,
+          bottom,
+        };
+      })
+      .filter((rect): rect is MilkdownAnnotationRect => Boolean(rect));
+  }
+
+  function touchBlockSelectionPreviewRectsFromAnnotationRects(
+    rects: MilkdownAnnotationRect[],
+    keyPrefix: string,
+  ): MilkdownTouchBlockSelectionPreviewRect[] {
+    const sortedRects = rects
+      .slice()
+      .sort((left, right) => left.top - right.top || left.left - right.left);
+    const extensionRightByRect = new Map<MilkdownAnnotationRect, number>();
+    const borderRadiusByRect = new Map<MilkdownAnnotationRect, string>();
+    let rectGroup: MilkdownAnnotationRect[] = [];
+
+    function flushRectGroup() {
+      if (rectGroup.length === 0) return;
+
+      const extendableLineRights = rectGroup
+        .filter((rect) => rect.canExtendRight)
+        .map((rect) => Math.max(rect.right, rect.lineRight));
+      if (extendableLineRights.length > 0) {
+        const targetRight = Math.max(...extendableLineRights);
+        rectGroup.forEach((rect) => {
+          extensionRightByRect.set(
+            rect,
+            rect.canExtendRight ? Math.max(rect.right, targetRight) : rect.right,
+          );
+        });
+      }
+
+      rectGroup.forEach((rect, groupIndex) => {
+        const isFirstRect = groupIndex === 0;
+        const isLastRect = groupIndex === rectGroup.length - 1;
+        borderRadiusByRect.set(
+          rect,
+          [
+            isFirstRect ? milkdownAnnotationFrameCornerRadius : "0",
+            isFirstRect ? milkdownAnnotationFrameCornerRadius : "0",
+            isLastRect ? milkdownAnnotationFrameCornerRadius : "0",
+            isLastRect ? milkdownAnnotationFrameCornerRadius : "0",
+          ].join(" "),
+        );
+      });
+      rectGroup = [];
+    }
+
+    sortedRects.forEach((rect) => {
+      const previousRect = rectGroup[rectGroup.length - 1];
+      const lineGap = previousRect ? rect.top - previousRect.bottom : 0;
+      if (
+        previousRect &&
+        (lineGap < 0 || lineGap > milkdownAnnotationLineJoinMaxGap)
+      ) {
+        flushRectGroup();
+      }
+
+      rectGroup.push(rect);
+    });
+    flushRectGroup();
+
+    return sortedRects.flatMap((rect, rectIndex) => {
+      const framePadding = milkdownAnnotationFramePaddingForKind("note");
+      const frameHorizontalPadding =
+        milkdownAnnotationFrameHorizontalPaddingForKind("note");
+      let top = rect.top - framePadding;
+      let bottom = rect.bottom + framePadding;
+      const previousRect = sortedRects[rectIndex - 1];
+      const nextRect = sortedRects[rectIndex + 1];
+
+      if (previousRect) {
+        const previousGap = rect.top - previousRect.bottom;
+        if (previousGap >= 0 && previousGap <= milkdownAnnotationLineJoinMaxGap) {
+          top = Math.min(top, previousRect.bottom + previousGap / 2 - 1);
+        }
+      }
+
+      if (nextRect) {
+        const nextGap = nextRect.top - rect.bottom;
+        if (nextGap >= 0 && nextGap <= milkdownAnnotationLineJoinMaxGap) {
+          bottom = Math.max(bottom, rect.bottom + nextGap / 2 + 1);
+        }
+      }
+
+      const frameLeft = Math.max(
+        rect.clipLeft ?? 0,
+        rect.left - frameHorizontalPadding,
+      );
+      const frameRight = Math.min(
+        rect.clipRight ?? window.innerWidth,
+        (extensionRightByRect.get(rect) ?? rect.right) + frameHorizontalPadding,
+      );
+      const frameTop = Math.max(0, top);
+      const frameBottom = Math.min(window.innerHeight, bottom);
+
+      if (frameRight <= frameLeft || frameBottom <= frameTop) return [];
+
+      return {
+        borderRadius: borderRadiusByRect.get(rect) ?? milkdownAnnotationFrameCornerRadius,
+        key: `${keyPrefix}:${rectIndex}:${roundFrameValue(frameLeft)}:${roundFrameValue(
+          frameTop,
+        )}`,
+        height: roundFrameValue(frameBottom - frameTop),
+        left: roundFrameValue(frameLeft),
+        top: roundFrameValue(frameTop),
+        width: roundFrameValue(frameRight - frameLeft),
+      };
+    });
+  }
+
+  function touchBlockSelectionPreviewRectsFromElement(
+    element: HTMLElement,
+    keyPrefix: string,
+  ): MilkdownTouchBlockSelectionPreviewRect[] {
+    return touchBlockSelectionPreviewRectsFromAnnotationRects(
+      touchBlockSelectionAnnotationRectsFromElement(element),
+      keyPrefix,
+    );
+  }
+
+  function touchBlockSelectionPreviewRectsFromSelectionRect(
+    selectionRect: ClientSelectionRect,
+  ): MilkdownTouchBlockSelectionPreviewRect[] {
+    if (!clientSelectionRectHasDrag(selectionRect)) return [];
+
+    const blockPreviewRects = touchBlockElementsFromSelectionRect(selectionRect).flatMap(
+      (blockElement, blockIndex) =>
+        touchBlockSelectionPreviewRectsFromElement(blockElement, `block:${blockIndex}`),
+    );
+    const root = rootRef.current;
+    if (!root) return blockPreviewRects;
+
+    const codePreviewRects = Array.from(
+      root.querySelectorAll<HTMLElement>(".milkdown-code-block"),
+    ).flatMap((codeBlock, codeBlockIndex) => {
+      if (!domRectOverlapsClientSelectionRect(codeBlock.getBoundingClientRect(), selectionRect)) {
+        return [];
+      }
+      if (!elementTextOverlapsClientSelectionRect(codeBlock, selectionRect)) {
+        return [];
+      }
+
+      const linePreviewRects = Array.from(
+        codeBlock.querySelectorAll<HTMLElement>(".cm-line"),
+      ).flatMap((lineElement, lineIndex) =>
+        elementTextNodeClientRects(lineElement).length > 0 &&
+        elementBoxOverlapsClientSelectionRect(lineElement, selectionRect)
+          ? touchBlockSelectionPreviewRectsFromElement(
+              lineElement,
+              `code:${codeBlockIndex}:${lineIndex}`,
+            )
+          : [],
+      );
+      if (linePreviewRects.length > 0) return linePreviewRects;
+
+      return touchBlockSelectionPreviewRectsFromElement(codeBlock, `code:${codeBlockIndex}`);
+    });
+
+    return [...blockPreviewRects, ...codePreviewRects];
+  }
+
+  function anchorFromTouchBlockSelectionRect(
+    view: EditorView,
+    selectionRect: ClientSelectionRect,
+  ) {
+    if (!clientSelectionRectHasDrag(selectionRect)) return null;
+
+    const anchors = sourceAnchorsFromTouchBlockSelectionRect(view, selectionRect);
+    if (anchors.length === 0) return null;
+
+    const from = Math.min(...anchors.map((anchor) => anchor.from));
+    const to = Math.max(...anchors.map((anchor) => anchor.to));
+    if (to <= from) return null;
+
+    const anchor = makeAnchorFromSourceRange(currentMarkdownRef.current, from, to);
+    return normalizeSelectedText(anchor.selectedText) ? anchor : null;
+  }
+
+  function completeTouchBlockSelection(
+    view: EditorView,
+    selectionRect: ClientSelectionRect,
+    event?: Event,
+  ) {
+    const anchor = anchorFromTouchBlockSelectionRect(view, selectionRect);
+    if (!anchor) return false;
+    const previewRects = touchBlockSelectionPreviewRectsFromSelectionRect(selectionRect);
+    const handled = onSelectionEnterRef.current(anchor, {
+      anchorRect: viewportAnchorRectFromTouchBlockPreviewRects(previewRects),
+      source: "touch-block",
+    });
+    if (!handled) return false;
+
+    event?.preventDefault();
+    event?.stopPropagation();
+    setTimeout(() => {
+      window.getSelection()?.removeAllRanges();
+    }, 0);
+    suppressSelectionPublishAfterTouchBlockSelection();
+    setTouchBlockCommittedSelectionOverlay(
+      previewRects.length > 0 ? { previewRects } : null,
+    );
+    blurReadonlyEditorFocus();
+    scheduleAnnotationFrameUpdate();
+    return true;
+  }
+
+  function clearTouchBlockHintTimers() {
+    window.cancelAnimationFrame(touchBlockHintFrameRef.current);
+    window.clearTimeout(touchBlockHintHideTimerRef.current);
+    window.clearTimeout(touchBlockHintUnmountTimerRef.current);
+    touchBlockHintFrameRef.current = 0;
+    touchBlockHintHideTimerRef.current = 0;
+    touchBlockHintUnmountTimerRef.current = 0;
+  }
+
+  function hideTouchBlockSelectionHint() {
+    window.cancelAnimationFrame(touchBlockHintFrameRef.current);
+    window.clearTimeout(touchBlockHintHideTimerRef.current);
+    touchBlockHintFrameRef.current = 0;
+    touchBlockHintHideTimerRef.current = 0;
+    setTouchBlockSelectionOverlay((currentOverlay) =>
+      currentOverlay ? { ...currentOverlay, hintPhase: "hiding" } : currentOverlay,
+    );
+  }
+
+  function touchSelectionRectFromSession(session: MilkdownTouchBlockSelectionSession) {
+    return clientSelectionRectFromPoints(
+      session.startClientX,
+      session.startClientY,
+      session.currentClientX,
+      session.currentClientY,
+    );
+  }
+
+  function updateTouchBlockSelectionOverlayRect(
+    session: MilkdownTouchBlockSelectionSession,
+  ) {
+    const rect = touchSelectionRectFromSession(session);
+    const previewRects = touchBlockSelectionPreviewRectsFromSelectionRect(rect);
+    const view = currentEditorView();
+    const anchor = view ? anchorFromTouchBlockSelectionRect(view, rect) : null;
+    const tone = anchor ? (mobileSelectionToneForAnchorRef.current?.(anchor) ?? 0) : 0;
+    setTouchBlockSelectionOverlay((currentOverlay) =>
+      currentOverlay
+        ? { ...currentOverlay, previewRects, rect, tone }
+        : { hintPhase: "entering", previewRects, rect, tone },
+    );
+  }
+
+  function showTouchBlockSelectionOverlay(session: MilkdownTouchBlockSelectionSession) {
+    clearTouchBlockHintTimers();
+    setTouchBlockSelectionOverlay({
+      hintPhase: "entering",
+      previewRects: [],
+      rect: touchSelectionRectFromSession(session),
+      tone: 0,
+    });
+    touchBlockHintFrameRef.current = window.requestAnimationFrame(() => {
+      touchBlockHintFrameRef.current = window.requestAnimationFrame(() => {
+        touchBlockHintFrameRef.current = 0;
+        setTouchBlockSelectionOverlay((currentOverlay) =>
+          currentOverlay ? { ...currentOverlay, hintPhase: "visible" } : currentOverlay,
+        );
+      });
+    });
+    touchBlockHintHideTimerRef.current = window.setTimeout(
+      hideTouchBlockSelectionHint,
+      milkdownTouchBlockHintVisibleMs,
+    );
+  }
+
+  function clearTouchBlockSelectionSession() {
+    window.clearTimeout(touchBlockLongPressTimerRef.current);
+    touchBlockLongPressTimerRef.current = 0;
+    clearTouchBlockHintTimers();
+    touchBlockSelectionSessionRef.current = null;
+    setTouchBlockSelectionOverlay(null);
+  }
+
+  function activateTouchBlockSelection() {
+    const session = touchBlockSelectionSessionRef.current;
+    if (!session || session.active) return;
+    if (!blockSelectionEnabled() || !targetSupportsTouchBlockSelection(session.target)) {
+      clearTouchBlockSelectionSession();
+      return;
+    }
+
+    session.active = true;
+    setTimeout(() => {
+      window.getSelection()?.removeAllRanges();
+    }, 0);
+    suppressSelectionPublishAfterTouchBlockSelection();
+    applyReadonlyDomFocusState();
+    blurReadonlyEditorFocus();
+    showTouchBlockSelectionOverlay(session);
+  }
+
+  function touchMovedBeyondActivationTolerance(
+    touch: Touch,
+    session: MilkdownTouchBlockSelectionSession,
+  ) {
+    return (
+      Math.abs(touch.clientX - session.startClientX) >
+        milkdownTouchBlockActivationMoveTolerancePx ||
+      Math.abs(touch.clientY - session.startClientY) >
+        milkdownTouchBlockActivationMoveTolerancePx
+    );
+  }
+
+  function createTouchBlockSelectionPlugin() {
+    return new Plugin({
+      key: milkdownTouchBlockSelectionPluginKey,
+      props: {
+        handleDOMEvents: {
+          selectstart(_view, event) {
+            if (
+              !blockSelectionEnabled() ||
+              !targetSupportsTouchBlockSelection(event.target)
+            ) {
+              return false;
+            }
+
+            event.preventDefault();
+            return true;
+          },
+          contextmenu(_view, event) {
+            if (
+              !touchBlockSelectionEnabled() ||
+              !targetSupportsTouchBlockSelection(event.target)
+            ) {
+              return false;
+            }
+
+            event.preventDefault();
+            event.stopPropagation();
+            setTimeout(() => {
+              window.getSelection()?.removeAllRanges();
+            }, 0);
+            suppressSelectionPublishAfterTouchBlockSelection();
+            return true;
+          },
+        },
+      },
+    });
+  }
+
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root) return undefined;
+
+    function handleTouchStart(event: TouchEvent) {
+      const touch = event.touches[0];
+      if (
+        !touch ||
+        event.touches.length !== 1 ||
+        !touchBlockSelectionEnabled() ||
+        !targetSupportsTouchBlockSelection(event.target) ||
+        codeBlockAnnotationHitFromPoint(touch.clientX, touch.clientY)
+      ) {
+        clearTouchBlockSelectionSession();
+        return;
+      }
+
+      clearTouchBlockSelectionSession();
+      touchBlockSelectionSessionRef.current = {
+        active: false,
+        currentClientX: touch.clientX,
+        currentClientY: touch.clientY,
+        startClientX: touch.clientX,
+        startClientY: touch.clientY,
+        target: event.target,
+      };
+      applyReadonlyDomFocusState();
+      blurReadonlyEditorFocus();
+      touchBlockLongPressTimerRef.current = window.setTimeout(
+        activateTouchBlockSelection,
+        milkdownTouchBlockLongPressMs,
+      );
+    }
+
+    function handleTouchMove(event: TouchEvent) {
+      const session = touchBlockSelectionSessionRef.current;
+      if (!session) return;
+
+      const touch = event.touches[0];
+      if (!touch || event.touches.length !== 1) {
+        clearTouchBlockSelectionSession();
+        return;
+      }
+
+      session.currentClientX = touch.clientX;
+      session.currentClientY = touch.clientY;
+
+      if (!session.active) {
+        if (touchMovedBeyondActivationTolerance(touch, session)) {
+          clearTouchBlockSelectionSession();
+        }
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+      updateTouchBlockSelectionOverlayRect(session);
+
+      if (clientSelectionRectHasDrag(touchSelectionRectFromSession(session))) {
+        hideTouchBlockSelectionHint();
+      }
+    }
+
+    function handleTouchEnd(event: TouchEvent) {
+      const session = touchBlockSelectionSessionRef.current;
+      if (!session) return;
+
+      const touch = event.changedTouches[0];
+      if (touch && event.changedTouches.length === 1) {
+        session.currentClientX = touch.clientX;
+        session.currentClientY = touch.clientY;
+      }
+      const wasActive = session.active;
+      const selectionRect = touchSelectionRectFromSession(session);
+      if (!wasActive) {
+        clearTouchBlockSelectionSession();
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+
+      const view = currentEditorView();
+      if (!view) {
+        clearTouchBlockSelectionSession();
+        return;
+      }
+
+      const handled = completeTouchBlockSelection(view, selectionRect, event);
+      clearTouchBlockSelectionSession();
+      if (handled) {
+        event.stopImmediatePropagation();
+      }
+    }
+
+    function handleTouchCancel() {
+      clearTouchBlockSelectionSession();
+    }
+
+    root.addEventListener("touchstart", handleTouchStart, {
+      capture: true,
+      passive: false,
+    });
+    root.addEventListener("touchmove", handleTouchMove, {
+      capture: true,
+      passive: false,
+    });
+    root.addEventListener("touchend", handleTouchEnd, {
+      capture: true,
+      passive: false,
+    });
+    root.addEventListener("touchcancel", handleTouchCancel, true);
+
+    return () => {
+      root.removeEventListener("touchstart", handleTouchStart, true);
+      root.removeEventListener("touchmove", handleTouchMove, true);
+      root.removeEventListener("touchend", handleTouchEnd, true);
+      root.removeEventListener("touchcancel", handleTouchCancel, true);
+      clearTouchBlockSelectionSession();
+    };
+  }, [editorRevision]);
+
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root) return undefined;
+
+    function handleDesktopPointerDown(event: PointerEvent) {
+      if (
+        event.pointerType !== "mouse" ||
+        event.button !== 0 ||
+        !desktopBlockSelectionEnabledNow() ||
+        !targetSupportsTouchBlockSelection(event.target) ||
+        codeBlockAnnotationHitFromPoint(event.clientX, event.clientY)
+      ) {
+        return;
+      }
+
+      clearTouchBlockSelectionSession();
+      touchBlockSelectionSessionRef.current = {
+        active: false,
+        currentClientX: event.clientX,
+        currentClientY: event.clientY,
+        startClientX: event.clientX,
+        startClientY: event.clientY,
+        target: event.target,
+      };
+      applyReadonlyDomFocusState();
+      blurReadonlyEditorFocus();
+    }
+
+    function handleDesktopPointerMove(event: PointerEvent) {
+      const session = touchBlockSelectionSessionRef.current;
+      if (
+        event.pointerType !== "mouse" ||
+        !session ||
+        !desktopBlockSelectionEnabledNow()
+      ) {
+        return;
+      }
+      if ((event.buttons & 1) === 0) {
+        clearTouchBlockSelectionSession();
+        return;
+      }
+
+      session.currentClientX = event.clientX;
+      session.currentClientY = event.clientY;
+      if (!session.active) {
+        if (!clientSelectionRectHasDrag(touchSelectionRectFromSession(session))) return;
+        activateTouchBlockSelection();
+      }
+      if (!session.active) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+      updateTouchBlockSelectionOverlayRect(session);
+      hideTouchBlockSelectionHint();
+    }
+
+    function handleDesktopPointerUp(event: PointerEvent) {
+      const session = touchBlockSelectionSessionRef.current;
+      if (event.pointerType !== "mouse" || !session) return;
+
+      session.currentClientX = event.clientX;
+      session.currentClientY = event.clientY;
+      if (!session.active) {
+        clearTouchBlockSelectionSession();
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+      const view = currentEditorView();
+      if (!view) {
+        clearTouchBlockSelectionSession();
+        return;
+      }
+
+      const handled = completeTouchBlockSelection(
+        view,
+        touchSelectionRectFromSession(session),
+        event,
+      );
+      clearTouchBlockSelectionSession();
+      if (handled) event.stopImmediatePropagation();
+    }
+
+    function handleDesktopPointerCancel(event: PointerEvent) {
+      if (event.pointerType === "mouse") clearTouchBlockSelectionSession();
+    }
+
+    root.addEventListener("pointerdown", handleDesktopPointerDown, true);
+    window.addEventListener("pointermove", handleDesktopPointerMove, {
+      capture: true,
+      passive: false,
+    });
+    window.addEventListener("pointerup", handleDesktopPointerUp, true);
+    window.addEventListener("pointercancel", handleDesktopPointerCancel, true);
+
+    return () => {
+      root.removeEventListener("pointerdown", handleDesktopPointerDown, true);
+      window.removeEventListener("pointermove", handleDesktopPointerMove, true);
+      window.removeEventListener("pointerup", handleDesktopPointerUp, true);
+      window.removeEventListener("pointercancel", handleDesktopPointerCancel, true);
+      clearTouchBlockSelectionSession();
+    };
+  }, [editorRevision]);
+
   function publishSelectionAfterSelectionComplete() {
     if (!noteModeEnabledRef.current) {
       mouseSelectionStartedRef.current = false;
       return;
     }
     if (selectionPublishSuppressedByIme()) return;
+    if (touchBlockSelectionPublishSuppressed()) {
+      mouseSelectionStartedRef.current = false;
+      return;
+    }
 
     window.clearTimeout(selectionFallbackTimerRef.current);
     window.cancelAnimationFrame(selectionFrameRef.current);
@@ -1902,6 +4238,7 @@ export function MilkdownMarkdownEditor({
   function scheduleSelectionPublishFromDom() {
     if (!noteModeEnabledRef.current) return;
     if (selectionPublishSuppressedByIme()) return;
+    if (touchBlockSelectionPublishSuppressed()) return;
 
     window.clearTimeout(selectionFallbackTimerRef.current);
     selectionFallbackTimerRef.current = window.setTimeout(() => {
@@ -1918,6 +4255,17 @@ export function MilkdownMarkdownEditor({
 
     function handleSelectionPointerDown(event: MouseEvent | PointerEvent) {
       if (event.button !== 0) return;
+      if (
+        desktopBlockSelectionEnabledNow() &&
+        (!("pointerType" in event) || event.pointerType === "mouse")
+      ) {
+        mouseSelectionStartedRef.current = false;
+        return;
+      }
+      if ("pointerType" in event && event.pointerType === "touch" && touchBlockSelectionEnabled()) {
+        mouseSelectionStartedRef.current = false;
+        return;
+      }
       if (!noteModeEnabledRef.current) return;
       if (selectionPublishSuppressedByIme()) return;
 
@@ -1926,6 +4274,17 @@ export function MilkdownMarkdownEditor({
 
     function handleSelectionPointerUp(event: MouseEvent | PointerEvent) {
       if (event.button !== 0) return;
+      if (
+        desktopBlockSelectionEnabledNow() &&
+        (!("pointerType" in event) || event.pointerType === "mouse")
+      ) {
+        mouseSelectionStartedRef.current = false;
+        return;
+      }
+      if ("pointerType" in event && event.pointerType === "touch" && touchBlockSelectionEnabled()) {
+        mouseSelectionStartedRef.current = false;
+        return;
+      }
       if (!noteModeEnabledRef.current) {
         mouseSelectionStartedRef.current = false;
         return;
@@ -2010,16 +4369,23 @@ export function MilkdownMarkdownEditor({
 
       ctx.update(codeBlockConfig.key, (previousConfig) => ({
         ...previousConfig,
+        onCopy: (code) => {
+          previousConfig.onCopy?.(code);
+          const button = pendingCodeBlockCopyButtonRef.current;
+          pendingCodeBlockCopyButtonRef.current = null;
+          window.clearTimeout(pendingCodeBlockCopyClearTimerRef.current);
+          pendingCodeBlockCopyClearTimerRef.current = 0;
+          if (button && document.documentElement.contains(button)) {
+            showCodeBlockCopyFeedback(button);
+          }
+        },
         previewOnlyByDefault: true,
         renderPreview: (language, content, applyPreview) => {
           if (isMermaidLanguage(language)) {
-            return renderMilkdownMermaidPreview(content, applyPreview);
+            return renderMilkdownMermaidPreview(content, applyPreview, mermaidLabelsRef.current);
           }
 
-          return (
-            previousConfig.renderPreview(language, content, applyPreview) ??
-            renderMilkdownCodeBlockPreview(content)
-          );
+          return previousConfig.renderPreview(language, content, applyPreview);
         },
       }));
 
@@ -2039,12 +4405,10 @@ export function MilkdownMarkdownEditor({
       }));
 
       ctx.update(prosePluginsCtx, (plugins) => [
+        createTouchBlockSelectionPlugin(),
+        createPlainEnterHardBreakPlugin(),
+        createReadonlyGuardPlugin(),
         ...plugins,
-        new Plugin({
-          filterTransaction(transaction) {
-            return !(readOnlyRef.current && transaction.docChanged);
-          },
-        }),
         createAnnotationPlugin({
           getAnnotations: () => editorAnnotationsRef.current,
           getMarkdown: () => editorMarkdownRef.current,
@@ -2066,7 +4430,7 @@ export function MilkdownMarkdownEditor({
           normalizedEditorMarkdown,
         );
         if (disposed || normalizedMarkdown === currentMarkdownRef.current) return;
-        if (readOnlyRef.current) return;
+        if (readOnlyRef.current || noteModeEnabledRef.current) return;
 
         currentMarkdownRef.current = normalizedMarkdown;
         editorMarkdownRef.current = normalizedEditorMarkdown;
@@ -2091,11 +4455,11 @@ export function MilkdownMarkdownEditor({
     });
 
     crepeRef.current = crepe;
-    crepe.setReadonly(readOnlyRef.current);
+    syncMilkdownReadOnlyState();
     void crepe
       .create()
       .then(() => {
-        crepe.setReadonly(readOnlyRef.current);
+        syncMilkdownReadOnlyState();
         hydrateLocalMarkdownImages();
         scheduleAnnotationFrameUpdate();
         dispatchSearchUpdate();
@@ -2189,34 +4553,133 @@ export function MilkdownMarkdownEditor({
     };
   }, [editorRevision]);
 
+  const shellClassName = [
+    "milkdown-markdown-editor-shell",
+    noteModeEnabled ? "is-note-mode" : "",
+    readOnly ? "is-readonly" : "",
+    noteModeEnabled && (desktopBlockSelectionEnabled || mobileBlockSelectionEnabled)
+      ? "is-block-note-selection"
+      : "",
+    noteModeEnabled && mobileBlockSelectionEnabled ? "is-touch-note-selection" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+  const backgroundAnnotationFrames = annotationFrames.filter(
+    (frame) => frame.layer === "background",
+  );
+  const foregroundAnnotationFrames = annotationFrames.filter(
+    (frame) => frame.layer === "foreground",
+  );
+  const touchBlockSelectionRect = touchBlockSelectionOverlay?.rect ?? null;
+  const touchBlockPreviewRects = touchBlockSelectionRect
+    ? (touchBlockSelectionOverlay?.previewRects ?? [])
+    : (touchBlockCommittedSelectionOverlay?.previewRects ?? []);
+  const touchBlockSelectionHintStyle = touchBlockSelectionRect
+    ? {
+        left: Math.min(
+          Math.max(touchBlockSelectionRect.left + touchBlockSelectionRect.width / 2, 18),
+          window.innerWidth - 18,
+        ),
+        top: Math.max(12, touchBlockSelectionRect.top - 48),
+      }
+    : undefined;
+
+  function renderAnnotationFrame(frame: MilkdownAnnotationFrame) {
+    return (
+      <div
+        className={`milkdown-annotation-frame ${
+          frame.isFocusTarget ? "is-focus-target" : ""
+        } ${frame.layer === "foreground" ? "is-code-block-frame" : ""}`}
+        data-annotation-kind={frame.kind}
+        data-focus-target={frame.isFocusTarget ? "true" : "false"}
+        data-note-id={frame.noteId}
+        data-note-tone={frame.tone}
+        key={frame.frameKey}
+        style={{
+          borderRadius: frame.borderRadius,
+          height: frame.height,
+          left: frame.left,
+          top: frame.top,
+          width: frame.width,
+        }}
+      />
+    );
+  }
+
   return (
-    <div className="milkdown-markdown-editor-shell" ref={containerRef}>
+    <div className={shellClassName} ref={containerRef}>
       <div aria-hidden="true" className="milkdown-annotation-layer">
-        {annotationFrames.map((frame) => (
-          <div
-            className={`milkdown-annotation-frame ${
-              frame.isFocusTarget ? "is-focus-target" : ""
-            }`}
-            data-annotation-kind={frame.kind}
-            data-focus-target={frame.isFocusTarget ? "true" : "false"}
-            data-note-id={frame.noteId}
-            data-note-tone={frame.tone}
-            key={frame.frameKey}
-            style={{
-              borderRadius: frame.borderRadius,
-              height: frame.height,
-              left: frame.left,
-              top: frame.top,
-              width: frame.width,
-            }}
-          />
-        ))}
+        {backgroundAnnotationFrames.map(renderAnnotationFrame)}
       </div>
+      <div
+        aria-hidden="true"
+        className="milkdown-annotation-layer milkdown-annotation-layer--foreground"
+      >
+        {foregroundAnnotationFrames.map(renderAnnotationFrame)}
+      </div>
+      {touchBlockSelectionRect || touchBlockPreviewRects.length > 0 ? (
+        <div
+          className={`milkdown-touch-block-selection-overlay ${
+            touchBlockSelectionRect ? "is-dragging" : "is-committed"
+          }`}
+          data-note-tone={
+            touchBlockSelectionRect
+              ? (touchBlockSelectionOverlay?.tone ?? 0)
+              : mobileCommittedSelectionTone
+          }
+          aria-hidden="true"
+        >
+          {touchBlockPreviewRects.map((previewRect) => (
+            <div
+              className="milkdown-touch-block-selection-preview"
+              key={previewRect.key}
+              style={{
+                borderRadius: previewRect.borderRadius,
+                height: previewRect.height,
+                left: previewRect.left,
+                top: previewRect.top,
+                width: previewRect.width,
+              }}
+            />
+          ))}
+          {touchBlockSelectionRect ? (
+            <>
+              <div
+                className="milkdown-touch-block-selection-rect"
+                style={{
+                  height: Math.max(1, touchBlockSelectionRect.height),
+                  left: touchBlockSelectionRect.left,
+                  top: touchBlockSelectionRect.top,
+                  width: Math.max(1, touchBlockSelectionRect.width),
+                }}
+              />
+              <div
+                className={`milkdown-touch-block-selection-hint is-${
+                  touchBlockSelectionOverlay?.hintPhase ?? "hiding"
+                }`}
+                style={touchBlockSelectionHintStyle}
+              >
+                {mobileBlockSelectionHint}
+              </div>
+            </>
+          ) : null}
+        </div>
+      ) : null}
       <div
         className="milkdown-markdown-editor"
         onKeyDownCapture={handleKeyDown}
         onKeyUp={publishSelectionAfterSelectionComplete}
         onMouseUp={publishSelectionAfterSelectionComplete}
+        onPointerDownCapture={(e) => {
+          const target = e.target as HTMLElement;
+          if (readOnlyRef.current && e.pointerType === "touch") {
+            applyReadonlyDomFocusState();
+            blurReadonlyEditorFocus();
+          }
+          if (target.closest(".copy-button")) {
+            e.preventDefault();
+          }
+        }}
         ref={rootRef}
       />
     </div>

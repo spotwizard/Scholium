@@ -1,0 +1,12 @@
+--- src/App.css
++++ src/App.css
+@@ -6280,7 +6280,8 @@
+   }
+ 
+   .markdown-preview,
+-  .milkdown-markdown-editor-shell {
++  .milkdown-markdown-editor-shell,
++  .note-markdown-editor__textarea {
+     font-size: clamp(16px, var(--settings-editor-font-size), 19px);
+   }
+ 
