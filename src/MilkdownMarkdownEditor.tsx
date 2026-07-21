@@ -45,6 +45,7 @@ type MilkdownMarkdownEditorProps = {
   documentFilePath?: string | null;
   noteModeEnabled: boolean;
   readOnly?: boolean;
+  desktopBlockSelectionEnabled?: boolean;
   mobileBlockSelectionEnabled?: boolean;
   mobileBlockSelectionHint: string;
   mobileCommittedSelectionKey?: string;
@@ -2036,6 +2037,7 @@ export function MilkdownMarkdownEditor({
   documentFilePath = null,
   noteModeEnabled,
   readOnly = false,
+  desktopBlockSelectionEnabled = false,
   mobileBlockSelectionEnabled = false,
   mobileBlockSelectionHint,
   mobileCommittedSelectionKey = "",
@@ -2068,6 +2070,7 @@ export function MilkdownMarkdownEditor({
   const documentFilePathRef = useRef(documentFilePath);
   const noteModeEnabledRef = useRef(noteModeEnabled);
   const readOnlyRef = useRef(readOnly);
+  const desktopBlockSelectionEnabledRef = useRef(desktopBlockSelectionEnabled);
   const mobileBlockSelectionEnabledRef = useRef(mobileBlockSelectionEnabled);
   const mobileCommittedSelectionKeyRef = useRef(mobileCommittedSelectionKey);
   const mobileSelectionToneForAnchorRef = useRef(mobileSelectionToneForAnchor);
@@ -3028,12 +3031,13 @@ export function MilkdownMarkdownEditor({
   }, [noteModeEnabled]);
 
   useEffect(() => {
+    desktopBlockSelectionEnabledRef.current = desktopBlockSelectionEnabled;
     mobileBlockSelectionEnabledRef.current = mobileBlockSelectionEnabled;
-    if (!mobileBlockSelectionEnabled) {
+    if (!desktopBlockSelectionEnabled && !mobileBlockSelectionEnabled) {
       clearTouchBlockSelectionSession();
       setTouchBlockCommittedSelectionOverlay(null);
     }
-  }, [mobileBlockSelectionEnabled]);
+  }, [desktopBlockSelectionEnabled, mobileBlockSelectionEnabled]);
 
   useEffect(() => {
     mobileCommittedSelectionKeyRef.current = mobileCommittedSelectionKey;
@@ -3353,6 +3357,18 @@ export function MilkdownMarkdownEditor({
       mobileBlockSelectionEnabledRef.current &&
       !selectionPublishSuppressedByIme()
     );
+  }
+
+  function desktopBlockSelectionEnabledNow() {
+    return (
+      noteModeEnabledRef.current &&
+      desktopBlockSelectionEnabledRef.current &&
+      !selectionPublishSuppressedByIme()
+    );
+  }
+
+  function blockSelectionEnabled() {
+    return touchBlockSelectionEnabled() || desktopBlockSelectionEnabledNow();
   }
 
   function touchBlockSelectionPublishSuppressed() {
@@ -3899,7 +3915,7 @@ export function MilkdownMarkdownEditor({
   function activateTouchBlockSelection() {
     const session = touchBlockSelectionSessionRef.current;
     if (!session || session.active) return;
-    if (!touchBlockSelectionEnabled() || !targetSupportsTouchBlockSelection(session.target)) {
+    if (!blockSelectionEnabled() || !targetSupportsTouchBlockSelection(session.target)) {
       clearTouchBlockSelectionSession();
       return;
     }
@@ -3933,7 +3949,7 @@ export function MilkdownMarkdownEditor({
         handleDOMEvents: {
           selectstart(_view, event) {
             if (
-              !touchBlockSelectionEnabled() ||
+              !blockSelectionEnabled() ||
               !targetSupportsTouchBlockSelection(event.target)
             ) {
               return false;
@@ -4085,6 +4101,111 @@ export function MilkdownMarkdownEditor({
     };
   }, [editorRevision]);
 
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root) return undefined;
+
+    function handleDesktopPointerDown(event: PointerEvent) {
+      if (
+        event.pointerType !== "mouse" ||
+        event.button !== 0 ||
+        !desktopBlockSelectionEnabledNow() ||
+        !targetSupportsTouchBlockSelection(event.target) ||
+        codeBlockAnnotationHitFromPoint(event.clientX, event.clientY)
+      ) {
+        return;
+      }
+
+      clearTouchBlockSelectionSession();
+      touchBlockSelectionSessionRef.current = {
+        active: false,
+        currentClientX: event.clientX,
+        currentClientY: event.clientY,
+        startClientX: event.clientX,
+        startClientY: event.clientY,
+        target: event.target,
+      };
+      applyReadonlyDomFocusState();
+      blurReadonlyEditorFocus();
+    }
+
+    function handleDesktopPointerMove(event: PointerEvent) {
+      const session = touchBlockSelectionSessionRef.current;
+      if (
+        event.pointerType !== "mouse" ||
+        !session ||
+        !desktopBlockSelectionEnabledNow()
+      ) {
+        return;
+      }
+      if ((event.buttons & 1) === 0) {
+        clearTouchBlockSelectionSession();
+        return;
+      }
+
+      session.currentClientX = event.clientX;
+      session.currentClientY = event.clientY;
+      if (!session.active) {
+        if (!clientSelectionRectHasDrag(touchSelectionRectFromSession(session))) return;
+        activateTouchBlockSelection();
+      }
+      if (!session.active) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+      updateTouchBlockSelectionOverlayRect(session);
+      hideTouchBlockSelectionHint();
+    }
+
+    function handleDesktopPointerUp(event: PointerEvent) {
+      const session = touchBlockSelectionSessionRef.current;
+      if (event.pointerType !== "mouse" || !session) return;
+
+      session.currentClientX = event.clientX;
+      session.currentClientY = event.clientY;
+      if (!session.active) {
+        clearTouchBlockSelectionSession();
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+      const view = currentEditorView();
+      if (!view) {
+        clearTouchBlockSelectionSession();
+        return;
+      }
+
+      const handled = completeTouchBlockSelection(
+        view,
+        touchSelectionRectFromSession(session),
+        event,
+      );
+      clearTouchBlockSelectionSession();
+      if (handled) event.stopImmediatePropagation();
+    }
+
+    function handleDesktopPointerCancel(event: PointerEvent) {
+      if (event.pointerType === "mouse") clearTouchBlockSelectionSession();
+    }
+
+    root.addEventListener("pointerdown", handleDesktopPointerDown, true);
+    window.addEventListener("pointermove", handleDesktopPointerMove, {
+      capture: true,
+      passive: false,
+    });
+    window.addEventListener("pointerup", handleDesktopPointerUp, true);
+    window.addEventListener("pointercancel", handleDesktopPointerCancel, true);
+
+    return () => {
+      root.removeEventListener("pointerdown", handleDesktopPointerDown, true);
+      window.removeEventListener("pointermove", handleDesktopPointerMove, true);
+      window.removeEventListener("pointerup", handleDesktopPointerUp, true);
+      window.removeEventListener("pointercancel", handleDesktopPointerCancel, true);
+      clearTouchBlockSelectionSession();
+    };
+  }, [editorRevision]);
+
   function publishSelectionAfterSelectionComplete() {
     if (!noteModeEnabledRef.current) {
       mouseSelectionStartedRef.current = false;
@@ -4134,6 +4255,13 @@ export function MilkdownMarkdownEditor({
 
     function handleSelectionPointerDown(event: MouseEvent | PointerEvent) {
       if (event.button !== 0) return;
+      if (
+        desktopBlockSelectionEnabledNow() &&
+        (!("pointerType" in event) || event.pointerType === "mouse")
+      ) {
+        mouseSelectionStartedRef.current = false;
+        return;
+      }
       if ("pointerType" in event && event.pointerType === "touch" && touchBlockSelectionEnabled()) {
         mouseSelectionStartedRef.current = false;
         return;
@@ -4146,6 +4274,13 @@ export function MilkdownMarkdownEditor({
 
     function handleSelectionPointerUp(event: MouseEvent | PointerEvent) {
       if (event.button !== 0) return;
+      if (
+        desktopBlockSelectionEnabledNow() &&
+        (!("pointerType" in event) || event.pointerType === "mouse")
+      ) {
+        mouseSelectionStartedRef.current = false;
+        return;
+      }
       if ("pointerType" in event && event.pointerType === "touch" && touchBlockSelectionEnabled()) {
         mouseSelectionStartedRef.current = false;
         return;
@@ -4244,7 +4379,7 @@ export function MilkdownMarkdownEditor({
             showCodeBlockCopyFeedback(button);
           }
         },
-        previewOnlyByDefault: false,
+        previewOnlyByDefault: true,
         renderPreview: (language, content, applyPreview) => {
           if (isMermaidLanguage(language)) {
             return renderMilkdownMermaidPreview(content, applyPreview, mermaidLabelsRef.current);
@@ -4422,6 +4557,9 @@ export function MilkdownMarkdownEditor({
     "milkdown-markdown-editor-shell",
     noteModeEnabled ? "is-note-mode" : "",
     readOnly ? "is-readonly" : "",
+    noteModeEnabled && (desktopBlockSelectionEnabled || mobileBlockSelectionEnabled)
+      ? "is-block-note-selection"
+      : "",
     noteModeEnabled && mobileBlockSelectionEnabled ? "is-touch-note-selection" : "",
   ]
     .filter(Boolean)

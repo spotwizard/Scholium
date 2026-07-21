@@ -7738,7 +7738,6 @@ function App() {
 
     if (
       !noteModeJustEnabled ||
-      !mobileAnnotationKeyboardShouldStayClosed ||
       settingsViewOpen
     ) {
       if (!noteModeEnabled || settingsViewOpen) {
@@ -7759,7 +7758,7 @@ function App() {
       window.cancelAnimationFrame(firstFrame);
       window.cancelAnimationFrame(secondFrame);
     };
-  }, [mobileAnnotationKeyboardShouldStayClosed, noteModeEnabled, settingsViewOpen]);
+  }, [noteModeEnabled, settingsViewOpen]);
 
   useEffect(() => {
     if (!mobileNoteSelectionHintVisible) return undefined;
@@ -15739,7 +15738,6 @@ function App() {
     notePanelModalActive || (noteModeEnabled && mobileAnnotationKeyboardShouldStayClosed);
   const mobileCommittedSelectionAnchor = pendingAnchor ?? activeNote?.anchor ?? null;
   const mobileCommittedSelectionKey =
-    mobileAnnotationKeyboardShouldStayClosed &&
     noteModeEnabled &&
     mobileCommittedSelectionAnchor &&
     hasRenderableAnchor(mobileCommittedSelectionAnchor)
@@ -16057,9 +16055,12 @@ function App() {
     workspaceSource === "local"
       ? `${mobileDataSourceLabel} / ${workspaceTitle}`
       : workspaceTitle;
-  const mobileFileLoading = [
+  const storageLoading = [
     t("status.openingFile"),
+    t("status.openingFolder"),
     t("status.openingLastFile"),
+    t("dropbox.status.loadingRoot"),
+    t("dropbox.status.openingFolder"),
     t("dropbox.status.openingFile"),
     t("dropbox.status.restoringLastFile"),
   ].includes(storageError);
@@ -16614,8 +16615,6 @@ function App() {
             </p>
           ) : null}
         </div>
-
-        {storageError ? <p className="storage-error">{storageError}</p> : null}
 
         {!settingsViewOpen ? (
           <button
@@ -17363,7 +17362,7 @@ function App() {
                 <h1 className="editor-document-title__text">{selectedDocument.title}</h1>
               </div>
             ) : null}
-            {mobileAnnotationKeyboardShouldStayClosed && noteModeEnabled ? (
+            {noteModeEnabled ? (
               <p
                 aria-hidden={!mobileNoteSelectionHintVisible}
                 className={`mobile-feedback-surface mobile-note-selection-hint ${
@@ -17371,7 +17370,11 @@ function App() {
                 }`}
                 role="status"
               >
-                {t("selection.mobileNoteModeHint")}
+                {t(
+                  mobileAnnotationKeyboardShouldStayClosed
+                    ? "selection.mobileNoteModeHint"
+                    : "selection.desktopNoteModeHint",
+                )}
               </p>
             ) : null}
             <div className="editor-content-frame">
@@ -17534,6 +17537,7 @@ function App() {
               ) : editorMode === "preview" ? (
                 <MilkdownMarkdownEditor
                   annotations={annotations}
+                  desktopBlockSelectionEnabled={!mobileAnnotationKeyboardShouldStayClosed}
                   documentFilePath={selectedDocument.filePath}
                   key={selectedDocument.id}
                   mobileBlockSelectionEnabled={mobileAnnotationKeyboardShouldStayClosed}
@@ -17927,7 +17931,7 @@ function App() {
         </nav>
       ) : null}
 
-      {!settingsViewOpen && storageError && mobileFileLoading ? (
+      {!settingsViewOpen && storageError && storageLoading && !dropboxDirectoryPicker ? (
         <div className="mobile-storage-loading-overlay">
           <p className="mobile-feedback-surface mobile-storage-status is-loading" role="status">
             {storageError}
@@ -17935,7 +17939,13 @@ function App() {
         </div>
       ) : null}
 
-      {!settingsViewOpen && storageError && !mobileFileLoading ? (
+      {!settingsViewOpen &&
+        storageError &&
+        !storageLoading &&
+        !createEntryDialog &&
+        !duplicateFileDialog &&
+        !renameDialog &&
+        !dropboxDirectoryPicker ? (
         <p
           className={`mobile-feedback-surface mobile-storage-status ${
             dropboxConnecting ? "is-informational" : "is-error"
