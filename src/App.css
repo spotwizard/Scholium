@@ -890,6 +890,10 @@ button:disabled {
   box-shadow: var(--shadow-high);
 }
 
+.document-tab-context-menu {
+  z-index: 90;
+}
+
 .file-context-menu button {
   display: grid;
   grid-template-columns: 18px minmax(0, 1fr);
@@ -2537,6 +2541,7 @@ button.document-tag-chip__label:focus-visible {
   justify-content: center;
   width: 100%;
   padding: 0 34px;
+  -webkit-touch-callout: none;
 }
 
 .document-tab__close {
@@ -4010,6 +4015,12 @@ button.document-tag-chip__label:focus-visible {
   background: color-mix(in srgb, var(--color-annotation-surface) 74%, transparent);
 }
 
+.milkdown-touch-block-selection-overlay.is-committed,
+.milkdown-touch-block-selection-overlay.is-committed
+  .milkdown-touch-block-selection-preview {
+  position: absolute;
+}
+
 .milkdown-touch-block-selection-overlay[data-note-tone="1"]
   .milkdown-touch-block-selection-preview {
   background: color-mix(in srgb, var(--color-annotation-surface-alt) 74%, transparent);
@@ -4533,7 +4544,7 @@ button.document-tag-chip__label:focus-visible {
   height: 25.5px;
   border-radius: 7.5px;
   margin-bottom: 10.5px;
-  background: #6e1b2b;
+  background: #1f6f52;
   box-shadow: 0 1.5px 4.5px rgba(70, 20, 35, 0.28);
 }
 

@@ -12,7 +12,7 @@ use std::io::{Read, Write};
 #[cfg(not(mobile))]
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
-#[cfg(desktop)]
+#[cfg(any(desktop, target_os = "ios"))]
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 #[cfg(not(mobile))]
@@ -67,7 +67,7 @@ const DROPBOX_REQUIRED_SCOPES: &str =
     "files.metadata.read files.content.read files.metadata.write files.content.write";
 const DROPBOX_TOKEN_REFRESH_ATTEMPTS: usize = 3;
 const DROPBOX_TOKEN_REFRESH_RETRY_DELAY: Duration = Duration::from_millis(500);
-#[cfg(desktop)]
+#[cfg(any(desktop, target_os = "ios"))]
 static NEW_WINDOW_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -79,6 +79,9 @@ struct LocationEntry {
     #[serde(default = "default_location_source")]
     source: String,
 }
+
+#[derive(Default)]
+struct NewWindowDocumentTargetState(Mutex<HashMap<String, LocationEntry>>);
 
 fn default_location_source() -> String {
     "local".to_string()
@@ -1602,7 +1605,7 @@ fn menu_text(language: &str, key: &str) -> &'static str {
     }
 }
 
-#[cfg(desktop)]
+#[cfg(any(desktop, target_os = "ios"))]
 fn next_scholium_window_label(app_handle: &tauri::AppHandle) -> String {
     loop {
         let sequence = NEW_WINDOW_SEQUENCE.fetch_add(1, Ordering::Relaxed);
@@ -1614,10 +1617,12 @@ fn next_scholium_window_label(app_handle: &tauri::AppHandle) -> String {
     }
 }
 
-#[cfg(desktop)]
+#[cfg(any(desktop, target_os = "ios"))]
 fn create_new_scholium_window(
     app_handle: &tauri::AppHandle,
     start_fullscreen: bool,
+    requester_scene_identifier: Option<String>,
+    document_target: Option<LocationEntry>,
 ) -> Result<String, String> {
     let label = next_scholium_window_label(app_handle);
     let mut window_config = app_handle
@@ -1629,13 +1634,34 @@ fn create_new_scholium_window(
         .ok_or_else(|| "missing base window configuration".to_string())?;
 
     window_config.label = label.clone();
+    window_config.fullscreen = start_fullscreen;
+    window_config.focus = true;
 
-    let window = tauri::WebviewWindowBuilder::from_config(app_handle, &window_config)
-        .map_err(|error| format!("failed to prepare new window: {error}"))?
-        .fullscreen(start_fullscreen)
-        .focused(true)
-        .build()
-        .map_err(|error| format!("failed to create new window: {error}"))?;
+    let window_builder = tauri::WebviewWindowBuilder::from_config(app_handle, &window_config)
+        .map_err(|error| format!("failed to prepare new window: {error}"))?;
+    #[cfg(target_os = "ios")]
+    let window_builder = match requester_scene_identifier {
+        Some(identifier) => window_builder.requested_by_scene_identifier(identifier),
+        None => window_builder,
+    };
+    #[cfg(not(target_os = "ios"))]
+    let _ = requester_scene_identifier;
+
+    if let Some(target) = document_target {
+        app_handle
+            .state::<NewWindowDocumentTargetState>()
+            .0
+            .lock()
+            .map_err(|_| "failed to lock new-window document target state".to_string())?
+            .insert(label.clone(), target);
+    }
+
+    let window = window_builder.build().map_err(|error| {
+        if let Ok(mut targets) = app_handle.state::<NewWindowDocumentTargetState>().0.lock() {
+            targets.remove(&label);
+        }
+        format!("failed to create new window: {error}")
+    })?;
 
     window
         .set_focus()
@@ -3985,23 +4011,62 @@ fn refresh_app_menu(_app_handle: &tauri::AppHandle) -> Result<(), String> {
 }
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-#[cfg(desktop)]
+#[cfg(any(desktop, target_os = "ios"))]
 #[tauri::command]
 async fn create_new_window(
     app: tauri::AppHandle,
     window: tauri::WebviewWindow,
+    document_target: Option<LocationEntry>,
+    requester_scene_identifier: Option<String>,
 ) -> Result<String, String> {
+    let document_target = document_target
+        .map(|target| {
+            sanitize_location_entry(
+                "file",
+                target.path,
+                target.title,
+                target.source,
+                &current_app_language(&app),
+            )
+        })
+        .transpose()?;
+    #[cfg(desktop)]
     let start_fullscreen = window
         .is_fullscreen()
         .map_err(|error| format!("failed to read current window fullscreen state: {error}"))?;
+    #[cfg(target_os = "ios")]
+    let start_fullscreen = false;
+    #[cfg(target_os = "ios")]
+    let _ = window;
 
-    create_new_scholium_window(&app, start_fullscreen)
+    create_new_scholium_window(
+        &app,
+        start_fullscreen,
+        requester_scene_identifier,
+        document_target,
+    )
 }
 
-#[cfg(mobile)]
+#[cfg(all(mobile, not(target_os = "ios")))]
 #[tauri::command]
-async fn create_new_window(_app: tauri::AppHandle) -> Result<String, String> {
+async fn create_new_window(
+    _app: tauri::AppHandle,
+    _document_target: Option<LocationEntry>,
+    _requester_scene_identifier: Option<String>,
+) -> Result<String, String> {
     Err("New windows are only available on desktop.".to_string())
+}
+
+#[tauri::command]
+fn take_new_window_document_target(
+    state: tauri::State<'_, NewWindowDocumentTargetState>,
+    window: tauri::WebviewWindow,
+) -> Result<Option<LocationEntry>, String> {
+    state
+        .0
+        .lock()
+        .map_err(|_| "failed to lock new-window document target state".to_string())
+        .map(|mut targets| targets.remove(window.label()))
 }
 
 #[tauri::command]
@@ -4084,6 +4149,7 @@ pub fn run() {
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_deep_link::init())
         .manage(LocationMenuState::default())
+        .manage(NewWindowDocumentTargetState::default())
         .manage(DropboxState::default())
         .manage(OpenedFileState::default())
         .on_page_load(|webview, payload| {
@@ -4137,7 +4203,9 @@ pub fn run() {
             let app_handle = app.clone();
             let start_fullscreen = target_window_is_fullscreen(app);
             std::thread::spawn(move || {
-                if let Err(error) = create_new_scholium_window(&app_handle, start_fullscreen) {
+                if let Err(error) =
+                    create_new_scholium_window(&app_handle, start_fullscreen, None, None)
+                {
                     eprintln!("{error}");
                 }
             });
@@ -4196,6 +4264,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             create_new_window,
+            take_new_window_document_target,
             greet,
             validate_dropped_markdown_file,
             take_opened_file_paths,

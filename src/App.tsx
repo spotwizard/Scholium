@@ -35,6 +35,7 @@ import {
   type TextSelectionEnterContext,
 } from "./MarkdownEditor";
 import type { DocumentSearchState } from "./documentSearch";
+import { documentTabIdsAfterClosingOthers } from "./documentTabs";
 import { SettingsView } from "./SettingsView";
 import appIconUrl from "../src-tauri/icons/128x128@2x.png";
 import fileSelectedGlyphSvg from "./assets/file-selected-glyph.svg?raw";
@@ -70,8 +71,8 @@ const markdownOrderedListLinePattern = /^(\s*)\d+[.)]\s+(.*)$/;
 const inlineBreakPattern = /<br\s*\/?>/gi;
 const annotationClickDelayMs = 500;
 const libraryAnnotationClickSuppressionMs = annotationClickDelayMs + 350;
-const mobileWorkspaceFileLongPressMs = 500;
-const mobileWorkspaceFileLongPressMoveTolerancePx = 10;
+const mobileContextMenuLongPressMs = 500;
+const mobileContextMenuLongPressMoveTolerancePx = 10;
 const pendingAnchorAnnotationId = "__scholium_pending_anchor__";
 
 function shouldClearTouchButtonFocus() {
@@ -459,6 +460,12 @@ type WorkspaceActionTarget = FileActionTarget | DirectoryActionTarget;
 
 type FileContextMenuState = WorkspaceActionTarget & {
   exportDocumentIds: string[];
+  left: number;
+  top: number;
+};
+
+type DocumentTabContextMenuState = {
+  documentId: string;
   left: number;
   top: number;
 };
@@ -7082,6 +7089,8 @@ function App() {
   const [settingsInitialCategory, setSettingsInitialCategory] =
     useState<SettingCategory>("app");
   const [fileContextMenu, setFileContextMenu] = useState<FileContextMenuState | null>(null);
+  const [documentTabContextMenu, setDocumentTabContextMenu] =
+    useState<DocumentTabContextMenuState | null>(null);
   const [duplicateFileDialog, setDuplicateFileDialog] =
     useState<DuplicateFileDialogState | null>(null);
   const [renameDialog, setRenameDialog] = useState<RenameDialogState | null>(null);
@@ -7165,9 +7174,15 @@ function App() {
   const openDocumentTabIdsRef = useRef(openDocumentTabIds);
   const documentTabsScrollerRef = useRef<HTMLDivElement | null>(null);
   const documentTabPointerActivationRef = useRef("");
+  const documentTabLongPressTimerRef = useRef(0);
+  const suppressedDocumentTabClickRef = useRef<{
+    documentId: string;
+    until: number;
+  } | null>(null);
   const manualDocumentSelectionRevisionRef = useRef(0);
   const documentTabTouchStateRef = useRef<{
     documentId: string;
+    longPressTriggered: boolean;
     moved: boolean;
     startX: number;
     startY: number;
@@ -7192,6 +7207,9 @@ function App() {
   const newMarkdownFolderHandlerRef = useRef<() => void>(() => undefined);
   const openMarkdownFileHandlerRef = useRef<() => void>(() => undefined);
   const openDroppedMarkdownPathsHandlerRef = useRef<(paths: string[]) => void>(() => undefined);
+  const openNewWindowDocumentTargetHandlerRef = useRef<
+    (target: OpenLocationEventPayload) => void
+  >(() => undefined);
   const openMarkdownFolderHandlerRef = useRef<() => void>(() => undefined);
   const openDropboxCloudHandlerRef = useRef<() => void>(() => undefined);
   const completeDropboxOAuthHandlerRef = useRef<
@@ -7226,6 +7244,9 @@ function App() {
   openDroppedMarkdownPathsHandlerRef.current = (paths) => {
     void openDroppedMarkdownPaths(paths);
   };
+  openNewWindowDocumentTargetHandlerRef.current = (target) => {
+    void openNativeMenuLocation(target).finally(() => setMobileStartupPhase("hidden"));
+  };
   openMarkdownFolderHandlerRef.current = () => {
     void openMarkdownFolder();
   };
@@ -7240,6 +7261,7 @@ function App() {
     return () => {
       window.clearTimeout(copiedNoteActionTimerRef.current);
       window.clearTimeout(workspaceFileLongPressTimerRef.current);
+      window.clearTimeout(documentTabLongPressTimerRef.current);
     };
   }, []);
 
@@ -9174,29 +9196,30 @@ function App() {
   }, [selectionWarningPosition]);
 
   useEffect(() => {
-    if (!fileContextMenu) return;
+    if (!fileContextMenu && !documentTabContextMenu) return;
 
-    function dismissFileContextMenu() {
+    function dismissContextMenus() {
       setFileContextMenu(null);
+      setDocumentTabContextMenu(null);
     }
 
-    function handleFileContextMenuKeyDown(event: KeyboardEvent) {
+    function handleContextMenuKeyDown(event: KeyboardEvent) {
       if (event.key !== "Escape") return;
 
       event.preventDefault();
-      setFileContextMenu(null);
+      dismissContextMenus();
     }
 
-    document.addEventListener("pointerdown", dismissFileContextMenu);
-    document.addEventListener("scroll", dismissFileContextMenu, true);
-    window.addEventListener("keydown", handleFileContextMenuKeyDown, true);
+    document.addEventListener("pointerdown", dismissContextMenus);
+    document.addEventListener("scroll", dismissContextMenus, true);
+    window.addEventListener("keydown", handleContextMenuKeyDown, true);
 
     return () => {
-      document.removeEventListener("pointerdown", dismissFileContextMenu);
-      document.removeEventListener("scroll", dismissFileContextMenu, true);
-      window.removeEventListener("keydown", handleFileContextMenuKeyDown, true);
+      document.removeEventListener("pointerdown", dismissContextMenus);
+      document.removeEventListener("scroll", dismissContextMenus, true);
+      window.removeEventListener("keydown", handleContextMenuKeyDown, true);
     };
-  }, [fileContextMenu]);
+  }, [documentTabContextMenu, fileContextMenu]);
 
   useEffect(() => {
     if (!duplicateFileDialog) return;
@@ -9534,6 +9557,19 @@ function App() {
 
       unlistenOpenedFilePaths = listener;
       lastOpenedFileRestoreAttemptedRef.current = true;
+
+      try {
+        const newWindowTarget = await invoke<OpenLocationEventPayload | null>(
+          "take_new_window_document_target",
+        );
+        if (disposed) return;
+        if (newWindowTarget) {
+          openNewWindowDocumentTargetHandlerRef.current(newWindowTarget);
+          return;
+        }
+      } catch (error) {
+        console.error(error);
+      }
 
       try {
         const openedFilePaths = await invoke<string[]>("take_opened_file_paths");
@@ -10353,6 +10389,63 @@ function App() {
 
     const nextIndex = Math.min(closedIndex, nextIds.length - 1);
     selectDocument(nextIds[nextIndex], { tabBehavior: "none" });
+  }
+
+  function closeOtherDocumentTabs(documentId: string) {
+    setDocumentTabContextMenu(null);
+    const currentIds = openDocumentTabIdsRef.current;
+    const nextIds = documentTabIdsAfterClosingOthers(currentIds, documentId);
+    if (nextIds === currentIds) return;
+
+    openDocumentTabIdsRef.current = nextIds;
+    setOpenDocumentTabIds(nextIds);
+    if (selectedDocumentIdRef.current !== documentId) {
+      selectDocument(documentId, { tabBehavior: "none" });
+    }
+  }
+
+  async function openDocumentTabInNewWindow(documentId: string) {
+    setDocumentTabContextMenu(null);
+    window.clearTimeout(autosaveTimerRef.current);
+
+    for (let attempts = 0; autosaveInFlightRef.current && attempts < 300; attempts += 1) {
+      await new Promise((resolve) => window.setTimeout(resolve, 50));
+    }
+    if (autosaveInFlightRef.current) {
+      setStorageError(t("error.waitForAutosaveBeforeNewWindow"));
+      return;
+    }
+
+    if (hasDirtyState(dirtyDocumentStatesRef.current[documentId])) {
+      await saveDirtyDocuments();
+      if (hasDirtyState(dirtyDocumentStatesRef.current[documentId])) return;
+    }
+
+    const documentToOpen = documentsRef.current.find(
+      (document) => document.id === documentId,
+    );
+    if (!documentToOpen) return;
+
+    try {
+      let requesterSceneIdentifier: string | null = null;
+      try {
+        requesterSceneIdentifier = await getCurrentWindow().sceneIdentifier();
+      } catch {
+        // Scene identifiers are available on iOS; desktop windows do not need one.
+      }
+      await invoke("create_new_window", {
+        documentTarget: {
+          kind: "file",
+          path: documentToOpen.filePath ?? documentToOpen.path,
+          source: documentIsFromDropbox(documentToOpen) ? "dropbox" : "local",
+          title: documentToOpen.title,
+        },
+        requesterSceneIdentifier,
+      });
+      setStorageError("");
+    } catch (error) {
+      setStorageError(translatedError(error, "error.openInNewWindowFailed"));
+    }
   }
 
   function documentFromLoadedFile(loaded: OpenMarkdownFileResult): MarkdownDocument {
@@ -11895,7 +11988,7 @@ function App() {
         until: Date.now() + 1000,
       };
       showFileContextMenu(entry, start.clientX, start.clientY);
-    }, mobileWorkspaceFileLongPressMs);
+    }, mobileContextMenuLongPressMs);
   }
 
   function moveWorkspaceFileLongPress(event: ReactPointerEvent<HTMLButtonElement>) {
@@ -11903,7 +11996,7 @@ function App() {
     if (!start || start.pointerId !== event.pointerId) return;
 
     const moved = Math.hypot(event.clientX - start.clientX, event.clientY - start.clientY);
-    if (moved > mobileWorkspaceFileLongPressMoveTolerancePx) {
+    if (moved > mobileContextMenuLongPressMoveTolerancePx) {
       cancelWorkspaceFileLongPress(event.pointerId);
     }
   }
@@ -14101,22 +14194,56 @@ function App() {
     selectDocument(documentId, { tabBehavior: "none" });
   }
 
+  function showDocumentTabContextMenu(documentId: string, left: number, top: number) {
+    setFileContextMenu(null);
+    setDocumentTabContextMenu({ documentId, left, top });
+  }
+
+  function openDocumentTabContextMenu(
+    documentId: string,
+    event: MouseEvent<HTMLElement>,
+  ) {
+    event.preventDefault();
+    event.stopPropagation();
+    cancelDocumentTabLongPress();
+    showDocumentTabContextMenu(documentId, event.clientX, event.clientY);
+  }
+
+  function cancelDocumentTabLongPress() {
+    window.clearTimeout(documentTabLongPressTimerRef.current);
+    documentTabLongPressTimerRef.current = 0;
+  }
+
   function handleDocumentTabTouchStart(
     documentId: string,
     event: ReactTouchEvent<HTMLButtonElement>,
   ) {
     if (event.touches.length !== 1) {
+      cancelDocumentTabLongPress();
       documentTabTouchStateRef.current = null;
       return;
     }
 
     const touch = event.touches[0];
-    documentTabTouchStateRef.current = {
+    const touchState = {
       documentId,
+      longPressTriggered: false,
       moved: false,
       startX: touch.clientX,
       startY: touch.clientY,
     };
+    documentTabTouchStateRef.current = touchState;
+    cancelDocumentTabLongPress();
+    documentTabLongPressTimerRef.current = window.setTimeout(() => {
+      if (documentTabTouchStateRef.current !== touchState || touchState.moved) return;
+
+      touchState.longPressTriggered = true;
+      suppressedDocumentTabClickRef.current = {
+        documentId,
+        until: Date.now() + 1000,
+      };
+      showDocumentTabContextMenu(documentId, touchState.startX, touchState.startY);
+    }, mobileContextMenuLongPressMs);
   }
 
   function handleDocumentTabTouchMove(
@@ -14132,8 +14259,12 @@ function App() {
     const deltaX = Math.abs(touch.clientX - touchState.startX);
     const deltaY = Math.abs(touch.clientY - touchState.startY);
 
-    if (deltaX > 10 || deltaY > 10) {
+    if (
+      deltaX > mobileContextMenuLongPressMoveTolerancePx ||
+      deltaY > mobileContextMenuLongPressMoveTolerancePx
+    ) {
       touchState.moved = true;
+      cancelDocumentTabLongPress();
     }
   }
 
@@ -14142,6 +14273,7 @@ function App() {
     event: ReactTouchEvent<HTMLButtonElement>,
   ) {
     const touchState = documentTabTouchStateRef.current;
+    cancelDocumentTabLongPress();
     documentTabTouchStateRef.current = null;
 
     if (!touchState || touchState.documentId !== documentId || touchState.moved) {
@@ -14152,16 +14284,25 @@ function App() {
       event.preventDefault();
     }
     event.stopPropagation();
+    if (touchState.longPressTriggered) return;
+
     documentTabPointerActivationRef.current = documentId;
     window.getSelection()?.removeAllRanges();
     selectDocument(documentId, { tabBehavior: "none" });
   }
 
   function handleDocumentTabTouchCancel() {
+    cancelDocumentTabLongPress();
     documentTabTouchStateRef.current = null;
   }
 
   function handleDocumentTabClick(documentId: string) {
+    const suppressedClick = suppressedDocumentTabClickRef.current;
+    if (suppressedClick?.documentId === documentId && Date.now() < suppressedClick.until) {
+      suppressedDocumentTabClickRef.current = null;
+      return;
+    }
+
     const pointerAlreadySelectedThisTab =
       documentTabPointerActivationRef.current === documentId &&
       selectedDocumentIdRef.current === documentId;
@@ -15744,6 +15885,7 @@ function App() {
     notePanelModalActive || (noteModeEnabled && mobileAnnotationKeyboardShouldStayClosed);
   const mobileCommittedSelectionAnchor = pendingAnchor ?? activeNote?.anchor ?? null;
   const mobileCommittedSelectionKey =
+    mobileAnnotationKeyboardShouldStayClosed &&
     noteModeEnabled &&
     mobileCommittedSelectionAnchor &&
     hasRenderableAnchor(mobileCommittedSelectionAnchor)
@@ -15847,6 +15989,41 @@ function App() {
             fileContextMenu.top,
             8,
             Math.max(8, window.innerHeight - (24 + fileContextMenuActions.length * 34)),
+          ),
+        ),
+      }
+    : undefined;
+  const documentTabContextMenuActions: FileContextMenuAction[] = documentTabContextMenu
+    ? [
+        {
+          id: "close-other-tabs",
+          label: t("documentTab.closeOthers"),
+          icon: <SearchCloseIcon />,
+          onSelect: () => closeOtherDocumentTabs(documentTabContextMenu.documentId),
+        },
+        {
+          id: "open-in-new-window",
+          label: t("documentTab.openInNewWindow"),
+          icon: <OpenTabIcon />,
+          onSelect: () => {
+            void openDocumentTabInNewWindow(documentTabContextMenu.documentId);
+          },
+        },
+      ]
+    : [];
+  const documentTabContextMenuStyle: CSSProperties | undefined = documentTabContextMenu
+    ? {
+        left: Math.round(
+          clampNumber(documentTabContextMenu.left, 8, Math.max(8, window.innerWidth - 214)),
+        ),
+        top: Math.round(
+          clampNumber(
+            documentTabContextMenu.top,
+            8,
+            Math.max(
+              8,
+              window.innerHeight - (24 + documentTabContextMenuActions.length * 34),
+            ),
           ),
         ),
       }
@@ -16247,6 +16424,7 @@ function App() {
                 <div
                   className={`document-tab ${tabActive ? "is-active" : ""}`}
                   key={document.id}
+                  onContextMenu={(event) => openDocumentTabContextMenu(document.id, event)}
                 >
                   <button
                     aria-selected={tabActive}
@@ -16754,6 +16932,28 @@ function App() {
           {fileContextMenuActions.map((action) => (
             <button
               className={action.tone === "danger" ? "is-danger" : ""}
+              key={action.id}
+              type="button"
+              role="menuitem"
+              onClick={action.onSelect}
+            >
+              {action.icon}
+              <span>{action.label}</span>
+            </button>
+          ))}
+        </div>
+      ) : null}
+
+      {documentTabContextMenu ? (
+        <div
+          className="file-context-menu document-tab-context-menu"
+          role="menu"
+          style={documentTabContextMenuStyle}
+          onContextMenu={(event) => event.preventDefault()}
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          {documentTabContextMenuActions.map((action) => (
+            <button
               key={action.id}
               type="button"
               role="menuitem"
@@ -17543,7 +17743,6 @@ function App() {
               ) : editorMode === "preview" ? (
                 <MilkdownMarkdownEditor
                   annotations={annotations}
-                  desktopBlockSelectionEnabled={!mobileAnnotationKeyboardShouldStayClosed}
                   documentFilePath={selectedDocument.filePath}
                   key={selectedDocument.id}
                   mobileBlockSelectionEnabled={mobileAnnotationKeyboardShouldStayClosed}
