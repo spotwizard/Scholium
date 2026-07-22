@@ -36,6 +36,7 @@ import {
 } from "./MarkdownEditor";
 import type { DocumentSearchState } from "./documentSearch";
 import { documentTabIdsAfterClosingOthers } from "./documentTabs";
+import { shouldHandlePreviewSelectAllShortcut } from "./editorKeyboardShortcuts";
 import { SettingsView } from "./SettingsView";
 import appIconUrl from "../src-tauri/icons/128x128@2x.png";
 import fileSelectedGlyphSvg from "./assets/file-selected-glyph.svg?raw";
@@ -7055,6 +7056,7 @@ function App() {
   const mobileAnnotationKeyboardShouldStayClosed =
     isMobileViewport || isMobileSafeLayoutViewport;
   const [editorMode, setEditorMode] = useState<EditorMode>("preview");
+  const [editorSelectAllRequestKey, setEditorSelectAllRequestKey] = useState(0);
   const initialNoteModeEnabled =
     noteModeEnabledByDefault && documentsSeed.length > 0;
   const [noteModeEnabled, setNoteModeEnabled] = useState(initialNoteModeEnabled);
@@ -9594,6 +9596,30 @@ function App() {
   }, [nativeStorageAvailable]);
 
   useEffect(() => {
+    function handleEditorSelectAllKeyUp(event: KeyboardEvent) {
+      const activeElement = document.activeElement;
+      const activeEditor =
+        activeElement instanceof Element
+          ? activeElement.closest(
+              ".editor-content-frame .milkdown-markdown-editor, .editor-content-frame .markdown-editor-host",
+            )
+          : null;
+      const documentSurfaceOwnsShortcut =
+        activeElement === document.body || activeElement === document.documentElement;
+      if (!activeEditor && !documentSurfaceOwnsShortcut) return;
+      if (!shouldHandlePreviewSelectAllShortcut(event, true, false)) return;
+
+      setEditorSelectAllRequestKey((currentKey) => currentKey + 1);
+    }
+
+    document.addEventListener("keyup", handleEditorSelectAllKeyUp, true);
+
+    return () => {
+      document.removeEventListener("keyup", handleEditorSelectAllKeyUp, true);
+    };
+  }, []);
+
+  useEffect(() => {
     if (!nativeStorageAvailable) return;
 
     let disposed = false;
@@ -9640,6 +9666,7 @@ function App() {
     let unlistenOpenFolder: (() => void) | null = null;
     let unlistenOpenDropbox: (() => void) | null = null;
     let unlistenOpenLocation: (() => void) | null = null;
+    let unlistenSelectAll: (() => void) | null = null;
 
     void Promise.all([
       listen("scholium-new-file", () => {
@@ -9663,6 +9690,39 @@ function App() {
       listen<OpenLocationEventPayload>("scholium-open-location", (event) => {
         void openNativeMenuLocation(event.payload);
       }),
+      listen("scholium-select-all", () => {
+        const activeElement = document.activeElement;
+        if (
+          activeElement instanceof HTMLInputElement ||
+          activeElement instanceof HTMLTextAreaElement
+        ) {
+          activeElement.select();
+          return;
+        }
+
+        const activeDocumentEditor =
+          activeElement instanceof Element
+            ? activeElement.closest(
+                ".editor-content-frame .milkdown-markdown-editor, .editor-content-frame .markdown-editor-host",
+              )
+            : null;
+        const documentSurfaceOwnsShortcut =
+          activeElement === document.body || activeElement === document.documentElement;
+        if (activeDocumentEditor || documentSurfaceOwnsShortcut) {
+          setEditorSelectAllRequestKey((currentKey) => currentKey + 1);
+          return;
+        }
+
+        if (activeElement instanceof HTMLElement && activeElement.isContentEditable) {
+          const selection = window.getSelection();
+          if (!selection) return;
+
+          const range = document.createRange();
+          range.selectNodeContents(activeElement);
+          selection.removeAllRanges();
+          selection.addRange(range);
+        }
+      }),
     ]).then(
       ([
         newFileListener,
@@ -9672,6 +9732,7 @@ function App() {
         openFolderListener,
         openDropboxListener,
         openLocationListener,
+        selectAllListener,
       ]) => {
         unlistenNewFile = newFileListener;
         unlistenNewFolder = newFolderListener;
@@ -9680,6 +9741,7 @@ function App() {
         unlistenOpenFolder = openFolderListener;
         unlistenOpenDropbox = openDropboxListener;
         unlistenOpenLocation = openLocationListener;
+        unlistenSelectAll = selectAllListener;
       },
     );
 
@@ -9691,6 +9753,7 @@ function App() {
       unlistenOpenFolder?.();
       unlistenOpenDropbox?.();
       unlistenOpenLocation?.();
+      unlistenSelectAll?.();
     };
   }, [nativeStorageAvailable]);
 
@@ -16034,6 +16097,10 @@ function App() {
       activeGlossaryIsEditing ||
       (pendingAnchor && pendingAnchorIsGlossaryTerm),
   );
+  const floatingPanelIsGlossaryCreate = Boolean(
+    activeGlossaryIsEditing &&
+      activeGlossaryTerm?.id === transientGlossaryTermIdRef.current,
+  );
   const floatingNoteTone = activeNote
     ? (activeNoteToneById.get(activeNote.id) ?? activeNote.tone ?? 0)
     : 0;
@@ -17756,6 +17823,7 @@ function App() {
                   noteModeEnabled={noteModeEnabled}
                   readOnly={previewEditorReadOnly}
                   search={documentSearchState}
+                  selectAllRequestKey={editorSelectAllRequestKey}
                   toolbarEnabled={false}
                   value={selectedDocument.body}
                   codeBlockCopiedLabel={t("codeBlock.copy.copied")}
@@ -17773,6 +17841,7 @@ function App() {
                   noteModeEnabled={noteModeEnabled}
                   readOnly={editorReadOnly}
                   search={documentSearchState}
+                  selectAllRequestKey={editorSelectAllRequestKey}
                   value={selectedDocument.body}
                   onAnnotationClick={showAnnotationViewer}
                   onAnnotationDoubleClick={showAnnotationViewer}
@@ -18207,7 +18276,7 @@ function App() {
                   : "is-below"
             } ${floatingNotePanelExpanded ? "is-expanded-sidebar" : ""} ${
               floatingPanelIsGlossary ? "is-glossary" : "is-note"
-            }`}
+            } ${floatingPanelIsGlossaryCreate ? "is-glossary-create" : ""}`}
             onBlur={handleFloatingNotePanelBlur}
             ref={notePanelRef}
             style={floatingNotePanelStyle}

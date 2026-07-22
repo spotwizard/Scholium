@@ -4266,6 +4266,10 @@ button.document-tag-chip__label:focus-visible {
   transform: translateX(0);
 }
 
+.note-library-pane:not(.is-open) {
+  box-shadow: none;
+}
+
 .note-library-pane.is-focus-active::after {
   content: "";
   position: absolute;
@@ -4544,8 +4548,12 @@ button.document-tag-chip__label:focus-visible {
   height: 25.5px;
   border-radius: 7.5px;
   margin-bottom: 10.5px;
-  background: #1f6f52;
+  background: #6e1b2b;
   box-shadow: 0 1.5px 4.5px rgba(70, 20, 35, 0.28);
+}
+
+.floating-note-panel.is-glossary-create .pin-badge {
+  background: #1f6f52;
 }
 
 .note-library-card__actions {
