@@ -14,6 +14,10 @@ export function appendTextMap(
   }
 }
 
+export function markdownListItemContentStartOffset(line: string) {
+  return line.match(/^[ \t]*(?:[-*+]|\d+[.)])[ \t]+/)?.[0].length ?? 0;
+}
+
 function isMarkdownEscapablePunctuation(character: string) {
   const code = character.codePointAt(0) ?? 0;
   return (

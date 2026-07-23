@@ -31,6 +31,7 @@ import {
   normalizeDocumentSearchQuery,
   type DocumentSearchState,
 } from "./documentSearch";
+import { shouldHandlePreviewSelectAllShortcut } from "./editorKeyboardShortcuts";
 import {
   fullSourceOffsetFromFrontmatterBodyOffset,
   mergeMarkdownFrontmatter,
@@ -40,6 +41,7 @@ import {
 import {
   appendInlineMarkdownTextMap,
   appendTextMap,
+  markdownListItemContentStartOffset,
   type MarkdownTextMap as MilkdownTextMap,
 } from "./markdownInlineTextMap";
 import { loadScholiumMermaid } from "./mermaid";
@@ -56,6 +58,7 @@ type MilkdownMarkdownEditorProps = {
   mobileCommittedSelectionTone?: AnnotationTone;
   mobileSelectionToneForAnchor?: (anchor: TextSelectionAnchor) => AnnotationTone;
   search?: DocumentSearchState;
+  selectAllRequestKey?: number;
   onSearchMatchCountChange?: (count: number) => void;
   toolbarEnabled?: boolean;
   codeBlockCopiedLabel: string;
@@ -278,8 +281,6 @@ type MarkdownImageFileResult = {
   dataUrl: string;
 };
 
-const markdownUnorderedListMarkerPattern = /^ {0,3}[-*+]\s+/;
-const markdownOrderedListMarkerPattern = /^ {0,3}\d+[.)]\s+/;
 const standaloneHtmlBreakPattern = /^<br\s*\/?>$/i;
 const localImageHydratedSrcAttribute = "data-scholium-local-image-src";
 const localImageMarkdownPathAttribute = "data-scholium-local-markdown-path";
@@ -478,11 +479,10 @@ function lineVisibleStartOffset(line: string) {
   const headingMatch = remainingLine.match(/^#{1,6}\s+/);
   if (headingMatch) return startOffset + headingMatch[0].length;
 
-  const unorderedListMatch = remainingLine.match(markdownUnorderedListMarkerPattern);
-  if (unorderedListMatch) return startOffset + unorderedListMatch[0].length;
-
-  const orderedListMatch = remainingLine.match(markdownOrderedListMarkerPattern);
-  if (orderedListMatch) return startOffset + orderedListMatch[0].length;
+  const listItemContentStartOffset = markdownListItemContentStartOffset(remainingLine);
+  if (listItemContentStartOffset > 0) {
+    return startOffset + listItemContentStartOffset;
+  }
 
   return startOffset;
 }
@@ -1981,6 +1981,7 @@ export function MilkdownMarkdownEditor({
   mobileCommittedSelectionTone = 0,
   mobileSelectionToneForAnchor,
   search = { activeIndex: 0, query: "" },
+  selectAllRequestKey = 0,
   onSearchMatchCountChange,
   toolbarEnabled = true,
   codeBlockCopiedLabel,
@@ -3143,6 +3144,27 @@ export function MilkdownMarkdownEditor({
 
     return view;
   }
+
+  function selectAllEditorContents(view: EditorView) {
+    const selection = window.getSelection();
+    if (!selection) return false;
+
+    view.dom.focus({ preventScroll: true });
+    const range = document.createRange();
+    range.selectNodeContents(view.dom);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    return !selection.isCollapsed;
+  }
+
+  useEffect(() => {
+    if (selectAllRequestKey === 0) return;
+
+    const view = currentEditorView();
+    if (!view) return;
+
+    selectAllEditorContents(view);
+  }, [selectAllRequestKey]);
 
   function syncMilkdownReadOnlyState() {
     const readOnlyState = readOnlyRef.current;
@@ -4325,7 +4347,7 @@ export function MilkdownMarkdownEditor({
   }
 
   useEffect(() => {
-    function targetShouldKeepEnter(target: EventTarget | null) {
+    function targetShouldKeepOwnKeyboardShortcut(target: EventTarget | null) {
       const root = rootRef.current;
       if (!root || !(target instanceof Element)) return false;
       if (root.contains(target)) return false;
@@ -4338,6 +4360,40 @@ export function MilkdownMarkdownEditor({
 
     function handleDocumentKeyDown(event: KeyboardEvent) {
       if (event.defaultPrevented) return;
+
+      const root = rootRef.current;
+      if (!root) return;
+
+      const targetElement = elementFromEventTarget(event.target);
+      const targetIsNestedEditor = Boolean(
+        targetElement?.closest(".milkdown-code-block .cm-editor"),
+      );
+      const targetKeepsOwnShortcut = targetShouldKeepOwnKeyboardShortcut(event.target);
+      const selection = window.getSelection();
+      const activeElement = document.activeElement;
+      const editorHasFocus = activeElement instanceof Node && root.contains(activeElement);
+      const targetIsInEditor = event.target instanceof Node && root.contains(event.target);
+      const selectionIsInEditor =
+        selectionBelongsToRoot(root, selection) ||
+        selectionVisuallyOverlapsRoot(root, selection);
+
+      if (
+        shouldHandlePreviewSelectAllShortcut(
+          event,
+          !targetKeepsOwnShortcut &&
+            (targetIsInEditor || editorHasFocus || selectionIsInEditor),
+          targetIsNestedEditor,
+        )
+      ) {
+        const view = currentEditorView();
+        if (!view) return;
+
+        selectAllEditorContents(view);
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
+
       const isPlainEnter =
         event.key === "Enter" &&
         !event.metaKey &&
@@ -4346,15 +4402,8 @@ export function MilkdownMarkdownEditor({
         !event.shiftKey;
       if (!isPlainEnter) return;
 
-      const root = rootRef.current;
-      if (!root || targetShouldKeepEnter(event.target)) return;
+      if (!root || targetKeepsOwnShortcut) return;
 
-      const selection = window.getSelection();
-      const activeElement = document.activeElement;
-      const editorHasFocus = activeElement instanceof Node && root.contains(activeElement);
-      const selectionIsInEditor =
-        selectionBelongsToRoot(root, selection) ||
-        selectionVisuallyOverlapsRoot(root, selection);
       if (!selectionIsInEditor && !editorHasFocus) return;
 
       handleSelectionEnterKeyDown(event);

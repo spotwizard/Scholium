@@ -7,6 +7,7 @@ APP_BUNDLE="${APP_NAME}.app"
 BUILT_APP="${ROOT_DIR}/src-tauri/target/release/bundle/macos/${APP_BUNDLE}"
 INSTALLED_APP="/Applications/${APP_BUNDLE}"
 INSTALLED_BINARY="${INSTALLED_APP}/Contents/MacOS/scholium"
+APP_BUNDLE_IDENTIFIER="com.spotwizard.scholium"
 LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
 
 unregister_app_bundle() {
@@ -46,6 +47,20 @@ export PATH="/opt/homebrew/opt/node@22/bin:/opt/homebrew/opt/rustup/bin:${PATH}"
 cd "${ROOT_DIR}"
 npm run tauri build -- --bundles app
 
+FRONTMOST_BUNDLE_IDENTIFIER="$(
+  /usr/bin/swift -e 'import AppKit; print(NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "")' 2>/dev/null || true
+)"
+
+if [[ -z "${FRONTMOST_BUNDLE_IDENTIFIER}" ]]; then
+  echo "Unable to determine the frontmost app; built app is ready, installation skipped." >&2
+  exit 2
+fi
+
+if [[ "${FRONTMOST_BUNDLE_IDENTIFIER}" == "${APP_BUNDLE_IDENTIFIER}" ]]; then
+  echo "Scholium is currently in use; built app is ready, installation skipped." >&2
+  exit 2
+fi
+
 osascript -e "tell application \"${APP_NAME}\" to quit" >/dev/null 2>&1 || true
 sleep 1
 
@@ -62,7 +77,7 @@ codesign --force --deep --sign - "${INSTALLED_APP}"
 unregister_noninstalled_scholium_apps
 "${LSREGISTER}" -f "${INSTALLED_APP}"
 touch "${INSTALLED_APP}"
-open "${INSTALLED_APP}"
+open -g "${INSTALLED_APP}"
 sleep 1
 
 pgrep -fl "${INSTALLED_BINARY}" || pgrep -fl scholium || true

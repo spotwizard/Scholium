@@ -1,5 +1,10 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
+import {
+  defaultKeymap,
+  history,
+  historyKeymap,
+  selectAll as selectAllCodeMirror,
+} from "@codemirror/commands";
 import { markdown } from "@codemirror/lang-markdown";
 import { Compartment, EditorState, Range, StateEffect, StateField } from "@codemirror/state";
 import {
@@ -62,6 +67,7 @@ type MarkdownEditorProps = {
   noteModeEnabled: boolean;
   readOnly?: boolean;
   search?: DocumentSearchState;
+  selectAllRequestKey?: number;
   onSearchMatchCountChange?: (count: number) => void;
   onChange: (value: string, source: EditorChangeSource) => void;
   onSelectionChange: (anchor: TextSelectionAnchor | null) => void;
@@ -585,6 +591,7 @@ export function MarkdownEditor({
   noteModeEnabled,
   readOnly = false,
   search = { activeIndex: 0, query: "" },
+  selectAllRequestKey = 0,
   onSearchMatchCountChange,
   onChange,
   onSelectionChange,
@@ -1268,6 +1275,16 @@ export function MarkdownEditor({
       },
     });
   }, [value]);
+
+  useEffect(() => {
+    if (selectAllRequestKey === 0) return;
+
+    const view = viewRef.current;
+    if (!view) return;
+
+    view.focus();
+    selectAllCodeMirror(view);
+  }, [selectAllRequestKey]);
 
   useEffect(() => {
     onSearchMatchCountChangeRef.current?.(searchMatchCount);

@@ -35,7 +35,15 @@ import {
   type TextSelectionEnterContext,
 } from "./MarkdownEditor";
 import type { DocumentSearchState } from "./documentSearch";
-import { documentTabIdsAfterClosingOthers } from "./documentTabs";
+import {
+  availableDocumentTabSession,
+  createDocumentTabSession,
+  documentTabIdsAfterClosingOthers,
+  parseDocumentTabSession,
+  type DocumentTabSessionState,
+} from "./documentTabs";
+import { shouldHandlePreviewSelectAllShortcut } from "./editorKeyboardShortcuts";
+import { anchoredFloatingNoteGeometry } from "./floatingNotePosition";
 import { SettingsView } from "./SettingsView";
 import appIconUrl from "../src-tauri/icons/128x128@2x.png";
 import fileSelectedGlyphSvg from "./assets/file-selected-glyph.svg?raw";
@@ -55,6 +63,11 @@ import {
   stripMarkdownFrontmatter,
   writeMarkdownTags,
 } from "./markdownFrontmatter";
+import {
+  markdownHasTable,
+  parseMarkdownTableAt,
+  type MarkdownTable,
+} from "./markdownTable";
 import {
   readSettingsSnapshot,
   resetSetting,
@@ -941,6 +954,14 @@ type MarkdownPreviewBlock =
       endLine: number;
     };
 
+type NoteMarkdownPreviewBlock =
+  | MarkdownPreviewBlock
+  | {
+      kind: "table";
+      key: string;
+      table: MarkdownTable;
+    };
+
 const markdownFilters = [
   {
     name: "Markdown",
@@ -971,6 +992,7 @@ const lastOpenedMarkdownPathStorageKey = "scholium:last-opened-markdown-path";
 const lastOpenedMarkdownRootDirectoryStorageKey =
   "scholium:last-opened-markdown-root-directory";
 const lastOpenedDropboxWorkspaceStorageKey = "scholium:last-opened-dropbox-workspace";
+const documentTabSessionStorageKey = "scholium:document-tab-session";
 const mobileViewportQuery = "(max-width: 640px)";
 const mobileSafeLayoutViewportQuery =
   "((max-width: 640px) and (any-pointer: coarse)), ((max-width: 980px) and (max-height: 520px) and (any-pointer: coarse))";
@@ -1766,6 +1788,43 @@ function readLastOpenedMarkdownPath() {
   } catch {
     return "";
   }
+}
+
+function readDocumentTabSession() {
+  try {
+    return parseDocumentTabSession(
+      window.localStorage.getItem(documentTabSessionStorageKey),
+    );
+  } catch {
+    return null;
+  }
+}
+
+function rememberDocumentTabSession(session: DocumentTabSessionState | null) {
+  try {
+    if (session) {
+      window.localStorage.setItem(documentTabSessionStorageKey, JSON.stringify(session));
+    } else {
+      window.localStorage.removeItem(documentTabSessionStorageKey);
+    }
+  } catch {
+    // Remembering open tabs is best-effort only.
+  }
+}
+
+function documentTabSessionForWorkspace(
+  source: WorkspaceSource,
+  workspacePath: string,
+) {
+  const session = readDocumentTabSession();
+  if (
+    session?.source !== source ||
+    !localPathsMatch(session.workspacePath, workspacePath)
+  ) {
+    return null;
+  }
+
+  return session;
 }
 
 function rememberLastOpenedMarkdownPath(path: string | null | undefined) {
@@ -4469,6 +4528,51 @@ function parseMarkdownPreviewBlocks(markdown: string): MarkdownPreviewBlock[] {
   return blocks;
 }
 
+function parseNoteMarkdownPreviewBlocks(markdown: string): NoteMarkdownPreviewBlock[] {
+  const normalizedMarkdown = markdown.replace(/\r\n/g, "\n");
+  const lines = normalizedMarkdown.split("\n");
+  const blocks: NoteMarkdownPreviewBlock[] = [];
+  let index = markdownFrontmatterBodyStartLine(normalizedMarkdown);
+  let segmentStart = 0;
+  let insideCodeFence = false;
+
+  const appendMarkdownSegment = (startLine: number, endLine: number) => {
+    if (endLine <= startLine) return;
+    parseMarkdownPreviewBlocks(lines.slice(startLine, endLine).join("\n")).forEach((block) => {
+      blocks.push({
+        ...block,
+        key: `note-${startLine}-${block.key}`,
+      });
+    });
+  };
+
+  while (index < lines.length) {
+    if (lines[index].trim().startsWith("```")) {
+      insideCodeFence = !insideCodeFence;
+      index += 1;
+      continue;
+    }
+
+    const tableMatch = insideCodeFence ? null : parseMarkdownTableAt(lines, index);
+    if (!tableMatch) {
+      index += 1;
+      continue;
+    }
+
+    appendMarkdownSegment(segmentStart, tableMatch.startLine);
+    blocks.push({
+      kind: "table",
+      key: `note-table-${tableMatch.startLine}`,
+      table: tableMatch.table,
+    });
+    index = tableMatch.endLine + 1;
+    segmentStart = index;
+  }
+
+  appendMarkdownSegment(segmentStart, lines.length);
+  return blocks;
+}
+
 function markdownFromPreviewBlock(block: MarkdownPreviewBlock, text: string) {
   const rawLines = text
     .replace(/\u200b/g, "")
@@ -6466,12 +6570,51 @@ function MarkdownPreviewContentBlock({
   mermaidErrorLabel,
   mermaidLoadingLabel,
 }: {
-  block: MarkdownPreviewBlock;
+  block: NoteMarkdownPreviewBlock;
   keyPrefix: string;
   mermaidEmptyDefinitionLabel: string;
   mermaidErrorLabel: string;
   mermaidLoadingLabel: string;
 }) {
+  if (block.kind === "table") {
+    return (
+      <div className="note-markdown-table-scroll" key={block.key}>
+        <table>
+          <thead>
+            <tr>
+              {block.table.header.map((cell, cellIndex) => (
+                <th
+                  key={`${block.key}-header-${cellIndex}`}
+                  scope="col"
+                  style={{ textAlign: block.table.alignments[cellIndex] ?? undefined }}
+                >
+                  {renderInlineMarkdown(cell, `${keyPrefix}-header-${cellIndex}`)}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {block.table.rows.map((row, rowIndex) => (
+              <tr key={`${block.key}-row-${rowIndex}`}>
+                {row.map((cell, cellIndex) => (
+                  <td
+                    key={`${block.key}-row-${rowIndex}-cell-${cellIndex}`}
+                    style={{ textAlign: block.table.alignments[cellIndex] ?? undefined }}
+                  >
+                    {renderInlineMarkdown(
+                      cell,
+                      `${keyPrefix}-row-${rowIndex}-cell-${cellIndex}`,
+                    )}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
+  }
+
   if (block.kind === "heading") {
     const tagName = `h${block.level}` as "h1" | "h2" | "h3" | "h4" | "h5" | "h6";
 
@@ -6553,7 +6696,7 @@ function MarkdownPreviewContent({
   value: string;
 }) {
   const isEmpty = !stripMarkdownFrontmatter(value).trim();
-  const blocks = isEmpty ? [] : parseMarkdownPreviewBlocks(value);
+  const blocks = isEmpty ? [] : parseNoteMarkdownPreviewBlocks(value);
 
   return (
     <div
@@ -6582,6 +6725,7 @@ function noteValueCanUsePlainTextPreview(value: string) {
   if (!body.trim()) return true;
 
   return !(
+    markdownHasTable(body) ||
     /^ {0,3}#{1,6}\s+\S/m.test(body) ||
     /^ {0,3}([-*+]\s+|\d+[.)]\s+)/m.test(body) ||
     /^ {0,3}>\s?/m.test(body) ||
@@ -6937,6 +7081,8 @@ function App() {
   const [openDocumentTabIds, setOpenDocumentTabIds] = useState<string[]>(() =>
     documentsSeed[0]?.id ? [documentsSeed[0].id] : [],
   );
+  const [documentTabSessionRestoreCompleted, setDocumentTabSessionRestoreCompleted] =
+    useState(false);
   const [documentTabIndicatorStyle, setDocumentTabIndicatorStyle] =
     useState<CSSProperties>(() => ({
       opacity: 0,
@@ -7055,6 +7201,7 @@ function App() {
   const mobileAnnotationKeyboardShouldStayClosed =
     isMobileViewport || isMobileSafeLayoutViewport;
   const [editorMode, setEditorMode] = useState<EditorMode>("preview");
+  const [editorSelectAllRequestKey, setEditorSelectAllRequestKey] = useState(0);
   const initialNoteModeEnabled =
     noteModeEnabledByDefault && documentsSeed.length > 0;
   const [noteModeEnabled, setNoteModeEnabled] = useState(initialNoteModeEnabled);
@@ -7631,6 +7778,16 @@ function App() {
   const floatingNoteCanExpand = Boolean(!pendingAnchor && (activeNote || activeGlossaryTerm));
   const floatingNotePanelExpanded =
     !settingsViewOpen && notePanelExpanded && floatingNoteCanExpand && !isNotePanelClosing;
+  const floatingCopyActionKey = activeNote
+    ? `floating:${activeNote.id}`
+    : activeGlossaryTerm
+      ? `floating-glossary:${activeGlossaryTerm.id}`
+      : "";
+  const floatingCopyContent = activeNote?.body ?? activeGlossaryTerm?.definition ?? "";
+  const floatingCopyLabel = activeGlossaryTerm ? t("glossary.copy") : t("note.copy");
+  const floatingCopySuccessLabel = activeGlossaryTerm
+    ? t("glossary.copy.copied")
+    : t("note.copy.copied");
   const expandedNotePanelScrollLocked =
     floatingNotePanelExpanded || libraryNotePanelExpanded;
   const floatingNoteBackdropActive = notePanelModalActive;
@@ -8607,84 +8764,32 @@ function App() {
     cardRect: DOMRect,
   ): FloatingNotePosition {
     const viewportRect = currentVisualViewportRect();
-    const viewportWidth = viewportRect.width;
-    const viewportHeight = viewportRect.height;
     const viewportMargin = isMobileViewport ? 32 : 12;
     const cardWidth = Math.min(
       cardRect.width || 450,
-      Math.max(180, viewportWidth - viewportMargin * 2),
+      Math.max(180, viewportRect.width - viewportMargin * 2),
     );
-    const cardHeight = Math.min(
-      cardRect.height || 260,
-      Math.max(120, viewportHeight - viewportMargin * 2),
+    const geometry = anchoredFloatingNoteGeometry({
+      anchorRect,
+      cardWidth,
+      viewportMargin,
+      viewportRect,
+    });
+    const panelPoint = floatingLayerPointFromViewport(geometry.left, geometry.top);
+    const connectorPoint = floatingLayerPointFromViewport(
+      geometry.connector.left,
+      geometry.connector.top,
     );
-    const verticalDistance = 12;
-    const connectorAnchorGap = 6;
-
-    let placement: "below" | "above" | "detached" = "below";
-    let targetY = anchorRect.bottom;
-    let panelAnchorY = anchorRect.bottom + connectorAnchorGap;
-    let top = panelAnchorY + verticalDistance;
-
-    if (top + cardHeight > viewportRect.bottom - viewportMargin) {
-      const spaceAbove =
-        anchorRect.top - verticalDistance - connectorAnchorGap - viewportRect.top - viewportMargin;
-      const spaceBelow = viewportRect.bottom - top - viewportMargin;
-
-      if (spaceAbove >= cardHeight || spaceAbove > spaceBelow) {
-        placement = "above";
-        targetY = anchorRect.top;
-        panelAnchorY = anchorRect.top - connectorAnchorGap;
-        top = panelAnchorY - verticalDistance - cardHeight;
-      }
-    }
-
-    const targetX = anchorRect.targetX;
-    const minPanelLeft = viewportRect.left + viewportMargin;
-    const maxPanelLeft = viewportRect.right - viewportMargin - cardWidth;
-    const preferredLeft = clampNumber(
-      targetX - cardWidth / 2,
-      minPanelLeft,
-      maxPanelLeft,
-    );
-    const left = maxPanelLeft >= minPanelLeft ? preferredLeft : minPanelLeft;
-    const right = left + cardWidth;
-    if (mobileAnnotationKeyboardShouldStayClosed) {
-      const minPanelTop = viewportRect.top + viewportMargin;
-      const maxPanelTop = viewportRect.bottom - viewportMargin - cardHeight;
-      top = maxPanelTop >= minPanelTop ? clampNumber(top, minPanelTop, maxPanelTop) : minPanelTop;
-    }
-    const connectorTilt = verticalDistance * 0.65;
-    const viewportCenterX = viewportRect.left + viewportRect.width / 2;
-    const preferredSourceX =
-      targetX + (targetX < viewportCenterX ? connectorTilt : -connectorTilt);
-    const minSourceX = Math.max(left, targetX - verticalDistance);
-    const maxSourceX = Math.min(right, targetX + verticalDistance);
-    const sourceX =
-      minSourceX <= maxSourceX
-        ? clampNumber(preferredSourceX, minSourceX, maxSourceX)
-        : clampNumber(targetX, left, right);
-    const sourceY = placement === "below" ? top : top + cardHeight;
-    const connectorDeltaX = sourceX - targetX;
-    const connectorDeltaY = sourceY - targetY;
-    const connectorWidth = Math.max(
-      0,
-      Math.sqrt(connectorDeltaX * connectorDeltaX + connectorDeltaY * connectorDeltaY),
-    );
-    const connectorAngle =
-      Math.atan2(connectorDeltaY, connectorDeltaX) * (180 / Math.PI);
-    const panelPoint = floatingLayerPointFromViewport(left, top);
-    const connectorPoint = floatingLayerPointFromViewport(targetX, targetY);
 
     return {
       connector: {
-        angle: Math.round(connectorAngle * 100) / 100,
+        angle: geometry.connector.angle,
         left: Math.round(connectorPoint.left),
         top: Math.round(connectorPoint.top),
-        width: Math.round(connectorWidth),
+        width: geometry.connector.width,
       },
       left: Math.round(panelPoint.left),
-      placement,
+      placement: geometry.placement,
       top: Math.round(panelPoint.top),
     };
   }
@@ -9458,41 +9563,70 @@ function App() {
     let disposed = false;
     let unlistenOpenedFilePaths: (() => void) | null = null;
 
+    function completeDocumentTabSessionRestore() {
+      if (!disposed) {
+        setDocumentTabSessionRestoreCompleted(true);
+      }
+    }
+
     function restoreLastOpenedFile() {
       const lastOpenedDropboxWorkspace = readLastOpenedDropboxWorkspace();
+      const dropboxTabSession = lastOpenedDropboxWorkspace
+        ? documentTabSessionForWorkspace(
+            "dropbox",
+            lastOpenedDropboxWorkspace.workspacePath,
+          )
+        : null;
       if (isMobileViewport) {
         if (!lastOpenedDropboxWorkspace) {
           setMobileStartupPhase("welcome");
+          completeDocumentTabSessionRestore();
           return;
         }
 
         setMobileStartupPhase("restoring");
-        void restoreLastOpenedDropboxWorkspace(lastOpenedDropboxWorkspace).then(
-          (workspaceRestored) => {
-            if (!disposed) {
-              setMobileStartupPhase(workspaceRestored ? "hidden" : "welcome");
-            }
-          },
-        );
+        void restoreLastOpenedDropboxWorkspace(
+          lastOpenedDropboxWorkspace,
+          dropboxTabSession,
+        ).then((workspaceRestored) => {
+          if (!disposed) {
+            setMobileStartupPhase(workspaceRestored ? "hidden" : "welcome");
+          }
+        }).finally(() => {
+          completeDocumentTabSessionRestore();
+        });
         return;
       }
 
       if (!settingsSnapshot["app.restoreLastOpenedFile"]) {
         setMobileStartupPhase("hidden");
+        completeDocumentTabSessionRestore();
         return;
       }
 
       if (lastOpenedDropboxWorkspace) {
-        void restoreLastOpenedDropboxWorkspace(lastOpenedDropboxWorkspace).finally(() => {
+        void restoreLastOpenedDropboxWorkspace(
+          lastOpenedDropboxWorkspace,
+          dropboxTabSession,
+        ).finally(() => {
           if (!disposed) setMobileStartupPhase("hidden");
+          completeDocumentTabSessionRestore();
         });
         return;
       }
 
-      const lastOpenedPath = readLastOpenedMarkdownPath();
-      const lastOpenedRootDirectoryPath = readLastOpenedMarkdownRootDirectoryPath();
+      const savedTabSession = readDocumentTabSession();
+      const lastOpenedRootDirectoryPath =
+        readLastOpenedMarkdownRootDirectoryPath() ||
+        (savedTabSession?.source === "local" ? savedTabSession.workspacePath : "");
+      const localTabSession = lastOpenedRootDirectoryPath
+        ? documentTabSessionForWorkspace("local", lastOpenedRootDirectoryPath)
+        : null;
+      const lastOpenedPath =
+        localTabSession?.activeDocumentPath || readLastOpenedMarkdownPath();
       if (!lastOpenedPath && !lastOpenedRootDirectoryPath) {
         setMobileStartupPhase("hidden");
+        completeDocumentTabSessionRestore();
         return;
       }
 
@@ -9503,6 +9637,7 @@ function App() {
           forgetLastOpenedMarkdownRootDirectoryPath();
           setStorageError("");
           setMobileStartupPhase("hidden");
+          completeDocumentTabSessionRestore();
           return;
         }
 
@@ -9523,6 +9658,7 @@ function App() {
           })
           .finally(() => {
             if (!disposed) setMobileStartupPhase("hidden");
+            completeDocumentTabSessionRestore();
           });
       }
 
@@ -9530,10 +9666,12 @@ function App() {
         void restoreLastOpenedMarkdownWorkspace(
           lastOpenedRootDirectoryPath,
           lastOpenedPath,
+          localTabSession,
         )
           .then(() => {
             setStorageError("");
             if (!disposed) setMobileStartupPhase("hidden");
+            completeDocumentTabSessionRestore();
           })
           .catch(() => {
             forgetLastOpenedMarkdownRootDirectoryPath();
@@ -9565,6 +9703,7 @@ function App() {
         if (disposed) return;
         if (newWindowTarget) {
           openNewWindowDocumentTargetHandlerRef.current(newWindowTarget);
+          completeDocumentTabSessionRestore();
           return;
         }
       } catch (error) {
@@ -9576,6 +9715,7 @@ function App() {
         if (disposed) return;
         if (openedFilePaths.length > 0) {
           openDroppedMarkdownPathsHandlerRef.current(openedFilePaths);
+          completeDocumentTabSessionRestore();
           return;
         }
       } catch (error) {
@@ -9592,6 +9732,30 @@ function App() {
       unlistenOpenedFilePaths?.();
     };
   }, [nativeStorageAvailable]);
+
+  useEffect(() => {
+    function handleEditorSelectAllKeyUp(event: KeyboardEvent) {
+      const activeElement = document.activeElement;
+      const activeEditor =
+        activeElement instanceof Element
+          ? activeElement.closest(
+              ".editor-content-frame .milkdown-markdown-editor, .editor-content-frame .markdown-editor-host",
+            )
+          : null;
+      const documentSurfaceOwnsShortcut =
+        activeElement === document.body || activeElement === document.documentElement;
+      if (!activeEditor && !documentSurfaceOwnsShortcut) return;
+      if (!shouldHandlePreviewSelectAllShortcut(event, true, false)) return;
+
+      setEditorSelectAllRequestKey((currentKey) => currentKey + 1);
+    }
+
+    document.addEventListener("keyup", handleEditorSelectAllKeyUp, true);
+
+    return () => {
+      document.removeEventListener("keyup", handleEditorSelectAllKeyUp, true);
+    };
+  }, []);
 
   useEffect(() => {
     if (!nativeStorageAvailable) return;
@@ -9631,6 +9795,60 @@ function App() {
   }, [nativeStorageAvailable, selectedDocument.id, selectedDocument.path, workspaceRootPath]);
 
   useEffect(() => {
+    if (
+      !nativeStorageAvailable ||
+      !documentTabSessionRestoreCompleted ||
+      !workspaceSource ||
+      workspaceRootPath === null
+    ) {
+      return;
+    }
+
+    const sessionSource = workspaceSource;
+    const sessionWorkspacePath = workspaceRootPath;
+
+    const openDocumentPaths = openDocumentTabIds.flatMap((documentId) => {
+      const document = documents.find((candidate) => candidate.id === documentId);
+      if (!document) return [];
+
+      const fromDropbox = documentIsFromDropbox(document);
+      if (
+        (sessionSource === "dropbox" && !fromDropbox) ||
+        (sessionSource === "local" && fromDropbox)
+      ) {
+        return [];
+      }
+
+      return [fromDropbox ? document.path : (document.filePath ?? document.path)];
+    });
+    const activeDocument = documents.find(
+      (document) => document.id === selectedDocumentId,
+    );
+    const activeDocumentPath = activeDocument
+      ? documentIsFromDropbox(activeDocument)
+        ? activeDocument.path
+        : (activeDocument.filePath ?? activeDocument.path)
+      : "";
+
+    rememberDocumentTabSession(
+      createDocumentTabSession(
+        sessionSource,
+        sessionWorkspacePath,
+        openDocumentPaths,
+        activeDocumentPath,
+      ),
+    );
+  }, [
+    documents,
+    documentTabSessionRestoreCompleted,
+    nativeStorageAvailable,
+    openDocumentTabIds,
+    selectedDocumentId,
+    workspaceRootPath,
+    workspaceSource,
+  ]);
+
+  useEffect(() => {
     if (!nativeStorageAvailable) return;
 
     let unlistenNewFile: (() => void) | null = null;
@@ -9640,6 +9858,7 @@ function App() {
     let unlistenOpenFolder: (() => void) | null = null;
     let unlistenOpenDropbox: (() => void) | null = null;
     let unlistenOpenLocation: (() => void) | null = null;
+    let unlistenSelectAll: (() => void) | null = null;
 
     void Promise.all([
       listen("scholium-new-file", () => {
@@ -9663,6 +9882,39 @@ function App() {
       listen<OpenLocationEventPayload>("scholium-open-location", (event) => {
         void openNativeMenuLocation(event.payload);
       }),
+      listen("scholium-select-all", () => {
+        const activeElement = document.activeElement;
+        if (
+          activeElement instanceof HTMLInputElement ||
+          activeElement instanceof HTMLTextAreaElement
+        ) {
+          activeElement.select();
+          return;
+        }
+
+        const activeDocumentEditor =
+          activeElement instanceof Element
+            ? activeElement.closest(
+                ".editor-content-frame .milkdown-markdown-editor, .editor-content-frame .markdown-editor-host",
+              )
+            : null;
+        const documentSurfaceOwnsShortcut =
+          activeElement === document.body || activeElement === document.documentElement;
+        if (activeDocumentEditor || documentSurfaceOwnsShortcut) {
+          setEditorSelectAllRequestKey((currentKey) => currentKey + 1);
+          return;
+        }
+
+        if (activeElement instanceof HTMLElement && activeElement.isContentEditable) {
+          const selection = window.getSelection();
+          if (!selection) return;
+
+          const range = document.createRange();
+          range.selectNodeContents(activeElement);
+          selection.removeAllRanges();
+          selection.addRange(range);
+        }
+      }),
     ]).then(
       ([
         newFileListener,
@@ -9672,6 +9924,7 @@ function App() {
         openFolderListener,
         openDropboxListener,
         openLocationListener,
+        selectAllListener,
       ]) => {
         unlistenNewFile = newFileListener;
         unlistenNewFolder = newFolderListener;
@@ -9680,6 +9933,7 @@ function App() {
         unlistenOpenFolder = openFolderListener;
         unlistenOpenDropbox = openDropboxListener;
         unlistenOpenLocation = openLocationListener;
+        unlistenSelectAll = selectAllListener;
       },
     );
 
@@ -9691,6 +9945,7 @@ function App() {
       unlistenOpenFolder?.();
       unlistenOpenDropbox?.();
       unlistenOpenLocation?.();
+      unlistenSelectAll?.();
     };
   }, [nativeStorageAvailable]);
 
@@ -11091,38 +11346,89 @@ function App() {
     setNativeCurrentDirectory(openedDirectory.path, openedDirectory.title, "local");
   }
 
+  async function loadAvailableLocalDocumentTabSession(
+    session: DocumentTabSessionState,
+  ) {
+    const sessionPaths = session.openDocumentPaths.filter((path) =>
+      localPathIsInsideDirectory(path, session.workspacePath),
+    );
+    const loadedResults = await Promise.allSettled(
+      sessionPaths.map((path) =>
+        invoke<OpenMarkdownFileResult>("open_markdown_file", { path }),
+      ),
+    );
+    const loadedFiles = loadedResults.flatMap((result) =>
+      result.status === "fulfilled" ? [result.value] : [],
+    );
+    const restoredSession = availableDocumentTabSession(
+      session,
+      loadedFiles.map((file) => file.path),
+    );
+
+    return { loadedFiles, restoredSession };
+  }
+
+  function applyLocalDocumentTabSession(
+    loadedSession: Awaited<ReturnType<typeof loadAvailableLocalDocumentTabSession>>,
+  ) {
+    const { loadedFiles, restoredSession } = loadedSession;
+    if (restoredSession.openDocumentPaths.length === 0) return false;
+
+    mergeLoadedFilesIntoDocumentState(loadedFiles);
+    openDocumentTabIdsRef.current = restoredSession.openDocumentPaths;
+    setOpenDocumentTabIds(restoredSession.openDocumentPaths);
+    setActiveDocumentId(restoredSession.activeDocumentPath);
+    rememberLastOpenedMarkdownPath(restoredSession.activeDocumentPath);
+    return true;
+  }
+
   async function restoreLastOpenedMarkdownWorkspace(
     rootDirectoryPath: string,
     selectedPath: string,
+    tabSession: DocumentTabSessionState | null = null,
   ) {
     const openedDirectory = await invoke<OpenMarkdownDirectoryResult>("open_markdown_directory", {
       path: rootDirectoryPath,
     });
+    const loadedTabSession = tabSession
+      ? await loadAvailableLocalDocumentTabSession(tabSession)
+      : null;
+    const restoredSelectedPath = loadedTabSession
+      ? loadedTabSession.restoredSession.activeDocumentPath
+      : selectedPath;
     const rootLoadedFiles = openedDirectory.entries.flatMap((entry) =>
       entry.kind === "file" ? [entry.file] : [],
     );
     const selectedIsRootEntry = rootLoadedFiles.some((file) =>
-      localPathsMatch(file.path, selectedPath),
+      localPathsMatch(file.path, restoredSelectedPath),
     );
     const ancestorPaths =
-      selectedPath && !selectedIsRootEntry
-        ? ancestorDirectoryPathsForFile(rootDirectoryPath, selectedPath)
+      restoredSelectedPath && !selectedIsRootEntry
+        ? ancestorDirectoryPathsForFile(rootDirectoryPath, restoredSelectedPath)
         : [];
 
-    if (selectedPath && !selectedIsRootEntry && ancestorPaths.length === 0) {
+    if (restoredSelectedPath && !selectedIsRootEntry && ancestorPaths.length === 0) {
       throw new Error("last opened file is outside the saved root directory");
     }
 
-    applyOpenedDirectory(openedDirectory, selectedIsRootEntry ? selectedPath : undefined, {
+    applyOpenedDirectory(openedDirectory, selectedIsRootEntry ? restoredSelectedPath : undefined, {
       rememberRecent: false,
       rememberSelection: false,
-      selectFallback: !selectedPath || selectedIsRootEntry,
+      selectFallback:
+        loadedTabSession === null && (!restoredSelectedPath || selectedIsRootEntry),
     });
 
-    if (!selectedPath) return;
+    if (!restoredSelectedPath) {
+      forgetLastOpenedMarkdownPath();
+      rememberDocumentTabSession(null);
+      return;
+    }
 
     if (selectedIsRootEntry) {
-      rememberLastOpenedMarkdownPath(selectedPath);
+      rememberLastOpenedMarkdownPath(restoredSelectedPath);
+      if (loadedTabSession) {
+        applyLocalDocumentTabSession(loadedTabSession);
+      }
       return;
     }
 
@@ -11159,7 +11465,7 @@ function App() {
     }
 
     const selectedFile = loadedDescendantFiles.find((file) =>
-      localPathsMatch(file.path, selectedPath),
+      localPathsMatch(file.path, restoredSelectedPath),
     );
     if (!selectedFile) {
       throw new Error("last opened file was not found in the restored directory tree");
@@ -11171,6 +11477,9 @@ function App() {
     setActiveDocumentId(selectedFile.path);
     resetDocumentTabs(selectedFile.path);
     rememberLastOpenedMarkdownPath(selectedFile.path);
+    if (loadedTabSession) {
+      applyLocalDocumentTabSession(loadedTabSession);
+    }
   }
 
   function dropboxErrorIsConnectionTimeout(message: string) {
@@ -11249,8 +11558,58 @@ function App() {
     }
   }
 
+  async function restoreDropboxDocumentTabSession(
+    session: DocumentTabSessionState,
+  ) {
+    const sessionPaths = session.openDocumentPaths.filter(
+      (path) =>
+        !session.workspacePath ||
+        localPathIsInsideDirectory(path, session.workspacePath),
+    );
+    const availablePaths: string[] = [];
+
+    for (const path of sessionPaths) {
+      const existingDocument = documentsRef.current.find(
+        (document) => documentIsFromDropbox(document) && document.path === path,
+      );
+      if (existingDocument) {
+        availablePaths.push(path);
+        continue;
+      }
+
+      try {
+        const loadedFile = await invoke<OpenDropboxMarkdownFileResult>(
+          "open_dropbox_markdown_file",
+          { path },
+        );
+        applyLoadedDropboxFile(loadedFile, {
+          rememberRecent: false,
+          tabBehavior: "none",
+        });
+        availablePaths.push(loadedFile.path);
+      } catch (error) {
+        console.error(error);
+      }
+    }
+
+    const restoredSession = availableDocumentTabSession(session, availablePaths);
+    if (restoredSession.openDocumentPaths.length === 0) return false;
+
+    const restoredDocumentIds = restoredSession.openDocumentPaths.map(dropboxDocumentId);
+    const activeDocumentId = dropboxDocumentId(restoredSession.activeDocumentPath);
+    openDocumentTabIdsRef.current = restoredDocumentIds;
+    setOpenDocumentTabIds(restoredDocumentIds);
+    setActiveDocumentId(activeDocumentId);
+    rememberLastOpenedDropboxWorkspace(
+      session.workspacePath,
+      restoredSession.activeDocumentPath,
+    );
+    return true;
+  }
+
   async function restoreLastOpenedDropboxWorkspace(
     restoreState: LastOpenedDropboxWorkspaceState,
+    tabSession: DocumentTabSessionState | null = null,
   ): Promise<boolean> {
     const restoreSelectionRevision = manualDocumentSelectionRevisionRef.current;
     const restoreWasInterrupted = () =>
@@ -11296,8 +11655,24 @@ function App() {
       return false;
     }
 
+    if (tabSession) {
+      const sessionRestored = await restoreDropboxDocumentTabSession(tabSession);
+      if (restoreWasInterrupted()) return true;
+      if (sessionRestored) {
+        setStorageError("");
+        return true;
+      }
+
+      rememberLastOpenedDropboxWorkspace(openedDirectory.path, "");
+      rememberDocumentTabSession(null);
+      setStorageError("");
+      return true;
+    }
+
     const restoreFilePath =
-      restoreState.filePath || firstDropboxMarkdownFileEntry(openedDirectory)?.path || "";
+      restoreState.filePath ||
+      firstDropboxMarkdownFileEntry(openedDirectory)?.path ||
+      "";
 
     if (!restoreFilePath) {
       rememberLastOpenedDropboxWorkspace(openedDirectory.path, "");
@@ -13017,14 +13392,18 @@ function App() {
     return copiedNoteActionKey === actionKey ? <CheckIcon /> : <NoteCopyIcon />;
   }
 
-  async function copyNoteContent(note: Pick<SelectionNote, "body">, actionKey: string) {
+  async function copyTextContent(text: string, actionKey: string) {
     try {
-      await writeTextToClipboard(note.body);
+      await writeTextToClipboard(text);
       markNoteCopySucceeded(actionKey);
       setStorageError("");
     } catch (error) {
       setStorageError(translatedError(error));
     }
+  }
+
+  function copyNoteContent(note: Pick<SelectionNote, "body">, actionKey: string) {
+    return copyTextContent(note.body, actionKey);
   }
 
   function removeDocumentsFromWorkspace(documentIds: Iterable<string>) {
@@ -16034,6 +16413,10 @@ function App() {
       activeGlossaryIsEditing ||
       (pendingAnchor && pendingAnchorIsGlossaryTerm),
   );
+  const floatingPanelIsGlossaryCreate = Boolean(
+    activeGlossaryIsEditing &&
+      activeGlossaryTerm?.id === transientGlossaryTermIdRef.current,
+  );
   const floatingNoteTone = activeNote
     ? (activeNoteToneById.get(activeNote.id) ?? activeNote.tone ?? 0)
     : 0;
@@ -17756,6 +18139,7 @@ function App() {
                   noteModeEnabled={noteModeEnabled}
                   readOnly={previewEditorReadOnly}
                   search={documentSearchState}
+                  selectAllRequestKey={editorSelectAllRequestKey}
                   toolbarEnabled={false}
                   value={selectedDocument.body}
                   codeBlockCopiedLabel={t("codeBlock.copy.copied")}
@@ -17773,6 +18157,7 @@ function App() {
                   noteModeEnabled={noteModeEnabled}
                   readOnly={editorReadOnly}
                   search={documentSearchState}
+                  selectAllRequestKey={editorSelectAllRequestKey}
                   value={selectedDocument.body}
                   onAnnotationClick={showAnnotationViewer}
                   onAnnotationDoubleClick={showAnnotationViewer}
@@ -18207,7 +18592,7 @@ function App() {
                   : "is-below"
             } ${floatingNotePanelExpanded ? "is-expanded-sidebar" : ""} ${
               floatingPanelIsGlossary ? "is-glossary" : "is-note"
-            }`}
+            } ${floatingPanelIsGlossaryCreate ? "is-glossary-create" : ""}`}
             onBlur={handleFloatingNotePanelBlur}
             ref={notePanelRef}
             style={floatingNotePanelStyle}
@@ -18233,30 +18618,30 @@ function App() {
               <div className="floating-note-card__header">
                 <PinBadge ariaLabel={t("note.pin")} />
                 <div className="floating-note-card__header-actions">
-                  {activeNote ? (
+                  {floatingCopyActionKey ? (
                     <button
                       className={`floating-note-copy-button ${
-                        copiedNoteActionKey === `floating:${activeNote.id}`
+                        copiedNoteActionKey === floatingCopyActionKey
                           ? "is-copy-success"
                           : ""
                       }`}
                       type="button"
                       aria-label={
-                        copiedNoteActionKey === `floating:${activeNote.id}`
-                          ? t("note.copy.copied")
-                          : t("note.copy")
+                        copiedNoteActionKey === floatingCopyActionKey
+                          ? floatingCopySuccessLabel
+                          : floatingCopyLabel
                       }
                       title={
-                        copiedNoteActionKey === `floating:${activeNote.id}`
-                          ? t("note.copy.copied")
-                          : t("note.copy")
+                        copiedNoteActionKey === floatingCopyActionKey
+                          ? floatingCopySuccessLabel
+                          : floatingCopyLabel
                       }
                       onClick={(event) => {
                         clearTouchButtonFocus(event.currentTarget);
-                        void copyNoteContent(activeNote, `floating:${activeNote.id}`);
+                        void copyTextContent(floatingCopyContent, floatingCopyActionKey);
                       }}
                     >
-                      {copiedNoteActionKey === `floating:${activeNote.id}` ? (
+                      {copiedNoteActionKey === floatingCopyActionKey ? (
                         <FloatingNoteCheckIcon />
                       ) : (
                         <FloatingNoteCopyIcon />

@@ -43,6 +43,7 @@ const MENU_CLEAR_FAVORITE_DIRECTORIES: &str = "file:clear-favorite-directories";
 const MENU_CLEAR_RECENT_LOCATIONS: &str = "file:clear-recent-locations";
 const MENU_FAVORITE_DIRECTORY_PREFIX: &str = "file:favorite-directory:";
 const MENU_RECENT_LOCATION_PREFIX: &str = "file:recent-location:";
+const MENU_SELECT_ALL: &str = "edit:select-all";
 const MAX_RECENT_LOCATIONS: usize = 12;
 const MAX_FILE_SEARCH_RESULTS: usize = 200;
 const MAX_LOCAL_IMAGE_BYTES: u64 = 64 * 1024 * 1024;
@@ -1554,6 +1555,7 @@ fn menu_text(language: &str, key: &str) -> &'static str {
         ("en", "settings") => "Settings...",
         ("en", "fileMenu") => "File",
         ("en", "editMenu") => "Edit",
+        ("en", "selectAll") => "Select All",
         ("en", "viewMenu") => "View",
         ("en", "windowMenu") => "Window",
         ("en", "helpMenu") => "Help",
@@ -1576,6 +1578,7 @@ fn menu_text(language: &str, key: &str) -> &'static str {
         ("zh-Hans", "settings") => "设置...",
         ("zh-Hans", "fileMenu") => "文件",
         ("zh-Hans", "editMenu") => "编辑",
+        ("zh-Hans", "selectAll") => "全选",
         ("zh-Hans", "viewMenu") => "视图",
         ("zh-Hans", "windowMenu") => "窗口",
         ("zh-Hans", "helpMenu") => "帮助",
@@ -1598,6 +1601,7 @@ fn menu_text(language: &str, key: &str) -> &'static str {
         (_, "settings") => "設定...",
         (_, "fileMenu") => "檔案",
         (_, "editMenu") => "編輯",
+        (_, "selectAll") => "全選",
         (_, "viewMenu") => "檢視",
         (_, "windowMenu") => "視窗",
         (_, "helpMenu") => "說明",
@@ -3904,6 +3908,13 @@ fn build_app_menu(app_handle: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wr
         true,
         Some("CmdOrCtrl+,"),
     )?;
+    let select_all = MenuItem::with_id(
+        app_handle,
+        MENU_SELECT_ALL,
+        menu_text(&language, "selectAll"),
+        true,
+        None::<&str>,
+    )?;
     let cloud_dropbox = MenuItem::with_id(
         app_handle,
         MENU_CLOUD_DROPBOX,
@@ -3969,7 +3980,7 @@ fn build_app_menu(app_handle: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wr
                     &PredefinedMenuItem::cut(app_handle, None)?,
                     &PredefinedMenuItem::copy(app_handle, None)?,
                     &PredefinedMenuItem::paste(app_handle, None)?,
-                    &PredefinedMenuItem::select_all(app_handle, None)?,
+                    &select_all,
                 ],
             )?,
             &Submenu::with_items(
@@ -4218,6 +4229,8 @@ pub fn run() {
         } else if event_id == MENU_OPEN_SETTINGS {
             let _ = emit_to_target_webview_window(app, "menu:open-settings", ());
             let _ = emit_to_target_webview_window(app, "scholium-open-settings", ());
+        } else if event_id == MENU_SELECT_ALL {
+            let _ = emit_to_target_webview_window(app, "scholium-select-all", ());
         } else if event_id == MENU_OPEN_FILE {
             let _ = emit_to_target_webview_window(app, "menu:open-file", ());
             let _ = emit_to_target_webview_window(app, "scholium-open-file", ());
