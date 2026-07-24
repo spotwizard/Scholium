@@ -1,7 +1,8 @@
 # Third-party notices
 
-The desktop floating note and glossary window action icons use Flaticon UIcons Regular Rounded:
+The source mode icon and desktop floating note and glossary window action icons use Flaticon UIcons Regular Rounded:
 
+- [Display Code](https://www.flaticon.com/free-icon-font/display-code_8778036)
 - [Copy](https://www.flaticon.com/free-icon-font/copy_3914097)
 - [Expand](https://www.flaticon.com/free-icon-font/expand_3917480)
 - [Compress](https://www.flaticon.com/free-icon-font/compress_3917438)

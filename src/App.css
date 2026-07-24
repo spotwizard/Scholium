@@ -2756,9 +2756,13 @@ button.document-tag-chip__label:focus-visible {
 }
 
 .editor-mode-toggle__icon {
+  display: block;
   width: 20px;
   height: 20px;
-  fill: currentColor;
+  flex: 0 0 auto;
+  background-color: currentColor;
+  -webkit-mask: url("./assets/source-mode-code.svg") center / contain no-repeat;
+  mask: url("./assets/source-mode-code.svg") center / contain no-repeat;
 }
 
 .mobile-editor-mode-toggle {
@@ -3773,7 +3777,8 @@ button.document-tag-chip__label:focus-visible {
 .milkdown-markdown-editor .milkdown .milkdown-code-block .tools .copy-button {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 0;
+  font-size: 0;
   line-height: 1;
 }
 

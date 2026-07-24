@@ -61,6 +61,7 @@ type MilkdownMarkdownEditorProps = {
   selectAllRequestKey?: number;
   onSearchMatchCountChange?: (count: number) => void;
   toolbarEnabled?: boolean;
+  codeBlockCopyLabel: string;
   codeBlockCopiedLabel: string;
   mermaidEmptyDefinitionLabel: string;
   mermaidErrorLabel: string;
@@ -89,7 +90,7 @@ const milkdownReadonlyGuardPluginKey = new PluginKey(
 const milkdownPlainEnterHardBreakPluginKey = new PluginKey(
   "scholium-milkdown-plain-enter-hard-break",
 );
-const codeBlockCopyFeedbackDurationMs = 2200;
+const codeBlockCopyFeedbackDurationMs = 1500;
 const milkdownStructuredTextAncestorNames = new Set([
   "list_item",
   "listItem",
@@ -1990,6 +1991,7 @@ export function MilkdownMarkdownEditor({
   selectAllRequestKey = 0,
   onSearchMatchCountChange,
   toolbarEnabled = true,
+  codeBlockCopyLabel,
   codeBlockCopiedLabel,
   mermaidEmptyDefinitionLabel,
   mermaidErrorLabel,
@@ -2018,6 +2020,7 @@ export function MilkdownMarkdownEditor({
   const mobileCommittedSelectionKeyRef = useRef(mobileCommittedSelectionKey);
   const mobileSelectionToneForAnchorRef = useRef(mobileSelectionToneForAnchor);
   const onChangeRef = useRef(onChange);
+  const codeBlockCopyLabelRef = useRef(codeBlockCopyLabel);
   const codeBlockCopiedLabelRef = useRef(codeBlockCopiedLabel);
   const mermaidLabelsRef = useRef({
     empty: mermaidEmptyDefinitionLabel,
@@ -2103,6 +2106,17 @@ export function MilkdownMarkdownEditor({
           node.nodeType === Node.TEXT_NODE && Boolean(node.textContent?.trim()),
       ) ?? null
     );
+  }
+
+  function syncCodeBlockCopyButtonLabels() {
+    const root = rootRef.current;
+    if (!root) return;
+
+    root.querySelectorAll<HTMLElement>(".milkdown-code-block .copy-button").forEach((button) => {
+      if (button.classList.contains("is-copy-success")) return;
+      button.setAttribute("aria-label", codeBlockCopyLabelRef.current);
+      button.setAttribute("title", codeBlockCopyLabelRef.current);
+    });
   }
 
   function showCodeBlockCopyFeedback(button: HTMLElement) {
@@ -2931,6 +2945,11 @@ export function MilkdownMarkdownEditor({
   }, [onChange]);
 
   useEffect(() => {
+    codeBlockCopyLabelRef.current = codeBlockCopyLabel;
+    syncCodeBlockCopyButtonLabels();
+  }, [codeBlockCopyLabel]);
+
+  useEffect(() => {
     codeBlockCopiedLabelRef.current = codeBlockCopiedLabel;
   }, [codeBlockCopiedLabel]);
 
@@ -3008,6 +3027,7 @@ export function MilkdownMarkdownEditor({
     if (!root) return undefined;
 
     const observer = new MutationObserver(() => {
+      syncCodeBlockCopyButtonLabels();
       if (readOnlyRef.current || noteModeEnabledRef.current) {
         scheduleReadonlyDomFocusSync();
       }
@@ -3019,6 +3039,7 @@ export function MilkdownMarkdownEditor({
       subtree: true,
     });
 
+    syncCodeBlockCopyButtonLabels();
     scheduleReadonlyDomFocusSync();
 
     const blockedEvents = ["beforeinput", "input", "compositionstart", "cut", "paste", "drop"];
@@ -4217,6 +4238,7 @@ export function MilkdownMarkdownEditor({
 
       ctx.update(codeBlockConfig.key, (previousConfig) => ({
         ...previousConfig,
+        copyText: codeBlockCopyLabelRef.current,
         onCopy: (code) => {
           previousConfig.onCopy?.(code);
           const button = pendingCodeBlockCopyButtonRef.current;
