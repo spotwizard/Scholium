@@ -80,5 +80,13 @@ assert.match(
   appSource,
   /if \(tabSession\) \{\n      const sessionRestored = await restoreDropboxDocumentTabSession\(tabSession\);[\s\S]*?rememberDocumentTabSession\(null\);/,
 );
+assert.match(
+  appSource,
+  /const loaded = await invoke<OpenDropboxMarkdownFileResult>\("open_dropbox_markdown_file",[\s\S]*?if \(options\.openedDirectory\) \{\n        applyOpenedDropboxDirectory\(options\.openedDirectory\);\n      \}\n      applyLoadedDropboxFile\(loaded, \{\n        replaceDocuments: Boolean\(options\.openedDirectory\),/,
+);
+assert.match(
+  appSource,
+  /const filePath =\n        location\.kind === "file"[\s\S]*?if \(filePath\) \{\n        await openDropboxMarkdownFilePath\(filePath, \{\n          allowPendingConnection: connected,\n          openedDirectory,\n        \}\);\n      \} else \{\n        applyOpenedDropboxDirectory\(openedDirectory\);\n      \}/,
+);
 
 console.log("document tab close-others regression: PASS");

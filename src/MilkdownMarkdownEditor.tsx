@@ -1870,12 +1870,14 @@ function targetIsMilkdownAnnotationFrame(target: EventTarget | null) {
 }
 
 function createAnnotationPlugin({
+  allowClickWithSelection,
   getAnnotations,
   getMarkdown,
   onAnnotationClick,
   onAnnotationDoubleClick,
   onFocusTargetAnnotationPress,
 }: {
+  allowClickWithSelection: () => boolean;
   getAnnotations: () => TextAnnotation[];
   getMarkdown: () => string;
   onAnnotationClick: (noteId: string) => void;
@@ -1910,7 +1912,11 @@ function createAnnotationPlugin({
         click(_view, event) {
           const source = annotationSourceFromAnnotationTarget(event.target, getAnnotations());
           if (!source) return false;
-          if (!targetIsMilkdownAnnotationFrame(event.target) && !window.getSelection()?.isCollapsed) {
+          if (
+            !allowClickWithSelection() &&
+            !targetIsMilkdownAnnotationFrame(event.target) &&
+            !window.getSelection()?.isCollapsed
+          ) {
             return false;
           }
 
@@ -2722,6 +2728,12 @@ export function MilkdownMarkdownEditor({
 
   function queueAnnotationClick(noteId: string) {
     clearQueuedAnnotationClick();
+    if (mobileBlockSelectionEnabledRef.current) {
+      window.getSelection()?.removeAllRanges();
+      onAnnotationClickRef.current(noteId);
+      return;
+    }
+
     annotationClickTimerRef.current = window.setTimeout(() => {
       annotationClickTimerRef.current = 0;
       if (focusTargetAnnotationPressIsSuppressed(noteId)) return;
@@ -4246,6 +4258,7 @@ export function MilkdownMarkdownEditor({
         createReadonlyGuardPlugin(),
         ...plugins,
         createAnnotationPlugin({
+          allowClickWithSelection: () => mobileBlockSelectionEnabledRef.current,
           getAnnotations: () => editorAnnotationsRef.current,
           getMarkdown: () => editorMarkdownRef.current,
           onAnnotationClick: queueAnnotationClick,

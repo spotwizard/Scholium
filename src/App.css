@@ -4876,6 +4876,14 @@ button.document-tag-chip__label:focus-visible {
   line-height: var(--note-content-line-height, 1.5);
 }
 
+.note-markdown-editor .markdown-preview[contenteditable="true"][data-empty="true"]::before {
+  position: absolute;
+  inset: 0 auto auto 0;
+  color: var(--color-muted);
+  content: attr(data-placeholder);
+  pointer-events: none;
+}
+
 .scholium-shell.is-mobile-safe-layout .note-markdown-editor :is(.markdown-preview, .note-markdown-editor__preview) {
   min-height: var(--note-markdown-editor-min-height);
 }
@@ -5518,23 +5526,33 @@ button.document-tag-chip__label:focus-visible {
   flex: 0 0 auto;
 }
 
+.floating-note-action-icon--copy,
+.floating-note-action-icon--expand,
+.floating-note-action-icon--collapse {
+  background-color: currentColor;
+  -webkit-mask-position: center;
+  mask-position: center;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-size: contain;
+  mask-size: contain;
+}
+
 .floating-note-action-icon--copy {
   width: 17px;
   height: 17px;
-  background-color: currentColor;
-  -webkit-mask: url("./assets/copy-page.svg") center / contain no-repeat;
-  mask: url("./assets/copy-page.svg") center / contain no-repeat;
+  -webkit-mask-image: url("./assets/copy-page.svg");
+  mask-image: url("./assets/copy-page.svg");
 }
 
-.floating-note-action-icon--raw-svg svg {
-  display: block;
-  width: 100%;
-  height: 100%;
-  fill: currentColor;
+.floating-note-action-icon--expand {
+  -webkit-mask-image: url("./assets/expand.svg");
+  mask-image: url("./assets/expand.svg");
 }
 
-.floating-note-action-icon--raw-svg path {
-  fill: currentColor;
+.floating-note-action-icon--collapse {
+  -webkit-mask-image: url("./assets/collapse.svg");
+  mask-image: url("./assets/collapse.svg");
 }
 
 .floating-note-action-icon--close {
@@ -5543,6 +5561,72 @@ button.document-tag-chip__label:focus-visible {
   font-size: 20px;
   font-weight: 800;
   line-height: 18px;
+}
+
+.floating-note-action-icon--close::before {
+  content: "×";
+}
+
+@media (min-width: 641px) {
+  .floating-note-card__header-actions {
+    gap: 6px;
+  }
+
+  .floating-note-copy-button,
+  .floating-note-panel-toggle-button,
+  .floating-note-close-button {
+    width: 28px;
+    min-width: 28px;
+    height: 28px;
+    min-height: 28px;
+    border-radius: 6px;
+  }
+
+  .floating-note-action-icon,
+  .floating-note-action-icon--copy {
+    width: 16px;
+    height: 16px;
+  }
+
+  .floating-note-action-icon--copy,
+  .floating-note-action-icon--expand,
+  .floating-note-action-icon--collapse,
+  .floating-note-action-icon--close {
+    background-color: currentColor;
+    -webkit-mask-position: center;
+    mask-position: center;
+    -webkit-mask-repeat: no-repeat;
+    mask-repeat: no-repeat;
+    -webkit-mask-size: contain;
+    mask-size: contain;
+  }
+
+  .floating-note-action-icon--copy {
+    -webkit-mask-image: url("./assets/floating-note-copy.svg");
+    mask-image: url("./assets/floating-note-copy.svg");
+  }
+
+  .floating-note-action-icon--expand {
+    -webkit-mask-image: url("./assets/floating-note-expand.svg");
+    mask-image: url("./assets/floating-note-expand.svg");
+  }
+
+  .floating-note-action-icon--collapse {
+    -webkit-mask-image: url("./assets/floating-note-collapse.svg");
+    mask-image: url("./assets/floating-note-collapse.svg");
+  }
+
+  .floating-note-action-icon--close {
+    display: block;
+    width: 14px;
+    height: 14px;
+    -webkit-mask-image: url("./assets/floating-note-close.svg");
+    mask-image: url("./assets/floating-note-close.svg");
+  }
+
+  .floating-note-action-icon--close::before {
+    content: none;
+  }
 }
 
 .floating-note-card__context {
@@ -7867,17 +7951,53 @@ button.document-tag-chip__label:focus-visible {
     right: auto;
     bottom: auto;
     left: var(--visual-viewport-offset-left, 0px);
+    z-index: 65;
     width: var(--visual-viewport-width, 100vw);
     height: var(--visual-viewport-height, 100svh);
+    background: transparent;
+  }
+
+  .scholium-shell.is-mobile-safe-layout.is-note-panel-modal-active .editor-content-frame {
+    position: relative;
+  }
+
+  .scholium-shell.is-mobile-safe-layout.is-note-panel-modal-active .editor-content-frame::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: 65;
+    background: rgba(33, 37, 43, 0.32);
+    pointer-events: none;
+  }
+
+  .scholium-shell.is-mobile-safe-layout.is-note-panel-modal-active .cm-annotation-layer,
+  .scholium-shell.is-mobile-safe-layout.is-note-panel-modal-active
+    .preview-annotation-layer,
+  .scholium-shell.is-mobile-safe-layout.is-note-panel-modal-active
+    .milkdown-annotation-layer,
+  .scholium-shell.is-mobile-safe-layout
+    .milkdown-touch-block-selection-overlay.is-committed {
+    z-index: 66;
+  }
+
+  .scholium-shell.is-mobile-safe-layout.is-note-panel-modal-active
+    .cm-note-annotation.is-focus-target,
+  .scholium-shell.is-mobile-safe-layout.is-note-panel-modal-active
+    .preview-note-annotation.is-focus-target,
+  .scholium-shell.is-mobile-safe-layout.is-note-panel-modal-active
+    .milkdown-note-annotation.is-focus-target {
+    z-index: 67;
   }
 
   .scholium-shell.is-mobile-safe-layout .floating-note-panel:not(.is-expanded-sidebar) {
     position: fixed;
+    z-index: 69;
     width: min(420px, calc(var(--visual-viewport-width, 100vw) - 64px));
   }
 
   .scholium-shell.is-mobile-safe-layout .floating-note-connector {
     position: fixed;
+    z-index: 68;
   }
 
   .mobile-command-bar button {

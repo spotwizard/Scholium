@@ -5,6 +5,7 @@ import { open as openDialog, save } from "@tauri-apps/plugin-dialog";
 import { openUrl as openExternalUrl } from "@tauri-apps/plugin-opener";
 import {
   type ChangeEvent,
+  type ClipboardEvent as ReactClipboardEvent,
   createElement,
   Fragment,
   type CompositionEvent,
@@ -63,11 +64,7 @@ import {
   stripMarkdownFrontmatter,
   writeMarkdownTags,
 } from "./markdownFrontmatter";
-import {
-  markdownHasTable,
-  parseMarkdownTableAt,
-  type MarkdownTable,
-} from "./markdownTable";
+import { parseMarkdownTableAt, type MarkdownTable } from "./markdownTable";
 import {
   readSettingsSnapshot,
   resetSetting,
@@ -666,8 +663,7 @@ function FloatingNoteExpandIcon() {
   return (
     <span
       aria-hidden="true"
-      className="floating-note-action-icon floating-note-action-icon--raw-svg"
-      dangerouslySetInnerHTML={{ __html: expandIconSvg }}
+      className="floating-note-action-icon floating-note-action-icon--expand"
     />
   );
 }
@@ -676,8 +672,7 @@ function FloatingNoteCollapseIcon() {
   return (
     <span
       aria-hidden="true"
-      className="floating-note-action-icon floating-note-action-icon--raw-svg"
-      dangerouslySetInnerHTML={{ __html: collapseIconSvg }}
+      className="floating-note-action-icon floating-note-action-icon--collapse"
     />
   );
 }
@@ -695,9 +690,7 @@ function FloatingNoteCloseIcon() {
     <span
       aria-hidden="true"
       className="floating-note-action-icon floating-note-action-icon--close"
-    >
-      ×
-    </span>
+    />
   );
 }
 
@@ -867,9 +860,16 @@ type FloatingNotePosition = {
   placement: "above" | "below" | "detached";
 };
 
+type FloatingNoteAnchorLock = {
+  key: string;
+  panelEdgeOffset: number;
+  placement: "above" | "below";
+};
+
 type PreviewTextMap = {
   text: string;
   sourceOffsets: Array<number | null>;
+  sourceEndOffset?: number | null;
 };
 
 type PreviewAnnotationTextRange = {
@@ -3233,6 +3233,9 @@ function appendTextMap(target: PreviewTextMap, text: string, sourceStart: number
       sourceStart === null ? null : sourceStart + index,
     ),
   );
+  if (sourceStart !== null) {
+    target.sourceEndOffset = sourceStart + text.length;
+  }
 }
 
 function appendTextMapSeparator(target: PreviewTextMap, separator: string) {
@@ -3242,6 +3245,9 @@ function appendTextMapSeparator(target: PreviewTextMap, separator: string) {
 function appendPreviewTextMap(target: PreviewTextMap, source: PreviewTextMap) {
   target.text += source.text;
   target.sourceOffsets.push(...source.sourceOffsets);
+  if (source.sourceEndOffset !== undefined) {
+    target.sourceEndOffset = source.sourceEndOffset;
+  }
 }
 
 function appendInlineTextMap(target: PreviewTextMap, text: string, sourceStart: number | null) {
@@ -3260,6 +3266,9 @@ function appendInlineTextMap(target: PreviewTextMap, text: string, sourceStart: 
     }
 
     appendTextMap(target, "\n", sourceStart === null ? null : sourceStart + index);
+    if (sourceStart !== null) {
+      target.sourceEndOffset = sourceStart + index + token.length;
+    }
     lastIndex = index + token.length;
   }
 
@@ -4720,6 +4729,29 @@ function appendBlankListItemToTypedMarkdownBlock(block: TypedPreviewMarkdownBloc
   return `${block.markdown}\n`;
 }
 
+function previewTextFromNode(node: Node): string {
+  if (node instanceof Text) return node.data;
+  if (node instanceof HTMLBRElement) return "\n";
+
+  let text = "";
+  Array.from(node.childNodes).forEach((child, index, children) => {
+    const isBlockChild =
+      child instanceof HTMLElement &&
+      ["blockquote", "div", "li", "p", "pre"].includes(child.tagName.toLowerCase());
+    if (isBlockChild && text && !text.endsWith("\n")) {
+      text += "\n";
+    }
+
+    text += previewTextFromNode(child);
+
+    if (isBlockChild && index < children.length - 1 && !text.endsWith("\n")) {
+      text += "\n";
+    }
+  });
+
+  return text;
+}
+
 function directPreviewListItemText(item: HTMLLIElement) {
   const text = Array.from(item.childNodes)
     .filter(
@@ -4729,7 +4761,7 @@ function directPreviewListItemText(item: HTMLLIElement) {
           (node.tagName.toLowerCase() === "ul" || node.tagName.toLowerCase() === "ol")
         ),
     )
-    .map((node) => (node instanceof HTMLElement ? node.innerText : node.textContent ?? ""))
+    .map(previewTextFromNode)
     .join("");
 
   return text.replace(/\u200b/g, "").replace(/\u00a0/g, " ").replace(/\r/g, "").trimEnd();
@@ -4748,7 +4780,7 @@ function directPreviewListNodeText(node: Node): string {
   }
 
   return normalizedPreviewListText(
-    node instanceof HTMLElement ? node.innerText : node.textContent ?? "",
+    previewTextFromNode(node),
   );
 }
 
@@ -4886,10 +4918,39 @@ function listContinuationLine(line: string) {
 
 function markdownFromEditedPreviewBlock(block: MarkdownPreviewBlock, element: HTMLElement) {
   if (block.kind === "unordered-list" || block.kind === "ordered-list") {
-    return markdownFromPreviewListElement(element) ?? markdownFromPreviewBlock(block, element.innerText);
+    return (
+      markdownFromPreviewListElement(element) ??
+      markdownFromPreviewBlock(block, previewTextFromNode(element))
+    );
   }
 
-  return markdownFromPreviewBlock(block, element.innerText);
+  const text = previewTextFromNode(element);
+  if (block.kind === "paragraph" && element.querySelector("br")) {
+    return text
+      .replace(/\u200b/g, "")
+      .replace(/\u00a0/g, " ")
+      .replace(/\r/g, "")
+      .split("\n")
+      .map((line) => line.trimEnd())
+      .join("<br>")
+      .replace(/(?:<br>)+$/, "");
+  }
+
+  return markdownFromPreviewBlock(block, text);
+}
+
+function markdownFromEditedPreviewBlockElements(
+  block: MarkdownPreviewBlock,
+  elements: HTMLElement[],
+) {
+  if (block.kind !== "paragraph" || elements.length <= 1) {
+    return markdownFromEditedPreviewBlock(block, elements[elements.length - 1]);
+  }
+
+  return markdownFromPreviewBlock(
+    block,
+    elements.map(previewTextFromNode).join("\n"),
+  );
 }
 
 function replaceMarkdownBlock(markdown: string, block: MarkdownPreviewBlock, nextBlock: string) {
@@ -4933,10 +4994,81 @@ function selectionOffsetsInElement(element: HTMLElement, selection: Selection) {
   };
 }
 
+function selectionOffsetsWithInlineBreaksInElement(
+  element: HTMLElement,
+  selection: Selection,
+) {
+  if (selection.rangeCount === 0) return null;
+
+  const range = selection.getRangeAt(0);
+  if (
+    !element.contains(range.startContainer) ||
+    !element.contains(range.endContainer)
+  ) {
+    return null;
+  }
+
+  const nodeLength = (node: Node): number => {
+    if (node instanceof Text) return node.data.replace(/\u200b/g, "").length;
+    if (node instanceof HTMLBRElement) return 1;
+
+    return Array.from(node.childNodes).reduce(
+      (length, child) => length + nodeLength(child),
+      0,
+    );
+  };
+  const pointOffset = (targetNode: Node, targetOffset: number) => {
+    let offset = 0;
+
+    function visit(node: Node): boolean {
+      if (node === targetNode) {
+        if (node instanceof Text) {
+          offset += node.data
+            .slice(0, clampNumber(targetOffset, 0, node.data.length))
+            .replace(/\u200b/g, "").length;
+        } else {
+          Array.from(node.childNodes)
+            .slice(0, clampNumber(targetOffset, 0, node.childNodes.length))
+            .forEach((child) => {
+              offset += nodeLength(child);
+            });
+        }
+        return true;
+      }
+
+      for (const child of Array.from(node.childNodes)) {
+        if (child === targetNode || child.contains(targetNode)) {
+          return visit(child);
+        }
+        offset += nodeLength(child);
+      }
+
+      return false;
+    }
+
+    return visit(element) ? offset : null;
+  };
+  const from = pointOffset(range.startContainer, range.startOffset);
+  const to = pointOffset(range.endContainer, range.endOffset);
+  if (from === null || to === null) return null;
+
+  return {
+    from,
+    to,
+  };
+}
+
 function sourcePositionForPreviewTextOffset(textMap: PreviewTextMap, offset: number) {
   if (textMap.sourceOffsets.length === 0) return null;
 
   const clampedOffset = clampNumber(offset, 0, textMap.sourceOffsets.length);
+  if (
+    clampedOffset === textMap.sourceOffsets.length &&
+    textMap.sourceEndOffset !== null &&
+    textMap.sourceEndOffset !== undefined
+  ) {
+    return textMap.sourceEndOffset;
+  }
   const exactOffset = textMap.sourceOffsets[clampedOffset];
   if (exactOffset !== null && exactOffset !== undefined) return exactOffset;
 
@@ -5232,6 +5364,7 @@ function MarkdownPreviewBlockView({
   block,
   markdown,
   annotations,
+  editable,
   mermaidEmptyDefinitionLabel,
   mermaidErrorLabel,
   mermaidLoadingLabel,
@@ -5241,6 +5374,7 @@ function MarkdownPreviewBlockView({
   block: MarkdownPreviewBlock;
   markdown: string;
   annotations: TextRangeAnnotation[];
+  editable: boolean;
   mermaidEmptyDefinitionLabel: string;
   mermaidErrorLabel: string;
   mermaidLoadingLabel: string;
@@ -5344,15 +5478,22 @@ function MarkdownPreviewBlockView({
   }
 
   if (block.kind === "paragraph") {
+    const textMap = getPreviewBlockTextMap(markdown, block);
+
     return (
       <p {...blockProps} className="markdown-preview-editable" key={block.key}>
         {renderPreviewInline(
-          getPreviewBlockTextMap(markdown, block),
+          textMap,
           `${block.key}-paragraph`,
           blockAnnotations,
           onAnnotationClick,
           onAnnotationDoubleClick,
         )}
+        {editable && textMap.text.endsWith("\n") ? (
+          <span aria-hidden="true" data-preview-trailing-caret="true">
+            {"\u200b"}
+          </span>
+        ) : null}
       </p>
     );
   }
@@ -5369,6 +5510,7 @@ export function MarkdownPreview({
   mermaidEmptyDefinitionLabel,
   mermaidErrorLabel,
   mermaidLoadingLabel,
+  placeholder,
   readOnly,
   onChange,
   onSelectionChange,
@@ -5383,6 +5525,7 @@ export function MarkdownPreview({
   mermaidEmptyDefinitionLabel: string;
   mermaidErrorLabel: string;
   mermaidLoadingLabel: string;
+  placeholder?: string;
   readOnly?: boolean;
   onChange: (
     value: string,
@@ -5398,11 +5541,17 @@ export function MarkdownPreview({
 }) {
   const blocks = parseMarkdownPreviewBlocks(value);
   const previewRef = useRef<HTMLDivElement | null>(null);
+  const previewValueRef = useRef(value);
   const annotationClickTimerRef = useRef(0);
   const inputCommitFrameRef = useRef(0);
+  const pendingPreviewTextFocusRef = useRef<{
+    blockKey: string;
+    textOffset: number;
+  } | null>(null);
   const previewUndoStackRef = useRef<string[]>([]);
   const previewRedoStackRef = useRef<string[]>([]);
   const [annotationFrames, setAnnotationFrames] = useState<PreviewAnnotationFrame[]>([]);
+  previewValueRef.current = value;
 
   useEffect(
     () => () => {
@@ -5411,6 +5560,14 @@ export function MarkdownPreview({
     },
     [],
   );
+
+  useLayoutEffect(() => {
+    const pendingFocus = pendingPreviewTextFocusRef.current;
+    if (!pendingFocus) return;
+
+    pendingPreviewTextFocusRef.current = null;
+    applyPreviewBlockTextOffset(pendingFocus.blockKey, pendingFocus.textOffset);
+  }, [value]);
 
   useLayoutEffect(() => {
     if (allowSelectedTextEnterEdit) return;
@@ -5648,6 +5805,70 @@ export function MarkdownPreview({
     });
   }
 
+  function applyPreviewBlockTextOffset(blockKey: string, textOffset: number) {
+    const previewElement = previewRef.current;
+    const blockElement = Array.from(
+      previewElement?.querySelectorAll<HTMLElement>("[data-preview-block-key]") ?? [],
+    ).find((element) => element.dataset.previewBlockKey === blockKey);
+    if (!blockElement) return;
+
+    let remainingOffset = Math.max(0, textOffset);
+    const walker = document.createTreeWalker(
+      blockElement,
+      NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT,
+    );
+    let node = walker.nextNode();
+    let focusNode: Node = blockElement;
+    let focusOffset = blockElement.childNodes.length;
+
+    while (node) {
+      if (node instanceof Text) {
+        const textLength = node.data.length;
+        if (remainingOffset <= textLength) {
+          focusNode = node;
+          focusOffset = remainingOffset;
+          break;
+        }
+        remainingOffset -= textLength;
+      } else if (node instanceof HTMLBRElement) {
+        if (remainingOffset <= 1) {
+          const trailingCaretText =
+            remainingOffset === 1 &&
+            node.nextSibling instanceof HTMLElement &&
+            node.nextSibling.dataset.previewTrailingCaret === "true" &&
+            node.nextSibling.firstChild instanceof Text
+              ? node.nextSibling.firstChild
+              : null;
+          if (trailingCaretText) {
+            focusNode = trailingCaretText;
+            focusOffset = trailingCaretText.data.length;
+          } else {
+            focusNode = node.parentNode ?? blockElement;
+            focusOffset = Array.from(focusNode.childNodes).indexOf(node) + remainingOffset;
+          }
+          break;
+        }
+        remainingOffset -= 1;
+      }
+
+      node = walker.nextNode();
+    }
+
+    previewElement?.focus();
+    const selection = window.getSelection();
+    if (!selection) return;
+
+    const range = document.createRange();
+    range.setStart(focusNode, focusOffset);
+    range.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }
+
+  function focusPreviewBlockTextOffset(blockKey: string, textOffset: number) {
+    pendingPreviewTextFocusRef.current = { blockKey, textOffset };
+  }
+
   function focusPreviewListItem(
     blockKey: string,
     itemIndex: number,
@@ -5686,10 +5907,39 @@ export function MarkdownPreview({
     blockElement.dataset.edited = "true";
   }
 
-  function childNodeText(node: ChildNode) {
-    if (node instanceof HTMLElement) return node.innerText;
+  function previewTextFocusFromSelection(blockElement: HTMLElement) {
+    const blockKey = blockElement.dataset.previewBlockKey;
+    const selection = window.getSelection();
+    const offsets = selection
+      ? selectionOffsetsWithInlineBreaksInElement(blockElement, selection)
+      : null;
+    const matchingElements = blockKey
+      ? Array.from(
+          previewRef.current?.querySelectorAll<HTMLElement>("[data-preview-block-key]") ?? [],
+        ).filter((element) => element.dataset.previewBlockKey === blockKey)
+      : [];
+    const blockElementIndex = matchingElements.indexOf(blockElement);
+    const precedingTextLength =
+      blockElementIndex > 0
+        ? matchingElements
+            .slice(0, blockElementIndex)
+            .reduce(
+              (length, element) =>
+                length + previewTextFromNode(element).replace(/\u200b/g, "").length + 1,
+              0,
+            )
+        : 0;
 
-    return node.textContent ?? "";
+    return blockKey && offsets
+      ? { blockKey, textOffset: precedingTextLength + offsets.to }
+      : null;
+  }
+
+  function childNodeText(node: ChildNode) {
+    const text = previewTextFromNode(node);
+    if (node instanceof HTMLBRElement || text !== "\n") return text;
+
+    return "";
   }
 
   function clearTransientPreviewNodes(nodes: ChildNode[]) {
@@ -5828,7 +6078,7 @@ export function MarkdownPreview({
     previousBlock: MarkdownPreviewBlock | null,
     markdownBlock: string,
   ) {
-    const lines = value.replace(/\r\n/g, "\n").split("\n");
+    const lines = previewValueRef.current.replace(/\r\n/g, "\n").split("\n");
     const insertIndex = previousBlock ? previousBlock.endLine + 1 : 0;
     const leadingBlankLineCount = previousBlock ? 1 : 0;
     const insertedLines = [
@@ -6041,6 +6291,18 @@ export function MarkdownPreview({
     }
 
     const nativeEvent = event.nativeEvent as InputEvent;
+    if (nativeEvent.defaultPrevented) return;
+    if (
+      commitOnInput &&
+      nativeEvent.inputType === "insertLineBreak" &&
+      !nativeEvent.isComposing
+    ) {
+      if (commitPreviewSoftBreak()) {
+        event.preventDefault();
+      }
+      return;
+    }
+
     if (nativeEvent.inputType !== "insertText" || nativeEvent.data !== " ") return;
 
     const textBeforeCaret = textBeforePreviewCaretOnCurrentLine(event.currentTarget);
@@ -6072,12 +6334,103 @@ export function MarkdownPreview({
     return insertPlainPreviewText(" ");
   }
 
+  function selectAllPreviewContent(previewElement: HTMLElement) {
+    const blockElements = Array.from(
+      previewElement.querySelectorAll<HTMLElement>("[data-preview-block-key]"),
+    );
+    const firstBlock = blockElements[0];
+    const lastBlock = blockElements[blockElements.length - 1];
+    const selection = window.getSelection();
+    if (!firstBlock || !lastBlock || !selection) return false;
+
+    const range = document.createRange();
+    range.setStart(firstBlock, 0);
+    range.setEnd(lastBlock, lastBlock.childNodes.length);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    handlePreviewSelection();
+    return true;
+  }
+
+  function selectionCoversAllPreviewContent(
+    previewElement: HTMLElement,
+    selection: Selection,
+  ) {
+    if (selection.isCollapsed || selection.rangeCount === 0) return false;
+
+    const blockElements = Array.from(
+      previewElement.querySelectorAll<HTMLElement>("[data-preview-block-key]"),
+    );
+    const firstBlock = blockElements[0];
+    const lastBlock = blockElements[blockElements.length - 1];
+    if (!firstBlock || !lastBlock) return false;
+
+    const contentRange = document.createRange();
+    contentRange.setStart(firstBlock, 0);
+    contentRange.setEnd(lastBlock, lastBlock.childNodes.length);
+    const selectionRange = selection.getRangeAt(0);
+
+    return (
+      selectionRange.compareBoundaryPoints(Range.START_TO_START, contentRange) <= 0 &&
+      selectionRange.compareBoundaryPoints(Range.END_TO_END, contentRange) >= 0
+    );
+  }
+
+  function handlePreviewPaste(event: ReactClipboardEvent<HTMLDivElement>) {
+    if (readOnly || !commitOnInput) return;
+
+    const selection = window.getSelection();
+    if (!selection || selection.isCollapsed || selection.rangeCount === 0) return;
+
+    const previewElement = event.currentTarget;
+    const selectedRange = selectionCoversAllPreviewContent(previewElement, selection)
+      ? { from: 0, to: previewValueRef.current.length }
+      : makePreviewAnchorFromSelection(
+          previewValueRef.current,
+          blocks,
+          previewElement,
+          selection,
+        );
+    if (!selectedRange) return;
+
+    const pastedText = event.clipboardData
+      .getData("text/plain")
+      .replace(/\r\n?/g, "\n");
+    event.preventDefault();
+    event.stopPropagation();
+    window.cancelAnimationFrame(inputCommitFrameRef.current);
+    inputCommitFrameRef.current = 0;
+    pendingPreviewTextFocusRef.current = null;
+    window.getSelection()?.removeAllRanges();
+    onSelectionChange(null);
+
+    const nextValue =
+      previewValueRef.current.slice(0, selectedRange.from) +
+      pastedText +
+      previewValueRef.current.slice(selectedRange.to);
+    commitPreviewChange(nextValue);
+
+    const caretLine =
+      nextValue.slice(0, selectedRange.from + pastedText.length).split("\n").length - 1;
+    const nextBlocks = parseMarkdownPreviewBlocks(nextValue);
+    const focusBlock =
+      nextBlocks.find(
+        (block) => block.startLine <= caretLine && block.endLine >= caretLine,
+      ) ??
+      nextBlocks.filter((block) => block.endLine < caretLine).slice(-1)[0] ??
+      nextBlocks[0];
+    if (focusBlock) {
+      focusPreviewBlockEnd(focusBlock.key);
+    }
+  }
+
   function handlePreviewInput(event: FormEvent<HTMLDivElement>) {
     if (readOnly) {
       event.preventDefault();
       return;
     }
 
+    const previewElement = event.currentTarget;
     const blockElement =
       previewBlockElementFromTarget(event.target) ?? previewBlockElementFromSelection();
     if (blockElement) {
@@ -6087,21 +6440,38 @@ export function MarkdownPreview({
     if (!commitOnInput) return;
     if ((event.nativeEvent as InputEvent).isComposing) return;
 
+    const pendingFocus = blockElement
+      ? previewTextFocusFromSelection(blockElement)
+      : null;
+    if (pendingFocus) {
+      pendingPreviewTextFocusRef.current = pendingFocus;
+    }
     window.cancelAnimationFrame(inputCommitFrameRef.current);
     inputCommitFrameRef.current = window.requestAnimationFrame(() => {
       inputCommitFrameRef.current = 0;
-      commitPendingPreviewInput(event.currentTarget);
+      if (!commitPendingPreviewInput(previewElement) && pendingFocus) {
+        pendingPreviewTextFocusRef.current = null;
+      }
     });
   }
 
   function handlePreviewCompositionEnd(event: CompositionEvent<HTMLDivElement>) {
     if (readOnly || !commitOnInput) return;
 
+    const previewElement = event.currentTarget;
+    const blockElement =
+      previewBlockElementFromTarget(event.target) ?? previewBlockElementFromSelection();
+    const pendingFocus = blockElement
+      ? previewTextFocusFromSelection(blockElement)
+      : null;
+    if (pendingFocus) {
+      pendingPreviewTextFocusRef.current = pendingFocus;
+    }
     window.cancelAnimationFrame(inputCommitFrameRef.current);
-    inputCommitFrameRef.current = window.requestAnimationFrame(() => {
-      inputCommitFrameRef.current = 0;
-      commitPendingPreviewInput(event.currentTarget);
-    });
+    inputCommitFrameRef.current = 0;
+    if (!commitPendingPreviewInput(previewElement) && pendingFocus) {
+      pendingPreviewTextFocusRef.current = null;
+    }
   }
 
   function listItemElementFromSelection(blockElement: HTMLElement) {
@@ -6186,7 +6556,7 @@ export function MarkdownPreview({
     const block = blockForPreviewElement(blockElement);
     if (!block || block.kind === "code") return false;
 
-    const lines = blockElement.innerText
+    const lines = previewTextFromNode(blockElement)
       .replace(/\u200b/g, "")
       .replace(/\u00a0/g, " ")
       .split("\n")
@@ -6221,12 +6591,22 @@ export function MarkdownPreview({
       .split("\n")
       .map((line) => line.replace(/\r$/, ""));
     const typedMarkdownBlock = typedMarkdownBlockFromLines(lines);
+    const preserveSoftBreaks = transientEdit.transientNodes.some(
+      (node) => node.dataset.previewSoftBreaks === "true",
+    );
+    if (preserveSoftBreaks && lines[lines.length - 1] === "") {
+      lines.pop();
+    }
     const markdownBlock =
       typedMarkdownBlock?.markdown ??
-      lines
-        .map((line) => line.trimEnd())
-        .join("\n")
-        .trim();
+      (preserveSoftBreaks
+        ? lines.some((line) => line.trim())
+          ? lines.map((line) => line.trimEnd()).join("<br>")
+          : ""
+        : lines
+            .map((line) => line.trimEnd())
+            .join("\n")
+            .trim());
     if (!markdownBlock) return false;
 
     const { nextValue, insertedBlockKey } = insertMarkdownAfterBlock(
@@ -6238,7 +6618,7 @@ export function MarkdownPreview({
         : markdownBlock,
     );
 
-    if (nextValue === value) return false;
+    if (nextValue === previewValueRef.current) return false;
 
     clearTransientPreviewNodes(transientEdit.transientNodes);
     commitPreviewChange(nextValue);
@@ -6258,7 +6638,7 @@ export function MarkdownPreview({
         .map((line) => line.trimEnd())
         .join("\n")
         .trim();
-    if (nextValue === value) return false;
+    if (nextValue === previewValueRef.current) return false;
 
     commitPreviewChange(nextValue);
     return true;
@@ -6268,31 +6648,50 @@ export function MarkdownPreview({
     const previewElement = previewRef.current;
     if (!previewElement) return false;
 
-    const editedBlocks = Array.from(
-      previewElement.querySelectorAll<HTMLElement>("[data-preview-block-key][data-edited='true']"),
-    )
-      .map((element) => {
-        const block = blockForPreviewElement(element);
-        return block ? { block, element } : null;
+    const previewBlockElements = Array.from(
+      previewElement.querySelectorAll<HTMLElement>("[data-preview-block-key]"),
+    );
+    const editedBlockKeys = new Set(
+      previewBlockElements
+        .filter((element) => element.dataset.edited === "true")
+        .map((element) => element.dataset.previewBlockKey)
+        .filter((blockKey): blockKey is string => Boolean(blockKey)),
+    );
+    const editedBlocks = Array.from(editedBlockKeys)
+      .map((blockKey) => {
+        const block = blocks.find((candidate) => candidate.key === blockKey);
+        const elements = previewBlockElements.filter(
+          (element) => element.dataset.previewBlockKey === blockKey,
+        );
+        return block && elements.length > 0 ? { block, blockKey, elements } : null;
       })
-      .filter((edit): edit is { block: MarkdownPreviewBlock; element: HTMLElement } =>
+      .filter((edit): edit is {
+        block: MarkdownPreviewBlock;
+        blockKey: string;
+        elements: HTMLElement[];
+      } =>
         Boolean(edit),
       )
       .sort((left, right) => right.block.startLine - left.block.startLine);
 
     if (editedBlocks.length === 0) return false;
 
-    let nextValue = value;
-    editedBlocks.forEach(({ block, element }) => {
+    const currentValue = previewValueRef.current;
+    let nextValue = currentValue;
+    editedBlocks.forEach(({ block, blockKey, elements }) => {
+      const currentBlock =
+        parseMarkdownPreviewBlocks(nextValue).find(
+          (candidate) => candidate.key === blockKey,
+        ) ?? block;
       nextValue = replaceMarkdownBlock(
         nextValue,
-        block,
-        markdownFromEditedPreviewBlock(block, element),
+        currentBlock,
+        markdownFromEditedPreviewBlockElements(currentBlock, elements),
       );
-      delete element.dataset.edited;
+      elements.forEach((element) => delete element.dataset.edited);
     });
 
-    if (nextValue === value) return false;
+    if (nextValue === currentValue) return false;
 
     commitPreviewChange(nextValue);
     return true;
@@ -6308,8 +6707,50 @@ export function MarkdownPreview({
     return true;
   }
 
+  function commitPreviewSoftBreak() {
+    const previewElement = previewRef.current;
+    if (previewElement) {
+      window.cancelAnimationFrame(inputCommitFrameRef.current);
+      inputCommitFrameRef.current = 0;
+      commitPendingPreviewInput(previewElement);
+    }
+
+    const selection = window.getSelection();
+    const blockElement = previewBlockElementFromSelection();
+    if (!selection || !blockElement) return false;
+
+    const renderedBlock = blockForPreviewElement(blockElement);
+    const offsets = selectionOffsetsWithInlineBreaksInElement(blockElement, selection);
+    if (!renderedBlock || !offsets) return false;
+
+    const currentValue = previewValueRef.current;
+    const block =
+      parseMarkdownPreviewBlocks(currentValue).find(
+        (candidate) => candidate.key === renderedBlock.key,
+      ) ?? renderedBlock;
+    const textMap = getPreviewBlockTextMap(currentValue, block);
+    const sourceRange = sourceRangeForPreviewTextOffsets(textMap, offsets.from, offsets.to);
+    if (!sourceRange) return false;
+
+    const softBreak = block.kind === "code" ? "\n" : "<br>";
+    const precedingWhitespace =
+      currentValue.slice(0, sourceRange.from).match(/[ \t]+$/)?.[0] ?? "";
+    const breakFrom = sourceRange.from - precedingWhitespace.length;
+    delete blockElement.dataset.edited;
+    focusPreviewBlockTextOffset(
+      block.key,
+      Math.max(0, offsets.from - precedingWhitespace.length) + 1,
+    );
+    commitPreviewChange(
+      currentValue.slice(0, breakFrom) +
+        softBreak +
+        currentValue.slice(sourceRange.to),
+    );
+    return true;
+  }
+
   function commitPreviewBlockMarkdown(block: MarkdownPreviewBlock, markdownBlock: string) {
-    const nextValue = replaceMarkdownBlock(value, block, markdownBlock);
+    const nextValue = replaceMarkdownBlock(previewValueRef.current, block, markdownBlock);
 
     commitPreviewChange(nextValue);
   }
@@ -6372,6 +6813,15 @@ export function MarkdownPreview({
       return;
     }
 
+    if (shouldHandlePreviewSelectAllShortcut(event.nativeEvent, true, false)) {
+      const previewElement = previewRef.current;
+      if (!previewElement || !selectAllPreviewContent(previewElement)) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+
     if (isUndoKeyboardShortcut(event)) {
       if (previewHasActiveUncommittedEdit()) return;
       if (!undoPreviewChange()) return;
@@ -6385,6 +6835,26 @@ export function MarkdownPreview({
     if (handlePreviewListDelete(event)) return;
     if (handlePreviewInlineShortcut(event)) return;
     if (handlePreviewMarkdownShortcutSpace(event)) return;
+
+    const isSoftEnter =
+      event.key === "Enter" &&
+      !event.metaKey &&
+      !event.ctrlKey &&
+      !event.altKey &&
+      event.shiftKey;
+    if (isSoftEnter && commitOnInput && !event.nativeEvent.isComposing) {
+      if (!commitPreviewSoftBreak()) {
+        const transientElement = transientPreviewElementFromSelection();
+        if (transientElement) {
+          transientElement.dataset.previewSoftBreaks = "true";
+        }
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
 
     const isPlainEnter =
       event.key === "Enter" &&
@@ -6484,23 +6954,25 @@ export function MarkdownPreview({
     const previousValue = previewUndoStackRef.current.pop();
     if (!previousValue) return false;
 
-    previewRedoStackRef.current.push(value);
+    previewRedoStackRef.current.push(previewValueRef.current);
+    previewValueRef.current = previousValue;
     onSelectionChange(null);
     onChange(previousValue, "undo");
     return true;
   }
 
   function commitPreviewChange(nextValue: string, anchorTransform?: BodyAnchorTransform) {
-    if (nextValue === value) return;
-
+    const previousValue = previewValueRef.current;
+    if (nextValue === previousValue) return;
     const undoStack = previewUndoStackRef.current;
-    if (undoStack[undoStack.length - 1] !== value) {
-      undoStack.push(value);
+    if (undoStack[undoStack.length - 1] !== previousValue) {
+      undoStack.push(previousValue);
       if (undoStack.length > 100) {
         undoStack.shift();
       }
     }
     previewRedoStackRef.current = [];
+    previewValueRef.current = nextValue;
     onChange(nextValue, "user", anchorTransform);
   }
 
@@ -6508,6 +6980,8 @@ export function MarkdownPreview({
     <div
       className="markdown-preview"
       contentEditable={!readOnly}
+      data-empty={blocks.length === 0 ? "true" : undefined}
+      data-placeholder={placeholder}
       aria-readonly={readOnly || undefined}
       ref={previewRef}
       autoCapitalize="off"
@@ -6520,6 +6994,7 @@ export function MarkdownPreview({
       onCompositionEnd={handlePreviewCompositionEnd}
       onInput={handlePreviewInput}
       onKeyDownCapture={handlePreviewKeyDown}
+      onPaste={handlePreviewPaste}
       onKeyUp={handlePreviewSelection}
       onMouseDownCapture={handlePreviewMouseDown}
       onMouseUpCapture={handlePreviewMouseUp}
@@ -6531,6 +7006,7 @@ export function MarkdownPreview({
             key={block.key}
             markdown={value}
             annotations={annotations}
+            editable={!readOnly}
             mermaidEmptyDefinitionLabel={mermaidEmptyDefinitionLabel}
             mermaidErrorLabel={mermaidErrorLabel}
             mermaidLoadingLabel={mermaidLoadingLabel}
@@ -6720,21 +7196,6 @@ function MarkdownPreviewContent({
   );
 }
 
-function noteValueCanUsePlainTextPreview(value: string) {
-  const body = stripMarkdownFrontmatter(value);
-  if (!body.trim()) return true;
-
-  return !(
-    markdownHasTable(body) ||
-    /^ {0,3}#{1,6}\s+\S/m.test(body) ||
-    /^ {0,3}([-*+]\s+|\d+[.)]\s+)/m.test(body) ||
-    /^ {0,3}>\s?/m.test(body) ||
-    /^ {0,3}(```|~~~)/m.test(body) ||
-    /^ {0,3}(-{3,}|\*{3,}|_{3,})\s*$/m.test(body) ||
-    /(`[^`]+`|\*\*[^*]+\*\*|\*[^*\n]+\*|\[[^\]]+\]\([^)]+\)|!\[[^\]]*\]\([^)]+\)|<br\s*\/?>)/i.test(body)
-  );
-}
-
 function keyboardEventIsComposing(event: KeyboardEvent | ReactKeyboardEvent<HTMLElement>) {
   const nativeEvent =
     "nativeEvent" in event
@@ -6742,28 +7203,6 @@ function keyboardEventIsComposing(event: KeyboardEvent | ReactKeyboardEvent<HTML
       : event;
 
   return Boolean(nativeEvent.isComposing || nativeEvent.keyCode === 229);
-}
-
-function ensureEmptyEditablePreviewLine(editableElement: HTMLElement) {
-  if (!editableElement.classList.contains("markdown-preview")) return null;
-
-  const existingInputTarget =
-    editableElement.querySelector<HTMLElement>("[data-preview-transient='true']") ??
-    editableElement.querySelector<HTMLElement>("[data-preview-block-key]");
-  if (existingInputTarget) return existingInputTarget;
-
-  const lineElement = document.createElement("div");
-  lineElement.className = "markdown-preview-editable";
-  lineElement.dataset.previewTransient = "true";
-  lineElement.dataset.previewPreviousBlockKey = "";
-  lineElement.append(document.createElement("br"));
-
-  const annotationLayer = editableElement.querySelector<HTMLElement>(
-    ".preview-annotation-layer",
-  );
-  editableElement.insertBefore(lineElement, annotationLayer);
-
-  return lineElement;
 }
 
 function textareaValueWithListContinuation(
@@ -6812,6 +7251,28 @@ function textareaValueWithListContinuation(
   return null;
 }
 
+function ensureEmptyEditablePreviewLine(editableElement: HTMLElement) {
+  if (!editableElement.classList.contains("markdown-preview")) return null;
+
+  const existingInputTarget =
+    editableElement.querySelector<HTMLElement>("[data-preview-transient='true']") ??
+    editableElement.querySelector<HTMLElement>("[data-preview-block-key]");
+  if (existingInputTarget) return existingInputTarget;
+
+  const lineElement = document.createElement("div");
+  lineElement.className = "markdown-preview-editable";
+  lineElement.dataset.previewTransient = "true";
+  lineElement.dataset.previewPreviousBlockKey = "";
+  lineElement.append(document.createElement("br"));
+
+  const annotationLayer = editableElement.querySelector<HTMLElement>(
+    ".preview-annotation-layer",
+  );
+  editableElement.insertBefore(lineElement, annotationLayer);
+
+  return lineElement;
+}
+
 function resizeNoteTextareaToContent(textarea: HTMLTextAreaElement) {
   const computedStyle = window.getComputedStyle(textarea);
   const parsedLineHeight = Number.parseFloat(computedStyle.lineHeight);
@@ -6840,10 +7301,58 @@ function resizeNoteTextareaToContent(textarea: HTMLTextAreaElement) {
   }
 }
 
+type CaretPositionDocument = Document & {
+  caretPositionFromPoint?: (
+    clientX: number,
+    clientY: number,
+  ) => { offsetNode: Node; offset: number } | null;
+  caretRangeFromPoint?: (clientX: number, clientY: number) => Range | null;
+};
+
+function caretRangeFromPoint(clientX: number, clientY: number) {
+  const caretDocument = document as CaretPositionDocument;
+  const caretPosition = caretDocument.caretPositionFromPoint?.(clientX, clientY);
+
+  if (caretPosition) {
+    const range = document.createRange();
+    range.setStart(caretPosition.offsetNode, caretPosition.offset);
+    range.collapse(true);
+    return range;
+  }
+
+  return caretDocument.caretRangeFromPoint?.(clientX, clientY) ?? null;
+}
+
+function focusEditableElementAtPoint(
+  editableElement: HTMLElement,
+  point: { clientX: number; clientY: number } | null,
+) {
+  editableElement.focus({ preventScroll: true });
+
+  const range = point ? caretRangeFromPoint(point.clientX, point.clientY) : null;
+  if (range && editableElement.contains(range.startContainer)) {
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    return;
+  }
+
+  const focusTarget = ensureEmptyEditablePreviewLine(editableElement) ?? editableElement;
+  const selection = window.getSelection();
+  if (!selection) return;
+
+  const fallbackRange = document.createRange();
+  fallbackRange.selectNodeContents(focusTarget);
+  fallbackRange.collapse(false);
+  selection.removeAllRanges();
+  selection.addRange(fallbackRange);
+}
+
 function NoteMarkdownEditor({
   ariaLabel,
   autoFocusOnEdit = true,
   className = "",
+  editingSurface = "rendered",
   editing = true,
   editorRootRef,
   mermaidEmptyDefinitionLabel,
@@ -6863,6 +7372,7 @@ function NoteMarkdownEditor({
   ariaLabel: string;
   autoFocusOnEdit?: boolean;
   className?: string;
+  editingSurface?: "rendered" | "source";
   editing?: boolean;
   editorRootRef?: (element: HTMLDivElement | null) => void;
   mermaidEmptyDefinitionLabel: string;
@@ -6883,15 +7393,6 @@ function NoteMarkdownEditor({
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const pendingEditPointerRef = useRef<{ clientX: number; clientY: number } | null>(null);
   const isEditable = editing && !readOnly;
-  const usePlainTextPreview = noteValueCanUsePlainTextPreview(value);
-  const previewIsEmpty = !stripMarkdownFrontmatter(value).trim();
-  const previewVisibilityStyle: CSSProperties = {
-    opacity: isEditable ? 0 : 1,
-    pointerEvents: isEditable ? "none" : "auto",
-    zIndex: isEditable ? -1 : 1,
-    visibility: isEditable ? "hidden" : "visible",
-  };
-
   const editorClassName = [
     "note-markdown-editor",
     "note-markdown-editor--preview",
@@ -6901,33 +7402,45 @@ function NoteMarkdownEditor({
   ]
     .filter(Boolean)
     .join(" ");
+  const noopSelectionHandler = () => undefined;
 
   useLayoutEffect(() => {
     if (!isEditable) return;
 
     window.requestAnimationFrame(() => {
-      const textarea = textareaRef.current;
-      if (!textarea) return;
+      if (editingSurface === "source") {
+        const textarea = textareaRef.current;
+        if (!textarea) return;
+        resizeNoteTextareaToContent(textarea);
+        if (!autoFocusOnEdit) return;
 
-      resizeNoteTextareaToContent(textarea);
+        textarea.focus({ preventScroll: true });
+        const selectionOffset = textarea.value.length;
+        textarea.setSelectionRange(selectionOffset, selectionOffset);
+        pendingEditPointerRef.current = null;
+        return;
+      }
+
+      const editableElement = rootRef.current?.querySelector<HTMLElement>(
+        ".markdown-preview[contenteditable='true']",
+      );
+      if (!editableElement) return;
       if (!autoFocusOnEdit) {
         pendingEditPointerRef.current = null;
         return;
       }
 
-      textarea.focus({ preventScroll: true });
-      const selectionOffset = textarea.value.length;
-      textarea.setSelectionRange(selectionOffset, selectionOffset);
+      focusEditableElementAtPoint(editableElement, pendingEditPointerRef.current);
       pendingEditPointerRef.current = null;
     });
-  }, [autoFocusOnEdit, isEditable]);
+  }, [autoFocusOnEdit, editingSurface, isEditable]);
 
   useLayoutEffect(() => {
     const textarea = textareaRef.current;
-    if (!isEditable || !textarea) return;
+    if (!isEditable || editingSurface !== "source" || !textarea) return;
 
     resizeNoteTextareaToContent(textarea);
-  }, [isEditable, value]);
+  }, [editingSurface, isEditable, value]);
 
   function setRootElement(element: HTMLDivElement | null) {
     rootRef.current = element;
@@ -6993,10 +7506,13 @@ function NoteMarkdownEditor({
       className={editorClassName}
       onBlur={handleBlur}
       onClick={onClick}
+      onCompositionEnd={editingSurface === "rendered" ? onCompositionEnd : undefined}
+      onCompositionStart={editingSurface === "rendered" ? onCompositionStart : undefined}
+      onKeyDownCapture={editingSurface === "rendered" ? onKeyDown : undefined}
       onPointerDownCapture={handlePointerDownCapture}
       ref={setRootElement}
     >
-      <div className="note-markdown-editor__shared-height-container">
+      {editingSurface === "source" && isEditable ? (
         <textarea
           aria-label={ariaLabel}
           className="note-markdown-editor__textarea"
@@ -7009,36 +7525,25 @@ function NoteMarkdownEditor({
           onCompositionEnd={onCompositionEnd}
           onCompositionStart={onCompositionStart}
           onKeyDown={handleTextareaKeyDown}
-          style={{
-            opacity: isEditable ? 1 : 0,
-            pointerEvents: isEditable ? "auto" : "none",
-            zIndex: isEditable ? 1 : -1,
-            visibility: isEditable ? "visible" : "hidden",
-          }}
         />
-        {usePlainTextPreview ? (
-          <div
-            className={`note-markdown-editor__preview note-markdown-editor__plain-preview ${
-              previewIsEmpty ? "is-empty" : ""
-            }`}
-            onDoubleClick={readOnly ? undefined : onRequestEdit}
-            style={previewVisibilityStyle}
-          >
-            {previewIsEmpty ? "" : stripMarkdownFrontmatter(value)}
-          </div>
-        ) : (
-          <MarkdownPreviewContent
-            className="note-markdown-editor__preview"
-            emptyLabel=""
-            mermaidEmptyDefinitionLabel={mermaidEmptyDefinitionLabel}
-            mermaidErrorLabel={mermaidErrorLabel}
-            mermaidLoadingLabel={mermaidLoadingLabel}
-            onDoubleClick={readOnly ? undefined : onRequestEdit}
-            value={value}
-            style={previewVisibilityStyle}
-          />
-        )}
-      </div>
+      ) : (
+        <MarkdownPreview
+          annotations={[]}
+          allowSelectedTextEnterEdit
+          commitOnInput
+          enableTabIndent
+          mermaidEmptyDefinitionLabel={mermaidEmptyDefinitionLabel}
+          mermaidErrorLabel={mermaidErrorLabel}
+          mermaidLoadingLabel={mermaidLoadingLabel}
+          placeholder={placeholder}
+          readOnly={!isEditable}
+          value={value}
+          onAnnotationClick={noopSelectionHandler}
+          onChange={(nextValue) => onChange(nextValue)}
+          onSelectionChange={noopSelectionHandler}
+          onSelectionEnter={() => false}
+        />
+      )}
     </div>
   );
 }
@@ -7269,6 +7774,7 @@ function App() {
   const notePanelCloseTimerRef = useRef(0);
   const floatingNotePanelPositionFrameRef = useRef(0);
   const floatingNoteAnchorRectRef = useRef<TextRangeRect | null>(null);
+  const floatingNoteAnchorLockRef = useRef<FloatingNoteAnchorLock | null>(null);
   const lastPointerAnchorRectRef = useRef<TextRangeRect | null>(null);
   const directoryPaneOpenBeforeNoteLibraryRef = useRef<boolean | null>(null);
   const directoryPaneOpenBeforeFullscreenRef = useRef<boolean | null>(null);
@@ -7845,6 +8351,13 @@ function App() {
       if (event.button !== 0) return;
       if (targetIsInsideNoteMarkdownEditor(event.target)) return;
 
+      const activeElement = document.activeElement;
+      if (
+        activeElement instanceof HTMLElement &&
+        targetIsInsideNoteMarkdownEditor(activeElement)
+      ) {
+        activeElement.blur();
+      }
       setActiveNoteEditorKey("");
     }
 
@@ -8278,6 +8791,7 @@ function App() {
     if (!notePanelHasContent) {
       window.cancelAnimationFrame(floatingNotePanelPositionFrameRef.current);
       floatingNoteAnchorRectRef.current = null;
+      floatingNoteAnchorLockRef.current = null;
       setFloatingNotePanelPosition(null);
       return;
     }
@@ -8312,11 +8826,18 @@ function App() {
           return;
         }
         const cardRect = card.getBoundingClientRect();
+        const cardSize = {
+          height: card.offsetHeight || cardRect.height,
+          width: card.offsetWidth || cardRect.width,
+        };
 
         function setPositionForAnchor(anchorRect: TextRangeRect | null) {
+          if (!anchorRect) {
+            floatingNoteAnchorLockRef.current = null;
+          }
           const nextPosition = anchorRect
-            ? calculateFloatingNotePosition(anchorRect, cardRect)
-            : calculateDetachedFloatingNotePosition(cardRect);
+            ? calculateFloatingNotePosition(anchorRect, cardSize)
+            : calculateDetachedFloatingNotePosition(cardSize);
           setFloatingNotePanelPosition((currentPosition) =>
             floatingNotePositionsAreEqual(currentPosition, nextPosition)
               ? currentPosition
@@ -8366,6 +8887,10 @@ function App() {
     const editorFrame = document.querySelector(".editor-content-frame");
     if (editorFrame) {
       resizeObserver.observe(editorFrame);
+    }
+    const floatingNoteCard = floatingNoteCardRef.current;
+    if (floatingNoteCard) {
+      resizeObserver.observe(floatingNoteCard);
     }
 
     return () => {
@@ -8759,22 +9284,59 @@ function App() {
     };
   }
 
+  function currentFloatingNoteViewportRect() {
+    const viewportRect = currentVisualViewportRect();
+    if (!isMobileViewport) return viewportRect;
+
+    const commandBarRect = document
+      .querySelector<HTMLElement>(".mobile-command-bar")
+      ?.getBoundingClientRect();
+    if (!commandBarRect || commandBarRect.height <= 0) return viewportRect;
+
+    const bottom = Math.min(viewportRect.bottom, commandBarRect.top);
+    return {
+      ...viewportRect,
+      bottom,
+      height: Math.max(0, bottom - viewportRect.top),
+    };
+  }
+
   function calculateFloatingNotePosition(
     anchorRect: TextRangeRect,
-    cardRect: DOMRect,
+    cardRect: Pick<DOMRect, "height" | "width">,
   ): FloatingNotePosition {
-    const viewportRect = currentVisualViewportRect();
+    const viewportRect = currentFloatingNoteViewportRect();
     const viewportMargin = isMobileViewport ? 32 : 12;
     const cardWidth = Math.min(
       cardRect.width || 450,
       Math.max(180, viewportRect.width - viewportMargin * 2),
     );
+    const cardHeight = cardRect.height || 260;
+    const anchorLock =
+      floatingNoteAnchorLockRef.current?.key === activeFloatingNoteKey
+        ? floatingNoteAnchorLockRef.current
+        : null;
     const geometry = anchoredFloatingNoteGeometry({
       anchorRect,
+      cardHeight,
       cardWidth,
+      flipAboveWhenNeeded: true,
+      lockedPlacement: anchorLock?.placement,
+      panelEdgeOffset: anchorLock?.panelEdgeOffset,
       viewportMargin,
       viewportRect,
     });
+    if (!anchorLock && activeFloatingNoteKey) {
+      const anchorY =
+        geometry.placement === "above" ? anchorRect.top : anchorRect.bottom;
+      const panelEdgeY =
+        geometry.placement === "above" ? geometry.top + cardHeight : geometry.top;
+      floatingNoteAnchorLockRef.current = {
+        key: activeFloatingNoteKey,
+        panelEdgeOffset: panelEdgeY - anchorY,
+        placement: geometry.placement,
+      };
+    }
     const panelPoint = floatingLayerPointFromViewport(geometry.left, geometry.top);
     const connectorPoint = floatingLayerPointFromViewport(
       geometry.connector.left,
@@ -8794,8 +9356,10 @@ function App() {
     };
   }
 
-  function calculateDetachedFloatingNotePosition(cardRect: DOMRect): FloatingNotePosition {
-    const viewportRect = currentVisualViewportRect();
+  function calculateDetachedFloatingNotePosition(
+    cardRect: Pick<DOMRect, "height" | "width">,
+  ): FloatingNotePosition {
+    const viewportRect = currentFloatingNoteViewportRect();
     const viewportMargin = 12;
     const cardHeight = Math.min(
       cardRect.height || 260,
@@ -9198,6 +9762,7 @@ function App() {
       if (notePanelModalActive) {
         if (targetIsInsideNotePanel(event.target)) return;
         if (targetIsInsideDocumentSearch(event.target)) return;
+        if (isMobileViewport) return;
 
         handleNotePanelOutsideModalInteraction(event);
         return;
@@ -9212,6 +9777,7 @@ function App() {
       if (notePanelModalActive) {
         if (targetIsInsideNotePanel(event.target)) return;
         if (targetIsInsideDocumentSearch(event.target)) return;
+        if (isMobileViewport) return;
 
         handleNotePanelOutsideModalInteraction(event);
         return;
@@ -9234,19 +9800,30 @@ function App() {
       dismissNotePanelFromAppInteraction();
     }
 
+    function handleDocumentClick(event: globalThis.MouseEvent) {
+      if (!isMobileViewport || !notePanelModalActive) return;
+      if (targetIsInsideNotePanel(event.target)) return;
+      if (targetIsInsideDocumentSearch(event.target)) return;
+
+      handleNotePanelOutsideModalInteraction(event);
+    }
+
     document.addEventListener("pointerdown", handleDocumentPointerDown, true);
     document.addEventListener("mousedown", handleDocumentMouseDown, true);
     document.addEventListener("focusin", handleDocumentFocusIn, true);
+    document.addEventListener("click", handleDocumentClick, true);
 
     return () => {
       document.removeEventListener("pointerdown", handleDocumentPointerDown, true);
       document.removeEventListener("mousedown", handleDocumentMouseDown, true);
       document.removeEventListener("focusin", handleDocumentFocusIn, true);
+      document.removeEventListener("click", handleDocumentClick, true);
     };
   }, [
     activeGlossaryBindingId,
     activeNoteId,
     isNotePanelClosing,
+    isMobileViewport,
     noteEditModalActive,
     notePanelModalActive,
     notePanelHasContent,
@@ -11042,7 +11619,11 @@ function App() {
 
   function applyLoadedDropboxFile(
     loadedFile: OpenDropboxMarkdownFileResult,
-    options: { rememberRecent?: boolean; tabBehavior?: DocumentTabBehavior } = {},
+    options: {
+      rememberRecent?: boolean;
+      replaceDocuments?: boolean;
+      tabBehavior?: DocumentTabBehavior;
+    } = {},
   ) {
     const loadedDocument = documentFromDropboxFile(loadedFile);
     const documentId = loadedDocument.id;
@@ -11053,10 +11634,12 @@ function App() {
       dropboxLoadedGlossaryBindingFromFile(loadedFile, binding, documentId),
     );
     const loadedGlossaryTerms = loadedFile.glossaryTerms ?? [];
-    const nextDocuments = [
-      loadedDocument,
-      ...documentsRef.current.filter((document) => document.id !== documentId),
-    ];
+    const nextDocuments = options.replaceDocuments
+      ? [loadedDocument]
+      : [
+          loadedDocument,
+          ...documentsRef.current.filter((document) => document.id !== documentId),
+        ];
 
     documentsRef.current = nextDocuments;
     setDocuments(nextDocuments);
@@ -11734,6 +12317,7 @@ function App() {
     path: string,
     options: {
       allowPendingConnection?: boolean;
+      openedDirectory?: OpenDropboxMarkdownDirectoryResult;
       tabBehavior?: DocumentTabBehavior;
       userInitiated?: boolean;
     } = {},
@@ -11760,7 +12344,13 @@ function App() {
       });
       if (selectionRevision !== manualDocumentSelectionRevisionRef.current) return false;
 
-      applyLoadedDropboxFile(loaded, { tabBehavior: options.tabBehavior });
+      if (options.openedDirectory) {
+        applyOpenedDropboxDirectory(options.openedDirectory);
+      }
+      applyLoadedDropboxFile(loaded, {
+        replaceDocuments: Boolean(options.openedDirectory),
+        tabBehavior: options.tabBehavior,
+      });
       setStorageError("");
       return true;
     } catch (error) {
@@ -12618,7 +13208,6 @@ function App() {
         "list_dropbox_markdown_directory",
         { path: directoryPath },
       );
-      applyOpenedDropboxDirectory(openedDirectory);
 
       const filePath =
         location.kind === "file"
@@ -12627,7 +13216,10 @@ function App() {
       if (filePath) {
         await openDropboxMarkdownFilePath(filePath, {
           allowPendingConnection: connected,
+          openedDirectory,
         });
+      } else {
+        applyOpenedDropboxDirectory(openedDirectory);
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -14840,7 +15432,17 @@ function App() {
     setNotePanelExpanded((currentValue) => !currentValue);
   }
 
+  function flushActiveNoteMarkdownEditor() {
+    const editableElement = noteEditorRootRef.current?.querySelector<HTMLElement>(
+      ".note-markdown-editor__textarea, .markdown-preview[contenteditable='true']",
+    );
+    if (!editableElement || document.activeElement !== editableElement) return;
+
+    editableElement.blur();
+  }
+
   function closeNotePanel() {
+    flushActiveNoteMarkdownEditor();
     clearNotePanelCloseTimer();
     clearReturnToViewTimer();
     resetNoteTextareaCompositionState();
@@ -15149,14 +15751,9 @@ function App() {
     ) {
       return false;
     }
+    if (!noteModeEnabled) return false;
 
     if (selectionShouldSuppressNewAnnotation(anchor)) {
-      if (!noteModeEnabled) {
-        setActiveDocumentModeState({
-          noteModeEnabled: true,
-          glossaryModeEnabled,
-        });
-      }
       if (noteLibraryOpen) {
         setNoteLibraryOpen(false);
       }
@@ -15176,12 +15773,6 @@ function App() {
     }
 
     if (isSelectionCompleteMarkdownBlock(selectedDocument.body, anchor)) {
-      if (!noteModeEnabled) {
-        setActiveDocumentModeState({
-          noteModeEnabled: true,
-          glossaryModeEnabled: false,
-        });
-      }
       if (noteLibraryOpen) {
         setNoteLibraryOpen(false);
       }
@@ -15190,13 +15781,6 @@ function App() {
         startEditing: true,
       });
       return true;
-    }
-
-    if (!noteModeEnabled) {
-      setActiveDocumentModeState({
-        noteModeEnabled: true,
-        glossaryModeEnabled: false,
-      });
     }
 
     if (noteLibraryOpen) {
@@ -18558,7 +19142,7 @@ function App() {
             <div
               aria-hidden="true"
               className={`note-edit-backdrop ${
-                floatingNotePanelExpanded ? "is-passive" : ""
+                floatingNotePanelExpanded || isMobileViewport ? "is-passive" : ""
               }`}
               onClick={
                 floatingNotePanelExpanded ? undefined : handleNotePanelOutsideModalInteraction
@@ -18674,6 +19258,7 @@ function App() {
                     className="floating-note-close-button"
                     type="button"
                     aria-label={t("note.close")}
+                    onPointerDown={flushActiveNoteMarkdownEditor}
                     onClick={closeNotePanel}
                   >
                     <FloatingNoteCloseIcon />
@@ -18774,6 +19359,7 @@ function App() {
                   ariaLabel={t("glossary.edit")}
                   autoFocusOnEdit={noteEditorShouldRefocusRef.current}
                   className="floating-note-card__editor"
+                  editingSurface="source"
                   editorRootRef={(element) => {
                     noteEditorRootRef.current = element;
                   }}

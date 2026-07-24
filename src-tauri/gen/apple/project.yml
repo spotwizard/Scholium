@@ -40,8 +40,6 @@ targets:
       path: scholium_iOS/Info.plist
       properties:
         LSRequiresIPhoneOS: true
-        UIApplicationSceneManifest:
-          UIApplicationSupportsMultipleScenes: true
         UILaunchStoryboardName: LaunchScreen
         UIRequiredDeviceCapabilities: [arm64, metal]
         UISupportedInterfaceOrientations:

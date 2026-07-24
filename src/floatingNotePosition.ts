@@ -1,5 +1,6 @@
 export type FloatingNoteAnchorRect = {
   bottom: number;
+  top: number;
   targetBottom: number;
   targetX: number;
 };
@@ -19,7 +20,7 @@ export type AnchoredFloatingNoteGeometry = {
     width: number;
   };
   left: number;
-  placement: "below";
+  placement: "above" | "below";
   top: number;
 };
 
@@ -29,14 +30,22 @@ function clamp(value: number, min: number, max: number) {
 
 export function anchoredFloatingNoteGeometry({
   anchorRect,
+  cardHeight,
   cardWidth,
   connectorGap = 18,
+  flipAboveWhenNeeded = false,
+  lockedPlacement,
+  panelEdgeOffset,
   viewportMargin,
   viewportRect,
 }: {
   anchorRect: FloatingNoteAnchorRect;
+  cardHeight: number;
   cardWidth: number;
   connectorGap?: number;
+  flipAboveWhenNeeded?: boolean;
+  lockedPlacement?: "above" | "below";
+  panelEdgeOffset?: number;
   viewportMargin: number;
   viewportRect: FloatingNoteViewportRect;
 }): AnchoredFloatingNoteGeometry {
@@ -49,10 +58,32 @@ export function anchoredFloatingNoteGeometry({
   );
   const left = maxPanelLeft >= minPanelLeft ? preferredLeft : minPanelLeft;
   const right = left + cardWidth;
-  const top = anchorRect.bottom + connectorGap;
+  const belowTop = anchorRect.bottom + connectorGap;
+  const belowFits =
+    belowTop + cardHeight <= viewportRect.bottom - viewportMargin;
+  const placement =
+    lockedPlacement ?? (flipAboveWhenNeeded && !belowFits ? "above" : "below");
+  const preferredTop =
+    panelEdgeOffset === undefined
+      ? placement === "above"
+        ? anchorRect.top - connectorGap - cardHeight
+        : belowTop
+      : placement === "above"
+        ? anchorRect.top + panelEdgeOffset - cardHeight
+        : anchorRect.bottom + panelEdgeOffset;
+  const minPanelTop = viewportRect.top + viewportMargin;
+  const maxPanelTop = viewportRect.bottom - viewportMargin - cardHeight;
+  const top =
+    panelEdgeOffset === undefined &&
+    flipAboveWhenNeeded &&
+    maxPanelTop >= minPanelTop
+      ? clamp(preferredTop, minPanelTop, maxPanelTop)
+      : preferredTop;
+  const anchorY = placement === "above" ? anchorRect.top : anchorRect.bottom;
+  const panelEdgeY = placement === "above" ? top + cardHeight : top;
   const sourceX = clamp(anchorRect.targetX, left, right);
   const connectorDeltaX = sourceX - anchorRect.targetX;
-  const connectorDeltaY = top - anchorRect.bottom;
+  const connectorDeltaY = panelEdgeY - anchorY;
 
   return {
     connector: {
@@ -60,7 +91,7 @@ export function anchoredFloatingNoteGeometry({
         Math.round(Math.atan2(connectorDeltaY, connectorDeltaX) * (180 / Math.PI) * 100) /
         100,
       left: Math.round(anchorRect.targetX),
-      top: Math.round(anchorRect.bottom),
+      top: Math.round(anchorY),
       width: Math.round(
         Math.sqrt(
           connectorDeltaX * connectorDeltaX + connectorDeltaY * connectorDeltaY,
@@ -68,7 +99,7 @@ export function anchoredFloatingNoteGeometry({
       ),
     },
     left,
-    placement: "below",
+    placement,
     top,
   };
 }
