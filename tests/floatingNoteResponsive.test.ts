@@ -69,6 +69,14 @@ assert.match(
 );
 assert.match(
   css,
+  /\.scholium-shell\.is-note-panel-modal-active[\s\S]*?\.cm-line:has\(\.cm-note-annotation\.is-focus-target\),[\s\S]*?li:has\(\.preview-note-annotation\.is-focus-target\),[\s\S]*?li:has\(\.milkdown-note-annotation\.is-focus-target\) \{[\s\S]*?z-index:\s*87;/,
+);
+assert.match(
+  css,
+  /\.scholium-shell\.is-mobile-safe-layout\.is-note-panel-modal-active[\s\S]*?\.cm-line:has\(\.cm-note-annotation\.is-focus-target\),[\s\S]*?li:has\(\.preview-note-annotation\.is-focus-target\),[\s\S]*?li:has\(\.milkdown-note-annotation\.is-focus-target\) \{\s*z-index:\s*67;/,
+);
+assert.match(
+  css,
   /\.scholium-shell\.is-mobile-safe-layout \.floating-note-connector \{[\s\S]*?z-index:\s*68;/,
 );
 assert.match(

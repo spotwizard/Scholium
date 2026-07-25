@@ -4203,6 +4203,20 @@ button.document-tag-chip__label:focus-visible {
 }
 
 .scholium-shell.is-note-panel-modal-active
+  .cm-line:has(.cm-note-annotation.is-focus-target),
+.scholium-shell.is-note-panel-modal-active
+  .markdown-preview
+  li:has(.preview-note-annotation.is-focus-target),
+.scholium-shell.is-note-panel-modal-active
+  .milkdown-markdown-editor
+  .milkdown
+  .ProseMirror
+  li:has(.milkdown-note-annotation.is-focus-target) {
+  position: relative;
+  z-index: 87;
+}
+
+.scholium-shell.is-note-panel-modal-active
   .cm-note-annotation.is-focus-target[data-note-tone="1"],
 .scholium-shell.is-note-panel-modal-active
   .preview-note-annotation.is-focus-target[data-note-tone="1"],
@@ -7991,6 +8005,19 @@ button.document-tag-chip__label:focus-visible {
     .preview-note-annotation.is-focus-target,
   .scholium-shell.is-mobile-safe-layout.is-note-panel-modal-active
     .milkdown-note-annotation.is-focus-target {
+    z-index: 67;
+  }
+
+  .scholium-shell.is-mobile-safe-layout.is-note-panel-modal-active
+    .cm-line:has(.cm-note-annotation.is-focus-target),
+  .scholium-shell.is-mobile-safe-layout.is-note-panel-modal-active
+    .markdown-preview
+    li:has(.preview-note-annotation.is-focus-target),
+  .scholium-shell.is-mobile-safe-layout.is-note-panel-modal-active
+    .milkdown-markdown-editor
+    .milkdown
+    .ProseMirror
+    li:has(.milkdown-note-annotation.is-focus-target) {
     z-index: 67;
   }
 
