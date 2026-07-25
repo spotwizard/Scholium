@@ -82,6 +82,14 @@ assert.match(
 );
 assert.match(
   appSource,
+  /function closeAllDocumentTabs\(\) \{[\s\S]*?openDocumentTabIdsRef\.current = \[\];[\s\S]*?setOpenDocumentTabIds\(\[\]\);[\s\S]*?clearActiveDocumentSelection\(\);/,
+);
+assert.match(
+  appSource,
+  /id: "close-other-tabs",[\s\S]*?id: "close-all-tabs",[\s\S]*?label: t\("documentTab\.closeAll"\),[\s\S]*?onSelect: closeAllDocumentTabs,[\s\S]*?id: "open-in-new-window",/,
+);
+assert.match(
+  appSource,
   /const loaded = await invoke<OpenDropboxMarkdownFileResult>\("open_dropbox_markdown_file",[\s\S]*?if \(options\.openedDirectory\) \{\n        applyOpenedDropboxDirectory\(options\.openedDirectory\);\n      \}\n      applyLoadedDropboxFile\(loaded, \{\n        replaceDocuments: Boolean\(options\.openedDirectory\),/,
 );
 assert.match(

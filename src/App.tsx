@@ -11230,6 +11230,15 @@ function App() {
     }
   }
 
+  function closeAllDocumentTabs() {
+    setDocumentTabContextMenu(null);
+    if (openDocumentTabIdsRef.current.length === 0) return;
+
+    openDocumentTabIdsRef.current = [];
+    setOpenDocumentTabIds([]);
+    clearActiveDocumentSelection();
+  }
+
   async function openDocumentTabInNewWindow(documentId: string) {
     setDocumentTabContextMenu(null);
     window.clearTimeout(autosaveTimerRef.current);
@@ -16957,6 +16966,12 @@ function App() {
           label: t("documentTab.closeOthers"),
           icon: <SearchCloseIcon />,
           onSelect: () => closeOtherDocumentTabs(documentTabContextMenu.documentId),
+        },
+        {
+          id: "close-all-tabs",
+          label: t("documentTab.closeAll"),
+          icon: <SearchCloseIcon />,
+          onSelect: closeAllDocumentTabs,
         },
         {
           id: "open-in-new-window",
