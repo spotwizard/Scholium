@@ -7681,6 +7681,8 @@ function App() {
     useState<SelectionWarningPosition | null>(null);
   const [mobileNoteSelectionHintVisible, setMobileNoteSelectionHintVisible] =
     useState(false);
+  const [noteModeSourceBlockedNoticePosition, setNoteModeSourceBlockedNoticePosition] =
+    useState<CSSProperties | null>(null);
   const [isNotePanelClosing, setIsNotePanelClosing] = useState(false);
   const [isMobileViewport, setIsMobileViewport] = useState(() =>
     window.matchMedia(mobileViewportQuery).matches,
@@ -7762,6 +7764,8 @@ function App() {
   const renameInputRef = useRef<HTMLInputElement | null>(null);
   const createEntryInputRef = useRef<HTMLInputElement | null>(null);
   const documentSearchInputRef = useRef<HTMLInputElement | null>(null);
+  const desktopSourceModeButtonRef = useRef<HTMLButtonElement | null>(null);
+  const mobileSourceModeButtonRef = useRef<HTMLButtonElement | null>(null);
   const noteEditorRootRef = useRef<HTMLDivElement | null>(null);
   const noteModeDefaultAppliedRef = useRef(noteModeEnabled);
   const returnToViewTimerRef = useRef(0);
@@ -8416,6 +8420,7 @@ function App() {
 
   useEffect(() => {
     setMobileNoteSelectionHintVisible(false);
+    setNoteModeSourceBlockedNoticePosition(null);
   }, [selectedDocumentId]);
 
   useEffect(() => {
@@ -8428,6 +8433,7 @@ function App() {
     ) {
       if (!noteModeEnabled || settingsViewOpen) {
         setMobileNoteSelectionHintVisible(false);
+        setNoteModeSourceBlockedNoticePosition(null);
       }
       return;
     }
@@ -8461,6 +8467,22 @@ function App() {
       window.removeEventListener("pointerdown", hideOnPointerDown, true);
     };
   }, [mobileNoteSelectionHintVisible]);
+
+  useEffect(() => {
+    if (!noteModeSourceBlockedNoticePosition) return undefined;
+
+    const hideTimer = window.setTimeout(
+      () => setNoteModeSourceBlockedNoticePosition(null),
+      3000,
+    );
+    const hideOnPointerDown = () => setNoteModeSourceBlockedNoticePosition(null);
+    window.addEventListener("pointerdown", hideOnPointerDown, true);
+
+    return () => {
+      window.clearTimeout(hideTimer);
+      window.removeEventListener("pointerdown", hideOnPointerDown, true);
+    };
+  }, [noteModeSourceBlockedNoticePosition]);
 
   useEffect(() => {
     if (noteModeEnabled) return;
@@ -9083,11 +9105,7 @@ function App() {
       if (selectionRect) return selectionRect;
     }
 
-    const editorSelectionRects = Array.from(
-      document.querySelectorAll<HTMLElement>(".cm-selectionBackground"),
-    ).flatMap((element) => Array.from(element.getClientRects()));
-
-    return textAnchorRectFromClientRects(editorSelectionRects);
+    return null;
   }
 
   function clearSelectionWarning() {
@@ -9098,7 +9116,7 @@ function App() {
   function annotationAnchorRect(annotationId: string) {
     const textElements = Array.from(
       document.querySelectorAll<HTMLElement>(
-        ".cm-note-annotation[data-note-id], .preview-note-annotation[data-note-id], .milkdown-note-annotation[data-note-id]",
+        ".preview-note-annotation[data-note-id], .milkdown-note-annotation[data-note-id]",
       ),
     ).filter((element) => element.dataset.noteId === annotationId);
     const textRects = textElements.flatMap((element) =>
@@ -9109,7 +9127,7 @@ function App() {
 
     const frameElements = Array.from(
       document.querySelectorAll<HTMLElement>(
-        ".cm-annotation-frame[data-note-id], .preview-annotation-frame[data-note-id], .milkdown-annotation-frame[data-note-id]",
+        ".preview-annotation-frame[data-note-id], .milkdown-annotation-frame[data-note-id]",
       ),
     ).filter((element) => element.dataset.noteId === annotationId);
     const frameRects = frameElements.flatMap((element) =>
@@ -9185,7 +9203,7 @@ function App() {
     const safeNoteId = cssAttributeSelectorValue(noteId);
     return Array.from(
       document.querySelectorAll<HTMLElement>(
-        `.cm-annotation-frame[data-note-id="${safeNoteId}"], .preview-annotation-frame[data-note-id="${safeNoteId}"], .milkdown-annotation-frame[data-note-id="${safeNoteId}"], .cm-note-annotation[data-note-id="${safeNoteId}"], .preview-note-annotation[data-note-id="${safeNoteId}"], .milkdown-note-annotation[data-note-id="${safeNoteId}"]`,
+        `.preview-annotation-frame[data-note-id="${safeNoteId}"], .milkdown-annotation-frame[data-note-id="${safeNoteId}"], .preview-note-annotation[data-note-id="${safeNoteId}"], .milkdown-note-annotation[data-note-id="${safeNoteId}"]`,
       ),
     )
       .filter((element) => {
@@ -9538,7 +9556,7 @@ function App() {
 
     const targetElement = elementFromEventTarget(target);
     const noteElement = targetElement?.closest<HTMLElement>(
-      ".cm-note-annotation[data-note-id], .cm-annotation-frame[data-note-id], .preview-note-annotation[data-note-id], .preview-annotation-frame[data-note-id], .milkdown-note-annotation[data-note-id], .milkdown-annotation-frame[data-note-id]",
+      ".preview-note-annotation[data-note-id], .preview-annotation-frame[data-note-id], .milkdown-note-annotation[data-note-id], .milkdown-annotation-frame[data-note-id]",
     );
 
     return (
@@ -9550,7 +9568,7 @@ function App() {
   function pointHitsLibraryNoteRange(noteId: string, clientX: number, clientY: number) {
     return Array.from(
       document.querySelectorAll<HTMLElement>(
-        ".cm-note-annotation[data-note-id], .cm-annotation-frame[data-note-id], .preview-note-annotation[data-note-id], .preview-annotation-frame[data-note-id], .milkdown-note-annotation[data-note-id], .milkdown-annotation-frame[data-note-id]",
+        ".preview-note-annotation[data-note-id], .preview-annotation-frame[data-note-id], .milkdown-note-annotation[data-note-id], .milkdown-annotation-frame[data-note-id]",
       ),
     ).some((element) => {
       if (element.dataset.noteId !== noteId) return false;
@@ -9564,7 +9582,7 @@ function App() {
 
     const targetElement = elementFromEventTarget(event.target);
     const noteElement = targetElement?.closest<HTMLElement>(
-      ".cm-note-annotation[data-note-id], .cm-annotation-frame[data-note-id], .preview-note-annotation[data-note-id], .preview-annotation-frame[data-note-id], .milkdown-note-annotation[data-note-id], .milkdown-annotation-frame[data-note-id]",
+      ".preview-note-annotation[data-note-id], .preview-annotation-frame[data-note-id], .milkdown-note-annotation[data-note-id], .milkdown-annotation-frame[data-note-id]",
     );
 
     return (
@@ -9613,7 +9631,7 @@ function App() {
 
     return Array.from(
       document.querySelectorAll<HTMLElement>(
-        ".cm-note-annotation[data-note-id], .cm-annotation-frame[data-note-id], .preview-note-annotation[data-note-id], .preview-annotation-frame[data-note-id], .milkdown-note-annotation[data-note-id], .milkdown-annotation-frame[data-note-id]",
+        ".preview-note-annotation[data-note-id], .preview-annotation-frame[data-note-id], .milkdown-note-annotation[data-note-id], .milkdown-annotation-frame[data-note-id]",
       ),
     ).some((element) => {
       const isActiveNote = element.dataset.noteId === activeNoteId;
@@ -9641,9 +9659,7 @@ function App() {
       }
     }
 
-    return Array.from(document.querySelectorAll<HTMLElement>(".cm-selectionBackground")).some(
-      (element) => pointHitsAnyRect(clientX, clientY, Array.from(element.getClientRects())),
-    );
+    return false;
   }
 
   function notePanelKeepsFocus(target: EventTarget | null, clientX?: number, clientY?: number) {
@@ -10791,6 +10807,11 @@ function App() {
       }
 
       event.preventDefault();
+      if (noteModeEnabled) {
+        event.stopPropagation();
+        showNoteModeSourceBlockedNotice();
+        return;
+      }
       closeNotePanel();
       toggleEditorMode();
     }
@@ -11009,7 +11030,7 @@ function App() {
 
   function normalizeDocumentModeState(modeState: DocumentModeState): DocumentModeState {
     return {
-      editorMode: modeState.editorMode,
+      editorMode: modeState.noteModeEnabled ? "preview" : modeState.editorMode,
       noteModeEnabled: modeState.noteModeEnabled,
       glossaryModeEnabled: modeState.noteModeEnabled
         ? modeState.glossaryModeEnabled
@@ -11085,12 +11106,41 @@ function App() {
     setGlossaryModeEnabled(normalizedModeState.glossaryModeEnabled);
   }
 
-  function toggleEditorMode() {
+  function toggleEditorMode(event?: MouseEvent<HTMLButtonElement>) {
+    if (noteModeEnabledRef.current) {
+      showNoteModeSourceBlockedNotice(event?.currentTarget);
+      return;
+    }
+
     const nextEditorMode = editorModeRef.current === "preview" ? "edit" : "preview";
     setActiveDocumentModeState({
       editorMode: nextEditorMode,
       noteModeEnabled: noteModeEnabledRef.current,
       glossaryModeEnabled: glossaryModeEnabledRef.current,
+    });
+  }
+
+  function showNoteModeSourceBlockedNotice(button?: HTMLButtonElement | null) {
+    const sourceModeButton =
+      button ??
+      [mobileSourceModeButtonRef.current, desktopSourceModeButtonRef.current].find(
+        (candidate) => {
+          const rect = candidate?.getBoundingClientRect();
+          return Boolean(rect && rect.width > 0 && rect.height > 0);
+        },
+      );
+    if (!sourceModeButton) return;
+
+    const buttonRect = sourceModeButton.getBoundingClientRect();
+    const noticeWidth = Math.min(320, window.innerWidth - 32);
+    const noticeLeft = Math.min(
+      Math.max(16, buttonRect.left + buttonRect.width / 2 - noticeWidth / 2),
+      window.innerWidth - 16 - noticeWidth,
+    );
+    setMobileNoteSelectionHintVisible(false);
+    setNoteModeSourceBlockedNoticePosition({
+      top: Math.round(buttonRect.bottom + 12),
+      left: Math.round(noticeLeft),
     });
   }
 
@@ -16292,6 +16342,7 @@ function App() {
     }
 
     setActiveDocumentModeState({
+      editorMode: nextNoteModeEnabled ? "preview" : editorModeRef.current,
       noteModeEnabled: nextNoteModeEnabled,
       glossaryModeEnabled: nextNoteModeEnabled ? glossaryModeEnabled : false,
     });
@@ -16837,7 +16888,6 @@ function App() {
           transform: `translateY(-50%) rotate(${floatingNotePanelPosition.connector.angle}deg)`,
           width: floatingNotePanelPosition.connector.width,
         };
-  const editorReadOnly = notePanelModalActive || noteModeEnabled;
   const previewEditorReadOnly =
     notePanelModalActive || (noteModeEnabled && mobileAnnotationKeyboardShouldStayClosed);
   const mobileCommittedSelectionAnchor = pendingAnchor ?? activeNote?.anchor ?? null;
@@ -18458,10 +18508,12 @@ function App() {
                     : t("toolbar.sourceMode.open")
                 }
                 aria-pressed={editorMode === "edit"}
+                aria-disabled={noteModeEnabled}
                 className={`editor-mode-toggle mobile-editor-mode-toggle ${
                   editorMode === "edit" ? "is-active" : ""
                 }`}
                 onClick={toggleEditorMode}
+                ref={mobileSourceModeButtonRef}
                 type="button"
               >
                 <SourceModeIcon />
@@ -18478,8 +18530,10 @@ function App() {
                     editorMode === "edit" ? t("toolbar.sourceMode") : t("toolbar.previewMode")
                   }`}
                   aria-pressed={editorMode === "edit"}
+                  aria-disabled={noteModeEnabled}
                   className={`editor-mode-toggle ${editorMode === "edit" ? "is-active" : ""}`}
                   onClick={toggleEditorMode}
+                  ref={desktopSourceModeButtonRef}
                   title={
                     editorMode === "edit"
                       ? t("toolbar.previewMode.open")
@@ -18500,7 +18554,11 @@ function App() {
                   role="switch"
                   type="button"
                 >
-                  <span className="note-mode-switch__label">{t("toolbar.noteMode")}</span>
+                  <span
+                    aria-hidden="true"
+                    className="note-mode-switch__icon note-mode-switch__icon--note"
+                  />
+                  <span className="note-mode-switch__label">{t("mobileToolbar.note")}</span>
                 </button>
                 <span
                   aria-hidden="true"
@@ -18520,7 +18578,11 @@ function App() {
                   role="switch"
                   type="button"
                 >
-                  <span className="note-mode-switch__label">{t("toolbar.glossaryMode")}</span>
+                  <span
+                    aria-hidden="true"
+                    className="note-mode-switch__icon note-mode-switch__icon--glossary"
+                  />
+                  <span className="note-mode-switch__label">{t("mobileToolbar.terms")}</span>
                 </button>
               </div>
             ) : null}
@@ -18531,17 +18593,24 @@ function App() {
             ) : null}
             {noteModeEnabled ? (
               <p
-                aria-hidden={!mobileNoteSelectionHintVisible}
+                aria-hidden={
+                  !mobileNoteSelectionHintVisible && !noteModeSourceBlockedNoticePosition
+                }
                 className={`mobile-feedback-surface mobile-note-selection-hint ${
-                  mobileNoteSelectionHintVisible ? "is-visible" : ""
-                }`}
+                  mobileNoteSelectionHintVisible || noteModeSourceBlockedNoticePosition
+                    ? "is-visible"
+                    : ""
+                } ${noteModeSourceBlockedNoticePosition ? "is-source-mode-blocked" : ""}`}
                 role="status"
+                style={noteModeSourceBlockedNoticePosition ?? undefined}
               >
-                {t(
-                  mobileAnnotationKeyboardShouldStayClosed
-                    ? "selection.mobileNoteModeHint"
-                    : "selection.desktopNoteModeHint",
-                )}
+                {noteModeSourceBlockedNoticePosition
+                  ? t("toolbar.sourceMode.blockedByNoteMode")
+                  : t(
+                      mobileAnnotationKeyboardShouldStayClosed
+                        ? "selection.mobileNoteModeHint"
+                        : "selection.desktopNoteModeHint",
+                    )}
               </p>
             ) : null}
             <div className="editor-content-frame">
@@ -18732,19 +18801,11 @@ function App() {
                 />
               ) : (
                 <MarkdownEditor
-                  annotations={annotations}
-                  noteModeEnabled={noteModeEnabled}
-                  readOnly={editorReadOnly}
                   search={documentSearchState}
                   selectAllRequestKey={editorSelectAllRequestKey}
                   value={selectedDocument.body}
-                  onAnnotationClick={showAnnotationViewer}
-                  onAnnotationDoubleClick={showAnnotationViewer}
                   onChange={updateSelectedDocumentBody}
-                  onFocusTargetAnnotationPress={dismissFocusTargetAnnotationFromEditor}
                   onSearchMatchCountChange={handleDocumentSearchMatchCountChange}
-                  onSelectionChange={handleSelectionChange}
-                  onSelectionEnter={handleSelectionEnter}
                 />
               )}
             </div>
@@ -19349,40 +19410,38 @@ function App() {
                 </div>
               ) : null}
 
-              {!pendingAnchor && activeGlossaryIsEditing ? (
-                <NoteMarkdownEditor
-                  ariaLabel={t("glossary.edit")}
-                  autoFocusOnEdit={noteEditorShouldRefocusRef.current}
-                  className="floating-note-card__editor"
-                  editingSurface="source"
-                  editorRootRef={(element) => {
-                    noteEditorRootRef.current = element;
-                  }}
-                  mermaidEmptyDefinitionLabel={t("mermaid.empty")}
-                  mermaidErrorLabel={t("mermaid.error")}
-                  mermaidLoadingLabel={t("mermaid.loading")}
-                  value={glossaryDraft}
-                  onChange={updateActiveGlossaryDraft}
-                  onCompositionStart={handleNoteEditorCompositionStart}
-                  onCompositionEnd={handleNoteEditorCompositionEnd}
-                  onKeyDown={handleNoteEditorKeyDown}
-                />
+              {!pendingAnchor && activeGlossaryTerm ? (
+                <div className="floating-note-card__body-shell">
+                  <div className="floating-note-card__body-measure">
+                    <NoteMarkdownEditor
+                      ariaLabel={t("glossary.edit")}
+                      autoFocusOnEdit={noteEditorShouldRefocusRef.current}
+                      className="floating-note-card__editor floating-note-card__editor--glossary"
+                      editing={activeGlossaryIsEditing}
+                      editorRootRef={(element) => {
+                        noteEditorRootRef.current = element;
+                      }}
+                      mermaidEmptyDefinitionLabel={t("mermaid.empty")}
+                      mermaidErrorLabel={t("mermaid.error")}
+                      mermaidLoadingLabel={t("mermaid.loading")}
+                      value={glossaryDraft}
+                      onChange={updateActiveGlossaryDraft}
+                      onCompositionStart={handleNoteEditorCompositionStart}
+                      onCompositionEnd={handleNoteEditorCompositionEnd}
+                      onKeyDown={handleNoteEditorKeyDown}
+                      onRequestEdit={() => openGlossaryEditor(activeGlossaryTerm.id)}
+                    />
+                  </div>
+                </div>
               ) : null}
 
-              {!pendingAnchor && activeGlossaryTerm && !activeGlossaryIsEditing ? (
-                <MarkdownPreviewContent
-                  className="bottom-note-body"
-                  emptyLabel={t("glossary.emptyDefinition")}
-                  mermaidEmptyDefinitionLabel={t("mermaid.empty")}
-                  mermaidErrorLabel={t("mermaid.error")}
-                  mermaidLoadingLabel={t("mermaid.loading")}
-                  onDoubleClick={() => openGlossaryEditor(activeGlossaryTerm.id)}
-                  value={activeGlossaryTerm.definition}
-                />
-              ) : null}
-
-              {!pendingAnchor && activeGlossaryTerm && !activeGlossaryIsEditing ? (
-                <div className="note-actions bottom-note-actions">
+              {!pendingAnchor && activeGlossaryTerm ? (
+                <div
+                  aria-hidden={activeGlossaryIsEditing || undefined}
+                  className={`note-actions bottom-note-actions ${
+                    activeGlossaryIsEditing ? "is-layout-placeholder" : ""
+                  }`}
+                >
                   <button
                     type="button"
                     aria-label={t("glossary.edit")}

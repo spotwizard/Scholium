@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 const appSource = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
+const appCss = readFileSync(new URL("../src/App.css", import.meta.url), "utf8");
 const milkdownSource = readFileSync(
   new URL("../src/MilkdownMarkdownEditor.tsx", import.meta.url),
   "utf8",
@@ -12,12 +13,24 @@ const noteEditorSource = appSource.slice(componentStart, componentEnd);
 const selectionEnterStart = appSource.indexOf("function handleSelectionEnter(");
 const selectionEnterEnd = appSource.indexOf("\n  function showNoteViewer(", selectionEnterStart);
 const selectionEnterSource = appSource.slice(selectionEnterStart, selectionEnterEnd);
+const glossaryEditorAriaLabel = appSource.indexOf('ariaLabel={t("glossary.edit")}');
+const glossaryEditorStart = appSource.lastIndexOf("<NoteMarkdownEditor", glossaryEditorAriaLabel);
+const glossaryEditorEnd = appSource.indexOf(
+  "\n              {!pendingAnchor && activeGlossaryTerm ? (\n                <div\n                  aria-hidden",
+  glossaryEditorStart,
+);
+const glossaryEditorSource = appSource.slice(glossaryEditorStart, glossaryEditorEnd);
 
 assert.ok(componentStart >= 0 && componentEnd > componentStart);
 assert.ok(selectionEnterStart >= 0 && selectionEnterEnd > selectionEnterStart);
+assert.ok(glossaryEditorStart >= 0 && glossaryEditorEnd > glossaryEditorStart);
 assert.match(noteEditorSource, /<MarkdownPreview[\s\S]*?commitOnInput/);
 assert.match(noteEditorSource, /readOnly=\{!isEditable\}/);
 assert.match(noteEditorSource, /editingSurface === "source" && isEditable[\s\S]*?<textarea/);
+assert.doesNotMatch(
+  appSource,
+  /function MarkdownPreviewContent\([\s\S]*?onClick\?: \(\) => void;/,
+);
 assert.match(
   selectionEnterSource,
   /if \(!noteModeEnabled\) return false;[\s\S]*?selectionShouldSuppressNewAnnotation\(anchor\)/,
@@ -137,9 +150,31 @@ assert.match(
   appSource,
   /className="floating-note-close-button"[\s\S]*?onPointerDown=\{flushActiveNoteMarkdownEditor\}[\s\S]*?onClick=\{closeNotePanel\}/,
 );
+assert.doesNotMatch(glossaryEditorSource, /editingSurface="source"/);
+assert.match(glossaryEditorSource, /<NoteMarkdownEditor/);
+assert.match(
+  glossaryEditorSource,
+  /className="floating-note-card__editor floating-note-card__editor--glossary"[\s\S]*?editing=\{activeGlossaryIsEditing\}[\s\S]*?onRequestEdit=\{\(\) => openGlossaryEditor\(activeGlossaryTerm\.id\)\}/,
+);
+assert.doesNotMatch(
+  appSource,
+  /activeGlossaryTerm && !activeGlossaryIsEditing[\s\S]*?<MarkdownPreviewContent/,
+);
 assert.match(
   appSource,
-  /ariaLabel=\{t\("glossary\.edit"\)\}[\s\S]*?editingSurface="source"/,
+  /aria-hidden=\{activeGlossaryIsEditing \|\| undefined\}[\s\S]*?activeGlossaryIsEditing \? "is-layout-placeholder" : ""/,
+);
+assert.match(
+  appCss,
+  /\.floating-note-card \.note-markdown-editor\.floating-note-card__editor--glossary\s*\{[\s\S]*?--note-edit-focus-ring-inline-padding: 0px;/,
+);
+assert.match(
+  appCss,
+  /\.floating-note-card__editor--glossary[\s\S]*?\[data-preview-block-key\]:has\(\+ \.preview-annotation-layer\)[\s\S]*?margin-bottom: 0;/,
+);
+assert.match(
+  appCss,
+  /\.bottom-note-actions\.is-layout-placeholder\s*\{[\s\S]*?visibility: hidden;[\s\S]*?pointer-events: none;/,
 );
 assert.match(
   milkdownSource,

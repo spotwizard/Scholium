@@ -405,6 +405,11 @@ button:disabled {
   opacity: 1;
 }
 
+.mobile-note-selection-hint.is-source-mode-blocked {
+  width: min(320px, calc(100vw - 32px));
+  transform: none;
+}
+
 .mobile-storage-status {
   position: fixed;
   top: 50%;
@@ -2732,6 +2737,14 @@ button.document-tag-chip__label:focus-visible {
   background: rgba(31, 41, 55, 0.08);
 }
 
+.editor-mode-toggle[aria-disabled="true"] {
+  cursor: not-allowed;
+}
+
+.editor-mode-toggle[aria-disabled="true"]:hover {
+  background: transparent;
+}
+
 .editor-mode-toggle.is-active {
   border-color: color-mix(in srgb, var(--color-mobile-active) 72%, var(--color-border));
   color: #fffdf8;
@@ -2773,13 +2786,14 @@ button.document-tag-chip__label:focus-visible {
   display: inline-flex;
   flex: 0 0 auto;
   width: auto;
-  min-width: 74px;
+  min-width: 0;
   height: 34px;
   align-items: center;
+  gap: 4px;
   justify-content: center;
   border: 1px solid transparent;
   border-radius: 8px;
-  padding: 0 14px;
+  padding: 0 6px;
   color: var(--color-accent-ink);
   background: transparent;
   box-shadow: none;
@@ -2999,6 +3013,24 @@ button.document-tag-chip__label:focus-visible {
   transition: color 120ms ease, text-shadow 120ms ease;
 }
 
+.note-mode-switch__icon {
+  display: block;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  background-color: currentColor;
+}
+
+.note-mode-switch__icon--note {
+  -webkit-mask: url("./assets/note-mode.svg") center / contain no-repeat;
+  mask: url("./assets/note-mode.svg") center / contain no-repeat;
+}
+
+.note-mode-switch__icon--glossary {
+  -webkit-mask: url("./assets/glossary-mode.svg") center / contain no-repeat;
+  mask: url("./assets/glossary-mode.svg") center / contain no-repeat;
+}
+
 .note-mode-switch[aria-checked="true"] .note-mode-switch__label,
 .note-mode-switch[aria-expanded="true"] .note-mode-switch__label {
   text-shadow: 0 0 5px rgba(198, 154, 77, 0.32);
@@ -3108,44 +3140,6 @@ button.document-tag-chip__label:focus-visible {
   background: var(--color-document-search-active);
   outline: 1px solid var(--color-document-search-active-border);
   outline-offset: 1px;
-}
-
-.cm-note-annotation {
-  border-radius: 2px;
-  cursor: pointer;
-  -webkit-user-select: text;
-  user-select: text;
-}
-
-.cm-glossary-annotation {
-  text-decoration: underline;
-  text-decoration-color: var(--color-glossary-border);
-  text-decoration-thickness: 2px;
-  text-underline-offset: 0.18em;
-  text-decoration-skip-ink: none;
-}
-
-.cm-annotation-layer {
-  position: absolute;
-  inset: 0;
-  z-index: 0;
-  overflow: visible;
-  pointer-events: none;
-}
-
-.cm-annotation-frame {
-  position: absolute;
-  box-sizing: border-box;
-  border-radius: 0;
-  background: var(--color-annotation-surface-soft);
-}
-
-.cm-annotation-frame[data-note-tone="1"] {
-  background: var(--color-annotation-surface-alt-soft);
-}
-
-.cm-annotation-frame[data-annotation-kind="glossary"] {
-  background: var(--color-glossary-surface-soft);
 }
 
 .markdown-preview {
@@ -4075,7 +4069,6 @@ button.document-tag-chip__label:focus-visible {
   text-decoration-skip-ink: none;
 }
 
-.scholium-shell.is-note-library-focus-active .cm-note-annotation,
 .scholium-shell.is-note-library-focus-active .preview-note-annotation,
 .scholium-shell.is-note-library-focus-active .milkdown-note-annotation {
   opacity: 1;
@@ -4087,20 +4080,17 @@ button.document-tag-chip__label:focus-visible {
   z-index: auto;
 }
 
-.scholium-shell.is-note-library-focus-active .cm-annotation-layer:has(.is-focus-target),
 .scholium-shell.is-note-library-focus-active .preview-annotation-layer:has(.is-focus-target),
 .scholium-shell.is-note-library-focus-active .milkdown-annotation-layer:has(.is-focus-target) {
   z-index: 64;
 }
 
-.scholium-shell.is-note-library-focus-active .cm-annotation-frame,
 .scholium-shell.is-note-library-focus-active .preview-annotation-frame,
 .scholium-shell.is-note-library-focus-active .milkdown-annotation-frame {
   opacity: 0;
   filter: none;
 }
 
-.scholium-shell.is-note-library-focus-active .cm-note-annotation.is-focus-target,
 .scholium-shell.is-note-library-focus-active .preview-note-annotation.is-focus-target,
 .scholium-shell.is-note-library-focus-active .milkdown-note-annotation.is-focus-target {
   position: relative;
@@ -4110,8 +4100,6 @@ button.document-tag-chip__label:focus-visible {
   filter: none;
 }
 
-.scholium-shell.is-note-library-focus-active
-  .cm-line:has(.cm-note-annotation.is-focus-target),
 .scholium-shell.is-note-library-focus-active
   .markdown-preview
   li:has(.preview-note-annotation.is-focus-target),
@@ -4124,7 +4112,6 @@ button.document-tag-chip__label:focus-visible {
   z-index: 65;
 }
 
-.scholium-shell.is-note-library-focus-active .cm-annotation-frame.is-focus-target,
 .scholium-shell.is-note-library-focus-active .preview-annotation-frame.is-focus-target,
 .scholium-shell.is-note-library-focus-active .milkdown-annotation-frame.is-focus-target {
   z-index: 64;
@@ -4133,11 +4120,6 @@ button.document-tag-chip__label:focus-visible {
   box-shadow: none;
 }
 
-.scholium-shell.is-note-library-focus-active
-  .cm-note-annotation.is-focus-target
-  .cm-glossary-annotation,
-.scholium-shell.is-note-library-focus-active
-  .cm-note-annotation.is-focus-target.cm-glossary-annotation,
 .scholium-shell.is-note-library-focus-active
   .preview-note-annotation.is-focus-target
   .preview-note-annotation[data-annotation-kind="glossary"],
@@ -4157,20 +4139,16 @@ button.document-tag-chip__label:focus-visible {
   filter: none;
 }
 
-.scholium-shell.is-note-panel-modal-active .cm-annotation-layer,
 .scholium-shell.is-note-panel-modal-active .preview-annotation-layer,
 .scholium-shell.is-note-panel-modal-active .milkdown-annotation-layer {
   z-index: 86;
 }
 
-.scholium-shell.is-note-panel-modal-active .cm-editor,
 .scholium-shell.is-note-panel-modal-active .markdown-preview > :not(.preview-annotation-layer),
 .scholium-shell.is-note-panel-modal-active .milkdown-markdown-editor {
   z-index: auto;
 }
 
-.scholium-shell.is-note-panel-modal-active
-  .cm-annotation-frame:not([data-focus-target="true"]),
 .scholium-shell.is-note-panel-modal-active
   .preview-annotation-frame:not([data-focus-target="true"]),
 .scholium-shell.is-note-panel-modal-active
@@ -4179,8 +4157,6 @@ button.document-tag-chip__label:focus-visible {
   filter: none;
 }
 
-.scholium-shell.is-note-panel-modal-active .cm-annotation-frame.is-focus-target,
-.scholium-shell.is-note-panel-modal-active .cm-annotation-frame[data-focus-target="true"],
 .scholium-shell.is-note-panel-modal-active .preview-annotation-frame.is-focus-target,
 .scholium-shell.is-note-panel-modal-active .preview-annotation-frame[data-focus-target="true"],
 .scholium-shell.is-note-panel-modal-active .milkdown-annotation-frame.is-focus-target,
@@ -4190,7 +4166,6 @@ button.document-tag-chip__label:focus-visible {
   filter: none;
 }
 
-.scholium-shell.is-note-panel-modal-active .cm-note-annotation.is-focus-target,
 .scholium-shell.is-note-panel-modal-active .preview-note-annotation.is-focus-target,
 .scholium-shell.is-note-panel-modal-active .milkdown-note-annotation.is-focus-target {
   position: relative;
@@ -4202,8 +4177,6 @@ button.document-tag-chip__label:focus-visible {
   filter: none;
 }
 
-.scholium-shell.is-note-panel-modal-active
-  .cm-line:has(.cm-note-annotation.is-focus-target),
 .scholium-shell.is-note-panel-modal-active
   .markdown-preview
   li:has(.preview-note-annotation.is-focus-target),
@@ -4217,16 +4190,12 @@ button.document-tag-chip__label:focus-visible {
 }
 
 .scholium-shell.is-note-panel-modal-active
-  .cm-note-annotation.is-focus-target[data-note-tone="1"],
-.scholium-shell.is-note-panel-modal-active
   .preview-note-annotation.is-focus-target[data-note-tone="1"],
 .scholium-shell.is-note-panel-modal-active
   .milkdown-note-annotation.is-focus-target[data-note-tone="1"] {
   background: transparent;
 }
 
-.scholium-shell.is-note-panel-modal-active
-  .cm-note-annotation.is-focus-target[data-annotation-kind="glossary"],
 .scholium-shell.is-note-panel-modal-active
   .preview-note-annotation.is-focus-target[data-annotation-kind="glossary"],
 .scholium-shell.is-note-panel-modal-active
@@ -5311,6 +5280,16 @@ button.document-tag-chip__label:focus-visible {
   overscroll-behavior: contain;
 }
 
+.floating-note-card .note-markdown-editor.floating-note-card__editor--glossary {
+  --note-edit-focus-ring-inline-padding: 0px;
+}
+
+.floating-note-card__editor--glossary
+  .markdown-preview
+  > [data-preview-block-key]:has(+ .preview-annotation-layer) {
+  margin-bottom: 0;
+}
+
 .scholium-shell .note-library-card__editor .markdown-preview,
 .scholium-shell .note-library-card__editor .note-markdown-editor__preview,
 .scholium-shell .note-library-card__editor .note-markdown-editor__textarea,
@@ -6192,6 +6171,11 @@ button.document-tag-chip__label:focus-visible {
 .floating-note-card .bottom-note-actions:has(button:not(.selection-confirmation-button)) {
   justify-content: flex-end;
   margin-top: 4px;
+}
+
+.floating-note-card .bottom-note-actions.is-layout-placeholder {
+  visibility: hidden;
+  pointer-events: none;
 }
 
 .floating-note-card .bottom-note-actions button:not(.selection-confirmation-button) {
@@ -7989,7 +7973,6 @@ button.document-tag-chip__label:focus-visible {
     pointer-events: none;
   }
 
-  .scholium-shell.is-mobile-safe-layout.is-note-panel-modal-active .cm-annotation-layer,
   .scholium-shell.is-mobile-safe-layout.is-note-panel-modal-active
     .preview-annotation-layer,
   .scholium-shell.is-mobile-safe-layout.is-note-panel-modal-active
@@ -8000,16 +7983,12 @@ button.document-tag-chip__label:focus-visible {
   }
 
   .scholium-shell.is-mobile-safe-layout.is-note-panel-modal-active
-    .cm-note-annotation.is-focus-target,
-  .scholium-shell.is-mobile-safe-layout.is-note-panel-modal-active
     .preview-note-annotation.is-focus-target,
   .scholium-shell.is-mobile-safe-layout.is-note-panel-modal-active
     .milkdown-note-annotation.is-focus-target {
     z-index: 67;
   }
 
-  .scholium-shell.is-mobile-safe-layout.is-note-panel-modal-active
-    .cm-line:has(.cm-note-annotation.is-focus-target),
   .scholium-shell.is-mobile-safe-layout.is-note-panel-modal-active
     .markdown-preview
     li:has(.preview-note-annotation.is-focus-target),
