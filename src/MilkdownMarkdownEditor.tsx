@@ -2505,6 +2505,23 @@ export function MilkdownMarkdownEditor({
     return true;
   }
 
+  function shouldLetMarkdownInputRuleHandleEnter(view: EditorView) {
+    const { selection } = view.state;
+    if (!selection.empty) return false;
+
+    const { $from } = selection;
+    const parentTextBeforeCursor = $from.parent.textBetween(
+      0,
+      $from.parentOffset,
+      undefined,
+      "\uFFFC",
+    );
+
+    return /^ {0,3}(?:```[A-Za-z0-9_-]*|---|___|\*\*\*)$/.test(
+      parentTextBeforeCursor,
+    );
+  }
+
   function splitParagraphWithShiftEnter(view: EditorView) {
     return splitBlock(view.state, (transaction) => view.dispatch(transaction), view);
   }
@@ -2514,6 +2531,10 @@ export function MilkdownMarkdownEditor({
       key: milkdownPlainEnterHardBreakPluginKey,
       props: {
         handleKeyDown(view, event) {
+          if (event.key === "Enter" && shouldLetMarkdownInputRuleHandleEnter(view)) {
+            return false;
+          }
+
           if (shouldInsertPlainEnterHardBreak(view, event)) {
             event.preventDefault();
             return insertPlainEnterHardBreak(view);
@@ -4949,9 +4970,14 @@ export function MilkdownMarkdownEditor({
       },
       features: {
         [CrepeFeature.AI]: false,
+        [CrepeFeature.BlockEdit]: true,
         [CrepeFeature.CodeMirror]: true,
         [CrepeFeature.ImageBlock]: false,
         [CrepeFeature.Latex]: false,
+        [CrepeFeature.LinkTooltip]: true,
+        [CrepeFeature.ListItem]: true,
+        [CrepeFeature.Placeholder]: true,
+        [CrepeFeature.Table]: true,
         [CrepeFeature.Toolbar]: toolbarEnabled,
         [CrepeFeature.TopBar]: false,
       },
