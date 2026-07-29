@@ -5,8 +5,9 @@ import { listItemBlockConfig } from "@milkdown/kit/component/list-item-block";
 import { editorViewCtx, prosePluginsCtx } from "@milkdown/kit/core";
 import { hardbreakAttr, hardbreakSchema } from "@milkdown/kit/preset/commonmark";
 import { splitBlock } from "@milkdown/prose/commands";
+import { InputRule, inputRules } from "@milkdown/prose/inputrules";
 import type { Node as ProseMirrorNode, ResolvedPos } from "@milkdown/prose/model";
-import { Plugin, PluginKey } from "@milkdown/prose/state";
+import { Plugin, PluginKey, TextSelection, type EditorState } from "@milkdown/prose/state";
 import { Decoration, DecorationSet, type EditorView } from "@milkdown/prose/view";
 import "@milkdown/crepe/theme/common/style.css";
 import "@milkdown/crepe/theme/frame.css";
@@ -91,6 +92,27 @@ const milkdownReadonlyGuardPluginKey = new PluginKey(
 const milkdownPlainEnterHardBreakPluginKey = new PluginKey(
   "scholium-milkdown-plain-enter-hard-break",
 );
+const milkdownPairedSymbolPluginKey = new PluginKey(
+  "scholium-milkdown-paired-symbols",
+);
+const inlineMarkdownLinkPattern = /(^|[^!])\[([^\]\n]+)\]\(([^)\n]*)\)$/;
+const markdownPairedSymbols: Readonly<Record<string, string>> = {
+  "(": ")",
+  "[": "]",
+  "{": "}",
+  "\"": "\"",
+  "'": "'",
+  "（": "）",
+  "［": "］",
+  "｛": "｝",
+  "【": "】",
+  "「": "」",
+  "『": "』",
+  "〈": "〉",
+  "《": "》",
+};
+const markdownClosingSymbols = new Set(Object.values(markdownPairedSymbols));
+const markdownSymmetricQuoteSymbols = new Set(["\"", "'"]);
 const codeBlockCopyFeedbackDurationMs = 1500;
 const milkdownStructuredTextAncestorNames = new Set([
   "list_item",
@@ -381,8 +403,37 @@ function normalizeSerializedHardBreaks(markdown: string) {
   return normalizedLines.join("\n");
 }
 
+function restoreSerializedInlineLinks(markdown: string) {
+  const lines = markdown.replace(/\r\n/g, "\n").split("\n");
+  const normalizedLines: string[] = [];
+  let inFencedCodeBlock = false;
+
+  for (const line of lines) {
+    if (/^ {0,3}(```|~~~)/.test(line)) {
+      inFencedCodeBlock = !inFencedCodeBlock;
+      normalizedLines.push(line);
+      continue;
+    }
+
+    if (inFencedCodeBlock) {
+      normalizedLines.push(line);
+      continue;
+    }
+
+    normalizedLines.push(
+      line.replace(/\\\[([^\]\n]*)\]\\\(([^)\n]*)\)/g, (match, label, href, offset) =>
+        line[offset - 1] === "!" ? match : `[${label}](${href})`,
+      ),
+    );
+  }
+
+  return normalizedLines.join("\n");
+}
+
 function normalizeMarkdownForScholium(markdown: string) {
-  return normalizeSerializedHardBreaks(normalizeSerializedEmptyParagraphBreaks(markdown))
+  return restoreSerializedInlineLinks(
+    normalizeSerializedHardBreaks(normalizeSerializedEmptyParagraphBreaks(markdown)),
+  )
     .replace(/^(\s*)\*\s+/gm, "$1- ")
     .replace(
       /^(\s*(?:[-+]|\d+[.)])\s+\S[^\n]*)\n\n(?=\s*(?:[-+]|\d+[.)])\s+\S)/gm,
@@ -2524,6 +2575,210 @@ export function MilkdownMarkdownEditor({
 
   function splitParagraphWithShiftEnter(view: EditorView) {
     return splitBlock(view.state, (transaction) => view.dispatch(transaction), view);
+  }
+
+  function createInlineMarkdownLinkInputRule() {
+    return inputRules({
+      rules: [
+        new InputRule(
+          inlineMarkdownLinkPattern,
+          createInlineMarkdownLinkTransaction,
+        ),
+      ],
+    });
+  }
+
+  function createInlineMarkdownLinkTransaction(
+    state: EditorState,
+    match: RegExpMatchArray,
+    start: number,
+    end: number,
+  ) {
+    const prefix = match[1] ?? "";
+    const label = match[2] ?? "";
+    const href = match[3] ?? "";
+    if (!label) return null;
+
+    const linkMarkType = state.schema.marks.link;
+    if (!linkMarkType) return null;
+
+    const linkStart = start + prefix.length;
+    const linkEnd = linkStart + label.length;
+    const tr = state.tr.insertText(label, linkStart, end);
+
+    tr.addMark(linkStart, linkEnd, linkMarkType.create({ href, title: null }));
+    tr.removeStoredMark(linkMarkType);
+
+    return tr;
+  }
+
+  function createPairedSymbolPlugin() {
+    return new Plugin({
+      key: milkdownPairedSymbolPluginKey,
+      props: {
+        handleTextInput(view, from, to, text) {
+          if (
+            view.composing ||
+            readOnlyRef.current ||
+            noteModeEnabledRef.current
+          ) {
+            return false;
+          }
+
+          const closingSymbol = markdownPairedSymbols[text];
+          if (!closingSymbol) return false;
+
+          if (from === to && markdownSymmetricQuoteSymbols.has(text)) {
+            const previousCharacter = view.state.doc.textBetween(
+              Math.max(0, from - 1),
+              from,
+            );
+            const nextCharacter = view.state.doc.textBetween(from, from + 1);
+            if (/[\p{L}\p{N}]/u.test(previousCharacter + nextCharacter)) {
+              return false;
+            }
+          }
+
+          const tr = view.state.tr;
+
+          if (from === to) {
+            tr.insertText(`${text}${closingSymbol}`, from, to);
+            tr.setSelection(TextSelection.create(tr.doc, from + text.length));
+          } else {
+            tr.insertText(closingSymbol, to);
+            tr.insertText(text, from);
+            tr.setSelection(
+              TextSelection.create(tr.doc, from + text.length, to + text.length),
+            );
+          }
+
+          view.dispatch(tr.scrollIntoView());
+          return true;
+        },
+        handleDOMEvents: {
+          compositionend(view, event) {
+            const openingSymbol = event.data;
+            const closingSymbol = markdownPairedSymbols[openingSymbol];
+            if (!closingSymbol) return false;
+
+            window.setTimeout(() => {
+              if (
+                readOnlyRef.current ||
+                noteModeEnabledRef.current ||
+                !view.dom.isConnected
+              ) {
+                return;
+              }
+
+              const { selection } = view.state;
+              if (!selection.empty) return;
+
+              const { $from } = selection;
+              const previousCharacter = view.state.doc.textBetween(
+                Math.max(0, $from.pos - openingSymbol.length),
+                $from.pos,
+              );
+              const nextCharacter = view.state.doc.textBetween(
+                $from.pos,
+                $from.pos + closingSymbol.length,
+              );
+              if (
+                previousCharacter !== openingSymbol ||
+                nextCharacter === closingSymbol
+              ) {
+                return;
+              }
+
+              const tr = view.state.tr.insertText(closingSymbol, $from.pos);
+              tr.setSelection(TextSelection.create(tr.doc, $from.pos));
+              view.dispatch(tr.scrollIntoView());
+            });
+
+            return false;
+          },
+        },
+        handleKeyDown(view, event) {
+          if (
+            event.isComposing ||
+            imeCompositionActiveRef.current ||
+            event.metaKey ||
+            event.ctrlKey ||
+            event.altKey ||
+            event.shiftKey ||
+            readOnlyRef.current ||
+            noteModeEnabledRef.current
+          ) {
+            return false;
+          }
+
+          const { selection } = view.state;
+          if (!selection.empty) return false;
+
+          const { $from } = selection;
+
+          if (event.key === "Backspace") {
+            const previousCharacter = view.state.doc.textBetween(
+              Math.max(0, $from.pos - 1),
+              $from.pos,
+            );
+            const nextCharacter = view.state.doc.textBetween($from.pos, $from.pos + 1);
+            if (markdownPairedSymbols[previousCharacter] !== nextCharacter) {
+              return false;
+            }
+
+            event.preventDefault();
+            view.dispatch(
+              view.state.tr
+                .delete($from.pos - previousCharacter.length, $from.pos + nextCharacter.length)
+                .scrollIntoView(),
+            );
+            return true;
+          }
+
+          if (!markdownClosingSymbols.has(event.key)) return false;
+
+          const nextCharacter = view.state.doc.textBetween(
+            $from.pos,
+            $from.pos + event.key.length,
+          );
+          if (nextCharacter !== event.key) return false;
+
+          if (event.key === ")") {
+            const textBeforeCursor = $from.parent.textBetween(
+              0,
+              $from.parentOffset,
+              undefined,
+              "\uFFFC",
+            );
+            const match = `${textBeforeCursor})`.match(inlineMarkdownLinkPattern);
+
+            if (match) {
+              const start = $from.start() + (match.index ?? 0);
+              const tr = createInlineMarkdownLinkTransaction(
+                view.state,
+                match,
+                start,
+                $from.pos + 1,
+              );
+
+              if (tr) {
+                event.preventDefault();
+                view.dispatch(tr.scrollIntoView());
+                return true;
+              }
+            }
+          }
+
+          event.preventDefault();
+          view.dispatch(
+            view.state.tr
+              .setSelection(TextSelection.create(view.state.doc, $from.pos + event.key.length))
+              .scrollIntoView(),
+          );
+          return true;
+        },
+      },
+    });
   }
 
   function createPlainEnterHardBreakPlugin() {
@@ -4958,6 +5213,7 @@ export function MilkdownMarkdownEditor({
     if (!root) return;
 
     let disposed = false;
+    let acceptsMarkdownUpdates = false;
     root.innerHTML = "";
 
     const crepe = new Crepe({
@@ -5039,6 +5295,8 @@ export function MilkdownMarkdownEditor({
 
       ctx.update(prosePluginsCtx, (plugins) => [
         createTouchBlockSelectionPlugin(),
+        createInlineMarkdownLinkInputRule(),
+        createPairedSymbolPlugin(),
         createPlainEnterHardBreakPlugin(),
         createReadonlyGuardPlugin(),
         ...plugins,
@@ -5063,7 +5321,13 @@ export function MilkdownMarkdownEditor({
           currentMarkdownRef.current,
           normalizedEditorMarkdown,
         );
-        if (disposed || normalizedMarkdown === currentMarkdownRef.current) return;
+        if (
+          disposed ||
+          !acceptsMarkdownUpdates ||
+          normalizedMarkdown === currentMarkdownRef.current
+        ) {
+          return;
+        }
         if (readOnlyRef.current || noteModeEnabledRef.current) return;
 
         currentMarkdownRef.current = normalizedMarkdown;
@@ -5093,6 +5357,8 @@ export function MilkdownMarkdownEditor({
     void crepe
       .create()
       .then(() => {
+        if (disposed) return;
+        acceptsMarkdownUpdates = true;
         syncMilkdownReadOnlyState();
         hydrateLocalMarkdownImages();
         scheduleAnnotationFrameUpdate();
