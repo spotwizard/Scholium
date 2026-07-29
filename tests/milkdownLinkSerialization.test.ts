@@ -17,5 +17,12 @@ assert.match(
   editor,
   /return restoreSerializedInlineLinks\(\n\s*normalizeSerializedHardBreaks\(normalizeSerializedEmptyParagraphBreaks\(markdown\)\),\n\s*\)/,
 );
+assert.ok(
+  editor.includes("/^(\\s*(?:[-+*]|\\d+[.)]))\\s+<br\\s*\\/?>\\s*$/i"),
+);
+assert.match(
+  editor,
+  /normalizedLines\.push\(emptyListItemBreak\[1\] \?\? line\);/,
+);
 
 console.log("milkdown link serialization regression: PASS");

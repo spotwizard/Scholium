@@ -5,6 +5,7 @@ import { listItemBlockConfig } from "@milkdown/kit/component/list-item-block";
 import { editorViewCtx, prosePluginsCtx } from "@milkdown/kit/core";
 import { hardbreakAttr, hardbreakSchema } from "@milkdown/kit/preset/commonmark";
 import { splitBlock } from "@milkdown/prose/commands";
+import { redo, undo } from "@milkdown/prose/history";
 import { InputRule, inputRules } from "@milkdown/prose/inputrules";
 import type { Node as ProseMirrorNode, ResolvedPos } from "@milkdown/prose/model";
 import { Plugin, PluginKey, TextSelection, type EditorState } from "@milkdown/prose/state";
@@ -45,7 +46,7 @@ import {
   markdownListItemContentStartOffset,
   type MarkdownTextMap as MilkdownTextMap,
 } from "./markdownInlineTextMap";
-import { sinkSingleListItem } from "./milkdownListIndent";
+import { deleteAtListItemStart, sinkSingleListItem } from "./milkdownListIndent";
 import { loadScholiumMermaid } from "./mermaid";
 
 type MilkdownMarkdownEditorProps = {
@@ -99,6 +100,9 @@ const milkdownPairedSymbolPluginKey = new PluginKey(
 );
 const milkdownSingleListItemIndentPluginKey = new PluginKey(
   "scholium-milkdown-single-list-item-indent",
+);
+const milkdownControlHistoryPluginKey = new PluginKey(
+  "scholium-milkdown-control-history",
 );
 const inlineMarkdownLinkPattern = /(^|[^!])\[([^\]\n]+)\]\(([^)\n]*)\)$/;
 const markdownPairedSymbols: Readonly<Record<string, string>> = {
@@ -375,6 +379,16 @@ function normalizeSerializedEmptyParagraphBreaks(markdown: string) {
       }
 
       continue;
+    }
+
+    if (!inFencedCodeBlock) {
+      const emptyListItemBreak = line.match(
+        /^(\s*(?:[-+*]|\d+[.)]))\s+<br\s*\/?>\s*$/i,
+      );
+      if (emptyListItemBreak) {
+        normalizedLines.push(emptyListItemBreak[1] ?? line);
+        continue;
+      }
     }
 
     normalizedLines.push(line);
@@ -2863,8 +2877,6 @@ export function MilkdownMarkdownEditor({
       props: {
         handleKeyDown(view, event) {
           if (
-            event.key !== "Tab" ||
-            event.shiftKey ||
             event.metaKey ||
             event.ctrlKey ||
             event.altKey ||
@@ -2879,11 +2891,87 @@ export function MilkdownMarkdownEditor({
           const listItemType = view.state.schema.nodes.list_item;
           if (!listItemType) return false;
 
+          if (event.key === "Backspace" || event.key === "Delete") {
+            const handled = deleteAtListItemStart(
+              listItemType,
+              event.key === "Delete" ? "forward" : "backward",
+            )(
+              view.state,
+              (transaction) => view.dispatch(transaction),
+              view,
+            );
+            if (!handled) return false;
+
+            event.preventDefault();
+            return true;
+          }
+
+          if (event.key !== "Tab" || event.shiftKey) return false;
+
           const handled = sinkSingleListItem(listItemType)(
             view.state,
             (transaction) => view.dispatch(transaction),
             view,
           );
+          if (!handled) return false;
+
+          event.preventDefault();
+          return true;
+        },
+      },
+    });
+  }
+
+  function createControlHistoryPlugin() {
+    function runHistoryCommand(view: EditorView, shouldRedo: boolean) {
+      const command = shouldRedo ? redo : undo;
+      return command(
+        view.state,
+        (transaction) => view.dispatch(transaction),
+        view,
+      );
+    }
+
+    return new Plugin({
+      key: milkdownControlHistoryPluginKey,
+      props: {
+        handleDOMEvents: {
+          beforeinput(view, event) {
+            if (
+              !(event instanceof InputEvent) ||
+              (event.inputType !== "historyUndo" &&
+                event.inputType !== "historyRedo") ||
+              readOnlyRef.current ||
+              noteModeEnabledRef.current
+            ) {
+              return false;
+            }
+
+            const handled = runHistoryCommand(
+              view,
+              event.inputType === "historyRedo",
+            );
+            if (!handled) return false;
+
+            event.preventDefault();
+            return true;
+          },
+        },
+        handleKeyDown(view, event) {
+          if (
+            event.key.toLowerCase() !== "z" ||
+            !event.ctrlKey ||
+            event.metaKey ||
+            event.altKey ||
+            event.isComposing ||
+            imeCompositionActiveRef.current ||
+            readOnlyRef.current ||
+            noteModeEnabledRef.current
+          ) {
+            return false;
+          }
+
+          const handled = runHistoryCommand(view, event.shiftKey);
           if (!handled) return false;
 
           event.preventDefault();
@@ -5414,6 +5502,7 @@ export function MilkdownMarkdownEditor({
         createInlineMarkdownLinkInputRule(),
         createPairedSymbolPlugin(),
         createSingleListItemIndentPlugin(),
+        createControlHistoryPlugin(),
         createPlainEnterHardBreakPlugin(),
         createReadonlyGuardPlugin(),
         ...plugins,
