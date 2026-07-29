@@ -6,6 +6,7 @@ import {
   selectAll as selectAllCodeMirror,
 } from "@codemirror/commands";
 import { markdown } from "@codemirror/lang-markdown";
+import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
 import { EditorState, StateEffect, StateField } from "@codemirror/state";
 import {
   Decoration,
@@ -14,6 +15,7 @@ import {
   keymap,
   ViewUpdate,
 } from "@codemirror/view";
+import { tags } from "@lezer/highlight";
 import {
   findDocumentSearchMatches,
   type DocumentSearchState,
@@ -70,6 +72,17 @@ type MarkdownEditorProps = {
 };
 
 const setSearchEffect = StateEffect.define<DocumentSearchState>();
+
+const sourceMarkdownHighlightStyle = HighlightStyle.define([
+  { tag: [tags.meta, tags.contentSeparator], color: "var(--color-source-syntax-meta)" },
+  { tag: tags.quote, color: "var(--color-source-syntax-quote)" },
+  { tag: tags.link, color: "var(--color-source-syntax-link)" },
+  { tag: tags.url, color: "var(--color-source-syntax-url)" },
+  { tag: tags.strong, color: "var(--color-source-syntax-strong)" },
+  { tag: tags.emphasis, color: "var(--color-source-syntax-emphasis)" },
+  { tag: tags.monospace, color: "var(--color-source-syntax-code)" },
+  { tag: tags.heading, color: "var(--color-source-syntax-heading)" },
+]);
 
 function markerIsPartOfLongerRun(doc: string, marker: "*" | "**", from: number, to: number) {
   if (marker !== "*") return false;
@@ -223,6 +236,7 @@ export function MarkdownEditor({
       extensions: [
         history(),
         markdown(),
+        syntaxHighlighting(sourceMarkdownHighlightStyle),
         searchField,
         updateListener,
         EditorView.lineWrapping,
