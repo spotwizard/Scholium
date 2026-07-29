@@ -64,6 +64,7 @@ import {
   stripMarkdownFrontmatter,
   writeMarkdownTags,
 } from "./markdownFrontmatter";
+import { resolveMarkdownLinkTarget } from "./markdownLinkTarget";
 import { parseMarkdownTableAt, type MarkdownTable } from "./markdownTable";
 import {
   readSettingsSnapshot,
@@ -11943,6 +11944,7 @@ function App() {
     const documentToSelect =
       selectedDocument ?? (options.selectFallback === false ? null : firstDocument);
 
+    documentsRef.current = loadedDocuments;
     setDocuments(loadedDocuments);
     setNotes(loadedNotes);
     setGlossaryBindings(loadedGlossaryBindings);
@@ -15220,6 +15222,63 @@ function App() {
       );
     } else {
       rememberLastOpenedMarkdownPath(nextDocument.filePath);
+    }
+  }
+
+  async function openMarkdownLink(href: string) {
+    const sourceDocument = documentsRef.current.find(
+      (document) => document.id === selectedDocumentIdRef.current,
+    );
+    if (!sourceDocument) return;
+
+    const source = documentIsFromDropbox(sourceDocument) ? "dropbox" : "local";
+    const target = resolveMarkdownLinkTarget(
+      href,
+      sourceDocument.filePath ?? sourceDocument.path,
+      source,
+    );
+
+    if (target.kind === "external") {
+      try {
+        await openExternalUrl(target.href);
+        setStorageError("");
+      } catch (error) {
+        setStorageError(translatedError(error));
+      }
+      return;
+    }
+    if (target.kind !== "document") return;
+
+    const loadedDocument = documentsRef.current.find((document) =>
+      source === "dropbox"
+        ? documentIsFromDropbox(document) && document.path === target.path
+        : !documentIsFromDropbox(document) && localPathsMatch(document.filePath, target.path),
+    );
+    if (loadedDocument) {
+      selectDocument(loadedDocument.id);
+      return;
+    }
+
+    if (source === "dropbox") {
+      await openDropboxMarkdownFilePath(target.path);
+      return;
+    }
+    if (!nativeStorageAvailable) {
+      setStorageError(t("error.nativeRuntimeRequired"));
+      return;
+    }
+
+    setStorageError(t("status.openingFile"));
+    try {
+      const loaded = await invoke<OpenMarkdownFileResult>("open_markdown_file", {
+        path: target.path,
+      });
+      mergeLoadedFilesIntoDocumentState([loaded]);
+      selectDocument(loaded.path);
+      rememberLastOpenedMarkdownPath(loaded.path);
+      setStorageError("");
+    } catch (error) {
+      setStorageError(translatedError(error, "error.openFileFailed"));
     }
   }
 
@@ -18852,6 +18911,7 @@ function App() {
                   onAnnotationDoubleClick={showAnnotationViewer}
                   onChange={updateSelectedDocumentBody}
                   onFocusTargetAnnotationPress={dismissFocusTargetAnnotationFromEditor}
+                  onLinkClick={(href) => void openMarkdownLink(href)}
                   onSearchMatchCountChange={handleDocumentSearchMatchCountChange}
                   onSelectionChange={handleSelectionChange}
                   onSelectionEnter={handleSelectionEnter}

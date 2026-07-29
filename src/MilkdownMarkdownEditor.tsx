@@ -74,6 +74,7 @@ type MilkdownMarkdownEditorProps = {
     anchor: TextSelectionAnchor,
     context?: TextSelectionEnterContext,
   ) => boolean;
+  onLinkClick?: (href: string) => void;
   onAnnotationClick: (noteId: string) => void;
   onAnnotationDoubleClick: (noteId: string) => void;
   onFocusTargetAnnotationPress?: (noteId: string) => void;
@@ -2069,6 +2070,7 @@ export function MilkdownMarkdownEditor({
   onChange,
   onSelectionChange,
   onSelectionEnter,
+  onLinkClick,
   onAnnotationClick,
   onAnnotationDoubleClick,
   onFocusTargetAnnotationPress,
@@ -2104,6 +2106,7 @@ export function MilkdownMarkdownEditor({
   const onSearchMatchCountChangeRef = useRef(onSearchMatchCountChange);
   const onSelectionChangeRef = useRef(onSelectionChange);
   const onSelectionEnterRef = useRef(onSelectionEnter);
+  const onLinkClickRef = useRef(onLinkClick);
   const onAnnotationClickRef = useRef(onAnnotationClick);
   const onAnnotationDoubleClickRef = useRef(onAnnotationDoubleClick);
   const onFocusTargetAnnotationPressRef = useRef(onFocusTargetAnnotationPress);
@@ -2302,15 +2305,34 @@ export function MilkdownMarkdownEditor({
       rememberPendingCodeBlockCopyButton(button);
     };
 
+    const handleLinkClick = (e: MouseEvent) => {
+      if (e.button !== 0) return;
+      const target =
+        e.target instanceof Element
+          ? e.target
+          : e.target instanceof Node
+            ? e.target.parentElement
+            : null;
+      const link = target?.closest<HTMLAnchorElement>("a[href]");
+      const href = link?.getAttribute("href")?.trim() ?? "";
+      if (!href || href.startsWith("#")) return;
+
+      e.preventDefault();
+      e.stopPropagation();
+      onLinkClickRef.current?.(href);
+    };
+
     container.addEventListener("mousedown", preventFocus, { capture: true });
     container.addEventListener("touchstart", preventFocus, { capture: true, passive: false });
     container.addEventListener("touchend", handleTouchEnd, { capture: true, passive: false });
+    container.addEventListener("click", handleLinkClick, true);
     container.addEventListener("click", handleCodeBlockCopyClick, true);
 
     return () => {
       container.removeEventListener("mousedown", preventFocus, { capture: true });
       container.removeEventListener("touchstart", preventFocus, { capture: true });
       container.removeEventListener("touchend", handleTouchEnd, { capture: true });
+      container.removeEventListener("click", handleLinkClick, true);
       container.removeEventListener("click", handleCodeBlockCopyClick, true);
     };
   }, []);
@@ -2612,9 +2634,63 @@ export function MilkdownMarkdownEditor({
     return tr;
   }
 
+  function completedInlineMarkdownLinkBeforeClosingParenthesis(
+    state: EditorState,
+    cursorPosition: number,
+  ) {
+    const $cursor = state.doc.resolve(cursorPosition);
+    const nextCharacter = state.doc.textBetween(cursorPosition, cursorPosition + 1);
+    if (nextCharacter !== ")") return null;
+
+    const textBeforeCursor = $cursor.parent.textBetween(
+      0,
+      $cursor.parentOffset,
+      undefined,
+      "\uFFFC",
+    );
+    const match = `${textBeforeCursor})`.match(inlineMarkdownLinkPattern);
+    if (!match) return null;
+
+    const start = $cursor.start() + (match.index ?? 0);
+    return {
+      end: cursorPosition + 1,
+      linkStart: start + (match[1]?.length ?? 0),
+      match,
+      start,
+    };
+  }
+
   function createPairedSymbolPlugin() {
     return new Plugin({
       key: milkdownPairedSymbolPluginKey,
+      appendTransaction(transactions, oldState, newState) {
+        if (
+          transactions.some((transaction) => transaction.docChanged) ||
+          !transactions.some((transaction) => transaction.selectionSet) ||
+          !oldState.selection.empty ||
+          oldState.selection.eq(newState.selection)
+        ) {
+          return null;
+        }
+
+        const completedLink = completedInlineMarkdownLinkBeforeClosingParenthesis(
+          oldState,
+          oldState.selection.from,
+        );
+        if (!completedLink) return null;
+
+        const selectionStayedInsideLink =
+          newState.selection.from >= completedLink.linkStart &&
+          newState.selection.to < completedLink.end;
+        if (selectionStayedInsideLink) return null;
+
+        return createInlineMarkdownLinkTransaction(
+          newState,
+          completedLink.match,
+          completedLink.start,
+          completedLink.end,
+        );
+      },
       props: {
         handleTextInput(view, from, to, text) {
           if (
@@ -2744,21 +2820,17 @@ export function MilkdownMarkdownEditor({
           if (nextCharacter !== event.key) return false;
 
           if (event.key === ")") {
-            const textBeforeCursor = $from.parent.textBetween(
-              0,
-              $from.parentOffset,
-              undefined,
-              "\uFFFC",
+            const completedLink = completedInlineMarkdownLinkBeforeClosingParenthesis(
+              view.state,
+              $from.pos,
             );
-            const match = `${textBeforeCursor})`.match(inlineMarkdownLinkPattern);
 
-            if (match) {
-              const start = $from.start() + (match.index ?? 0);
+            if (completedLink) {
               const tr = createInlineMarkdownLinkTransaction(
                 view.state,
-                match,
-                start,
-                $from.pos + 1,
+                completedLink.match,
+                completedLink.start,
+                completedLink.end,
               );
 
               if (tr) {
@@ -3279,6 +3351,10 @@ export function MilkdownMarkdownEditor({
   useEffect(() => {
     onSelectionEnterRef.current = onSelectionEnter;
   }, [onSelectionEnter]);
+
+  useEffect(() => {
+    onLinkClickRef.current = onLinkClick;
+  }, [onLinkClick]);
 
   useEffect(() => {
     onAnnotationClickRef.current = onAnnotationClick;

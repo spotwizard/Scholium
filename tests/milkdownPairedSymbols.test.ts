@@ -60,7 +60,23 @@ assert.match(
 );
 assert.match(
   editor,
-  /createInlineMarkdownLinkTransaction\([\s\S]*?\$from\.pos \+ 1,[\s\S]*?\)/,
+  /completedInlineMarkdownLinkBeforeClosingParenthesis\(\n\s*view\.state,\n\s*\$from\.pos,\n\s*\)/,
+);
+assert.match(
+  editor,
+  /function completedInlineMarkdownLinkBeforeClosingParenthesis\([\s\S]*?nextCharacter !== "\)"[\s\S]*?inlineMarkdownLinkPattern/,
+);
+assert.match(
+  editor,
+  /appendTransaction\(transactions, oldState, newState\) \{[\s\S]*?transaction\.docChanged[\s\S]*?transaction\.selectionSet[\s\S]*?oldState\.selection\.eq\(newState\.selection\)/,
+);
+assert.match(
+  editor,
+  /const selectionStayedInsideLink =[\s\S]*?newState\.selection\.from >= completedLink\.linkStart[\s\S]*?newState\.selection\.to < completedLink\.end;/,
+);
+assert.match(
+  editor,
+  /if \(selectionStayedInsideLink\) return null;[\s\S]*?createInlineMarkdownLinkTransaction\(\n\s*newState,/,
 );
 assert.match(
   editor,

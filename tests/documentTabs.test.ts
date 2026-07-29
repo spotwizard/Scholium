@@ -78,6 +78,11 @@ assert.match(
 );
 assert.match(
   appSource,
+  /documentsRef\.current = loadedDocuments;\n    setDocuments\(loadedDocuments\);/,
+  "workspace documents must be available before the restored tab session is merged",
+);
+assert.match(
+  appSource,
   /if \(tabSession\) \{\n      const sessionRestored = await restoreDropboxDocumentTabSession\(tabSession\);[\s\S]*?rememberDocumentTabSession\(null\);/,
 );
 assert.match(

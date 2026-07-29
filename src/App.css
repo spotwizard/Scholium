@@ -3283,6 +3283,10 @@ button.document-tag-chip__label:focus-visible {
   margin: 4px 0;
 }
 
+.milkdown-markdown-editor .ProseMirror a[href] {
+  cursor: pointer;
+}
+
 .milkdown-markdown-editor .ProseMirror img[data-scholium-local-image-error="true"] {
   min-width: 160px;
   min-height: 44px;
