@@ -1276,22 +1276,48 @@ function normalizeDoubledFinalConsonant(token: string) {
   return token;
 }
 
-function glossaryTermWordCount(term: string) {
-  const normalizedTerm = term.replace(/\s+/g, " ").trim();
-  if (!normalizedTerm) return 0;
+function glossarySelectionBoundaryCharacter(character: string) {
+  return /[\s.,，。!?！？;；:：、"'“”‘’()[\]{}《》〈〉【】]/u.test(character);
+}
 
-  return normalizedTerm.split(" ").length;
+function normalizeGlossarySelectionAnchor(anchor: TextSelectionAnchor) {
+  let leadingLength = 0;
+  for (const character of anchor.selectedText) {
+    if (!glossarySelectionBoundaryCharacter(character)) break;
+    leadingLength += character.length;
+  }
+
+  let trailingLength = 0;
+  for (const character of Array.from(anchor.selectedText.slice(leadingLength)).reverse()) {
+    if (!glossarySelectionBoundaryCharacter(character)) break;
+    trailingLength += character.length;
+  }
+
+  const selectedText = anchor.selectedText.slice(
+    leadingLength,
+    anchor.selectedText.length - trailingLength,
+  );
+  if (!selectedText) return null;
+
+  return {
+    ...anchor,
+    from: anchor.from + leadingLength,
+    to: anchor.to - trailingLength,
+    selectedText,
+    prefix: `${anchor.prefix}${anchor.selectedText.slice(0, leadingLength)}`.slice(-48),
+    suffix: `${anchor.selectedText.slice(anchor.selectedText.length - trailingLength)}${
+      anchor.suffix
+    }`.slice(0, 48),
+  };
 }
 
 function isGlossarySelectionCandidate(anchor: TextSelectionAnchor) {
-  const normalizedTerm = anchor.selectedText.replace(/\s+/g, " ").trim();
-  const wordCount = glossaryTermWordCount(normalizedTerm);
+  const normalizedAnchor = normalizeGlossarySelectionAnchor(anchor);
+  if (!normalizedAnchor) return false;
 
   return (
-    wordCount >= 1 &&
-    wordCount <= 3 &&
-    !/[\r\n]/.test(anchor.selectedText) &&
-    !/[.!?。！？,，;；:：]$/.test(normalizedTerm)
+    !/[\r\n]/.test(normalizedAnchor.selectedText) &&
+    /[\p{L}\p{N}]/u.test(normalizedAnchor.selectedText)
   );
 }
 
@@ -15652,13 +15678,22 @@ function App() {
       notePanelHasContentRef.current = false;
     }
 
-    if (isMobileViewport && !pendingGlossaryTerm) {
-      if (selectionShouldSuppressNewAnnotation(anchor)) {
+    if (mobileAnnotationKeyboardShouldStayClosed && !pendingGlossaryTerm) {
+      const glossaryAnchor = glossaryModeActive
+        ? normalizeGlossarySelectionAnchor(anchor)
+        : null;
+      const selectionAnchor = glossaryAnchor ?? anchor;
+
+      if (glossaryModeActive && !isGlossarySelectionCandidate(selectionAnchor)) {
         return;
       }
 
-      if (glossaryModeActive && isGlossarySelectionCandidate(anchor)) {
-        startGlossaryFlowForAnchor(anchor);
+      if (selectionShouldSuppressNewAnnotation(selectionAnchor)) {
+        return;
+      }
+
+      if (glossaryModeActive) {
+        startGlossaryFlowForAnchor(selectionAnchor);
         return;
       }
 
@@ -15698,15 +15733,15 @@ function App() {
   }
 
   function selectionIsBlockedByExistingAnnotations(anchor: TextSelectionAnchor) {
-    if (glossaryModeActive && isGlossarySelectionCandidate(anchor)) {
+    if (glossaryModeActive) {
       return selectionOverlapsActiveGlossary(anchor);
     }
 
-    return selectionOverlapsActiveNote(anchor) || selectionOverlapsActiveGlossary(anchor);
+    return selectionOverlapsActiveNote(anchor);
   }
 
   function selectionShouldSuppressNewAnnotation(anchor: TextSelectionAnchor) {
-    if (isMobileViewport && !(glossaryModeActive && isGlossarySelectionCandidate(anchor))) {
+    if (mobileAnnotationKeyboardShouldStayClosed && !glossaryModeActive) {
       return false;
     }
 
@@ -15764,15 +15799,19 @@ function App() {
   }
 
   function openExistingAnnotationForSelection(anchor: TextSelectionAnchor) {
+    if (glossaryModeActive) {
+      const overlappingGlossaryBinding = activeGlossaryBindingOverlappingSelection(anchor);
+      if (overlappingGlossaryBinding) {
+        return openGlossaryBindingPanel(overlappingGlossaryBinding);
+      }
+
+      return false;
+    }
+
     const overlappingNote = activeNoteOverlappingSelection(anchor);
     if (overlappingNote) {
       openSelectionNoteViewer(overlappingNote);
       return true;
-    }
-
-    const overlappingGlossaryBinding = activeGlossaryBindingOverlappingSelection(anchor);
-    if (overlappingGlossaryBinding) {
-      return openGlossaryBindingPanel(overlappingGlossaryBinding);
     }
 
     return false;
@@ -15783,6 +15822,10 @@ function App() {
     context?: TextSelectionEnterContext,
   ) {
     const contextAnchorRect = textRangeRectFromSelectionEnterContext(context);
+    const glossaryAnchor = glossaryModeActive
+      ? normalizeGlossarySelectionAnchor(anchor)
+      : null;
+    const selectionAnchor = glossaryAnchor ?? anchor;
 
     if (!hasOpenDocument) return false;
     if (
@@ -15796,23 +15839,26 @@ function App() {
       return false;
     }
     if (!noteModeEnabled) return false;
+    if (glossaryModeActive && !isGlossarySelectionCandidate(selectionAnchor)) {
+      return false;
+    }
 
-    if (selectionShouldSuppressNewAnnotation(anchor)) {
+    if (selectionShouldSuppressNewAnnotation(selectionAnchor)) {
       if (noteLibraryOpen) {
         setNoteLibraryOpen(false);
       }
       if (contextAnchorRect) {
         floatingNoteAnchorRectRef.current = contextAnchorRect;
       }
-      openExistingAnnotationForSelection(anchor);
+      openExistingAnnotationForSelection(selectionAnchor);
       return true;
     }
 
-    if (glossaryModeActive && isGlossarySelectionCandidate(anchor)) {
+    if (glossaryModeActive) {
       if (noteLibraryOpen) {
         setNoteLibraryOpen(false);
       }
-      startGlossaryFlowForAnchor(anchor, { anchorRect: contextAnchorRect });
+      startGlossaryFlowForAnchor(selectionAnchor, { anchorRect: contextAnchorRect });
       return true;
     }
 
@@ -15960,6 +16006,8 @@ function App() {
     options: { anchorRect?: TextRangeRect | null } = {},
   ) {
     if (!glossaryModeActive) return;
+    const selectionAnchor = normalizeGlossarySelectionAnchor(anchor);
+    if (!selectionAnchor || !isGlossarySelectionCandidate(selectionAnchor)) return;
 
     discardTransientEmptySelectionNote();
     setSelectionWarningPosition(null);
@@ -15973,12 +16021,12 @@ function App() {
       floatingNoteAnchorRectRef.current = anchorRect;
     }
 
-    const existingTerm = glossaryTermForAnchor(anchor);
+    const existingTerm = glossaryTermForAnchor(selectionAnchor);
     if (existingTerm) {
       clearNotePanelCloseTimer();
       clearReturnToViewTimer();
       setIsNotePanelClosing(false);
-      setPendingAnchor(anchor);
+      setPendingAnchor(selectionAnchor);
       setPendingGlossaryTerm(existingTerm);
       pendingGlossaryPromptLockUntilRef.current = Date.now() + 350;
       setActiveNoteId("");
@@ -15991,7 +16039,7 @@ function App() {
     }
 
     const now = nowLabel();
-    const termText = anchor.selectedText.replace(/\s+/g, " ").trim();
+    const termText = selectionAnchor.selectedText.replace(/\s+/g, " ").trim();
     const term: GlossaryTerm = {
       id: crypto.randomUUID(),
       term: termText,
@@ -16002,7 +16050,7 @@ function App() {
     };
 
     setGlossaryTerms((currentTerms) => [term, ...currentTerms]);
-    const binding = createGlossaryBinding(term, anchor);
+    const binding = createGlossaryBinding(term, selectionAnchor);
     transientGlossaryBindingIdRef.current = binding.id;
     transientGlossaryTermIdRef.current = term.id;
     setPendingAnchor(null);
@@ -16355,6 +16403,9 @@ function App() {
     const nextGlossaryModeEnabled = !glossaryModeEnabled;
     if (!nextGlossaryModeEnabled) {
       resetGlossaryModeInteractionState();
+    } else {
+      setNoteLibraryOpen(false);
+      setFocusedLibraryNoteId("");
     }
 
     setActiveDocumentModeState({
@@ -16890,7 +16941,8 @@ function App() {
         };
   const previewEditorReadOnly =
     notePanelModalActive || (noteModeEnabled && mobileAnnotationKeyboardShouldStayClosed);
-  const mobileCommittedSelectionAnchor = pendingAnchor ?? activeNote?.anchor ?? null;
+  const mobileCommittedSelectionAnchor =
+    pendingAnchor ?? activeNote?.anchor ?? activeGlossaryBinding?.anchor ?? null;
   const mobileCommittedSelectionKey =
     mobileAnnotationKeyboardShouldStayClosed &&
     noteModeEnabled &&
@@ -18776,7 +18828,12 @@ function App() {
                   documentFilePath={selectedDocument.filePath}
                   key={selectedDocument.id}
                   mobileBlockSelectionEnabled={mobileAnnotationKeyboardShouldStayClosed}
-                  mobileBlockSelectionHint={t("selection.dragToCreateNote")}
+                  mobileBlockSelectionHint={t(
+                    glossaryModeActive
+                      ? "selection.mobileGlossaryModeHint"
+                      : "selection.dragToCreateNote",
+                  )}
+                  mobileSelectionKind={glossaryModeActive ? "glossary" : "note"}
                   mobileCommittedSelectionKey={mobileCommittedSelectionKey}
                   mobileCommittedSelectionTone={floatingNoteTone}
                   mobileSelectionToneForAnchor={toneForNewSelectionNote}

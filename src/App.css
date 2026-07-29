@@ -4017,6 +4017,11 @@ button.document-tag-chip__label:focus-visible {
   background: color-mix(in srgb, var(--color-annotation-surface-alt) 74%, transparent);
 }
 
+.milkdown-touch-block-selection-overlay.is-glossary
+  .milkdown-touch-block-selection-preview {
+  background: color-mix(in srgb, var(--color-glossary-surface) 82%, transparent);
+}
+
 .milkdown-touch-block-selection-overlay.is-committed
   .milkdown-touch-block-selection-preview {
   background: color-mix(in srgb, var(--color-annotation-surface) 82%, transparent);
@@ -4025,6 +4030,11 @@ button.document-tag-chip__label:focus-visible {
 .milkdown-touch-block-selection-overlay.is-committed[data-note-tone="1"]
   .milkdown-touch-block-selection-preview {
   background: color-mix(in srgb, var(--color-annotation-surface-alt) 82%, transparent);
+}
+
+.milkdown-touch-block-selection-overlay.is-committed.is-glossary
+  .milkdown-touch-block-selection-preview {
+  background: color-mix(in srgb, var(--color-glossary-surface) 88%, transparent);
 }
 
 .milkdown-touch-block-selection-rect {

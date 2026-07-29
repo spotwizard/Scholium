@@ -33,7 +33,7 @@ assert.doesNotMatch(
 );
 assert.match(
   selectionEnterSource,
-  /if \(!noteModeEnabled\) return false;[\s\S]*?selectionShouldSuppressNewAnnotation\(anchor\)/,
+  /if \(!noteModeEnabled\) return false;[\s\S]*?selectionShouldSuppressNewAnnotation\(selectionAnchor\)/,
 );
 assert.doesNotMatch(selectionEnterSource, /setActiveDocumentModeState/);
 assert.match(
