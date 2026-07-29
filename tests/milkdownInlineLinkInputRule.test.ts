@@ -16,7 +16,7 @@ assert.match(editor, /state\.tr\.insertText\(label, linkStart, end\)/);
 assert.match(editor, /tr\.addMark\(linkStart, linkEnd, linkMarkType\.create\(\{ href, title: null \}\)\)/);
 assert.match(
   editor,
-  /createInlineMarkdownLinkInputRule\(\),\n\s*createPairedSymbolPlugin\(\),\n\s*createPlainEnterHardBreakPlugin\(\),/,
+  /createInlineMarkdownLinkInputRule\(\),\n\s*createPairedSymbolPlugin\(\),\n\s*createSingleListItemIndentPlugin\(\),\n\s*createPlainEnterHardBreakPlugin\(\),/,
 );
 assert.match(editor, /let acceptsMarkdownUpdates = false;/);
 assert.match(editor, /disposed \|\|\n\s*!acceptsMarkdownUpdates \|\|/);

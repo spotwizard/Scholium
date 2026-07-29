@@ -45,6 +45,7 @@ import {
   markdownListItemContentStartOffset,
   type MarkdownTextMap as MilkdownTextMap,
 } from "./markdownInlineTextMap";
+import { sinkSingleListItem } from "./milkdownListIndent";
 import { loadScholiumMermaid } from "./mermaid";
 
 type MilkdownMarkdownEditorProps = {
@@ -95,6 +96,9 @@ const milkdownPlainEnterHardBreakPluginKey = new PluginKey(
 );
 const milkdownPairedSymbolPluginKey = new PluginKey(
   "scholium-milkdown-paired-symbols",
+);
+const milkdownSingleListItemIndentPluginKey = new PluginKey(
+  "scholium-milkdown-single-list-item-indent",
 );
 const inlineMarkdownLinkPattern = /(^|[^!])\[([^\]\n]+)\]\(([^)\n]*)\)$/;
 const markdownPairedSymbols: Readonly<Record<string, string>> = {
@@ -2853,6 +2857,42 @@ export function MilkdownMarkdownEditor({
     });
   }
 
+  function createSingleListItemIndentPlugin() {
+    return new Plugin({
+      key: milkdownSingleListItemIndentPluginKey,
+      props: {
+        handleKeyDown(view, event) {
+          if (
+            event.key !== "Tab" ||
+            event.shiftKey ||
+            event.metaKey ||
+            event.ctrlKey ||
+            event.altKey ||
+            event.isComposing ||
+            imeCompositionActiveRef.current ||
+            readOnlyRef.current ||
+            noteModeEnabledRef.current
+          ) {
+            return false;
+          }
+
+          const listItemType = view.state.schema.nodes.list_item;
+          if (!listItemType) return false;
+
+          const handled = sinkSingleListItem(listItemType)(
+            view.state,
+            (transaction) => view.dispatch(transaction),
+            view,
+          );
+          if (!handled) return false;
+
+          event.preventDefault();
+          return true;
+        },
+      },
+    });
+  }
+
   function createPlainEnterHardBreakPlugin() {
     return new Plugin({
       key: milkdownPlainEnterHardBreakPluginKey,
@@ -5373,6 +5413,7 @@ export function MilkdownMarkdownEditor({
         createTouchBlockSelectionPlugin(),
         createInlineMarkdownLinkInputRule(),
         createPairedSymbolPlugin(),
+        createSingleListItemIndentPlugin(),
         createPlainEnterHardBreakPlugin(),
         createReadonlyGuardPlugin(),
         ...plugins,
