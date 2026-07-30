@@ -3,10 +3,11 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { history, redo, undo } from "@milkdown/prose/history";
 import { Schema } from "@milkdown/prose/model";
-import { bulletList, listItem } from "@milkdown/prose/schema-list";
+import { bulletList, listItem, orderedList } from "@milkdown/prose/schema-list";
 import { EditorState, TextSelection } from "@milkdown/prose/state";
 import {
   deleteAtListItemStart,
+  mergeRemovedListMarkerLineBackward,
   sinkSingleListItem,
 } from "../src/milkdownListIndent.ts";
 
@@ -15,7 +16,9 @@ const schema = new Schema({
     doc: { content: "block+" },
     paragraph: { content: "inline*", group: "block" },
     text: { group: "inline" },
+    hardbreak: { inline: true, group: "inline", selectable: false },
     bullet_list: { ...bulletList, content: "list_item+", group: "block" },
+    ordered_list: { ...orderedList, content: "list_item+", group: "block" },
     list_item: { ...listItem, content: "paragraph block*" },
   },
 });
@@ -27,6 +30,16 @@ const item = (text: string, children: ReturnType<typeof item>[] = []) =>
     null,
     children.length > 0
       ? [paragraph(text), schema.nodes.bullet_list.create(null, children)]
+      : [paragraph(text)],
+  );
+const orderedItem = (
+  text: string,
+  children: ReturnType<typeof orderedItem>[] = [],
+) =>
+  schema.nodes.list_item.create(
+    null,
+    children.length > 0
+      ? [paragraph(text), schema.nodes.ordered_list.create(null, children)]
       : [paragraph(text)],
   );
 
@@ -163,10 +176,37 @@ const deletionHandled = deleteAtListItemStart(
   "backward",
 )(
   deletionState,
-  () => assert.fail("Backspace at the start of a non-empty item must not move it"),
+  (transaction) => {
+    deletionState = deletionState.apply(transaction);
+  },
 );
 
 assert.equal(deletionHandled, true);
+assert.equal(deletionState.doc.textContent, deletionDocument.textContent);
+assert.equal(deletionState.selection.$from.parent.textContent, "分析");
+assert.equal(deletionState.selection.$from.parentOffset, 0);
+const remainingListItemLabels: string[] = [];
+let filterOutItem = null;
+deletionState.doc.descendants((node) => {
+  if (node.type !== schema.nodes.list_item) return;
+
+  const label = node.firstChild?.textContent ?? "";
+  remainingListItemLabels.push(label);
+  if (label === "篩除") filterOutItem = node;
+});
+assert.equal(remainingListItemLabels.includes("分析"), false);
+assert.equal(remainingListItemLabels.includes("找出能代表該地點的亮點特色"), true);
+assert.equal(remainingListItemLabels.includes("篩除"), true);
+assert.equal(
+  filterOutItem?.lastChild?.textContent,
+  "刪除重複的資料刪除",
+);
+assert.equal(
+  undo(deletionState, (transaction) => {
+    deletionState = deletionState.apply(transaction);
+  }),
+  true,
+);
 assert.deepEqual(deletionState.doc.toJSON(), deletionBeforeBackspace);
 
 const middleOfItemState = EditorState.create({
@@ -229,19 +269,114 @@ clearedItemState.doc.descendants((node, position) => {
 });
 assert.notEqual(emptyParentPosition, -1);
 
-const emptyParentState = clearedItemState.apply(
-  clearedItemState.tr.setSelection(
-    TextSelection.create(clearedItemState.doc, emptyParentPosition),
-  ),
-);
+let emptyParentState = EditorState.create({
+  doc: clearedItemState.doc,
+  selection: TextSelection.create(clearedItemState.doc, emptyParentPosition),
+  plugins: [history()],
+});
 assert.equal(
   deleteAtListItemStart(schema.nodes.list_item, "backward")(
     emptyParentState,
-    () => assert.fail("An empty item that owns children must remain in place"),
+    (transaction) => {
+      emptyParentState = emptyParentState.apply(transaction);
+    },
   ),
   true,
 );
+assert.equal(emptyParentState.doc.textContent, clearedItemState.doc.textContent);
+const promotedTopLevelItem = emptyParentState.doc.firstChild?.firstChild;
+const promotedFirstLevelList = promotedTopLevelItem?.child(1);
+const promotedFilterItem = promotedFirstLevelList?.firstChild;
+const promotedFilterList = promotedFilterItem?.child(1);
+assert.equal(promotedFilterList?.childCount, 2);
+assert.equal(
+  promotedFilterList?.child(0).firstChild?.textContent,
+  "找出能代表該地點的亮點特色",
+);
+assert.equal(promotedFilterList?.child(1).firstChild?.textContent, "篩除：");
+assert.equal(
+  promotedFilterList?.child(1).lastChild?.textContent,
+  "刪除重複的資料刪除",
+);
+assert.equal(
+  emptyParentState.selection.$from.parent.textContent,
+  "找出能代表該地點的亮點特色",
+);
+assert.equal(emptyParentState.selection.$from.parentOffset, 0);
+
+assert.equal(
+  undo(emptyParentState, (transaction) => {
+    emptyParentState = emptyParentState.apply(transaction);
+  }),
+  true,
+);
 assert.deepEqual(emptyParentState.doc.toJSON(), clearedItemState.doc.toJSON());
+
+const phantomParentItem = schema.nodes.list_item.create(null, [
+  schema.nodes.paragraph.create(null, schema.nodes.hardbreak.create()),
+  schema.nodes.bullet_list.create(null, [
+    item("必須採用以下文章結構："),
+  ]),
+]);
+const phantomBulletDocument = schema.nodes.doc.create(null, [
+  schema.nodes.bullet_list.create(null, [
+    item("禁止使用純記錄的方式描述"),
+    item("不要刻意提及店名、地區、街道和門牌號"),
+    phantomParentItem,
+    item("文章標題：代表整篇文章"),
+  ]),
+]);
+let phantomBulletPosition = -1;
+phantomBulletDocument.descendants((node, position) => {
+  if (
+    node.type === schema.nodes.list_item &&
+    node.firstChild?.textContent === "" &&
+    node.childCount === 2
+  ) {
+    phantomBulletPosition = position + 3;
+  }
+});
+assert.notEqual(phantomBulletPosition, -1);
+
+let phantomBulletState = EditorState.create({
+  doc: phantomBulletDocument,
+  selection: TextSelection.create(phantomBulletDocument, phantomBulletPosition),
+  plugins: [history()],
+});
+assert.equal(
+  deleteAtListItemStart(schema.nodes.list_item, "backward")(
+    phantomBulletState,
+    (transaction) => {
+      phantomBulletState = phantomBulletState.apply(transaction);
+    },
+  ),
+  true,
+);
+const normalizedBulletList = phantomBulletState.doc.firstChild;
+assert.equal(normalizedBulletList?.childCount, 4);
+assert.deepEqual(
+  Array.from({ length: normalizedBulletList?.childCount ?? 0 }, (_, index) =>
+    normalizedBulletList?.child(index).firstChild?.textContent,
+  ),
+  [
+    "禁止使用純記錄的方式描述",
+    "不要刻意提及店名、地區、街道和門牌號",
+    "必須採用以下文章結構：",
+    "文章標題：代表整篇文章",
+  ],
+);
+assert.equal(
+  phantomBulletState.selection.$from.parent.textContent,
+  "必須採用以下文章結構：",
+);
+assert.equal(phantomBulletState.selection.$from.parentOffset, 0);
+assert.equal(
+  undo(phantomBulletState, (transaction) => {
+    phantomBulletState = phantomBulletState.apply(transaction);
+  }),
+  true,
+);
+assert.deepEqual(phantomBulletState.doc.toJSON(), phantomBulletDocument.toJSON());
 
 assert.equal(
   undo(clearedItemState, (transaction) => {
@@ -286,7 +421,68 @@ assert.equal(
   ),
   true,
 );
-assert.deepEqual(siblingDeletionState.doc.toJSON(), {
+assert.equal(siblingDeletionState.doc.textContent, siblingDeletionDocument.textContent);
+const siblingTopList = siblingDeletionState.doc.firstChild;
+const siblingFilterItem = siblingTopList?.firstChild;
+assert.equal(siblingTopList?.childCount, 2);
+assert.equal(siblingFilterItem?.childCount, 3);
+assert.equal(siblingFilterItem?.child(0).textContent, "篩選");
+assert.equal(siblingFilterItem?.child(1).type, schema.nodes.paragraph);
+assert.equal(siblingFilterItem?.child(1).textContent, "");
+assert.equal(siblingFilterItem?.child(2).type, schema.nodes.bullet_list);
+assert.equal(siblingFilterItem?.child(2).firstChild?.firstChild?.textContent, "篩除：");
+assert.equal(
+  siblingFilterItem?.child(2).firstChild?.lastChild?.textContent,
+  "刪除重複的資料刪除",
+);
+assert.equal(siblingDeletionState.selection.$from.parent.type, schema.nodes.paragraph);
+assert.equal(siblingDeletionState.selection.$from.parent.textContent, "");
+assert.equal(siblingDeletionState.selection.$from.parentOffset, 0);
+assert.equal(
+  undo(siblingDeletionState, (transaction) => {
+    siblingDeletionState = siblingDeletionState.apply(transaction);
+  }),
+  true,
+);
+assert.deepEqual(siblingDeletionState.doc.toJSON(), siblingDeletionDocument.toJSON());
+
+const topLevelEmptyItemDocument = schema.nodes.doc.create(null, [
+  schema.nodes.bullet_list.create(null, [
+    item("使用者提供地點"),
+    item("根據 search.md 中的規則進行搜尋資料的程序"),
+    item(""),
+  ]),
+]);
+let topLevelEmptyItemPosition = -1;
+topLevelEmptyItemDocument.descendants((node, position) => {
+  if (
+    node.type === schema.nodes.list_item &&
+    node.firstChild?.textContent === "" &&
+    node.childCount === 1
+  ) {
+    topLevelEmptyItemPosition = position + 2;
+  }
+});
+assert.notEqual(topLevelEmptyItemPosition, -1);
+
+let topLevelEmptyItemState = EditorState.create({
+  doc: topLevelEmptyItemDocument,
+  selection: TextSelection.create(
+    topLevelEmptyItemDocument,
+    topLevelEmptyItemPosition,
+  ),
+  plugins: [history()],
+});
+assert.equal(
+  deleteAtListItemStart(schema.nodes.list_item, "backward")(
+    topLevelEmptyItemState,
+    (transaction) => {
+      topLevelEmptyItemState = topLevelEmptyItemState.apply(transaction);
+    },
+  ),
+  true,
+);
+assert.deepEqual(topLevelEmptyItemState.doc.toJSON(), {
   type: "doc",
   content: [
     {
@@ -295,43 +491,9 @@ assert.deepEqual(siblingDeletionState.doc.toJSON(), {
         {
           type: "list_item",
           content: [
-            { type: "paragraph", content: [{ type: "text", text: "篩選" }] },
             {
-              type: "bullet_list",
-              content: [
-                {
-                  type: "list_item",
-                  content: [
-                    {
-                      type: "paragraph",
-                      content: [{ type: "text", text: "篩除：" }],
-                    },
-                    {
-                      type: "bullet_list",
-                      content: [
-                        {
-                          type: "list_item",
-                          content: [
-                            {
-                              type: "paragraph",
-                              content: [{ type: "text", text: "刪除重複的資料" }],
-                            },
-                          ],
-                        },
-                        {
-                          type: "list_item",
-                          content: [
-                            {
-                              type: "paragraph",
-                              content: [{ type: "text", text: "刪除" }],
-                            },
-                          ],
-                        },
-                      ],
-                    },
-                  ],
-                },
-              ],
+              type: "paragraph",
+              content: [{ type: "text", text: "使用者提供地點" }],
             },
           ],
         },
@@ -340,21 +502,462 @@ assert.deepEqual(siblingDeletionState.doc.toJSON(), {
           content: [
             {
               type: "paragraph",
-              content: [{ type: "text", text: "文章結構" }],
+              content: [
+                {
+                  type: "text",
+                  text: "根據 search.md 中的規則進行搜尋資料的程序",
+                },
+              ],
             },
           ],
         },
       ],
     },
+    { type: "paragraph" },
   ],
 });
+assert.equal(topLevelEmptyItemState.selection.$from.parent.type, schema.nodes.paragraph);
+assert.equal(topLevelEmptyItemState.selection.$from.parent.textContent, "");
+assert.equal(topLevelEmptyItemState.selection.$from.parentOffset, 0);
 assert.equal(
-  undo(siblingDeletionState, (transaction) => {
-    siblingDeletionState = siblingDeletionState.apply(transaction);
+  undo(topLevelEmptyItemState, (transaction) => {
+    topLevelEmptyItemState = topLevelEmptyItemState.apply(transaction);
   }),
   true,
 );
-assert.deepEqual(siblingDeletionState.doc.toJSON(), siblingDeletionDocument.toJSON());
+assert.deepEqual(
+  topLevelEmptyItemState.doc.toJSON(),
+  topLevelEmptyItemDocument.toJSON(),
+);
+
+const orderedTextDeletionDocument = schema.nodes.doc.create(null, [
+  schema.nodes.ordered_list.create(null, [
+    orderedItem("第一列"),
+    orderedItem("第二列"),
+    orderedItem("第三列"),
+  ]),
+]);
+let orderedTextDeletionPosition = -1;
+orderedTextDeletionDocument.descendants((node, position) => {
+  if (node.isText && node.text === "第二列") {
+    orderedTextDeletionPosition = position;
+  }
+});
+assert.notEqual(orderedTextDeletionPosition, -1);
+
+let orderedTextDeletionState = EditorState.create({
+  doc: orderedTextDeletionDocument,
+});
+orderedTextDeletionState = orderedTextDeletionState.apply(
+  orderedTextDeletionState.tr.delete(
+    orderedTextDeletionPosition,
+    orderedTextDeletionPosition + "第二列".length,
+  ),
+);
+const orderedListAfterTextDeletion = orderedTextDeletionState.doc.firstChild;
+assert.equal(orderedListAfterTextDeletion?.type, schema.nodes.ordered_list);
+assert.equal(orderedListAfterTextDeletion?.childCount, 3);
+assert.equal(
+  orderedListAfterTextDeletion?.child(1).firstChild?.textContent,
+  "",
+);
+
+const orderedEmptyItemDocument = schema.nodes.doc.create(null, [
+  schema.nodes.ordered_list.create(null, [
+    orderedItem("第一列"),
+    orderedItem(""),
+    orderedItem("第三列"),
+  ]),
+]);
+let orderedEmptyItemPosition = -1;
+orderedEmptyItemDocument.descendants((node, position) => {
+  if (
+    node.type === schema.nodes.list_item &&
+    node.firstChild?.textContent === "" &&
+    node.childCount === 1
+  ) {
+    orderedEmptyItemPosition = position + 2;
+  }
+});
+assert.notEqual(orderedEmptyItemPosition, -1);
+
+let orderedEmptyItemState = EditorState.create({
+  doc: orderedEmptyItemDocument,
+  selection: TextSelection.create(
+    orderedEmptyItemDocument,
+    orderedEmptyItemPosition,
+  ),
+  plugins: [history()],
+});
+assert.equal(
+  deleteAtListItemStart(schema.nodes.list_item, "backward")(
+    orderedEmptyItemState,
+    (transaction) => {
+      orderedEmptyItemState = orderedEmptyItemState.apply(transaction);
+    },
+  ),
+  true,
+);
+assert.equal(orderedEmptyItemState.doc.childCount, 3);
+assert.equal(orderedEmptyItemState.doc.child(0).type, schema.nodes.ordered_list);
+assert.equal(orderedEmptyItemState.doc.child(0).textContent, "第一列");
+assert.equal(orderedEmptyItemState.doc.child(1).type, schema.nodes.paragraph);
+assert.equal(orderedEmptyItemState.doc.child(1).textContent, "");
+assert.equal(orderedEmptyItemState.doc.child(2).type, schema.nodes.ordered_list);
+assert.equal(orderedEmptyItemState.doc.child(2).textContent, "第三列");
+assert.equal(orderedEmptyItemState.doc.child(2).attrs.order, 3);
+assert.equal(
+  orderedEmptyItemState.selection.$from.parent.type,
+  schema.nodes.paragraph,
+);
+assert.equal(orderedEmptyItemState.selection.$from.parentOffset, 0);
+assert.equal(
+  undo(orderedEmptyItemState, (transaction) => {
+    orderedEmptyItemState = orderedEmptyItemState.apply(transaction);
+  }),
+  true,
+);
+assert.deepEqual(
+  orderedEmptyItemState.doc.toJSON(),
+  orderedEmptyItemDocument.toJSON(),
+);
+
+const orderedMarkerDocument = schema.nodes.doc.create(null, [
+  schema.nodes.ordered_list.create({ order: 4 }, [
+    orderedItem("第四列"),
+    orderedItem("第五列"),
+    orderedItem("第六列"),
+  ]),
+]);
+let orderedMarkerPosition = -1;
+orderedMarkerDocument.descendants((node, position) => {
+  if (node.isText && node.text === "第五列") {
+    orderedMarkerPosition = position;
+  }
+});
+assert.notEqual(orderedMarkerPosition, -1);
+
+let orderedMarkerState = EditorState.create({
+  doc: orderedMarkerDocument,
+  selection: TextSelection.create(orderedMarkerDocument, orderedMarkerPosition),
+  plugins: [history()],
+});
+assert.equal(
+  deleteAtListItemStart(schema.nodes.list_item, "backward")(
+    orderedMarkerState,
+    (transaction) => {
+      orderedMarkerState = orderedMarkerState.apply(transaction);
+    },
+  ),
+  true,
+);
+assert.equal(orderedMarkerState.doc.childCount, 3);
+assert.equal(orderedMarkerState.doc.child(0).type, schema.nodes.ordered_list);
+assert.equal(orderedMarkerState.doc.child(0).attrs.order, 4);
+assert.equal(orderedMarkerState.doc.child(0).textContent, "第四列");
+assert.equal(orderedMarkerState.doc.child(1).type, schema.nodes.paragraph);
+assert.equal(orderedMarkerState.doc.child(1).textContent, "第五列");
+assert.equal(orderedMarkerState.doc.child(2).type, schema.nodes.ordered_list);
+assert.equal(orderedMarkerState.doc.child(2).attrs.order, 5);
+assert.equal(orderedMarkerState.doc.child(2).textContent, "第六列");
+assert.equal(orderedMarkerState.selection.$from.parent.textContent, "第五列");
+assert.equal(orderedMarkerState.selection.$from.parentOffset, 0);
+assert.equal(
+  mergeRemovedListMarkerLineBackward(schema.nodes.list_item)(
+    orderedMarkerState,
+    (transaction) => {
+      orderedMarkerState = orderedMarkerState.apply(transaction);
+    },
+  ),
+  true,
+);
+assert.equal(orderedMarkerState.doc.childCount, 2);
+assert.equal(orderedMarkerState.doc.child(0).type, schema.nodes.ordered_list);
+assert.equal(orderedMarkerState.doc.child(0).attrs.order, 4);
+assert.equal(orderedMarkerState.doc.child(0).textContent, "第四列第五列");
+assert.equal(orderedMarkerState.doc.child(1).type, schema.nodes.ordered_list);
+assert.equal(orderedMarkerState.doc.child(1).attrs.order, 5);
+assert.equal(orderedMarkerState.doc.child(1).textContent, "第六列");
+assert.equal(
+  orderedMarkerState.selection.$from.parent.textContent,
+  "第四列第五列",
+);
+assert.equal(orderedMarkerState.selection.$from.parentOffset, "第四列".length);
+assert.equal(
+  undo(orderedMarkerState, (transaction) => {
+    orderedMarkerState = orderedMarkerState.apply(transaction);
+  }),
+  true,
+);
+assert.deepEqual(orderedMarkerState.doc.toJSON(), orderedMarkerDocument.toJSON());
+
+const orderedMarkerWithChildrenDocument = schema.nodes.doc.create(null, [
+  schema.nodes.ordered_list.create({ order: 4 }, [
+    orderedItem("第四列"),
+    orderedItem("第五列", [
+      orderedItem("第一個子項目", [orderedItem("孫項目")]),
+      orderedItem("第二個子項目"),
+    ]),
+    orderedItem("第六列"),
+  ]),
+]);
+let orderedMarkerWithChildrenPosition = -1;
+orderedMarkerWithChildrenDocument.descendants((node, position) => {
+  if (node.isText && node.text === "第五列") {
+    orderedMarkerWithChildrenPosition = position;
+  }
+});
+assert.notEqual(orderedMarkerWithChildrenPosition, -1);
+
+let orderedMarkerWithChildrenState = EditorState.create({
+  doc: orderedMarkerWithChildrenDocument,
+  selection: TextSelection.create(
+    orderedMarkerWithChildrenDocument,
+    orderedMarkerWithChildrenPosition,
+  ),
+  plugins: [history()],
+});
+assert.equal(
+  deleteAtListItemStart(schema.nodes.list_item, "backward")(
+    orderedMarkerWithChildrenState,
+    (transaction) => {
+      orderedMarkerWithChildrenState =
+        orderedMarkerWithChildrenState.apply(transaction);
+    },
+  ),
+  true,
+);
+assert.equal(orderedMarkerWithChildrenState.doc.childCount, 1);
+const orderedListWithPreservedChildren =
+  orderedMarkerWithChildrenState.doc.child(0);
+assert.equal(orderedListWithPreservedChildren.type, schema.nodes.ordered_list);
+assert.equal(orderedListWithPreservedChildren.attrs.order, 4);
+assert.equal(orderedListWithPreservedChildren.childCount, 2);
+const orderedItemWithPreservedChildren =
+  orderedListWithPreservedChildren.child(0);
+assert.equal(orderedItemWithPreservedChildren.childCount, 3);
+assert.equal(
+  orderedItemWithPreservedChildren.child(0).textContent,
+  "第四列",
+);
+assert.equal(
+  orderedItemWithPreservedChildren.child(1).textContent,
+  "第五列",
+);
+const preservedOrderedChildren = orderedItemWithPreservedChildren.child(2);
+assert.equal(preservedOrderedChildren.type, schema.nodes.ordered_list);
+assert.equal(preservedOrderedChildren.attrs.order, 1);
+assert.equal(preservedOrderedChildren.childCount, 2);
+assert.equal(
+  preservedOrderedChildren.child(0).firstChild?.textContent,
+  "第一個子項目",
+);
+assert.equal(preservedOrderedChildren.child(0).childCount, 2);
+assert.equal(
+  preservedOrderedChildren.child(0).child(1).firstChild?.firstChild?.textContent,
+  "孫項目",
+);
+assert.equal(
+  preservedOrderedChildren.child(1).firstChild?.textContent,
+  "第二個子項目",
+);
+assert.equal(
+  orderedListWithPreservedChildren.child(1).firstChild?.textContent,
+  "第六列",
+);
+assert.equal(
+  orderedMarkerWithChildrenState.selection.$from.parent.textContent,
+  "第五列",
+);
+assert.equal(orderedMarkerWithChildrenState.selection.$from.parentOffset, 0);
+assert.equal(
+  mergeRemovedListMarkerLineBackward(schema.nodes.list_item)(
+    orderedMarkerWithChildrenState,
+    (transaction) => {
+      orderedMarkerWithChildrenState =
+        orderedMarkerWithChildrenState.apply(transaction);
+    },
+  ),
+  true,
+);
+const orderedListAfterTextMerge = orderedMarkerWithChildrenState.doc.child(0);
+assert.equal(orderedListAfterTextMerge.type, schema.nodes.ordered_list);
+assert.equal(orderedListAfterTextMerge.childCount, 2);
+assert.equal(
+  orderedListAfterTextMerge.child(0).firstChild?.textContent,
+  "第四列第五列",
+);
+assert.equal(orderedListAfterTextMerge.child(0).childCount, 2);
+assert.equal(
+  orderedListAfterTextMerge.child(0).child(1).firstChild?.firstChild?.textContent,
+  "第一個子項目",
+);
+assert.equal(
+  orderedMarkerWithChildrenState.selection.$from.parentOffset,
+  "第四列".length,
+);
+assert.equal(
+  undo(orderedMarkerWithChildrenState, (transaction) => {
+    orderedMarkerWithChildrenState =
+      orderedMarkerWithChildrenState.apply(transaction);
+  }),
+  true,
+);
+assert.deepEqual(
+  orderedMarkerWithChildrenState.doc.toJSON(),
+  orderedMarkerWithChildrenDocument.toJSON(),
+);
+
+const bulletMarkerWithChildrenDocument = schema.nodes.doc.create(null, [
+  schema.nodes.bullet_list.create(null, [
+    item("第一列"),
+    item("第二列", [item("子項目")]),
+    item("第三列"),
+  ]),
+]);
+let bulletMarkerWithChildrenPosition = -1;
+bulletMarkerWithChildrenDocument.descendants((node, position) => {
+  if (node.isText && node.text === "第二列") {
+    bulletMarkerWithChildrenPosition = position;
+  }
+});
+assert.notEqual(bulletMarkerWithChildrenPosition, -1);
+
+let bulletMarkerWithChildrenState = EditorState.create({
+  doc: bulletMarkerWithChildrenDocument,
+  selection: TextSelection.create(
+    bulletMarkerWithChildrenDocument,
+    bulletMarkerWithChildrenPosition,
+  ),
+  plugins: [history()],
+});
+assert.equal(
+  deleteAtListItemStart(schema.nodes.list_item, "backward")(
+    bulletMarkerWithChildrenState,
+    (transaction) => {
+      bulletMarkerWithChildrenState =
+        bulletMarkerWithChildrenState.apply(transaction);
+    },
+  ),
+  true,
+);
+assert.equal(bulletMarkerWithChildrenState.doc.childCount, 1);
+const bulletListWithPreservedChildren =
+  bulletMarkerWithChildrenState.doc.child(0);
+assert.equal(bulletListWithPreservedChildren.type, schema.nodes.bullet_list);
+assert.equal(bulletListWithPreservedChildren.childCount, 2);
+const bulletItemWithPreservedChildren = bulletListWithPreservedChildren.child(0);
+assert.equal(bulletItemWithPreservedChildren.childCount, 3);
+assert.equal(bulletItemWithPreservedChildren.child(0).textContent, "第一列");
+assert.equal(bulletItemWithPreservedChildren.child(1).textContent, "第二列");
+const preservedBulletChildren = bulletItemWithPreservedChildren.child(2);
+assert.equal(preservedBulletChildren.type, schema.nodes.bullet_list);
+assert.equal(preservedBulletChildren.childCount, 1);
+assert.equal(
+  preservedBulletChildren.firstChild?.firstChild?.textContent,
+  "子項目",
+);
+assert.equal(
+  bulletListWithPreservedChildren.child(1).firstChild?.textContent,
+  "第三列",
+);
+assert.equal(
+  bulletMarkerWithChildrenState.selection.$from.parent.textContent,
+  "第二列",
+);
+assert.equal(bulletMarkerWithChildrenState.selection.$from.parentOffset, 0);
+assert.equal(
+  mergeRemovedListMarkerLineBackward(schema.nodes.list_item)(
+    bulletMarkerWithChildrenState,
+    (transaction) => {
+      bulletMarkerWithChildrenState =
+        bulletMarkerWithChildrenState.apply(transaction);
+    },
+  ),
+  true,
+);
+const bulletListAfterTextMerge = bulletMarkerWithChildrenState.doc.child(0);
+assert.equal(bulletListAfterTextMerge.type, schema.nodes.bullet_list);
+assert.equal(bulletListAfterTextMerge.childCount, 2);
+assert.equal(
+  bulletListAfterTextMerge.child(0).firstChild?.textContent,
+  "第一列第二列",
+);
+assert.equal(bulletListAfterTextMerge.child(0).childCount, 2);
+assert.equal(
+  bulletListAfterTextMerge.child(0).child(1).firstChild?.firstChild?.textContent,
+  "子項目",
+);
+assert.equal(
+  bulletMarkerWithChildrenState.selection.$from.parentOffset,
+  "第一列".length,
+);
+assert.equal(
+  undo(bulletMarkerWithChildrenState, (transaction) => {
+    bulletMarkerWithChildrenState =
+      bulletMarkerWithChildrenState.apply(transaction);
+  }),
+  true,
+);
+assert.deepEqual(
+  bulletMarkerWithChildrenState.doc.toJSON(),
+  bulletMarkerWithChildrenDocument.toJSON(),
+);
+
+const phantomNumberDocument = schema.nodes.doc.create(null, [
+  schema.nodes.ordered_list.create(null, [
+    orderedItem("第一列"),
+    orderedItem("", [orderedItem("原本的子項目")]),
+    orderedItem("第三列"),
+  ]),
+]);
+let phantomNumberPosition = -1;
+phantomNumberDocument.descendants((node, position) => {
+  if (
+    node.type === schema.nodes.list_item &&
+    node.firstChild?.textContent === "" &&
+    node.childCount === 2
+  ) {
+    phantomNumberPosition = position + 2;
+  }
+});
+assert.notEqual(phantomNumberPosition, -1);
+
+let phantomNumberState = EditorState.create({
+  doc: phantomNumberDocument,
+  selection: TextSelection.create(phantomNumberDocument, phantomNumberPosition),
+  plugins: [history()],
+});
+assert.equal(
+  deleteAtListItemStart(schema.nodes.list_item, "backward")(
+    phantomNumberState,
+    (transaction) => {
+      phantomNumberState = phantomNumberState.apply(transaction);
+    },
+  ),
+  true,
+);
+const normalizedNumberList = phantomNumberState.doc.firstChild;
+assert.equal(normalizedNumberList?.type, schema.nodes.ordered_list);
+assert.equal(normalizedNumberList?.childCount, 3);
+assert.deepEqual(
+  Array.from({ length: normalizedNumberList?.childCount ?? 0 }, (_, index) =>
+    normalizedNumberList?.child(index).firstChild?.textContent,
+  ),
+  ["第一列", "原本的子項目", "第三列"],
+);
+assert.equal(
+  phantomNumberState.selection.$from.parent.textContent,
+  "原本的子項目",
+);
+assert.equal(phantomNumberState.selection.$from.parentOffset, 0);
+assert.equal(
+  undo(phantomNumberState, (transaction) => {
+    phantomNumberState = phantomNumberState.apply(transaction);
+  }),
+  true,
+);
+assert.deepEqual(phantomNumberState.doc.toJSON(), phantomNumberDocument.toJSON());
 
 let forwardDeletePosition = -1;
 deletionDocument.descendants((node, position) => {
@@ -382,6 +985,151 @@ assert.equal(
   deletionDocument.textContent.replace("篩除", "除"),
 );
 
+const nestedOrderedMarkerDocument = schema.nodes.doc.create(null, [
+  schema.nodes.ordered_list.create(null, [
+    orderedItem("第一層", [
+      orderedItem("第二層上一項"),
+      orderedItem("第二層目標"),
+      orderedItem("第二層下一項"),
+    ]),
+  ]),
+]);
+let nestedOrderedMarkerPosition = -1;
+nestedOrderedMarkerDocument.descendants((node, position) => {
+  if (node.isText && node.text === "第二層目標") {
+    nestedOrderedMarkerPosition = position;
+  }
+});
+assert.notEqual(nestedOrderedMarkerPosition, -1);
+let nestedOrderedMarkerState = EditorState.create({
+  doc: nestedOrderedMarkerDocument,
+  selection: TextSelection.create(
+    nestedOrderedMarkerDocument,
+    nestedOrderedMarkerPosition,
+  ),
+});
+assert.equal(
+  deleteAtListItemStart(schema.nodes.list_item, "backward")(
+    nestedOrderedMarkerState,
+    (transaction) => {
+      nestedOrderedMarkerState =
+        nestedOrderedMarkerState.apply(transaction);
+    },
+  ),
+  true,
+);
+assert.equal(
+  mergeRemovedListMarkerLineBackward(schema.nodes.list_item)(
+    nestedOrderedMarkerState,
+    (transaction) => {
+      nestedOrderedMarkerState =
+        nestedOrderedMarkerState.apply(transaction);
+    },
+  ),
+  true,
+);
+const nestedOrderedOuterItem =
+  nestedOrderedMarkerState.doc.firstChild?.firstChild;
+assert.equal(nestedOrderedOuterItem?.childCount, 3);
+assert.equal(
+  nestedOrderedOuterItem?.child(1).lastChild?.firstChild?.textContent,
+  "第二層上一項第二層目標",
+);
+assert.equal(nestedOrderedOuterItem?.child(2).attrs.order, 2);
+assert.equal(
+  nestedOrderedOuterItem?.child(2).firstChild?.firstChild?.textContent,
+  "第二層下一項",
+);
+assert.equal(
+  nestedOrderedMarkerState.selection.$from.parentOffset,
+  "第二層上一項".length,
+);
+assert.equal(
+  mergeRemovedListMarkerLineBackward(schema.nodes.list_item)(
+    nestedOrderedMarkerState,
+  ),
+  false,
+);
+assert.equal(
+  deleteAtListItemStart(schema.nodes.list_item, "backward")(
+    nestedOrderedMarkerState,
+  ),
+  false,
+);
+
+const deeplyNestedBulletMarkerDocument = schema.nodes.doc.create(null, [
+  schema.nodes.bullet_list.create(null, [
+    item("第一層", [
+      item("第二層", [
+        item("第三層上一項"),
+        item("第三層目標"),
+        item("第三層下一項"),
+      ]),
+    ]),
+  ]),
+]);
+let deeplyNestedBulletMarkerPosition = -1;
+deeplyNestedBulletMarkerDocument.descendants((node, position) => {
+  if (node.isText && node.text === "第三層目標") {
+    deeplyNestedBulletMarkerPosition = position;
+  }
+});
+assert.notEqual(deeplyNestedBulletMarkerPosition, -1);
+let deeplyNestedBulletMarkerState = EditorState.create({
+  doc: deeplyNestedBulletMarkerDocument,
+  selection: TextSelection.create(
+    deeplyNestedBulletMarkerDocument,
+    deeplyNestedBulletMarkerPosition,
+  ),
+});
+assert.equal(
+  deleteAtListItemStart(schema.nodes.list_item, "backward")(
+    deeplyNestedBulletMarkerState,
+    (transaction) => {
+      deeplyNestedBulletMarkerState =
+        deeplyNestedBulletMarkerState.apply(transaction);
+    },
+  ),
+  true,
+);
+assert.equal(
+  mergeRemovedListMarkerLineBackward(schema.nodes.list_item)(
+    deeplyNestedBulletMarkerState,
+    (transaction) => {
+      deeplyNestedBulletMarkerState =
+        deeplyNestedBulletMarkerState.apply(transaction);
+    },
+  ),
+  true,
+);
+const secondLevelBulletItem =
+  deeplyNestedBulletMarkerState.doc.firstChild?.firstChild?.child(1).firstChild;
+assert.equal(secondLevelBulletItem?.childCount, 3);
+assert.equal(
+  secondLevelBulletItem?.child(1).lastChild?.firstChild?.textContent,
+  "第三層上一項第三層目標",
+);
+assert.equal(
+  secondLevelBulletItem?.child(2).firstChild?.firstChild?.textContent,
+  "第三層下一項",
+);
+assert.equal(
+  deeplyNestedBulletMarkerState.selection.$from.parentOffset,
+  "第三層上一項".length,
+);
+assert.equal(
+  mergeRemovedListMarkerLineBackward(schema.nodes.list_item)(
+    deeplyNestedBulletMarkerState,
+  ),
+  false,
+);
+assert.equal(
+  deleteAtListItemStart(schema.nodes.list_item, "backward")(
+    deeplyNestedBulletMarkerState,
+  ),
+  false,
+);
+
 const editorSource = readFileSync(
   fileURLToPath(new URL("../src/MilkdownMarkdownEditor.tsx", import.meta.url)),
   "utf8",
@@ -392,5 +1140,9 @@ assert.match(editorSource, /const command = shouldRedo \? redo : undo/);
 assert.match(editorSource, /event\.inputType !== "historyUndo"/);
 assert.match(editorSource, /event\.inputType === "historyRedo"/);
 assert.match(editorSource, /createControlHistoryPlugin\(\),/);
+assert.match(
+  editorSource,
+  /event\.key === "Backspace"[\s\S]*?mergeRemovedListMarkerLineBackward\(listItemType\)/,
+);
 
 console.log("milkdown list indentation and deletion regression: PASS");

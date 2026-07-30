@@ -8,7 +8,13 @@ import { splitBlock } from "@milkdown/prose/commands";
 import { redo, undo } from "@milkdown/prose/history";
 import { InputRule, inputRules } from "@milkdown/prose/inputrules";
 import type { Node as ProseMirrorNode, ResolvedPos } from "@milkdown/prose/model";
-import { Plugin, PluginKey, TextSelection, type EditorState } from "@milkdown/prose/state";
+import {
+  Plugin,
+  PluginKey,
+  TextSelection,
+  type EditorState,
+  type Transaction,
+} from "@milkdown/prose/state";
 import { Decoration, DecorationSet, type EditorView } from "@milkdown/prose/view";
 import "@milkdown/crepe/theme/common/style.css";
 import "@milkdown/crepe/theme/frame.css";
@@ -46,7 +52,11 @@ import {
   markdownListItemContentStartOffset,
   type MarkdownTextMap as MilkdownTextMap,
 } from "./markdownInlineTextMap";
-import { deleteAtListItemStart, sinkSingleListItem } from "./milkdownListIndent";
+import {
+  deleteAtListItemStart,
+  mergeRemovedListMarkerLineBackward,
+  sinkSingleListItem,
+} from "./milkdownListIndent";
 import { loadScholiumMermaid } from "./mermaid";
 
 type MilkdownMarkdownEditorProps = {
@@ -92,8 +102,11 @@ const milkdownTouchBlockSelectionPluginKey = new PluginKey(
 const milkdownReadonlyGuardPluginKey = new PluginKey(
   "scholium-milkdown-readonly-guard",
 );
-const milkdownPlainEnterHardBreakPluginKey = new PluginKey(
-  "scholium-milkdown-plain-enter-hard-break",
+const milkdownShiftEnterParagraphSplitPluginKey = new PluginKey(
+  "scholium-milkdown-shift-enter-paragraph-split",
+);
+const milkdownSoftLineBlockInputRulePluginKey = new PluginKey(
+  "scholium-milkdown-soft-line-block-input-rule",
 );
 const milkdownPairedSymbolPluginKey = new PluginKey(
   "scholium-milkdown-paired-symbols",
@@ -162,6 +175,54 @@ const milkdownNoteModeCodeBlockFocusableSelector =
 const annotationClickDelayMs = 500;
 const annotationFocusTargetPressSuppressionMs = annotationClickDelayMs + 350;
 const imeSelectionSuppressionMs = 350;
+
+type SoftLineIsolation = {
+  state: EditorState;
+  transaction: Transaction;
+};
+
+function isolateSelectedSoftLine(state: EditorState): SoftLineIsolation | null {
+  const { selection } = state;
+  if (!(selection instanceof TextSelection) || !selection.empty) return null;
+
+  const { $from } = selection;
+  if ($from.parent.type.name !== "paragraph") return null;
+
+  let previousHardbreakOffset: number | null = null;
+  let nextHardbreakOffset: number | null = null;
+  $from.parent.forEach((node, offset) => {
+    if (node.type.name !== "hardbreak") return;
+
+    if (offset < $from.parentOffset) {
+      previousHardbreakOffset = offset;
+    } else if (nextHardbreakOffset === null) {
+      nextHardbreakOffset = offset;
+    }
+  });
+  if (previousHardbreakOffset === null && nextHardbreakOffset === null) return null;
+
+  const paragraphStart = $from.start();
+  const tr = state.tr;
+  if (nextHardbreakOffset !== null) {
+    const nextHardbreakPosition = paragraphStart + nextHardbreakOffset;
+    tr.delete(nextHardbreakPosition, nextHardbreakPosition + 1);
+    tr.split(nextHardbreakPosition);
+  }
+  if (previousHardbreakOffset !== null) {
+    const previousHardbreakPosition = paragraphStart + previousHardbreakOffset;
+    tr.delete(previousHardbreakPosition, previousHardbreakPosition + 1);
+    tr.split(previousHardbreakPosition);
+  }
+
+  tr.setSelection(
+    TextSelection.create(
+      tr.doc,
+      tr.mapping.map(selection.from),
+      tr.mapping.map(selection.to),
+    ),
+  );
+  return { state: state.apply(tr), transaction: tr };
+}
 
 function shouldClearTouchButtonFocus() {
   return Boolean(
@@ -2528,50 +2589,6 @@ export function MilkdownMarkdownEditor({
     return false;
   }
 
-  function shouldInsertPlainEnterHardBreak(view: EditorView, event: KeyboardEvent) {
-    const isPlainEnter =
-      event.key === "Enter" &&
-      !event.metaKey &&
-      !event.ctrlKey &&
-      !event.altKey &&
-      !event.shiftKey;
-    if (!isPlainEnter) return false;
-    if (keyboardEventIsComposing(event)) return false;
-    if (readOnlyRef.current) return false;
-
-    const { selection, schema } = view.state;
-    if (!selection.empty) return false;
-
-    const { $from } = selection;
-    const parent = $from.parent;
-    if (!parent.isTextblock || parent.content.size === 0) return false;
-    if (parent.type.name === "code_block" || parent.type.name === "heading") {
-      return false;
-    }
-    if (resolvedPositionHasAncestor($from, milkdownStructuredTextAncestorNames)) {
-      return false;
-    }
-
-    const hardbreakType = schema.nodes.hardbreak;
-    if (!hardbreakType) return false;
-
-    return parent.canReplaceWith($from.index(), $from.index(), hardbreakType);
-  }
-
-  function insertPlainEnterHardBreak(view: EditorView) {
-    const hardbreakType = view.state.schema.nodes.hardbreak;
-    if (!hardbreakType) return false;
-
-    view.dispatch(
-      view.state.tr
-        .setMeta("hardbreak", true)
-        .replaceSelectionWith(hardbreakType.create())
-        .scrollIntoView(),
-    );
-
-    return true;
-  }
-
   function shouldSplitParagraphWithShiftEnter(view: EditorView, event: KeyboardEvent) {
     const isShiftEnter =
       event.key === "Enter" &&
@@ -2596,23 +2613,6 @@ export function MilkdownMarkdownEditor({
     return true;
   }
 
-  function shouldLetMarkdownInputRuleHandleEnter(view: EditorView) {
-    const { selection } = view.state;
-    if (!selection.empty) return false;
-
-    const { $from } = selection;
-    const parentTextBeforeCursor = $from.parent.textBetween(
-      0,
-      $from.parentOffset,
-      undefined,
-      "\uFFFC",
-    );
-
-    return /^ {0,3}(?:```[A-Za-z0-9_-]*|---|___|\*\*\*)$/.test(
-      parentTextBeforeCursor,
-    );
-  }
-
   function splitParagraphWithShiftEnter(view: EditorView) {
     return splitBlock(view.state, (transaction) => view.dispatch(transaction), view);
   }
@@ -2625,6 +2625,113 @@ export function MilkdownMarkdownEditor({
           createInlineMarkdownLinkTransaction,
         ),
       ],
+    });
+  }
+
+  function applyInputRuleToIsolatedSoftLine(
+    view: EditorView,
+    isolation: SoftLineIsolation,
+    runInputRule: (
+      plugin: Plugin,
+      inputRuleView: EditorView,
+      from: number,
+      to: number,
+    ) => boolean,
+  ) {
+    let matchedTransaction: Transaction | null = null;
+    let matchedPlugin: Plugin | null = null;
+    const isolatedFrom = isolation.state.selection.from;
+    const isolatedTo = isolation.state.selection.to;
+
+    for (const plugin of isolation.state.plugins) {
+      if (
+        plugin.spec.key === milkdownSoftLineBlockInputRulePluginKey ||
+        !(plugin.spec as { isInputRules?: boolean }).isInputRules
+      ) {
+        continue;
+      }
+
+      const inputRuleView = Object.create(view) as EditorView;
+      Object.defineProperties(inputRuleView, {
+        composing: { value: false },
+        dispatch: {
+          value: (transaction: Transaction) => {
+            matchedTransaction = transaction;
+          },
+        },
+        state: { value: isolation.state },
+      });
+      if (!runInputRule(plugin, inputRuleView, isolatedFrom, isolatedTo)) continue;
+      if (!matchedTransaction) continue;
+
+      matchedPlugin = plugin;
+      break;
+    }
+    const inputRuleTransaction = matchedTransaction as Transaction | null;
+    const inputRulePlugin = matchedPlugin as Plugin | null;
+    if (!inputRuleTransaction || !inputRulePlugin) return false;
+
+    view.dispatch(isolation.transaction);
+    return runInputRule(inputRulePlugin, view, isolatedFrom, isolatedTo);
+  }
+
+  function createSoftLineBlockInputRulePlugin() {
+    return new Plugin({
+      key: milkdownSoftLineBlockInputRulePluginKey,
+      props: {
+        handleTextInput(view, _from, _to, text) {
+          if (
+            view.composing ||
+            readOnlyRef.current ||
+            noteModeEnabledRef.current
+          ) {
+            return false;
+          }
+
+          const isolation = isolateSelectedSoftLine(view.state);
+          if (!isolation) return false;
+
+          return applyInputRuleToIsolatedSoftLine(
+            view,
+            isolation,
+            (plugin, inputRuleView, from, to) => {
+              const handler = plugin.props.handleTextInput;
+              return (
+                handler?.call(
+                  plugin,
+                  inputRuleView,
+                  from,
+                  to,
+                  text,
+                  () => inputRuleView.state.tr.insertText(text, from, to),
+                ) ?? false
+              );
+            },
+          );
+        },
+        handleKeyDown(view, event) {
+          if (
+            event.key !== "Enter" ||
+            event.isComposing ||
+            readOnlyRef.current ||
+            noteModeEnabledRef.current
+          ) {
+            return false;
+          }
+
+          const isolation = isolateSelectedSoftLine(view.state);
+          if (!isolation) return false;
+
+          return applyInputRuleToIsolatedSoftLine(
+            view,
+            isolation,
+            (plugin, inputRuleView) => {
+              const handler = plugin.props.handleKeyDown;
+              return handler?.call(plugin, inputRuleView, event) ?? false;
+            },
+          );
+        },
+      },
     });
   }
 
@@ -2892,6 +2999,18 @@ export function MilkdownMarkdownEditor({
           if (!listItemType) return false;
 
           if (event.key === "Backspace" || event.key === "Delete") {
+            if (
+              event.key === "Backspace" &&
+              mergeRemovedListMarkerLineBackward(listItemType)(
+                view.state,
+                (transaction) => view.dispatch(transaction),
+                view,
+              )
+            ) {
+              event.preventDefault();
+              return true;
+            }
+
             const handled = deleteAtListItemStart(
               listItemType,
               event.key === "Delete" ? "forward" : "backward",
@@ -2981,20 +3100,11 @@ export function MilkdownMarkdownEditor({
     });
   }
 
-  function createPlainEnterHardBreakPlugin() {
+  function createShiftEnterParagraphSplitPlugin() {
     return new Plugin({
-      key: milkdownPlainEnterHardBreakPluginKey,
+      key: milkdownShiftEnterParagraphSplitPluginKey,
       props: {
         handleKeyDown(view, event) {
-          if (event.key === "Enter" && shouldLetMarkdownInputRuleHandleEnter(view)) {
-            return false;
-          }
-
-          if (shouldInsertPlainEnterHardBreak(view, event)) {
-            event.preventDefault();
-            return insertPlainEnterHardBreak(view);
-          }
-
           if (!shouldSplitParagraphWithShiftEnter(view, event)) return false;
 
           event.preventDefault();
@@ -5499,11 +5609,12 @@ export function MilkdownMarkdownEditor({
 
       ctx.update(prosePluginsCtx, (plugins) => [
         createTouchBlockSelectionPlugin(),
+        createSoftLineBlockInputRulePlugin(),
         createInlineMarkdownLinkInputRule(),
         createPairedSymbolPlugin(),
         createSingleListItemIndentPlugin(),
         createControlHistoryPlugin(),
-        createPlainEnterHardBreakPlugin(),
+        createShiftEnterParagraphSplitPlugin(),
         createReadonlyGuardPlugin(),
         ...plugins,
         createAnnotationPlugin({

@@ -1,22 +1,128 @@
-import type { NodeType } from "@milkdown/prose/model";
+import type { Node as ProseMirrorNode, NodeType } from "@milkdown/prose/model";
 import { liftListItem, sinkListItem } from "@milkdown/prose/schema-list";
 import {
-  Selection,
   TextSelection,
   type Command,
   type Transaction,
 } from "@milkdown/prose/state";
 
+export function mergeRemovedListMarkerLineBackward(
+  itemType: NodeType,
+): Command {
+  return (state, dispatch) => {
+    const { $from } = state.selection;
+    if (
+      !(state.selection instanceof TextSelection) ||
+      !state.selection.empty ||
+      $from.parentOffset !== 0
+    ) {
+      return false;
+    }
+
+    const paragraph = $from.parent;
+    const containerDepth = $from.depth - 1;
+    const paragraphIndex = $from.index(containerDepth);
+    const container = $from.node(containerDepth);
+    if (paragraphIndex > 0) {
+      const previousList = container.child(paragraphIndex - 1);
+      const previousItem = previousList.lastChild;
+      const previousParagraph = previousItem?.firstChild;
+      if (
+        previousItem?.type === itemType &&
+        previousParagraph?.type === paragraph.type
+      ) {
+        if (!dispatch) return true;
+
+        const mergedParagraph = previousParagraph.copy(
+          previousParagraph.content.append(paragraph.content),
+        );
+        const itemBlocks: ProseMirrorNode[] = [mergedParagraph];
+        for (let index = 1; index < previousItem.childCount; index += 1) {
+          itemBlocks.push(previousItem.child(index));
+        }
+        const mergedItem = previousItem.type.create(
+          previousItem.attrs,
+          itemBlocks,
+          previousItem.marks,
+        );
+        const listItems: ProseMirrorNode[] = [];
+        for (let index = 0; index < previousList.childCount - 1; index += 1) {
+          listItems.push(previousList.child(index));
+        }
+        listItems.push(mergedItem);
+        const mergedList = previousList.type.create(
+          previousList.attrs,
+          listItems,
+          previousList.marks,
+        );
+        const paragraphFrom = $from.before($from.depth);
+        const listFrom = paragraphFrom - previousList.nodeSize;
+        const tr = state.tr.replaceWith(
+          listFrom,
+          paragraphFrom + paragraph.nodeSize,
+          mergedList,
+        );
+        let mergedParagraphPosition = -1;
+        mergedList.descendants((node, position) => {
+          if (node === mergedParagraph) {
+            mergedParagraphPosition =
+              listFrom + position + 2 + previousParagraph.content.size;
+          }
+        });
+        if (mergedParagraphPosition < 0) return false;
+        tr.setSelection(TextSelection.create(tr.doc, mergedParagraphPosition));
+        dispatch(tr.scrollIntoView());
+        return true;
+      }
+    }
+
+    let itemDepth = $from.depth;
+    while (itemDepth > 0 && $from.node(itemDepth).type !== itemType) {
+      itemDepth -= 1;
+    }
+    if (itemDepth === 0) return false;
+
+    const item = $from.node(itemDepth);
+    const itemParagraphIndex = $from.index(itemDepth);
+    const canMergeInsideItem =
+      itemParagraphIndex > 0 &&
+      item.child(itemParagraphIndex - 1).type === paragraph.type &&
+      itemParagraphIndex < item.childCount - 1 &&
+      item.child(itemParagraphIndex + 1).firstChild?.type === itemType;
+    if (!canMergeInsideItem) return false;
+    if (dispatch) {
+      const paragraphBoundary = $from.before($from.depth);
+      const tr = state.tr.join(paragraphBoundary);
+      tr.setSelection(TextSelection.create(tr.doc, paragraphBoundary - 1));
+      dispatch(tr.scrollIntoView());
+    }
+    return true;
+  };
+}
+
 export function deleteAtListItemStart(
   itemType: NodeType,
   direction: "backward" | "forward",
 ): Command {
-  return (state, dispatch, view) => {
+  return (state, dispatch) => {
     const { selection } = state;
     if (
       !(selection instanceof TextSelection) ||
-      !selection.empty ||
-      selection.$from.parentOffset !== 0
+      !selection.empty
+    ) {
+      return false;
+    }
+
+    const paragraph = selection.$from.parent;
+    const paragraphContainsOnlyHardbreak =
+      paragraph.childCount === 1 &&
+      paragraph.firstChild?.type.name === "hardbreak";
+    if (
+      selection.$from.parentOffset !== 0 &&
+      !(
+        paragraphContainsOnlyHardbreak &&
+        selection.$from.parentOffset === paragraph.content.size
+      )
     ) {
       return false;
     }
@@ -28,11 +134,106 @@ export function deleteAtListItemStart(
     if (itemDepth === 0) return false;
 
     const item = selection.$from.node(itemDepth);
-    const paragraph = selection.$from.parent;
     if (item.firstChild !== paragraph) return false;
 
-    if (paragraph.content.size > 0) {
-      if (direction === "backward") return true;
+    const listDepth = itemDepth - 1;
+    const list = selection.$from.node(listDepth);
+    const itemIndex = selection.$from.index(listDepth);
+    const listFrom = selection.$from.before(listDepth);
+    const createListSegment = (
+      fromIndex: number,
+      toIndex: number,
+      orderAdjustment = 0,
+    ) => {
+      if (fromIndex >= toIndex) return null;
+
+      const items: ProseMirrorNode[] = [];
+      for (let index = fromIndex; index < toIndex; index += 1) {
+        items.push(list.child(index));
+      }
+      const attrs = { ...list.attrs };
+      if (typeof attrs.order === "number" && fromIndex > 0) {
+        attrs.order += fromIndex + orderAdjustment;
+      }
+      return list.type.create(attrs, items);
+    };
+    const replaceItemWithBlocks = (
+      blocks: ProseMirrorNode[],
+      selectionOffset: number,
+      afterListOrderAdjustment = 0,
+    ) => {
+      if (dispatch) {
+        const beforeList = createListSegment(0, itemIndex);
+        const afterList = createListSegment(
+          itemIndex + 1,
+          list.childCount,
+          afterListOrderAdjustment,
+        );
+        const replacement = [
+          ...(beforeList ? [beforeList] : []),
+          ...blocks,
+          ...(afterList ? [afterList] : []),
+        ];
+        const blockFrom = listFrom + (beforeList?.nodeSize ?? 0);
+        const tr = state.tr.replaceWith(
+          listFrom,
+          listFrom + list.nodeSize,
+          replacement,
+        );
+        tr.setSelection(
+          TextSelection.create(tr.doc, blockFrom + selectionOffset),
+        );
+        dispatch(tr.scrollIntoView());
+      }
+      return true;
+    };
+    const mergeItemIntoPrevious = () => {
+      if (itemIndex === 0) return false;
+      if (!dispatch) return true;
+
+      const mergedItem = list.child(itemIndex - 1).copy(
+        list.child(itemIndex - 1).content.append(item.content),
+      );
+      const items: ProseMirrorNode[] = [];
+      for (let index = 0; index < list.childCount; index += 1) {
+        if (index === itemIndex - 1) {
+          items.push(mergedItem);
+        } else if (index !== itemIndex) {
+          items.push(list.child(index));
+        }
+      }
+
+      const replacementList = list.type.create(list.attrs, items);
+      let paragraphPosition = -1;
+      replacementList.descendants((node, position) => {
+        if (node === paragraph) {
+          paragraphPosition = listFrom + position + 2;
+        }
+      });
+      if (paragraphPosition < 0) return false;
+
+      const tr = state.tr.replaceWith(
+        listFrom,
+        listFrom + list.nodeSize,
+        replacementList,
+      );
+      tr.setSelection(TextSelection.create(tr.doc, paragraphPosition));
+      dispatch(tr.scrollIntoView());
+      return true;
+    };
+    const paragraphIsEmpty =
+      paragraph.content.size === 0 ||
+      paragraphContainsOnlyHardbreak;
+
+    if (!paragraphIsEmpty) {
+      if (direction === "backward") {
+        if (item.childCount > 1 && itemIndex > 0) {
+          return mergeItemIntoPrevious();
+        }
+        const blocks: ProseMirrorNode[] = [];
+        item.forEach((block) => blocks.push(block));
+        return replaceItemWithBlocks(blocks, 1, -1);
+      }
 
       const firstInlineNode = paragraph.firstChild;
       if (!firstInlineNode) return true;
@@ -50,28 +251,33 @@ export function deleteAtListItemStart(
       return true;
     }
 
-    // Keep an empty parent item when it still owns nested content.
-    if (item.childCount > 1) return true;
+    if (item.childCount > 1) {
+      const childList = item.childCount === 2 ? item.child(1) : null;
+      if (
+        childList &&
+        childList.firstChild?.type === itemType &&
+        childList.type === list.type
+      ) {
+        if (!dispatch) return true;
+        const itemFrom = selection.$from.before(itemDepth);
+        const tr = state.tr.replaceWith(
+          itemFrom,
+          itemFrom + item.nodeSize,
+          childList.content,
+        );
+        tr.setSelection(TextSelection.create(tr.doc, itemFrom + 2));
+        dispatch(tr.scrollIntoView());
+        return true;
+      }
 
-    const listDepth = itemDepth - 1;
-    const list = selection.$from.node(listDepth);
-    if (list.childCount === 1) {
-      return liftListItem(itemType)(state, dispatch, view);
+      if (childList && childList.firstChild?.type === itemType) {
+        return replaceItemWithBlocks([childList], 2);
+      }
     }
 
-    if (dispatch) {
-      const itemFrom = selection.$from.before(itemDepth);
-      const tr = state.tr.delete(itemFrom, itemFrom + item.nodeSize);
-      const selectionPosition = Math.min(itemFrom, tr.doc.content.size);
-      tr.setSelection(
-        Selection.near(
-          tr.doc.resolve(selectionPosition),
-          direction === "forward" ? 1 : -1,
-        ),
-      );
-      dispatch(tr.scrollIntoView());
-    }
-    return true;
+    const blocks: ProseMirrorNode[] = [];
+    item.forEach((block) => blocks.push(block));
+    return replaceItemWithBlocks(blocks, 1);
   };
 }
 
