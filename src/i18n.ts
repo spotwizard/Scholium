@@ -302,6 +302,8 @@ const zhHantTranslations = {
   "confirm.deleteFiles": "確定要刪除 {count} 個檔案嗎？\n\n這也會一併刪除這些檔案的筆記與名詞解釋。",
   "confirm.deleteDropboxFile": "確定要刪除 Dropbox 上的「{title}」嗎？\n\n這個檔案也會從 Dropbox 刪除。",
   "confirm.deleteDropboxFiles": "確定要刪除 Dropbox 上的 {count} 個檔案嗎？\n\n這些檔案也會從 Dropbox 刪除。",
+  "confirm.saveDraftFile": "這份未命名內容尚未存成檔案，要先存檔嗎？",
+  "confirm.discardDraftFile": "要放棄建立這份未命名檔案嗎？\n\n放棄後，這份未命名內容不會存成檔案。",
 } as const;
 
 export type TranslationKey = keyof typeof zhHantTranslations;
@@ -608,6 +610,8 @@ const enTranslations: Record<TranslationKey, string> = {
   "confirm.deleteFiles": "Delete {count} files?\n\nThis will also delete their notes and term definitions.",
   "confirm.deleteDropboxFile": "Delete “{title}” from Dropbox?\n\nThe file will also be deleted from Dropbox.",
   "confirm.deleteDropboxFiles": "Delete {count} files from Dropbox?\n\nThe files will also be deleted from Dropbox.",
+  "confirm.saveDraftFile": "This untitled content has not been saved as a file yet. Save it first?",
+  "confirm.discardDraftFile": "Discard this untitled file?\n\nIf you discard it, this untitled content will not be saved as a file.",
 };
 
 const zhHansTranslations: Record<TranslationKey, string> = {
@@ -912,6 +916,8 @@ const zhHansTranslations: Record<TranslationKey, string> = {
   "confirm.deleteFiles": "确定要删除 {count} 个文件吗？\n\n这也会一并删除这些文件的笔记和名词解释。",
   "confirm.deleteDropboxFile": "确定要删除 Dropbox 中的“{title}”吗？\n\n此文件也会从 Dropbox 中删除。",
   "confirm.deleteDropboxFiles": "确定要删除 Dropbox 中的 {count} 个文件吗？\n\n这些文件也会从 Dropbox 中删除。",
+  "confirm.saveDraftFile": "这份未命名内容尚未保存为文件，要先保存吗？",
+  "confirm.discardDraftFile": "要放弃建立这份未命名文件吗？\n\n放弃后，这份未命名内容不会保存为文件。",
 };
 
 const translations: Record<AppLanguage, Record<TranslationKey, string>> = {

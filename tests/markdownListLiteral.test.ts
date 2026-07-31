@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
   escapeListLeadingAsterisksForPreview,
+  normalizeListItemStrongTrailingWhitespace,
   restoreListLeadingAsterisksFromPreview,
 } from "../src/markdownListLiteral.ts";
 
@@ -23,6 +24,22 @@ assert.equal(
 assert.equal(
   escapeListLeadingAsterisksForPreview("```\n- * 程式碼中的星號\n```"),
   "```\n- * 程式碼中的星號\n```",
+);
+assert.equal(
+  normalizeListItemStrongTrailingWhitespace("- **plugins/marketplace.json： **定義"),
+  "- **plugins/marketplace.json：** 定義",
+);
+assert.equal(
+  normalizeListItemStrongTrailingWhitespace("1. 說明 **重點 **內容"),
+  "1. 說明 **重點** 內容",
+);
+assert.equal(
+  normalizeListItemStrongTrailingWhitespace("**一般段落： **定義"),
+  "**一般段落： **定義",
+);
+assert.equal(
+  normalizeListItemStrongTrailingWhitespace("```\n- **code： **literal\n```"),
+  "```\n- **code： **literal\n```",
 );
 
 console.log("markdown list-leading literal asterisk regression: PASS");

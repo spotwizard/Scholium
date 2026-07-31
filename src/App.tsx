@@ -995,6 +995,7 @@ const mobileViewportQuery = "(max-width: 640px)";
 const mobileSafeLayoutViewportQuery =
   "((max-width: 640px) and (any-pointer: coarse)), ((max-width: 980px) and (max-height: 520px) and (any-pointer: coarse))";
 const dropboxDocumentIdPrefix = "dropbox:";
+const draftDocumentIdPrefix = "draft:";
 const configuredDropboxAppKey = import.meta.env.VITE_DROPBOX_APP_KEY?.trim() ?? "";
 
 function previewAnnotationFramePaddingForKind(kind: AnnotationKind) {
@@ -1367,8 +1368,22 @@ function dropboxDocumentId(path: string) {
   return `${dropboxDocumentIdPrefix}${path || "/"}`;
 }
 
+function draftDocumentId(source: WorkspaceSource | null) {
+  return `${draftDocumentIdPrefix}${source ?? "local"}:${Date.now()}:${Math.random()
+    .toString(36)
+    .slice(2)}`;
+}
+
 function isDropboxDocumentId(documentId: string) {
   return documentId.startsWith(dropboxDocumentIdPrefix);
+}
+
+function isDraftDocumentId(documentId: string) {
+  return documentId.startsWith(draftDocumentIdPrefix);
+}
+
+function draftDocumentSource(document: MarkdownDocument): WorkspaceSource {
+  return document.id.startsWith(`${draftDocumentIdPrefix}dropbox:`) ? "dropbox" : "local";
 }
 
 function documentIsFromDropbox(document: MarkdownDocument) {
@@ -10777,6 +10792,23 @@ function App() {
         return;
       }
 
+      const isSaveShortcut =
+        event.key.toLowerCase() === "s" &&
+        !event.altKey &&
+        !event.shiftKey &&
+        ((event.metaKey && !event.ctrlKey) || (event.ctrlKey && !event.metaKey));
+      if (isSaveShortcut) {
+        const documentToSave = documentsRef.current.find(
+          (document) => document.id === selectedDocumentIdRef.current,
+        );
+        if (documentToSave && isDraftDocumentId(documentToSave.id)) {
+          event.preventDefault();
+          event.stopPropagation();
+          void saveDraftDocument(documentToSave);
+        }
+        return;
+      }
+
       if (event.key === "Escape" && (notePanelHasContentRef.current || pendingAnchor)) {
         event.preventDefault();
         closeNotePanel();
@@ -11288,19 +11320,28 @@ function App() {
     clearReturnToViewTimer();
   }
 
-  function closeDocumentTab(documentId: string, event?: MouseEvent<HTMLButtonElement>) {
+  async function closeDocumentTab(documentId: string, event?: MouseEvent<HTMLButtonElement>) {
     event?.preventDefault();
     event?.stopPropagation();
 
+    let documentIdToClose = documentId;
+    if (isDraftDocumentId(documentId)) {
+      const result = await prepareDraftDocumentForLeaving(documentId);
+      if (result === "blocked" || result === "discarded") return;
+      if (result === "saved") {
+        documentIdToClose = selectedDocumentIdRef.current;
+      }
+    }
+
     const currentIds = openDocumentTabIdsRef.current;
-    const closedIndex = currentIds.indexOf(documentId);
+    const closedIndex = currentIds.indexOf(documentIdToClose);
     if (closedIndex < 0) return;
 
-    const nextIds = currentIds.filter((currentId) => currentId !== documentId);
+    const nextIds = currentIds.filter((currentId) => currentId !== documentIdToClose);
     openDocumentTabIdsRef.current = nextIds;
     setOpenDocumentTabIds(nextIds);
 
-    if (documentId !== selectedDocumentIdRef.current) return;
+    if (documentIdToClose !== selectedDocumentIdRef.current) return;
 
     if (nextIds.length === 0) {
       clearActiveDocumentSelection();
@@ -11311,8 +11352,16 @@ function App() {
     selectDocument(nextIds[nextIndex], { tabBehavior: "none" });
   }
 
-  function closeOtherDocumentTabs(documentId: string) {
+  async function closeOtherDocumentTabs(documentId: string) {
     setDocumentTabContextMenu(null);
+    const documentIdsToClose = openDocumentTabIdsRef.current.filter(
+      (currentId) => currentId !== documentId,
+    );
+    for (const currentId of documentIdsToClose) {
+      const result = await prepareDraftDocumentForLeaving(currentId);
+      if (result === "blocked") return;
+    }
+
     const currentIds = openDocumentTabIdsRef.current;
     const nextIds = documentTabIdsAfterClosingOthers(currentIds, documentId);
     if (nextIds === currentIds) return;
@@ -11326,6 +11375,13 @@ function App() {
 
   async function openDocumentTabInNewWindow(documentId: string) {
     setDocumentTabContextMenu(null);
+    let documentIdToOpen = documentId;
+    if (isDraftDocumentId(documentIdToOpen)) {
+      const result = await prepareDraftDocumentForLeaving(documentIdToOpen);
+      if (result !== "saved") return;
+      documentIdToOpen = selectedDocumentIdRef.current;
+    }
+
     window.clearTimeout(autosaveTimerRef.current);
 
     for (let attempts = 0; autosaveInFlightRef.current && attempts < 300; attempts += 1) {
@@ -11336,13 +11392,13 @@ function App() {
       return;
     }
 
-    if (hasDirtyState(dirtyDocumentStatesRef.current[documentId])) {
+    if (hasDirtyState(dirtyDocumentStatesRef.current[documentIdToOpen])) {
       await saveDirtyDocuments();
-      if (hasDirtyState(dirtyDocumentStatesRef.current[documentId])) return;
+      if (hasDirtyState(dirtyDocumentStatesRef.current[documentIdToOpen])) return;
     }
 
     const documentToOpen = documentsRef.current.find(
-      (document) => document.id === documentId,
+      (document) => document.id === documentIdToOpen,
     );
     if (!documentToOpen) return;
 
@@ -13577,12 +13633,302 @@ function App() {
         },
       );
       applyLoadedDropboxFile(loaded);
-      setActiveDocumentModeState({ editorMode: "edit" });
+      setActiveDocumentModeState({ editorMode: "preview" });
       setStorageError("");
       return true;
     } catch (error) {
       setStorageError(translatedError(error, "error.createFileFailed"));
       return false;
+    }
+  }
+
+  function draftDocumentHasContent(document: MarkdownDocument) {
+    return Boolean(
+      document.body.trim() ||
+        notesForDocument(document.id).length > 0 ||
+        glossaryBindingsForDocument(document.id).length > 0,
+    );
+  }
+
+  function replaceDraftWithLoadedDocument(
+    draftId: string,
+    loadedDocument: MarkdownDocument,
+    loadedNotes: SelectionNote[],
+    loadedGlossaryTerms: GlossaryTerm[],
+    loadedGlossaryBindings: GlossaryBinding[],
+  ) {
+    const nextDocuments = documentsRef.current.flatMap((document) => {
+      if (document.id === draftId) return [loadedDocument];
+      if (document.id === loadedDocument.id) return [];
+      return [document];
+    });
+    if (!nextDocuments.some((document) => document.id === loadedDocument.id)) {
+      nextDocuments.unshift(loadedDocument);
+    }
+
+    const nextNotes = [
+      ...loadedNotes,
+      ...notesRef.current.filter(
+        (note) => note.documentId !== draftId && note.documentId !== loadedDocument.id,
+      ),
+    ];
+    const nextGlossaryBindings = [
+      ...loadedGlossaryBindings,
+      ...glossaryBindingsRef.current.filter(
+        (binding) =>
+          binding.documentId !== draftId && binding.documentId !== loadedDocument.id,
+      ),
+    ];
+    const nextGlossaryTerms = mergeGlossaryTerms(
+      loadedGlossaryTerms,
+      glossaryTermsRef.current,
+    );
+    const nextDirtyDocumentStates = { ...dirtyDocumentStatesRef.current };
+    delete nextDirtyDocumentStates[draftId];
+    delete nextDirtyDocumentStates[loadedDocument.id];
+
+    const nextDocumentModeStates = { ...documentModeStatesRef.current };
+    const draftModeState = nextDocumentModeStates[draftId];
+    delete nextDocumentModeStates[draftId];
+    if (draftModeState) {
+      nextDocumentModeStates[loadedDocument.id] = draftModeState;
+    }
+
+    const nextOpenDocumentTabIds = availableDocumentTabIds(
+      openDocumentTabIdsRef.current.map((documentId) =>
+        documentId === draftId || documentId === loadedDocument.id
+          ? loadedDocument.id
+          : documentId,
+      ),
+      nextDocuments,
+    );
+    const nextWorkspaceEntries = sortWorkspaceEntriesForDirectory(
+      insertOrUpdateWorkspaceFileEntry(
+        workspaceEntriesRef.current.filter(
+          (entry) => entry.kind !== "file" || entry.documentId !== draftId,
+        ),
+        workspaceEntryFromDocument(loadedDocument),
+        workspaceRootPath,
+      ),
+    );
+
+    documentsRef.current = nextDocuments;
+    notesRef.current = nextNotes;
+    glossaryBindingsRef.current = nextGlossaryBindings;
+    glossaryTermsRef.current = nextGlossaryTerms;
+    dirtyDocumentStatesRef.current = nextDirtyDocumentStates;
+    documentModeStatesRef.current = nextDocumentModeStates;
+    openDocumentTabIdsRef.current = nextOpenDocumentTabIds;
+    workspaceEntriesRef.current = nextWorkspaceEntries;
+
+    setDocuments(nextDocuments);
+    setNotes(nextNotes);
+    setGlossaryBindings(nextGlossaryBindings);
+    setGlossaryTerms(nextGlossaryTerms);
+    setDirtyDocumentStates(nextDirtyDocumentStates);
+    setDocumentModeStates(nextDocumentModeStates);
+    setOpenDocumentTabIds(nextOpenDocumentTabIds);
+    setWorkspaceEntries(nextWorkspaceEntries);
+    setSavedDocumentBodies((currentBodies) => {
+      const nextBodies = { ...currentBodies };
+      delete nextBodies[draftId];
+      nextBodies[loadedDocument.id] = loadedDocument.body;
+      savedDocumentBodiesRef.current = nextBodies;
+      return nextBodies;
+    });
+    if (selectedDocumentIdRef.current === draftId) {
+      setActiveDocumentId(loadedDocument.id);
+    }
+  }
+
+  function replaceDraftWithLoadedLocalFile(
+    draftId: string,
+    loadedFile: OpenMarkdownFileResult,
+  ) {
+    const loadedDocument = documentFromLoadedFile(loadedFile);
+    replaceDraftWithLoadedDocument(
+      draftId,
+      loadedDocument,
+      loadedFile.notes.map((note) => localLoadedNoteFromFile(loadedFile, note)),
+      loadedFile.glossaryTerms ?? [],
+      (loadedFile.glossaryBindings ?? []).map((binding) =>
+        localLoadedGlossaryBindingFromFile(loadedFile, binding),
+      ),
+    );
+    rememberLastOpenedMarkdownPath(loadedDocument.filePath);
+  }
+
+  function replaceDraftWithLoadedDropboxFile(
+    draftId: string,
+    loadedFile: OpenDropboxMarkdownFileResult,
+  ) {
+    const loadedDocument = documentFromDropboxFile(loadedFile);
+    replaceDraftWithLoadedDocument(
+      draftId,
+      loadedDocument,
+      loadedFile.notes.map((note) =>
+        dropboxLoadedNoteFromFile(loadedFile, note, loadedDocument.id),
+      ),
+      loadedFile.glossaryTerms ?? [],
+      (loadedFile.glossaryBindings ?? []).map((binding) =>
+        dropboxLoadedGlossaryBindingFromFile(loadedFile, binding, loadedDocument.id),
+      ),
+    );
+    rememberLastOpenedDropboxWorkspace(
+      workspaceRootPath ??
+        readLastOpenedDropboxWorkspace()?.workspacePath ??
+        dropboxParentDirectoryPath(loadedDocument.path),
+      loadedDocument.path,
+    );
+  }
+
+  async function saveDraftDocument(
+    documentToSave: MarkdownDocument,
+  ): Promise<"saved" | "cancelled" | "failed"> {
+    if (!nativeStorageAvailable) {
+      setStorageError(t("error.nativeRuntimeRequired"));
+      return "failed";
+    }
+    if (!isDraftDocumentId(documentToSave.id)) return "saved";
+
+    const notesToSave = notesForDocument(documentToSave.id);
+    const glossaryBindingsToSave = glossaryBindingsForDocument(documentToSave.id);
+    const glossaryTermsToSave = glossaryTermsForDocument(documentToSave.id);
+    const source = draftDocumentSource(documentToSave);
+    const defaultFileName = ensureMarkdownExtension(
+      documentToSave.title || t("app.untitledFile"),
+    );
+
+    try {
+      if (source === "dropbox") {
+        if (workspaceRootPath === null) {
+          setStorageError(t("dropbox.error.noWorkspace"));
+          return "failed";
+        }
+
+        const fileName = window.prompt(
+          t("newFile.namePrompt"),
+          stripMarkdownExtension(defaultFileName),
+        );
+        if (fileName === null) return "cancelled";
+        const trimmedFileName = fileName.trim();
+        if (!trimmedFileName) {
+          setStorageError(t("error.fileNameRequired"));
+          return "failed";
+        }
+
+        const created = await invoke<OpenDropboxMarkdownFileResult>(
+          "create_dropbox_markdown_file",
+          {
+            parentPath: workspaceRootPath,
+            fileName: trimmedFileName,
+          },
+        );
+        const saved = await invoke<OpenDropboxMarkdownFileResult>(
+          "save_dropbox_markdown_file",
+          {
+            path: created.path,
+            body: documentToSave.body,
+            rev: created.rev ?? null,
+            notes: notesToSave,
+            glossaryTerms: glossaryTermsToSave,
+            glossaryBindings: glossaryBindingsToSave,
+          },
+        );
+        replaceDraftWithLoadedDropboxFile(documentToSave.id, saved);
+        setStorageError("");
+        return "saved";
+      }
+
+      const selectedPath = await save({
+        defaultPath:
+          workspaceSource === "local" && workspaceRootPath
+            ? filePathInDirectory(workspaceRootPath, defaultFileName)
+            : defaultFileName,
+        filters: markdownFilters,
+      });
+      if (!selectedPath) return "cancelled";
+
+      const path = ensureMarkdownExtension(selectedPath);
+      const saved = await invoke<SaveMarkdownFileResult>("save_markdown_file", {
+        path,
+        body: documentToSave.body,
+        notes: notesToSave,
+        glossaryTerms: glossaryTermsToSave,
+        glossaryBindings: glossaryBindingsToSave,
+      });
+      const loaded = await invoke<OpenMarkdownFileResult>("open_markdown_file", {
+        path: saved.path,
+      });
+      replaceDraftWithLoadedLocalFile(documentToSave.id, loaded);
+      setStorageError("");
+      return "saved";
+    } catch (error) {
+      setStorageError(translatedError(error, "error.saveFailed"));
+      return "failed";
+    }
+  }
+
+  function confirmDiscardDraftDocument(documentId: string) {
+    const shouldDiscard = window.confirm(t("confirm.discardDraftFile"));
+    if (!shouldDiscard) return false;
+
+    removeDocumentsFromWorkspace([documentId]);
+    return true;
+  }
+
+  async function prepareDraftDocumentForLeaving(
+    documentId: string,
+  ): Promise<"unchanged" | "saved" | "discarded" | "blocked"> {
+    const documentToLeave = documentsRef.current.find((document) => document.id === documentId);
+    if (!documentToLeave || !isDraftDocumentId(documentToLeave.id)) return "unchanged";
+    if (!draftDocumentHasContent(documentToLeave)) {
+      removeDocumentsFromWorkspace([documentToLeave.id]);
+      return "discarded";
+    }
+
+    const shouldSave = window.confirm(t("confirm.saveDraftFile"));
+    if (!shouldSave) {
+      return confirmDiscardDraftDocument(documentToLeave.id) ? "discarded" : "blocked";
+    }
+
+    const saveResult = await saveDraftDocument(documentToLeave);
+    if (saveResult === "saved") return "saved";
+    if (saveResult === "cancelled") {
+      return confirmDiscardDraftDocument(documentToLeave.id) ? "discarded" : "blocked";
+    }
+    return "blocked";
+  }
+
+  function createDraftMarkdownDocument(source: WorkspaceSource | null) {
+    const title = stripMarkdownExtension(t("app.untitledFile"));
+    const draftDocument: MarkdownDocument = {
+      id: draftDocumentId(source),
+      title,
+      path: "",
+      filePath: null,
+      notesPath: null,
+      updatedAt: "",
+      modifiedAt: null,
+      body: "",
+    };
+    const nextDocuments = [
+      draftDocument,
+      ...documentsRef.current.filter((document) => document.id !== draftDocument.id),
+    ];
+
+    documentsRef.current = nextDocuments;
+    setDocuments(nextDocuments);
+    setSavedDocumentBodies((currentBodies) => ({
+      ...currentBodies,
+      [draftDocument.id]: "",
+    }));
+    setActiveDocumentId(draftDocument.id);
+    addDocumentTab(draftDocument.id);
+    setActiveDocumentModeState({ editorMode: "preview" });
+    setStorageError("");
+    if (isMobileViewport) {
+      setDirectoryPaneOpen(false);
     }
   }
 
@@ -13592,45 +13938,7 @@ function App() {
       return;
     }
 
-    setStorageError("");
-
-    if (workspaceSource === "dropbox") {
-      openCreateEntryDialog("file");
-      return;
-    }
-
-    try {
-      const defaultFileName = t("app.untitledFile");
-      const selectedPath = await save({
-        defaultPath:
-          workspaceSource === "local" && workspaceRootPath
-            ? filePathInDirectory(workspaceRootPath, defaultFileName)
-            : defaultFileName,
-        filters: markdownFilters,
-      });
-      if (!selectedPath) return;
-
-      const path = ensureMarkdownExtension(selectedPath);
-      const body = "";
-      const saved = await invoke<SaveMarkdownFileResult>("save_markdown_file", {
-        path,
-        body,
-        notes: [],
-        glossaryTerms: [],
-        glossaryBindings: [],
-      });
-      const loaded = await invoke<OpenMarkdownFileResult>("open_markdown_file", {
-        path: saved.path,
-      });
-
-      applyLoadedFiles([loaded], { sortEntries: true });
-      setActiveDocumentModeState({ editorMode: "edit" });
-      if (isMobileViewport) {
-        setDirectoryPaneOpen(false);
-      }
-    } catch (error) {
-      setStorageError(translatedError(error, "error.createFileFailed"));
-    }
+    createDraftMarkdownDocument(workspaceSource === "dropbox" ? "dropbox" : "local");
   }
 
   async function createWorkspaceFolder(name: string) {
@@ -13712,7 +14020,7 @@ function App() {
       setStorageError(kind === "file" ? t("dropbox.error.noWorkspace") : t("newFolder.noWorkspace"));
       return;
     }
-    if (kind === "file" && workspaceSource !== "dropbox") {
+    if (kind === "file") {
       void newMarkdownFile();
       return;
     }
@@ -13720,7 +14028,7 @@ function App() {
     setStorageError("");
     setCreateEntryDialog({
       kind,
-      name: kind === "file" ? stripMarkdownExtension(t("app.untitledFile")) : "",
+      name: "",
       isSubmitting: false,
     });
   }
@@ -15207,6 +15515,20 @@ function App() {
       manualDocumentSelectionRevisionRef.current += 1;
     }
 
+    const currentDocumentId = selectedDocumentIdRef.current;
+    if (
+      options.userInitiated !== false &&
+      currentDocumentId &&
+      currentDocumentId !== documentId &&
+      isDraftDocumentId(currentDocumentId)
+    ) {
+      void prepareDraftDocumentForLeaving(currentDocumentId).then((result) => {
+        if (result === "blocked") return;
+        selectDocument(documentId, { ...options, userInitiated: false });
+      });
+      return;
+    }
+
     const nextDocument = documentsRef.current.find((document) => document.id === documentId);
     if (!nextDocument) return;
 
@@ -15230,6 +15552,10 @@ function App() {
     setActiveNoteMode("view");
     setActiveGlossaryMode("view");
     clearReturnToViewTimer();
+    if (isDraftDocumentId(nextDocument.id)) {
+      return;
+    }
+
     if (documentIsFromDropbox(nextDocument)) {
       rememberLastOpenedDropboxWorkspace(
         workspaceRootPath ??
@@ -17134,7 +17460,9 @@ function App() {
           id: "close-other-tabs",
           label: t("documentTab.closeOthers"),
           icon: <SearchCloseIcon />,
-          onSelect: () => closeOtherDocumentTabs(documentTabContextMenu.documentId),
+          onSelect: () => {
+            void closeOtherDocumentTabs(documentTabContextMenu.documentId);
+          },
         },
         {
           id: "open-in-new-window",
@@ -17585,7 +17913,9 @@ function App() {
                   <button
                     aria-label={`${t("documentTab.close")}: ${document.title}`}
                     className="document-tab__close"
-                    onClick={(event) => closeDocumentTab(document.id, event)}
+                    onClick={(event) => {
+                      void closeDocumentTab(document.id, event);
+                    }}
                     title={t("documentTab.close")}
                     type="button"
                   >

@@ -54,6 +54,7 @@ import {
 } from "./markdownInlineTextMap";
 import {
   escapeListLeadingAsterisksForPreview,
+  normalizeListItemStrongTrailingWhitespace,
   restoreListLeadingAsterisksFromPreview,
 } from "./markdownListLiteral";
 import {
@@ -62,6 +63,7 @@ import {
   moveToNextEmptyListItem,
   sinkSingleListItem,
 } from "./milkdownListIndent";
+import { createListItemInlineStrongSyntaxPlugin } from "./milkdownInlineMarkdownSyntax";
 import { loadScholiumMermaid } from "./mermaid";
 
 type MilkdownMarkdownEditorProps = {
@@ -517,14 +519,16 @@ function restoreSerializedInlineLinks(markdown: string) {
 
 function normalizeMarkdownForScholium(markdown: string) {
   return restoreListLeadingAsterisksFromPreview(
-    restoreSerializedInlineLinks(
-      normalizeSerializedHardBreaks(normalizeSerializedEmptyParagraphBreaks(markdown)),
+    normalizeListItemStrongTrailingWhitespace(
+      restoreSerializedInlineLinks(
+        normalizeSerializedHardBreaks(normalizeSerializedEmptyParagraphBreaks(markdown)),
+      )
+        .replace(/^(\s*)\*\s+/gm, "$1- ")
+        .replace(
+          /^(\s*(?:[-+]|\d+[.)])\s+\S[^\n]*)\n\n(?=\s*(?:[-+]|\d+[.)])\s+\S)/gm,
+          "$1\n",
+        ),
     )
-      .replace(/^(\s*)\*\s+/gm, "$1- ")
-      .replace(
-        /^(\s*(?:[-+]|\d+[.)])\s+\S[^\n]*)\n\n(?=\s*(?:[-+]|\d+[.)])\s+\S)/gm,
-        "$1\n",
-      ),
   );
 }
 
@@ -5633,6 +5637,7 @@ export function MilkdownMarkdownEditor({
         createInlineMarkdownLinkInputRule(),
         createPairedSymbolPlugin(),
         createSingleListItemIndentPlugin(),
+        createListItemInlineStrongSyntaxPlugin(),
         createControlHistoryPlugin(),
         createShiftEnterParagraphSplitPlugin(),
         createReadonlyGuardPlugin(),
