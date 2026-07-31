@@ -46,6 +46,7 @@ import {
   splitMarkdownFrontmatter,
   stripMarkdownFrontmatter,
 } from "./markdownFrontmatter";
+import { markdownCopyTextFromRange } from "./markdownClipboard";
 import {
   appendInlineMarkdownTextMap,
   appendTextMap,
@@ -1632,6 +1633,10 @@ function makeAnchorFromSourceRange(markdown: string, from: number, to: number) {
   };
 }
 
+function markdownCopyTextFromAnchor(markdown: string, anchor: TextSelectionAnchor) {
+  return markdownCopyTextFromRange(markdown, anchor.from, anchor.to);
+}
+
 function buildAnchor(
   markdown: string,
   selectedText: string,
@@ -2415,6 +2420,7 @@ export function MilkdownMarkdownEditor({
     container.addEventListener("mousedown", preventFocus, { capture: true });
     container.addEventListener("touchstart", preventFocus, { capture: true, passive: false });
     container.addEventListener("touchend", handleTouchEnd, { capture: true, passive: false });
+    container.addEventListener("copy", handleMarkdownCopy, true);
     container.addEventListener("click", handleLinkClick, true);
     container.addEventListener("click", handleCodeBlockCopyClick, true);
 
@@ -2422,6 +2428,7 @@ export function MilkdownMarkdownEditor({
       container.removeEventListener("mousedown", preventFocus, { capture: true });
       container.removeEventListener("touchstart", preventFocus, { capture: true });
       container.removeEventListener("touchend", handleTouchEnd, { capture: true });
+      container.removeEventListener("copy", handleMarkdownCopy, true);
       container.removeEventListener("click", handleLinkClick, true);
       container.removeEventListener("click", handleCodeBlockCopyClick, true);
     };
@@ -3990,6 +3997,40 @@ export function MilkdownMarkdownEditor({
       ) ??
       anchorFromEditorSelection()
     );
+  }
+
+  function selectionMatchesWholeMilkdownDocument(selectedText: string) {
+    const view = currentEditorView();
+    if (!view) return false;
+
+    return (
+      normalizeSelectedText(selectedText) ===
+      normalizeSelectedText(view.state.doc.textBetween(0, view.state.doc.content.size, " "))
+    );
+  }
+
+  function markdownCopyTextFromCurrentSelection() {
+    const selectedText = window.getSelection()?.toString() ?? "";
+    if (!normalizeSelectedText(selectedText)) return null;
+
+    if (selectionMatchesWholeMilkdownDocument(selectedText)) {
+      return stripMarkdownFrontmatter(currentMarkdownRef.current);
+    }
+
+    const anchor = anchorFromCurrentSelection();
+    return anchor ? markdownCopyTextFromAnchor(currentMarkdownRef.current, anchor) : null;
+  }
+
+  function handleMarkdownCopy(event: ClipboardEvent) {
+    if (!event.clipboardData) return;
+
+    const copyText = markdownCopyTextFromCurrentSelection();
+    if (!copyText) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    event.clipboardData.clearData();
+    event.clipboardData.setData("text/plain", copyText);
   }
 
   function touchBlockSelectionEnabled() {

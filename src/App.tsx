@@ -8709,9 +8709,18 @@ function App() {
 
   useEffect(() => {
     function handlePlainTextCopy(event: ClipboardEvent) {
-      const selectedText = window.getSelection()?.toString() ?? "";
+      const selection = window.getSelection();
+      const selectedText = selection?.toString() ?? "";
       if (!selectedText) return;
       if (!event.clipboardData) return;
+      const selectionElements = [selection?.anchorNode, selection?.focusNode]
+        .map((node) => (node instanceof Element ? node : node?.parentElement ?? null))
+        .filter((element): element is Element => Boolean(element));
+      if (
+        selectionElements.some((element) => element.closest(".milkdown-markdown-editor"))
+      ) {
+        return;
+      }
 
       event.preventDefault();
       event.clipboardData.clearData();
