@@ -100,6 +100,51 @@ export function mergeRemovedListMarkerLineBackward(
   };
 }
 
+export function moveToNextEmptyListItem(itemType: NodeType): Command {
+  return (state, dispatch) => {
+    const { selection } = state;
+    if (!(selection instanceof TextSelection) || !selection.empty) return false;
+
+    let itemDepth = selection.$from.depth;
+    while (itemDepth > 0 && selection.$from.node(itemDepth).type !== itemType) {
+      itemDepth -= 1;
+    }
+    if (itemDepth === 0) return false;
+
+    const item = selection.$from.node(itemDepth);
+    if (item.childCount !== 1 || item.firstChild !== selection.$from.parent) return false;
+
+    const listDepth = itemDepth - 1;
+    const list = selection.$from.node(listDepth);
+    const itemIndex = selection.$from.index(listDepth);
+    if (itemIndex >= list.childCount - 1) return false;
+
+    const nextItem = list.child(itemIndex + 1);
+    const nextParagraph = nextItem.firstChild;
+    if (
+      nextItem.type !== itemType ||
+      nextItem.childCount !== 1 ||
+      !nextParagraph?.isTextblock ||
+      nextParagraph.content.size !== 0
+    ) {
+      return false;
+    }
+
+    if (dispatch) {
+      let nextItemPosition = selection.$from.start(listDepth);
+      for (let index = 0; index <= itemIndex; index += 1) {
+        nextItemPosition += list.child(index).nodeSize;
+      }
+      dispatch(
+        state.tr
+          .setSelection(TextSelection.create(state.doc, nextItemPosition + 2))
+          .scrollIntoView(),
+      );
+    }
+    return true;
+  };
+}
+
 export function deleteAtListItemStart(
   itemType: NodeType,
   direction: "backward" | "forward",

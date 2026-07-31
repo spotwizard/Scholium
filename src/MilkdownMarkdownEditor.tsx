@@ -53,8 +53,13 @@ import {
   type MarkdownTextMap as MilkdownTextMap,
 } from "./markdownInlineTextMap";
 import {
+  escapeListLeadingAsterisksForPreview,
+  restoreListLeadingAsterisksFromPreview,
+} from "./markdownListLiteral";
+import {
   deleteAtListItemStart,
   mergeRemovedListMarkerLineBackward,
+  moveToNextEmptyListItem,
   sinkSingleListItem,
 } from "./milkdownListIndent";
 import { loadScholiumMermaid } from "./mermaid";
@@ -511,14 +516,16 @@ function restoreSerializedInlineLinks(markdown: string) {
 }
 
 function normalizeMarkdownForScholium(markdown: string) {
-  return restoreSerializedInlineLinks(
-    normalizeSerializedHardBreaks(normalizeSerializedEmptyParagraphBreaks(markdown)),
-  )
-    .replace(/^(\s*)\*\s+/gm, "$1- ")
-    .replace(
-      /^(\s*(?:[-+]|\d+[.)])\s+\S[^\n]*)\n\n(?=\s*(?:[-+]|\d+[.)])\s+\S)/gm,
-      "$1\n",
-    );
+  return restoreListLeadingAsterisksFromPreview(
+    restoreSerializedInlineLinks(
+      normalizeSerializedHardBreaks(normalizeSerializedEmptyParagraphBreaks(markdown)),
+    )
+      .replace(/^(\s*)\*\s+/gm, "$1- ")
+      .replace(
+        /^(\s*(?:[-+]|\d+[.)])\s+\S[^\n]*)\n\n(?=\s*(?:[-+]|\d+[.)])\s+\S)/gm,
+        "$1\n",
+      ),
+  );
 }
 
 function encodeEmptyParagraphsForMilkdown(markdown: string) {
@@ -1668,7 +1675,7 @@ function buildAnchor(
 }
 
 function editorMarkdownFromFullSource(markdown: string) {
-  return stripMarkdownFrontmatter(markdown);
+  return escapeListLeadingAsterisksForPreview(stripMarkdownFrontmatter(markdown));
 }
 
 function sourceAnchorFromEditorAnchor(markdown: string, anchor: TextSelectionAnchor | null) {
@@ -2998,6 +3005,19 @@ export function MilkdownMarkdownEditor({
           const listItemType = view.state.schema.nodes.list_item;
           if (!listItemType) return false;
 
+          if (
+            event.key === "Enter" &&
+            !event.shiftKey &&
+            moveToNextEmptyListItem(listItemType)(
+              view.state,
+              (transaction) => view.dispatch(transaction),
+              view,
+            )
+          ) {
+            event.preventDefault();
+            return true;
+          }
+
           if (event.key === "Backspace" || event.key === "Delete") {
             if (
               event.key === "Backspace" &&
@@ -3796,7 +3816,10 @@ export function MilkdownMarkdownEditor({
     let view: EditorView | null = null;
     try {
       crepe.editor.action((ctx) => {
-        view = ctx.get(editorViewCtx) as EditorView;
+        const candidate = ctx.get(editorViewCtx) as EditorView | undefined;
+        if (candidate?.state && typeof candidate.dispatch === "function") {
+          view = candidate;
+        }
       });
     } catch {
       return null;
@@ -3871,10 +3894,7 @@ export function MilkdownMarkdownEditor({
 
   function dispatchSearchUpdate() {
     const view = currentEditorView();
-    if (!view) {
-      onSearchMatchCountChangeRef.current?.(0);
-      return;
-    }
+    if (!view) return;
 
     view.dispatch(view.state.tr.setMeta(milkdownSearchPluginKey, true));
     reportSearchMatchCount(view);

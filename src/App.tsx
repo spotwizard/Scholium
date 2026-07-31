@@ -35,7 +35,10 @@ import {
   type TextSelectionAnchor,
   type TextSelectionEnterContext,
 } from "./MarkdownEditor";
-import type { DocumentSearchState } from "./documentSearch";
+import {
+  documentSearchMoveDeltaForKeyDown,
+  type DocumentSearchState,
+} from "./documentSearch";
 import {
   availableDocumentTabSession,
   createDocumentTabSession,
@@ -6538,6 +6541,19 @@ export function MarkdownPreview({
     const nextLine = listContinuationLine(currentLine);
     if (!listLine || nextLine === null) return false;
 
+    const nextListItem = listItem.nextElementSibling;
+    const nextListLine = parseMarkdownListLine(lines[lineIndex + 1] ?? "");
+    if (
+      nextListItem instanceof HTMLLIElement &&
+      Number(nextListItem.dataset.previewListItemIndex) === flatIndex + 1 &&
+      nextListLine &&
+      !nextListLine.text.trim() &&
+      !directPreviewListItemText(nextListItem).trim()
+    ) {
+      focusPreviewListItem(block.key, itemIndex + 1);
+      return true;
+    }
+
     const splitOffset = caretOffset === null
       ? currentItem.length
       : clampNumber(caretOffset, 0, currentItem.length);
@@ -9772,9 +9788,10 @@ function App() {
   }
 
   function handleDocumentSearchInputKeyDown(event: ReactKeyboardEvent<HTMLInputElement>) {
-    if (event.key === "Enter") {
+    const moveDelta = documentSearchMoveDeltaForKeyDown(event.nativeEvent);
+    if (moveDelta !== 0) {
       event.preventDefault();
-      moveDocumentSearch(event.shiftKey ? -1 : 1);
+      moveDocumentSearch(moveDelta);
       return;
     }
 

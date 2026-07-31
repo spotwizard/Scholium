@@ -2879,7 +2879,7 @@ button.document-tag-chip__label:focus-visible {
 
 .document-search {
   position: absolute;
-  top: 20px;
+  top: calc(var(--editor-document-title-top) + 52px);
   right: calc(var(--editor-content-end-offset) + 24px);
   z-index: 8;
   display: grid;
@@ -2896,7 +2896,9 @@ button.document-tag-chip__label:focus-visible {
 }
 
 .scholium-shell.has-document-tabs .document-search {
-  top: calc(20px + var(--document-tab-bar-occupied-height));
+  top: calc(
+    var(--editor-document-title-top) + 52px + var(--document-tab-bar-occupied-height)
+  );
 }
 
 :root[data-theme="dark"] .document-search {

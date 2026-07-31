@@ -8,6 +8,7 @@ import { EditorState, TextSelection } from "@milkdown/prose/state";
 import {
   deleteAtListItemStart,
   mergeRemovedListMarkerLineBackward,
+  moveToNextEmptyListItem,
   sinkSingleListItem,
 } from "../src/milkdownListIndent.ts";
 
@@ -42,6 +43,65 @@ const orderedItem = (
       ? [paragraph(text), schema.nodes.ordered_list.create(null, children)]
       : [paragraph(text)],
   );
+
+const enterBeforeEmptyDocument = schema.nodes.doc.create(null, [
+  schema.nodes.bullet_list.create(null, [
+    item("保留這一項"),
+    item(""),
+  ]),
+]);
+let enterBeforeEmptyPosition = -1;
+enterBeforeEmptyDocument.descendants((node, position) => {
+  if (node.isText && node.text === "保留這一項") {
+    enterBeforeEmptyPosition = position + 2;
+  }
+});
+assert.notEqual(enterBeforeEmptyPosition, -1);
+const enterBeforeEmptyState = EditorState.create({
+  doc: enterBeforeEmptyDocument,
+  selection: TextSelection.create(
+    enterBeforeEmptyDocument,
+    enterBeforeEmptyPosition,
+  ),
+});
+let movedToEmptyState = enterBeforeEmptyState;
+assert.equal(
+  moveToNextEmptyListItem(schema.nodes.list_item)(
+    enterBeforeEmptyState,
+    (transaction) => {
+      movedToEmptyState = enterBeforeEmptyState.apply(transaction);
+    },
+  ),
+  true,
+);
+assert.deepEqual(movedToEmptyState.doc.toJSON(), enterBeforeEmptyDocument.toJSON());
+assert.equal(movedToEmptyState.selection.$from.parent.textContent, "");
+assert.equal(movedToEmptyState.selection.$from.parentOffset, 0);
+
+const enterBeforeContentDocument = schema.nodes.doc.create(null, [
+  schema.nodes.bullet_list.create(null, [
+    item("保留這一項"),
+    item("下一項有內容"),
+  ]),
+]);
+let enterBeforeContentPosition = -1;
+enterBeforeContentDocument.descendants((node, position) => {
+  if (node.isText && node.text === "保留這一項") {
+    enterBeforeContentPosition = position + 2;
+  }
+});
+assert.equal(
+  moveToNextEmptyListItem(schema.nodes.list_item)(
+    EditorState.create({
+      doc: enterBeforeContentDocument,
+      selection: TextSelection.create(
+        enterBeforeContentDocument,
+        enterBeforeContentPosition,
+      ),
+    }),
+  ),
+  false,
+);
 
 const document = schema.nodes.doc.create(null, [
   schema.nodes.bullet_list.create(null, [
@@ -1143,6 +1203,10 @@ assert.match(editorSource, /createControlHistoryPlugin\(\),/);
 assert.match(
   editorSource,
   /event\.key === "Backspace"[\s\S]*?mergeRemovedListMarkerLineBackward\(listItemType\)/,
+);
+assert.match(
+  editorSource,
+  /event\.key === "Enter"[\s\S]*?moveToNextEmptyListItem\(listItemType\)/,
 );
 
 console.log("milkdown list indentation and deletion regression: PASS");

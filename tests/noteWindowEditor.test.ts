@@ -132,6 +132,10 @@ assert.match(
 );
 assert.match(
   appSource,
+  /function commitPreviewListEnter[\s\S]*?const nextListItem = listItem\.nextElementSibling;[\s\S]*?!nextListLine\.text\.trim\(\)[\s\S]*?focusPreviewListItem\(block\.key, itemIndex \+ 1\);[\s\S]*?return true;/,
+);
+assert.match(
+  appSource,
   /const preserveSoftBreaks = transientEdit\.transientNodes\.some[\s\S]*?node\.dataset\.previewSoftBreaks === "true"[\s\S]*?join\("<br>"\)/,
 );
 assert.match(

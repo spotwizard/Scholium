@@ -15,7 +15,7 @@ assert.match(
 );
 assert.match(
   editor,
-  /return restoreSerializedInlineLinks\(\n\s*normalizeSerializedHardBreaks\(normalizeSerializedEmptyParagraphBreaks\(markdown\)\),\n\s*\)/,
+  /return restoreListLeadingAsterisksFromPreview\(\s*restoreSerializedInlineLinks\(\s*normalizeSerializedHardBreaks\(normalizeSerializedEmptyParagraphBreaks\(markdown\)\),\s*\)/,
 );
 assert.ok(
   editor.includes("/^(\\s*(?:[-+*]|\\d+[.)]))\\s+<br\\s*\\/?>\\s*$/i"),
