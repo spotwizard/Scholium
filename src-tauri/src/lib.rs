@@ -84,6 +84,10 @@ struct LocationEntry {
 #[derive(Default)]
 struct NewWindowDocumentTargetState(Mutex<HashMap<String, LocationEntry>>);
 
+#[cfg(desktop)]
+#[derive(Default)]
+struct FocusedWindowState(Mutex<Option<String>>);
+
 fn default_location_source() -> String {
     "local".to_string()
 }
@@ -1637,6 +1641,7 @@ fn create_new_scholium_window(
         .ok_or_else(|| "missing base window configuration".to_string())?;
 
     window_config.label = label.clone();
+    window_config.url = tauri::WebviewUrl::App("index.html?scholium-window=secondary".into());
     window_config.fullscreen = start_fullscreen;
     window_config.focus = true;
 
@@ -1678,13 +1683,30 @@ fn target_window_is_fullscreen(app_handle: &tauri::AppHandle) -> bool {
 fn target_webview_window_label(app_handle: &tauri::AppHandle) -> Option<String> {
     let webview_windows = app_handle.webview_windows();
 
-    webview_windows
-        .iter()
-        .find_map(|(label, window)| match window.is_focused() {
-            Ok(true) => Some(label.clone()),
-            _ => None,
-        })
-        .or_else(|| webview_windows.keys().next().cloned())
+    let focused_label =
+        webview_windows
+            .iter()
+            .find_map(|(label, window)| match window.is_focused() {
+                Ok(true) => Some(label.clone()),
+                _ => None,
+            });
+
+    if let Some(label) = focused_label {
+        if let Ok(mut last_focused_label) = app_handle.state::<FocusedWindowState>().0.lock() {
+            *last_focused_label = Some(label.clone());
+        }
+        return Some(label);
+    }
+
+    let last_focused_label = app_handle
+        .state::<FocusedWindowState>()
+        .0
+        .lock()
+        .ok()
+        .and_then(|label| label.clone())
+        .filter(|label| webview_windows.contains_key(label));
+
+    last_focused_label.or_else(|| webview_windows.keys().next().cloned())
 }
 
 #[cfg(desktop)]
@@ -4144,8 +4166,24 @@ pub fn run() {
         .plugin(tauri_plugin_deep_link::init())
         .manage(LocationMenuState::default())
         .manage(NewWindowDocumentTargetState::default())
+        .manage(FocusedWindowState::default())
         .manage(DropboxState::default())
         .manage(OpenedFileState::default())
+        .on_window_event(|window, event| match event {
+            tauri::WindowEvent::Focused(true) => {
+                if let Ok(mut last_focused_label) = window.state::<FocusedWindowState>().0.lock() {
+                    *last_focused_label = Some(window.label().to_string());
+                }
+            }
+            tauri::WindowEvent::Destroyed => {
+                if let Ok(mut last_focused_label) = window.state::<FocusedWindowState>().0.lock() {
+                    if last_focused_label.as_deref() == Some(window.label()) {
+                        *last_focused_label = None;
+                    }
+                }
+            }
+            _ => {}
+        })
         .on_page_load(|webview, payload| {
             if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
                 if let Err(error) = webview.window().show() {

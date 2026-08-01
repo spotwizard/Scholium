@@ -991,6 +991,13 @@ const lastOpenedMarkdownRootDirectoryStorageKey =
   "scholium:last-opened-markdown-root-directory";
 const lastOpenedDropboxWorkspaceStorageKey = "scholium:last-opened-dropbox-workspace";
 const documentTabSessionStorageKey = "scholium:document-tab-session";
+const secondaryWorkspaceStorageSeededKey = "scholium:secondary-workspace-seeded";
+const workspaceStorageKeys = [
+  lastOpenedMarkdownPathStorageKey,
+  lastOpenedMarkdownRootDirectoryStorageKey,
+  lastOpenedDropboxWorkspaceStorageKey,
+  documentTabSessionStorageKey,
+];
 const mobileViewportQuery = "(max-width: 640px)";
 const mobileSafeLayoutViewportQuery =
   "((max-width: 640px) and (any-pointer: coarse)), ((max-width: 980px) and (max-height: 520px) and (any-pointer: coarse))";
@@ -1821,9 +1828,29 @@ function glossaryTermHasContent(term: GlossaryTerm | null | undefined): term is 
   return Boolean(term?.definition.trim());
 }
 
+function currentWindowWorkspaceStorage() {
+  const isSecondaryWindow =
+    new URLSearchParams(window.location.search).get("scholium-window") === "secondary";
+  if (!isSecondaryWindow) return window.localStorage;
+
+  if (window.sessionStorage.getItem(secondaryWorkspaceStorageSeededKey) !== "true") {
+    workspaceStorageKeys.forEach((key) => {
+      const value = window.localStorage.getItem(key);
+      if (value === null) {
+        window.sessionStorage.removeItem(key);
+      } else {
+        window.sessionStorage.setItem(key, value);
+      }
+    });
+    window.sessionStorage.setItem(secondaryWorkspaceStorageSeededKey, "true");
+  }
+
+  return window.sessionStorage;
+}
+
 function readLastOpenedMarkdownPath() {
   try {
-    return window.localStorage.getItem(lastOpenedMarkdownPathStorageKey)?.trim() ?? "";
+    return currentWindowWorkspaceStorage().getItem(lastOpenedMarkdownPathStorageKey)?.trim() ?? "";
   } catch {
     return "";
   }
@@ -1832,7 +1859,7 @@ function readLastOpenedMarkdownPath() {
 function readDocumentTabSession() {
   try {
     return parseDocumentTabSession(
-      window.localStorage.getItem(documentTabSessionStorageKey),
+      currentWindowWorkspaceStorage().getItem(documentTabSessionStorageKey),
     );
   } catch {
     return null;
@@ -1842,9 +1869,9 @@ function readDocumentTabSession() {
 function rememberDocumentTabSession(session: DocumentTabSessionState | null) {
   try {
     if (session) {
-      window.localStorage.setItem(documentTabSessionStorageKey, JSON.stringify(session));
+      currentWindowWorkspaceStorage().setItem(documentTabSessionStorageKey, JSON.stringify(session));
     } else {
-      window.localStorage.removeItem(documentTabSessionStorageKey);
+      currentWindowWorkspaceStorage().removeItem(documentTabSessionStorageKey);
     }
   } catch {
     // Remembering open tabs is best-effort only.
@@ -1870,7 +1897,7 @@ function rememberLastOpenedMarkdownPath(path: string | null | undefined) {
   if (!path) return;
 
   try {
-    window.localStorage.setItem(lastOpenedMarkdownPathStorageKey, path);
+    currentWindowWorkspaceStorage().setItem(lastOpenedMarkdownPathStorageKey, path);
     forgetLastOpenedDropboxWorkspace();
   } catch {
     // Remembering the last file is best-effort only.
@@ -1879,7 +1906,9 @@ function rememberLastOpenedMarkdownPath(path: string | null | undefined) {
 
 function readLastOpenedMarkdownRootDirectoryPath() {
   try {
-    return window.localStorage.getItem(lastOpenedMarkdownRootDirectoryStorageKey)?.trim() ?? "";
+    return currentWindowWorkspaceStorage()
+      .getItem(lastOpenedMarkdownRootDirectoryStorageKey)
+      ?.trim() ?? "";
   } catch {
     return "";
   }
@@ -1889,7 +1918,7 @@ function rememberLastOpenedMarkdownRootDirectoryPath(path: string | null | undef
   if (!path) return;
 
   try {
-    window.localStorage.setItem(lastOpenedMarkdownRootDirectoryStorageKey, path);
+    currentWindowWorkspaceStorage().setItem(lastOpenedMarkdownRootDirectoryStorageKey, path);
     forgetLastOpenedDropboxWorkspace();
   } catch {
     // Remembering the last root directory is best-effort only.
@@ -1898,7 +1927,7 @@ function rememberLastOpenedMarkdownRootDirectoryPath(path: string | null | undef
 
 function forgetLastOpenedMarkdownRootDirectoryPath() {
   try {
-    window.localStorage.removeItem(lastOpenedMarkdownRootDirectoryStorageKey);
+    currentWindowWorkspaceStorage().removeItem(lastOpenedMarkdownRootDirectoryStorageKey);
   } catch {
     // Remembering the last root directory is best-effort only.
   }
@@ -1906,7 +1935,9 @@ function forgetLastOpenedMarkdownRootDirectoryPath() {
 
 function readLastOpenedDropboxWorkspace() {
   try {
-    const rawValue = window.localStorage.getItem(lastOpenedDropboxWorkspaceStorageKey);
+    const rawValue = currentWindowWorkspaceStorage().getItem(
+      lastOpenedDropboxWorkspaceStorageKey,
+    );
     if (!rawValue) return null;
 
     const parsedValue = JSON.parse(rawValue) as Partial<LastOpenedDropboxWorkspaceState>;
@@ -1941,7 +1972,7 @@ function rememberLastOpenedDropboxWorkspace(
   };
 
   try {
-    window.localStorage.setItem(
+    currentWindowWorkspaceStorage().setItem(
       lastOpenedDropboxWorkspaceStorageKey,
       JSON.stringify(nextState),
     );
@@ -1954,7 +1985,7 @@ function rememberLastOpenedDropboxWorkspace(
 
 function forgetLastOpenedDropboxWorkspace() {
   try {
-    window.localStorage.removeItem(lastOpenedDropboxWorkspaceStorageKey);
+    currentWindowWorkspaceStorage().removeItem(lastOpenedDropboxWorkspaceStorageKey);
   } catch {
     // Remembering the last Dropbox workspace is best-effort only.
   }
@@ -2038,7 +2069,7 @@ function ancestorDirectoryPathsForFile(rootDirectoryPath: string, filePath: stri
 
 function forgetLastOpenedMarkdownPath() {
   try {
-    window.localStorage.removeItem(lastOpenedMarkdownPathStorageKey);
+    currentWindowWorkspaceStorage().removeItem(lastOpenedMarkdownPathStorageKey);
   } catch {
     // Remembering the last file is best-effort only.
   }
@@ -10514,30 +10545,31 @@ function App() {
     let unlistenOpenDropbox: (() => void) | null = null;
     let unlistenOpenLocation: (() => void) | null = null;
     let unlistenSelectAll: (() => void) | null = null;
+    const appWindow = getCurrentWindow();
 
     void Promise.all([
-      listen("scholium-new-file", () => {
+      appWindow.listen("scholium-new-file", () => {
         newMarkdownFileHandlerRef.current();
       }),
-      listen("scholium-new-folder", () => {
+      appWindow.listen("scholium-new-folder", () => {
         newMarkdownFolderHandlerRef.current();
       }),
-      listen("scholium-open-settings", () => {
+      appWindow.listen("scholium-open-settings", () => {
         openSettingsHandlerRef.current();
       }),
-      listen("scholium-open-file", () => {
+      appWindow.listen("scholium-open-file", () => {
         openMarkdownFileHandlerRef.current();
       }),
-      listen("scholium-open-folder", () => {
+      appWindow.listen("scholium-open-folder", () => {
         openMarkdownFolderHandlerRef.current();
       }),
-      listen("scholium-open-dropbox", () => {
+      appWindow.listen("scholium-open-dropbox", () => {
         openDropboxCloudHandlerRef.current();
       }),
-      listen<OpenLocationEventPayload>("scholium-open-location", (event) => {
+      appWindow.listen<OpenLocationEventPayload>("scholium-open-location", (event) => {
         void openNativeMenuLocation(event.payload);
       }),
-      listen("scholium-select-all", () => {
+      appWindow.listen("scholium-select-all", () => {
         const activeElement = document.activeElement;
         if (
           activeElement instanceof HTMLInputElement ||

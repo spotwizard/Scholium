@@ -66,6 +66,49 @@ assert.deepEqual(
 );
 
 const appSource = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
+const workspaceStorageHelper = appSource.match(
+  /function currentWindowWorkspaceStorage\(\) \{[\s\S]*?\n\}/,
+)?.[0];
+assert.ok(workspaceStorageHelper, "window workspace storage helper should exist");
+assert.match(workspaceStorageHelper, /new URLSearchParams\(window\.location\.search\)/);
+assert.match(workspaceStorageHelper, /if \(!isSecondaryWindow\) return window\.localStorage/);
+assert.match(workspaceStorageHelper, /workspaceStorageKeys\.forEach/);
+assert.match(workspaceStorageHelper, /window\.localStorage\.getItem\(key\)/);
+assert.match(workspaceStorageHelper, /window\.sessionStorage\.setItem\(key, value\)/);
+assert.match(workspaceStorageHelper, /return window\.sessionStorage/);
+assert.match(
+  appSource,
+  /const appWindow = getCurrentWindow\(\);[\s\S]*?appWindow\.listen<OpenLocationEventPayload>\("scholium-open-location"/,
+  "desktop menu events must be scoped to the current Scholium window",
+);
+
+const tauriSource = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
+assert.match(
+  tauriSource,
+  /window_config\.url =\s*tauri::WebviewUrl::App\("index\.html\?scholium-window=secondary"\.into\(\)\);/,
+  "new desktop windows must carry an explicit independent-workspace marker",
+);
+assert.match(
+  tauriSource,
+  /struct FocusedWindowState\(Mutex<Option<String>>\);/,
+  "desktop menu routing must remember the last focused Scholium window",
+);
+assert.match(
+  tauriSource,
+  /last_focused_label\.or_else\(\|\| webview_windows\.keys\(\)\.next\(\)\.cloned\(\)\)/,
+  "desktop menu routing must prefer the remembered window while the app menu owns focus",
+);
+
+const workspacePersistenceHelpers = appSource.slice(
+  appSource.indexOf("function readLastOpenedMarkdownPath()"),
+  appSource.indexOf("function browserAppearsOffline()"),
+);
+assert.match(workspacePersistenceHelpers, /currentWindowWorkspaceStorage\(\)/);
+assert.doesNotMatch(
+  workspacePersistenceHelpers,
+  /window\.(?:localStorage|sessionStorage)/,
+  "workspace and open-file state must use storage isolated to the current window",
+);
 const sessionPersistenceEffect = appSource.match(
   /useEffect\(\(\) => \{\n    if \(\n      !nativeStorageAvailable \|\|\n      !documentTabSessionRestoreCompleted[\s\S]*?\n  \}, \[\n    documents,\n    documentTabSessionRestoreCompleted,[\s\S]*?\n  \]\);/,
 )?.[0];
