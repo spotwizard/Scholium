@@ -1045,6 +1045,84 @@ assert.equal(
   deletionDocument.textContent.replace("篩除", "除"),
 );
 
+const forwardDeleteAfterSelectionDocument = schema.nodes.doc.create(null, [
+  schema.nodes.bullet_list.create(null, [
+    item("第一列"),
+    item("第二列"),
+    item("第三列"),
+  ]),
+]);
+let forwardDeleteSelectionFrom = -1;
+forwardDeleteAfterSelectionDocument.descendants((node, position) => {
+  if (node.isText && node.text === "第二列") {
+    forwardDeleteSelectionFrom = position;
+  }
+});
+assert.notEqual(forwardDeleteSelectionFrom, -1);
+let forwardDeleteAfterSelectionState = EditorState.create({
+  doc: forwardDeleteAfterSelectionDocument,
+  selection: TextSelection.create(
+    forwardDeleteAfterSelectionDocument,
+    forwardDeleteSelectionFrom,
+    forwardDeleteSelectionFrom + "第二列".length,
+  ),
+  plugins: [history()],
+});
+forwardDeleteAfterSelectionState = forwardDeleteAfterSelectionState.apply(
+  forwardDeleteAfterSelectionState.tr.deleteSelection(),
+);
+assert.equal(
+  forwardDeleteAfterSelectionState.selection.$from.parent.textContent,
+  "",
+);
+assert.equal(
+  deleteAtListItemStart(schema.nodes.list_item, "forward")(
+    forwardDeleteAfterSelectionState,
+    (transaction) => {
+      forwardDeleteAfterSelectionState =
+        forwardDeleteAfterSelectionState.apply(transaction);
+    },
+  ),
+  true,
+);
+assert.deepEqual(forwardDeleteAfterSelectionState.doc.toJSON(), {
+  type: "doc",
+  content: [
+    {
+      type: "bullet_list",
+      content: [
+        {
+          type: "list_item",
+          content: [
+            { type: "paragraph", content: [{ type: "text", text: "第一列" }] },
+          ],
+        },
+      ],
+    },
+    { type: "paragraph" },
+    {
+      type: "bullet_list",
+      content: [
+        {
+          type: "list_item",
+          content: [
+            { type: "paragraph", content: [{ type: "text", text: "第三列" }] },
+          ],
+        },
+      ],
+    },
+  ],
+});
+assert.equal(
+  forwardDeleteAfterSelectionState.selection.$from.parent.type,
+  schema.nodes.paragraph,
+);
+assert.equal(
+  forwardDeleteAfterSelectionState.selection.$from.parent.textContent,
+  "",
+);
+assert.equal(forwardDeleteAfterSelectionState.selection.$from.parentOffset, 0);
+
 const nestedOrderedMarkerDocument = schema.nodes.doc.create(null, [
   schema.nodes.ordered_list.create(null, [
     orderedItem("第一層", [
@@ -1207,6 +1285,34 @@ assert.match(
 assert.match(
   editorSource,
   /event\.key === "Enter"[\s\S]*?moveToNextEmptyListItem\(listItemType\)/,
+);
+const singleListItemIndentPluginStart = editorSource.indexOf(
+  "function createSingleListItemIndentPlugin()",
+);
+const singleListItemIndentPluginEnd = editorSource.indexOf(
+  "function createControlHistoryPlugin()",
+  singleListItemIndentPluginStart,
+);
+assert.ok(
+  singleListItemIndentPluginStart >= 0 &&
+    singleListItemIndentPluginEnd > singleListItemIndentPluginStart,
+);
+const singleListItemIndentPluginSource = editorSource.slice(
+  singleListItemIndentPluginStart,
+  singleListItemIndentPluginEnd,
+);
+assert.match(
+  singleListItemIndentPluginSource,
+  /event\.key === "Enter"[\s\S]*?!noteModeEnabledRef\.current[\s\S]*?moveToNextEmptyListItem\(listItemType\)/,
+);
+assert.ok(
+  singleListItemIndentPluginSource.indexOf(
+    'if (event.key === "Backspace" || event.key === "Delete")',
+  ) <
+    singleListItemIndentPluginSource.indexOf(
+      "if (noteModeEnabledRef.current) return false;",
+    ),
+  "Note mode must still allow Backspace/Delete to remove empty list markers",
 );
 
 console.log("milkdown list indentation and deletion regression: PASS");

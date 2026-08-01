@@ -7,7 +7,7 @@ import { hardbreakAttr, hardbreakSchema } from "@milkdown/kit/preset/commonmark"
 import { splitBlock } from "@milkdown/prose/commands";
 import { redo, undo } from "@milkdown/prose/history";
 import { InputRule, inputRules } from "@milkdown/prose/inputrules";
-import type { Node as ProseMirrorNode, ResolvedPos } from "@milkdown/prose/model";
+import type { MarkType, Node as ProseMirrorNode, ResolvedPos } from "@milkdown/prose/model";
 import {
   Plugin,
   PluginKey,
@@ -118,6 +118,9 @@ const milkdownSoftLineBlockInputRulePluginKey = new PluginKey(
 );
 const milkdownPairedSymbolPluginKey = new PluginKey(
   "scholium-milkdown-paired-symbols",
+);
+const milkdownPastedLinkBoundaryPluginKey = new PluginKey(
+  "scholium-milkdown-pasted-link-boundary",
 );
 const milkdownSingleListItemIndentPluginKey = new PluginKey(
   "scholium-milkdown-single-list-item-indent",
@@ -2803,6 +2806,63 @@ export function MilkdownMarkdownEditor({
     };
   }
 
+  function textRangeHasMark(
+    doc: ProseMirrorNode,
+    from: number,
+    to: number,
+    markType: MarkType,
+  ) {
+    let hasMark = false;
+    doc.nodesBetween(Math.max(0, from), Math.min(to, doc.content.size), (node) => {
+      if (node.isText && markType.isInSet(node.marks)) {
+        hasMark = true;
+        return false;
+      }
+
+      return !hasMark;
+    });
+    return hasMark;
+  }
+
+  function createPastedLinkBoundaryPlugin() {
+    return new Plugin({
+      key: milkdownPastedLinkBoundaryPluginKey,
+      appendTransaction(transactions, _oldState, newState) {
+        const pasted = transactions.some(
+          (transaction) =>
+            transaction.getMeta("paste") === true ||
+            transaction.getMeta("uiEvent") === "paste",
+        );
+        if (!pasted) return null;
+        if (!(newState.selection instanceof TextSelection) || !newState.selection.empty) {
+          return null;
+        }
+
+        const linkMarkType = newState.schema.marks.link;
+        if (!linkMarkType) return null;
+
+        const cursorPosition = newState.selection.from;
+        const linkBeforeCursor = textRangeHasMark(
+          newState.doc,
+          cursorPosition - 1,
+          cursorPosition,
+          linkMarkType,
+        );
+        const linkAfterCursor = textRangeHasMark(
+          newState.doc,
+          cursorPosition,
+          cursorPosition + 1,
+          linkMarkType,
+        );
+        if (!linkBeforeCursor || linkAfterCursor) return null;
+
+        return newState.tr
+          .removeStoredMark(linkMarkType)
+          .setMeta("addToHistory", false);
+      },
+    });
+  }
+
   function createPairedSymbolPlugin() {
     return new Plugin({
       key: milkdownPairedSymbolPluginKey,
@@ -3007,8 +3067,7 @@ export function MilkdownMarkdownEditor({
             event.altKey ||
             event.isComposing ||
             imeCompositionActiveRef.current ||
-            readOnlyRef.current ||
-            noteModeEnabledRef.current
+            readOnlyRef.current
           ) {
             return false;
           }
@@ -3019,6 +3078,7 @@ export function MilkdownMarkdownEditor({
           if (
             event.key === "Enter" &&
             !event.shiftKey &&
+            !noteModeEnabledRef.current &&
             moveToNextEmptyListItem(listItemType)(
               view.state,
               (transaction) => view.dispatch(transaction),
@@ -3056,6 +3116,7 @@ export function MilkdownMarkdownEditor({
             return true;
           }
 
+          if (noteModeEnabledRef.current) return false;
           if (event.key !== "Tab" || event.shiftKey) return false;
 
           const handled = sinkSingleListItem(listItemType)(
@@ -5676,6 +5737,7 @@ export function MilkdownMarkdownEditor({
         createTouchBlockSelectionPlugin(),
         createSoftLineBlockInputRulePlugin(),
         createInlineMarkdownLinkInputRule(),
+        createPastedLinkBoundaryPlugin(),
         createPairedSymbolPlugin(),
         createSingleListItemIndentPlugin(),
         createListItemInlineStrongSyntaxPlugin(),

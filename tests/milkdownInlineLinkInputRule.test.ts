@@ -16,8 +16,15 @@ assert.match(editor, /state\.tr\.insertText\(label, linkStart, end\)/);
 assert.match(editor, /tr\.addMark\(linkStart, linkEnd, linkMarkType\.create\(\{ href, title: null \}\)\)/);
 assert.match(
   editor,
-  /createInlineMarkdownLinkInputRule\(\),\n\s*createPairedSymbolPlugin\(\),\n\s*createSingleListItemIndentPlugin\(\),\n\s*createControlHistoryPlugin\(\),\n\s*createShiftEnterParagraphSplitPlugin\(\),/,
+  /createInlineMarkdownLinkInputRule\(\),\n\s*createPastedLinkBoundaryPlugin\(\),\n\s*createPairedSymbolPlugin\(\),\n\s*createSingleListItemIndentPlugin\(\),\n\s*createListItemInlineStrongSyntaxPlugin\(\),\n\s*createControlHistoryPlugin\(\),\n\s*createShiftEnterParagraphSplitPlugin\(\),/,
 );
+assert.match(editor, /function createPastedLinkBoundaryPlugin\(\)/);
+assert.match(editor, /transaction\.getMeta\("paste"\) === true/);
+assert.match(editor, /transaction\.getMeta\("uiEvent"\) === "paste"/);
+assert.match(editor, /const linkBeforeCursor = textRangeHasMark\(/);
+assert.match(editor, /const linkAfterCursor = textRangeHasMark\(/);
+assert.match(editor, /if \(!linkBeforeCursor \|\| linkAfterCursor\) return null;/);
+assert.match(editor, /\.removeStoredMark\(linkMarkType\)/);
 assert.match(editor, /let acceptsMarkdownUpdates = false;/);
 assert.match(editor, /disposed \|\|\n\s*!acceptsMarkdownUpdates \|\|/);
 assert.match(editor, /if \(disposed\) return;\n\s*acceptsMarkdownUpdates = true;/);
