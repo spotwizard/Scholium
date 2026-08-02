@@ -5,6 +5,7 @@ import {
 } from "../src/documentSearch.ts";
 
 const appCss = readFileSync(new URL("../src/App.css", import.meta.url), "utf8");
+const app = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
 const milkdownEditor = readFileSync(
   new URL("../src/MilkdownMarkdownEditor.tsx", import.meta.url),
   "utf8",
@@ -60,6 +61,22 @@ assert.match(
 assert.match(
   milkdownEditor,
   /function dispatchSearchUpdate\(\) \{\s*const view = currentEditorView\(\);\s*if \(!view\) return;\s*view\.dispatch/,
+);
+assert.match(
+  milkdownEditor,
+  /const scrollContainer =\s*editorPane && editorPane\.scrollHeight > editorPane\.clientHeight\s*\? editorPane\s*:\s*document\.scrollingElement;/,
+);
+assert.match(
+  milkdownEditor,
+  /function scrollActiveSearchMatchIntoView\(\) \{\s*window\.setTimeout\(\(\) => \{/,
+);
+assert.match(
+  milkdownEditor,
+  /scrollContainer\.scrollTop \+=\s*matchRect\.top -\s*viewportRect\.top -\s*\(viewportRect\.height - matchRect\.height\) \/ 2;/,
+);
+assert.match(
+  app,
+  /function moveDocumentSearch\(delta: number\) \{\s*if \(documentSearchMatchCount <= 0\) return;\s*setDocumentSearchScrollRequestKey\(\(requestKey\) => requestKey \+ 1\);\s*setDocumentSearchActiveIndex/,
 );
 
 console.log("document search IME Enter regression: PASS");

@@ -7652,6 +7652,7 @@ function App() {
   const [documentSearchQuery, setDocumentSearchQuery] = useState("");
   const [documentSearchActiveIndex, setDocumentSearchActiveIndex] = useState(0);
   const [documentSearchMatchCount, setDocumentSearchMatchCount] = useState(0);
+  const [documentSearchScrollRequestKey, setDocumentSearchScrollRequestKey] = useState(0);
   const [tagDraft, setTagDraft] = useState("");
   const [documentTagsExpanded, setDocumentTagsExpanded] = useState(false);
   const [hiddenDocumentTagCount, setHiddenDocumentTagCount] = useState(0);
@@ -8194,8 +8195,13 @@ function App() {
     () => ({
       activeIndex: documentSearchActiveIndex,
       query: activeDocumentSearchQuery,
+      scrollRequestKey: documentSearchScrollRequestKey,
     }),
-    [activeDocumentSearchQuery, documentSearchActiveIndex],
+    [
+      activeDocumentSearchQuery,
+      documentSearchActiveIndex,
+      documentSearchScrollRequestKey,
+    ],
   );
   const documentSearchStatus =
     documentSearchQuery.trim() && documentSearchVisible
@@ -9836,6 +9842,7 @@ function App() {
   function moveDocumentSearch(delta: number) {
     if (documentSearchMatchCount <= 0) return;
 
+    setDocumentSearchScrollRequestKey((requestKey) => requestKey + 1);
     setDocumentSearchActiveIndex(
       (currentIndex) =>
         (currentIndex + delta + documentSearchMatchCount) % documentSearchMatchCount,

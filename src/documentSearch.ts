@@ -6,6 +6,7 @@ export type DocumentSearchMatch = {
 export type DocumentSearchState = {
   activeIndex: number;
   query: string;
+  scrollRequestKey?: number;
 };
 
 type DocumentSearchKeyEvent = Pick<

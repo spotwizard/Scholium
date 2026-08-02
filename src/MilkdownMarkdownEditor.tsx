@@ -3954,14 +3954,32 @@ export function MilkdownMarkdownEditor({
   }
 
   function scrollActiveSearchMatchIntoView() {
-    window.requestAnimationFrame(() => {
-      rootRef.current
-        ?.querySelector<HTMLElement>(".milkdown-document-search-match.is-active")
-        ?.scrollIntoView({
-          block: "center",
-          inline: "nearest",
-        });
-    });
+    window.setTimeout(() => {
+      const activeMatch = rootRef.current?.querySelector<HTMLElement>(
+        ".milkdown-document-search-match.is-active",
+      );
+      if (!activeMatch) return;
+
+      const editorPane = activeMatch.closest<HTMLElement>(".editor-pane");
+      const scrollContainer =
+        editorPane && editorPane.scrollHeight > editorPane.clientHeight
+          ? editorPane
+          : document.scrollingElement;
+      if (!scrollContainer) return;
+
+      const matchRect = activeMatch.getBoundingClientRect();
+      const viewportRect =
+        scrollContainer === document.scrollingElement
+          ? {
+              height: window.visualViewport?.height ?? window.innerHeight,
+              top: window.visualViewport?.offsetTop ?? 0,
+            }
+          : scrollContainer.getBoundingClientRect();
+      scrollContainer.scrollTop +=
+        matchRect.top -
+        viewportRect.top -
+        (viewportRect.height - matchRect.height) / 2;
+    }, 0);
   }
 
   function dispatchSearchUpdate() {
