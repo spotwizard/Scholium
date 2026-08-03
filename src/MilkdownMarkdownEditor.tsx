@@ -7,7 +7,7 @@ import { hardbreakAttr, hardbreakSchema } from "@milkdown/kit/preset/commonmark"
 import { splitBlock } from "@milkdown/prose/commands";
 import { redo, undo } from "@milkdown/prose/history";
 import { InputRule, inputRules } from "@milkdown/prose/inputrules";
-import type { MarkType, Node as ProseMirrorNode, ResolvedPos } from "@milkdown/prose/model";
+import type { Node as ProseMirrorNode, ResolvedPos } from "@milkdown/prose/model";
 import {
   Plugin,
   PluginKey,
@@ -65,6 +65,7 @@ import {
   sinkSingleListItem,
 } from "./milkdownListIndent";
 import { createListItemInlineStrongSyntaxPlugin } from "./milkdownInlineMarkdownSyntax";
+import { createPastedInlineMarkBoundaryPlugin } from "./milkdownPastedInlineMarkBoundary";
 import { loadScholiumMermaid } from "./mermaid";
 
 type MilkdownMarkdownEditorProps = {
@@ -118,9 +119,6 @@ const milkdownSoftLineBlockInputRulePluginKey = new PluginKey(
 );
 const milkdownPairedSymbolPluginKey = new PluginKey(
   "scholium-milkdown-paired-symbols",
-);
-const milkdownPastedLinkBoundaryPluginKey = new PluginKey(
-  "scholium-milkdown-pasted-link-boundary",
 );
 const milkdownSingleListItemIndentPluginKey = new PluginKey(
   "scholium-milkdown-single-list-item-indent",
@@ -2804,63 +2802,6 @@ export function MilkdownMarkdownEditor({
       match,
       start,
     };
-  }
-
-  function textRangeHasMark(
-    doc: ProseMirrorNode,
-    from: number,
-    to: number,
-    markType: MarkType,
-  ) {
-    let hasMark = false;
-    doc.nodesBetween(Math.max(0, from), Math.min(to, doc.content.size), (node) => {
-      if (node.isText && markType.isInSet(node.marks)) {
-        hasMark = true;
-        return false;
-      }
-
-      return !hasMark;
-    });
-    return hasMark;
-  }
-
-  function createPastedLinkBoundaryPlugin() {
-    return new Plugin({
-      key: milkdownPastedLinkBoundaryPluginKey,
-      appendTransaction(transactions, _oldState, newState) {
-        const pasted = transactions.some(
-          (transaction) =>
-            transaction.getMeta("paste") === true ||
-            transaction.getMeta("uiEvent") === "paste",
-        );
-        if (!pasted) return null;
-        if (!(newState.selection instanceof TextSelection) || !newState.selection.empty) {
-          return null;
-        }
-
-        const linkMarkType = newState.schema.marks.link;
-        if (!linkMarkType) return null;
-
-        const cursorPosition = newState.selection.from;
-        const linkBeforeCursor = textRangeHasMark(
-          newState.doc,
-          cursorPosition - 1,
-          cursorPosition,
-          linkMarkType,
-        );
-        const linkAfterCursor = textRangeHasMark(
-          newState.doc,
-          cursorPosition,
-          cursorPosition + 1,
-          linkMarkType,
-        );
-        if (!linkBeforeCursor || linkAfterCursor) return null;
-
-        return newState.tr
-          .removeStoredMark(linkMarkType)
-          .setMeta("addToHistory", false);
-      },
-    });
   }
 
   function createPairedSymbolPlugin() {
@@ -5755,7 +5696,7 @@ export function MilkdownMarkdownEditor({
         createTouchBlockSelectionPlugin(),
         createSoftLineBlockInputRulePlugin(),
         createInlineMarkdownLinkInputRule(),
-        createPastedLinkBoundaryPlugin(),
+        createPastedInlineMarkBoundaryPlugin(),
         createPairedSymbolPlugin(),
         createSingleListItemIndentPlugin(),
         createListItemInlineStrongSyntaxPlugin(),

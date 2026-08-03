@@ -80,7 +80,7 @@ assert.match(
 );
 assert.match(
   editor,
-  /createInlineMarkdownLinkInputRule\(\),\n\s*createPastedLinkBoundaryPlugin\(\),\n\s*createPairedSymbolPlugin\(\),/,
+  /createInlineMarkdownLinkInputRule\(\),\n\s*createPastedInlineMarkBoundaryPlugin\(\),\n\s*createPairedSymbolPlugin\(\),/,
 );
 
 console.log("milkdown paired symbols regression: PASS");
