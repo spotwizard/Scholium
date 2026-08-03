@@ -43,6 +43,7 @@ import {
   availableDocumentTabSession,
   createDocumentTabSession,
   documentTabIdsAfterClosingOthers,
+  documentTabIdAtPoint,
   parseDocumentTabSession,
   type DocumentTabSessionState,
 } from "./documentTabs";
@@ -15683,9 +15684,29 @@ function App() {
     if (event.button !== 0) return;
     if (event.pointerType === "touch") return;
 
-    documentTabPointerActivationRef.current = documentId;
+    const visibleDocumentId = documentTabIdAtPoint(
+      Array.from(
+        documentTabsScrollerRef.current?.querySelectorAll<HTMLElement>(
+          ".document-tab[data-document-id]",
+        ) ?? [],
+      ).map((tab) => {
+        const bounds = tab.getBoundingClientRect();
+        return {
+          documentId: tab.dataset.documentId ?? "",
+          left: bounds.left,
+          right: bounds.right,
+          top: bounds.top,
+          bottom: bounds.bottom,
+        };
+      }),
+      event.clientX,
+      event.clientY,
+      documentId,
+    );
+
+    documentTabPointerActivationRef.current = visibleDocumentId;
     window.getSelection()?.removeAllRanges();
-    selectDocument(documentId, { tabBehavior: "none" });
+    selectDocument(visibleDocumentId, { tabBehavior: "none" });
   }
 
   function showDocumentTabContextMenu(documentId: string, left: number, top: number) {
@@ -15797,13 +15818,14 @@ function App() {
       return;
     }
 
-    const pointerAlreadySelectedThisTab =
-      documentTabPointerActivationRef.current === documentId &&
-      selectedDocumentIdRef.current === documentId;
+    const pointerActivatedDocumentId = documentTabPointerActivationRef.current;
 
     documentTabPointerActivationRef.current = "";
 
-    if (pointerAlreadySelectedThisTab) {
+    if (pointerActivatedDocumentId) {
+      if (selectedDocumentIdRef.current !== pointerActivatedDocumentId) {
+        selectDocument(pointerActivatedDocumentId, { tabBehavior: "none" });
+      }
       return;
     }
 
@@ -17941,6 +17963,7 @@ function App() {
               return (
                 <div
                   className={`document-tab ${tabActive ? "is-active" : ""}`}
+                  data-document-id={document.id}
                   key={document.id}
                   onContextMenu={(event) => openDocumentTabContextMenu(document.id, event)}
                 >

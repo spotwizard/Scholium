@@ -4,6 +4,7 @@ import {
   availableDocumentTabSession,
   createDocumentTabSession,
   documentTabIdsAfterClosingOthers,
+  documentTabIdAtPoint,
   parseDocumentTabSession,
 } from "../src/documentTabs.ts";
 
@@ -12,6 +13,14 @@ assert.deepEqual(
   ["second"],
 );
 assert.deepEqual(documentTabIdsAfterClosingOthers(["first"], "missing"), ["first"]);
+
+const tabHitTargets = [
+  { documentId: "first", left: 0, right: 100, top: 0, bottom: 30 },
+  { documentId: "second", left: 103, right: 203, top: 0, bottom: 30 },
+  { documentId: "third", left: 206, right: 306, top: 0, bottom: 30 },
+];
+assert.equal(documentTabIdAtPoint(tabHitTargets, 150, 15, "first"), "second");
+assert.equal(documentTabIdAtPoint(tabHitTargets, 204, 15, "first"), "first");
 
 const savedSession = createDocumentTabSession(
   "local",
@@ -135,6 +144,16 @@ assert.match(
 assert.match(
   appSource,
   /const filePath =\n        location\.kind === "file"[\s\S]*?if \(filePath\) \{\n        await openDropboxMarkdownFilePath\(filePath, \{\n          allowPendingConnection: connected,\n          openedDirectory,\n        \}\);\n      \} else \{\n        applyOpenedDropboxDirectory\(openedDirectory\);\n      \}/,
+);
+assert.match(
+  appSource,
+  /documentTabIdAtPoint\([\s\S]*?getBoundingClientRect\(\)[\s\S]*?event\.clientX[\s\S]*?event\.clientY/,
+  "desktop tab activation must resolve the document from the visible tab bounds",
+);
+assert.match(
+  appSource,
+  /const pointerActivatedDocumentId = documentTabPointerActivationRef\.current;[\s\S]*?if \(pointerActivatedDocumentId\) \{[\s\S]*?selectedDocumentIdRef\.current !== pointerActivatedDocumentId[\s\S]*?selectDocument\(pointerActivatedDocumentId/,
+  "the follow-up click must not replace the pointer-resolved document with a stale hit target",
 );
 
 console.log("document tab close-others regression: PASS");

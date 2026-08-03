@@ -5,6 +5,31 @@ export function documentTabIdsAfterClosingOthers(
   return openDocumentTabIds.includes(documentId) ? [documentId] : openDocumentTabIds;
 }
 
+export type DocumentTabHitTarget = {
+  documentId: string;
+  left: number;
+  right: number;
+  top: number;
+  bottom: number;
+};
+
+export function documentTabIdAtPoint(
+  targets: DocumentTabHitTarget[],
+  clientX: number,
+  clientY: number,
+  fallbackDocumentId: string,
+) {
+  return (
+    targets.find(
+      (target) =>
+        clientX >= target.left &&
+        clientX < target.right &&
+        clientY >= target.top &&
+        clientY < target.bottom,
+    )?.documentId ?? fallbackDocumentId
+  );
+}
+
 export type DocumentTabSessionSource = "local" | "dropbox";
 
 export type DocumentTabSessionState = {
