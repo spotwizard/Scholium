@@ -201,7 +201,7 @@ export function MarkdownEditor({
     () => findDocumentSearchMatches(value, search.query).length,
     [search.query, value],
   );
-  const searchSignature = `${search.query}\n${search.activeIndex}\n${searchMatchCount}`;
+  const searchSignature = `${search.query}\n${search.activeIndex}\n${searchMatchCount}\n${search.scrollRequestKey ?? 0}`;
 
   useEffect(() => {
     onChangeRef.current = onChange;

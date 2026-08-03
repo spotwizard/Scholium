@@ -10,8 +10,16 @@ const milkdownEditor = readFileSync(
   new URL("../src/MilkdownMarkdownEditor.tsx", import.meta.url),
   "utf8",
 );
+const milkdownScrollFunction =
+  milkdownEditor.match(
+    /function scrollActiveSearchMatchIntoView\(\) \{[\s\S]*?\n  \}\n\n  function dispatchSearchUpdate/,
+  )?.[0] ?? "";
 const desktopSearchRule = appCss.match(/\.document-search \{([\s\S]*?)\n\}/)?.[1] ?? "";
 
+assert.match(
+  desktopSearchRule,
+  /position:\s*fixed;/,
+);
 assert.match(
   desktopSearchRule,
   /top:\s*calc\(var\(--editor-document-title-top\) \+ 52px\);/,
@@ -63,20 +71,36 @@ assert.match(
   /function dispatchSearchUpdate\(\) \{\s*const view = currentEditorView\(\);\s*if \(!view\) return;\s*view\.dispatch/,
 );
 assert.match(
-  milkdownEditor,
-  /const scrollContainer =\s*editorPane && editorPane\.scrollHeight > editorPane\.clientHeight\s*\? editorPane\s*:\s*document\.scrollingElement;/,
-);
-assert.match(
-  milkdownEditor,
+  milkdownScrollFunction,
   /function scrollActiveSearchMatchIntoView\(\) \{\s*window\.setTimeout\(\(\) => \{/,
 );
 assert.match(
-  milkdownEditor,
+  milkdownScrollFunction,
+  /rootRef\.current\?\.querySelector<HTMLElement>\(\s*"\.milkdown-document-search-match\.is-active"/,
+);
+assert.match(
+  milkdownScrollFunction,
+  /const scrollContainer =\s*editorPane && editorPane\.scrollHeight > editorPane\.clientHeight\s*\? editorPane\s*:\s*document\.scrollingElement;/,
+);
+assert.match(
+  milkdownScrollFunction,
   /scrollContainer\.scrollTop \+=\s*matchRect\.top -\s*viewportRect\.top -\s*\(viewportRect\.height - matchRect\.height\) \/ 2;/,
+);
+assert.doesNotMatch(
+  milkdownScrollFunction,
+  /domAtPos|coordsAtPos|\.scrollIntoView\(/,
+);
+assert.match(
+  app,
+  /function updateDocumentSearchQuery\(value: string\) \{\s*setDocumentSearchQuery\(value\);\s*setDocumentSearchActiveIndex\(0\);\s*if \(value\.trim\(\)\) \{\s*setDocumentSearchScrollRequestKey\(\(requestKey\) => requestKey \+ 1\);/,
+);
+assert.match(
+  milkdownEditor,
+  /const searchSignature = `\$\{search\.query\}\\n\$\{search\.activeIndex\}\\n\$\{search\.scrollRequestKey \?\? 0\}`;/,
 );
 assert.match(
   app,
   /function moveDocumentSearch\(delta: number\) \{\s*if \(documentSearchMatchCount <= 0\) return;\s*setDocumentSearchScrollRequestKey\(\(requestKey\) => requestKey \+ 1\);\s*setDocumentSearchActiveIndex/,
 );
 
-console.log("document search IME Enter regression: PASS");
+console.log("document search input, paste, and stable scroll regression: PASS");

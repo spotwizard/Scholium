@@ -2878,7 +2878,7 @@ button.document-tag-chip__label:focus-visible {
 }
 
 .document-search {
-  position: absolute;
+  position: fixed;
   top: calc(var(--editor-document-title-top) + 52px);
   right: calc(var(--editor-content-end-offset) + 24px);
   z-index: 8;

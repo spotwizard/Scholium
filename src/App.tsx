@@ -9837,6 +9837,9 @@ function App() {
   function updateDocumentSearchQuery(value: string) {
     setDocumentSearchQuery(value);
     setDocumentSearchActiveIndex(0);
+    if (value.trim()) {
+      setDocumentSearchScrollRequestKey((requestKey) => requestKey + 1);
+    }
   }
 
   function moveDocumentSearch(delta: number) {

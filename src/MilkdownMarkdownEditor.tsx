@@ -2239,7 +2239,7 @@ export function MilkdownMarkdownEditor({
     useState<MilkdownTouchBlockSelectionOverlay | null>(null);
   const [touchBlockCommittedSelectionOverlay, setTouchBlockCommittedSelectionOverlay] =
     useState<MilkdownTouchBlockCommittedSelectionOverlay | null>(null);
-  const searchSignature = `${search.query}\n${search.activeIndex}`;
+  const searchSignature = `${search.query}\n${search.activeIndex}\n${search.scrollRequestKey ?? 0}`;
   const annotationSignature = useMemo(
     () =>
       annotations
