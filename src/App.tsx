@@ -2047,6 +2047,26 @@ function localPathIsInsideDirectory(path: string, directoryPath: string) {
   return normalizedPath.startsWith(`${normalizedDirectoryPath}/`);
 }
 
+function workspacePathIsInsideDirectory(
+  path: string,
+  directoryPath: string,
+  source: WorkspaceSource,
+) {
+  if (source === "local") return localPathIsInsideDirectory(path, directoryPath);
+
+  const normalizedPath = path.trim().replace(/^\/+|\/+$/g, "").toLowerCase();
+  const normalizedDirectoryPath = directoryPath
+    .trim()
+    .replace(/^\/+|\/+$/g, "")
+    .toLowerCase();
+  if (!normalizedPath || !normalizedDirectoryPath) return false;
+
+  return (
+    normalizedPath === normalizedDirectoryPath ||
+    normalizedPath.startsWith(`${normalizedDirectoryPath}/`)
+  );
+}
+
 function ancestorDirectoryPathsForFile(rootDirectoryPath: string, filePath: string) {
   const rootPath = normalizeLocalPathForCompare(rootDirectoryPath);
   const selectedDirectoryPath = normalizeLocalPathForCompare(parentDirectoryPath(filePath));
@@ -15173,6 +15193,94 @@ function App() {
     }
   }
 
+  async function deleteWorkspaceDirectory(target: DirectoryActionTarget) {
+    setFileContextMenu(null);
+    if (!nativeStorageAvailable) {
+      setStorageError(t("error.nativeRuntimeRequired"));
+      return;
+    }
+    if (autosaveInFlightRef.current) {
+      setStorageError(t("error.waitForAutosaveBeforeDeleteDirectory"));
+      return;
+    }
+    if (!workspaceRootPath) {
+      setStorageError(t("error.operationFailed"));
+      return;
+    }
+
+    const source = target.source ?? workspaceSource ?? "local";
+    const confirmed = window.confirm(
+      t(source === "dropbox" ? "confirm.deleteDropboxDirectory" : "confirm.deleteDirectory", {
+        title: target.title,
+      }),
+    );
+    if (!confirmed) return;
+
+    setStorageError(t("status.deletingDirectory"));
+    try {
+      await invoke<void>(
+        source === "dropbox"
+          ? "delete_dropbox_markdown_directory"
+          : "delete_markdown_directory",
+        { path: target.path, rootPath: workspaceRootPath },
+      );
+
+      const deletedDocumentIds = new Set(
+        documentsRef.current
+          .filter((document) => {
+            const documentSource = documentIsFromDropbox(document) ? "dropbox" : "local";
+            const documentPath = documentSource === "dropbox" ? document.path : document.filePath;
+            return (
+              documentSource === source &&
+              Boolean(documentPath) &&
+              workspacePathIsInsideDirectory(documentPath ?? "", target.path, source)
+            );
+          })
+          .map((document) => document.id),
+      );
+      workspaceEntriesRef.current.forEach((entry) => {
+        if (
+          entry.kind === "file" &&
+          entry.source === source &&
+          workspacePathIsInsideDirectory(entry.path, target.path, source)
+        ) {
+          deletedDocumentIds.add(entry.documentId);
+        }
+      });
+
+      removeDocumentsFromWorkspace(deletedDocumentIds);
+      const deletedDirectoryKeys = new Set(
+        workspaceEntriesRef.current
+          .filter(
+            (entry) =>
+              entry.kind === "directory" &&
+              entry.source === source &&
+              workspacePathIsInsideDirectory(entry.path, target.path, source),
+          )
+          .map(directoryTreeKey),
+      );
+      const nextWorkspaceEntries = workspaceEntriesRef.current.filter(
+        (entry) =>
+          entry.source !== source ||
+          !workspacePathIsInsideDirectory(entry.path, target.path, source),
+      );
+      workspaceEntriesRef.current = nextWorkspaceEntries;
+      setWorkspaceEntries(nextWorkspaceEntries);
+      setExpandedDirectoryKeys(
+        (currentKeys) => new Set([...currentKeys].filter((key) => !deletedDirectoryKeys.has(key))),
+      );
+      setLoadingDirectoryKeys(
+        (currentKeys) => new Set([...currentKeys].filter((key) => !deletedDirectoryKeys.has(key))),
+      );
+      setDropboxIndexedDocumentTags((currentEntries) =>
+        currentEntries.filter((entry) => !deletedDocumentIds.has(entry.documentId)),
+      );
+      setStorageError("");
+    } catch (error) {
+      setStorageError(translatedError(error));
+    }
+  }
+
   function renamedPath(path: string, oldPath: string, newPath: string, source?: WorkspaceSource) {
     if (source === "dropbox") {
       if (path === oldPath) return newPath;
@@ -17435,6 +17543,15 @@ function App() {
               icon: <PencilIcon />,
               onSelect: () => {
                 openRenameDialog(fileContextMenu);
+              },
+            },
+            {
+              id: "delete",
+              label: t("directory.delete"),
+              icon: <TrashIcon />,
+              tone: "danger",
+              onSelect: () => {
+                void deleteWorkspaceDirectory(fileContextMenu);
               },
             },
           ];
