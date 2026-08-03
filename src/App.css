@@ -183,16 +183,14 @@ button:disabled {
   --document-tab-bar-height: 40px;
   --document-tab-bar-offset: 0px;
   --document-tab-bar-occupied-height: var(--document-tab-bar-height);
-  --editor-content-gutter: 72px;
-  --editor-content-top-gutter: 80px;
+  --editor-content-gutter: 56px;
+  --editor-content-top-gutter: 20px;
   --editor-content-inline-start-gutter: clamp(96px, 7vw, 120px);
   --editor-content-inline-end-gutter: var(--editor-content-gutter);
   --editor-content-offset: var(--side-panel-reserved-width);
   --editor-content-end-offset: var(--side-panel-reserved-width);
   --editor-left-control-gutter: clamp(56px, 4vw, 72px);
   --editor-top-control-offset: 20px;
-  --editor-document-title-top: var(--editor-top-control-offset);
-  --editor-document-title-max-width: min(36rem, 34vw);
   --settings-editor-font-size: 18px;
   --settings-editor-line-height: 1.72;
   --settings-editor-line-height-px: 31px;
@@ -2106,6 +2104,7 @@ button:disabled {
 }
 
 .editor-pane {
+  position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr);
@@ -2682,40 +2681,6 @@ button.document-tag-chip__label:focus-visible {
   top: calc(var(--editor-top-control-offset) + var(--document-tab-bar-occupied-height));
 }
 
-.editor-document-title {
-  position: absolute;
-  top: var(--editor-document-title-top);
-  right: var(--editor-content-end-offset);
-  left: calc(var(--editor-content-offset) + var(--editor-left-control-gutter));
-  z-index: 3;
-  display: flex;
-  min-height: 40px;
-  align-items: center;
-  justify-content: center;
-  pointer-events: none;
-  transition:
-    left var(--side-panel-transition-duration) var(--side-panel-transition-easing),
-    right var(--side-panel-transition-duration) var(--side-panel-transition-easing);
-}
-
-.scholium-shell.has-document-tabs .editor-document-title {
-  top: calc(var(--editor-document-title-top) + var(--document-tab-bar-occupied-height));
-}
-
-.editor-document-title__text {
-  max-width: var(--editor-document-title-max-width);
-  margin: 0;
-  overflow: hidden;
-  color: var(--color-preview-editor-text);
-  font-size: 1.75rem;
-  font-weight: 760;
-  letter-spacing: 0;
-  line-height: 1.22;
-  text-align: center;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .editor-toolbar:not([data-expanded="true"]) .note-mode-switch--dependent {
   display: none;
 }
@@ -2878,8 +2843,8 @@ button.document-tag-chip__label:focus-visible {
 }
 
 .document-search {
-  position: fixed;
-  top: calc(var(--editor-document-title-top) + 52px);
+  position: absolute;
+  top: var(--editor-top-control-offset);
   right: calc(var(--editor-content-end-offset) + 24px);
   z-index: 8;
   display: grid;
@@ -2896,9 +2861,7 @@ button.document-tag-chip__label:focus-visible {
 }
 
 .scholium-shell.has-document-tabs .document-search {
-  top: calc(
-    var(--editor-document-title-top) + 52px + var(--document-tab-bar-occupied-height)
-  );
+  top: calc(var(--editor-top-control-offset) + var(--document-tab-bar-occupied-height));
 }
 
 :root[data-theme="dark"] .document-search {
@@ -6372,14 +6335,6 @@ button.document-tag-chip__label:focus-visible {
   }
 }
 
-@media (max-width: 1680px) {
-  .scholium-shell {
-    --editor-content-top-gutter: 128px;
-    --editor-document-title-top: calc(var(--editor-top-control-offset) + 52px);
-    --editor-document-title-max-width: min(100%, 36rem);
-  }
-}
-
 @media (max-width: 820px) {
   .scholium-shell {
     --editor-content-gutter: 32px;
@@ -6478,7 +6433,7 @@ button.document-tag-chip__label:focus-visible {
     --editor-content-gutter: 32px;
     --editor-content-inline-start-gutter: 32px;
     --editor-content-inline-end-gutter: 32px;
-    --editor-content-top-gutter: 0px;
+    --editor-content-top-gutter: 96px;
     --editor-content-offset: 0px;
     --editor-content-end-offset: 0px;
     --editor-left-control-gutter: 0px;
@@ -6585,31 +6540,8 @@ button.document-tag-chip__label:focus-visible {
     display: none;
   }
 
-  .editor-document-title {
-    position: relative;
-    top: auto;
-    right: auto;
-    left: auto;
-    height: auto;
-    justify-content: flex-start;
-    padding: calc(var(--mobile-editor-top-padding) + 64px) 16px 26px;
-  }
-
-  .scholium-shell.has-document-tabs .editor-document-title {
-    top: auto;
-  }
-
-  .editor-document-title__text {
-    max-width: 100%;
-    overflow: visible;
-    overflow-wrap: anywhere;
-    text-align: left;
-    text-overflow: clip;
-    white-space: normal;
-  }
-
   .mobile-editor-mode-toggle {
-    position: fixed;
+    position: absolute;
     top: calc(var(--mobile-safe-area-top) + 12px);
     left: 16px;
     z-index: 74;
@@ -6635,7 +6567,7 @@ button.document-tag-chip__label:focus-visible {
   }
 
   .document-search {
-    position: fixed;
+    position: absolute;
     top: calc(var(--mobile-safe-area-top) + 12px);
     right: 16px;
     bottom: auto;

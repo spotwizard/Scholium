@@ -15,18 +15,66 @@ const milkdownScrollFunction =
     /function scrollActiveSearchMatchIntoView\(\) \{[\s\S]*?\n  \}\n\n  function dispatchSearchUpdate/,
   )?.[0] ?? "";
 const desktopSearchRule = appCss.match(/\.document-search \{([\s\S]*?)\n\}/)?.[1] ?? "";
+const editorPaneIndex = app.indexOf('<section className="editor-pane"');
+const editorGridIndex = app.indexOf('<div className="editor-grid">', editorPaneIndex);
+const documentSearchIndex = app.indexOf('className="document-search"', editorPaneIndex);
 
 assert.match(
   desktopSearchRule,
-  /position:\s*fixed;/,
+  /position:\s*absolute;/,
+);
+assert.ok(documentSearchIndex > editorPaneIndex);
+assert.ok(
+  documentSearchIndex < editorGridIndex,
+  "document search must stay outside the scrollable editor surface",
 );
 assert.match(
   desktopSearchRule,
-  /top:\s*calc\(var\(--editor-document-title-top\) \+ 52px\);/,
+  /top:\s*var\(--editor-top-control-offset\);/,
 );
 assert.match(
   appCss,
-  /\.scholium-shell\.has-document-tabs \.document-search \{\s*top:\s*calc\(\s*var\(--editor-document-title-top\) \+ 52px \+ var\(--document-tab-bar-occupied-height\)\s*\);/,
+  /\.scholium-shell\.has-document-tabs \.document-search \{\s*top:\s*calc\(var\(--editor-top-control-offset\) \+ var\(--document-tab-bar-occupied-height\)\);/,
+);
+assert.doesNotMatch(
+  desktopSearchRule,
+  /\+ 52px/,
+);
+assert.match(
+  appCss,
+  /--editor-content-gutter:\s*56px;/,
+);
+assert.match(
+  appCss,
+  /--editor-content-top-gutter:\s*20px;/,
+);
+assert.doesNotMatch(
+  appCss,
+  /editor-document-title/,
+);
+assert.doesNotMatch(
+  app,
+  /editor-document-title/,
+);
+assert.match(
+  appCss,
+  /@media \(max-width: 640px\) \{[\s\S]*?--editor-content-top-gutter:\s*96px;/,
+);
+assert.match(
+  appCss,
+  /@media \(max-width: 640px\) \{[\s\S]*?\.document-search \{[\s\S]*?position:\s*absolute;[\s\S]*?top:\s*calc\(var\(--mobile-safe-area-top\) \+ 12px\);/,
+);
+assert.match(
+  appCss,
+  /\.editor-pane \{[\s\S]*?position:\s*relative;/,
+);
+assert.match(
+  app,
+  /const documentSearchVisible = hasOpenDocument && !settingsViewOpen;/,
+);
+assert.match(
+  app,
+  /function closeDocumentSearch\(\) \{\s*setDocumentSearchOpen\(false\);\s*if \(!isMobileViewport\) \{\s*setDocumentSearchQuery\(""\);\s*setDocumentSearchActiveIndex\(0\);\s*setDocumentSearchMatchCount\(0\);/,
 );
 
 const candidateCommitEnter = {

@@ -84,7 +84,6 @@ struct LocationEntry {
 #[derive(Default)]
 struct NewWindowDocumentTargetState(Mutex<HashMap<String, LocationEntry>>);
 
-#[cfg(desktop)]
 #[derive(Default)]
 struct FocusedWindowState(Mutex<Option<String>>);
 

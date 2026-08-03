@@ -8156,7 +8156,7 @@ function App() {
     (binding) => binding.documentId === selectedDocument.id && binding.status !== "deleted",
   );
   const nativeStorageAvailable = hasNativeStorageAccess();
-  const documentSearchVisible = hasOpenDocument && !settingsViewOpen && (documentSearchOpen || isMobileViewport);
+  const documentSearchVisible = hasOpenDocument && !settingsViewOpen;
   const documentTabsVisible = !settingsViewOpen && openDocumentTabs.length > 1;
 
   useLayoutEffect(() => {
@@ -9840,6 +9840,11 @@ function App() {
 
   function closeDocumentSearch() {
     setDocumentSearchOpen(false);
+    if (!isMobileViewport) {
+      setDocumentSearchQuery("");
+      setDocumentSearchActiveIndex(0);
+      setDocumentSearchMatchCount(0);
+    }
     if (isMobileViewport) {
       const activeElement = document.activeElement;
       if (activeElement instanceof HTMLElement && activeElement.closest(".document-search")) {
@@ -19068,178 +19073,167 @@ function App() {
       ) : null}
 
       <section className="editor-pane" aria-label={t("app.markdownEditor")}>
-        <div className="editor-grid">
-          <div className="editor-surface" style={editorSurfaceStyle}>
-            {documentSearchVisible ? (
-              <form
+        {documentSearchVisible ? (
+          <form
+            aria-label={t("documentSearch.label")}
+            className="document-search"
+            data-has-query={documentSearchQuery.trim() ? "true" : "false"}
+            data-expanded={documentSearchOpen ? "true" : "false"}
+            onBlur={(event) => {
+              const nextTarget = event.relatedTarget;
+              if (
+                isMobileViewport &&
+                !(nextTarget instanceof Node && event.currentTarget.contains(nextTarget))
+              ) {
+                closeDocumentSearch();
+              }
+            }}
+            onSubmit={(event) => {
+              event.preventDefault();
+              moveDocumentSearch(1);
+            }}
+          >
+            <label className="document-search__field">
+              <SearchIcon />
+              <input
                 aria-label={t("documentSearch.label")}
-                className="document-search"
-                data-has-query={documentSearchQuery.trim() ? "true" : "false"}
-                data-expanded={documentSearchOpen ? "true" : "false"}
-                onBlur={(event) => {
-                  const nextTarget = event.relatedTarget;
-                  if (
-                    isMobileViewport &&
-                    !(nextTarget instanceof Node && event.currentTarget.contains(nextTarget))
-                  ) {
-                    closeDocumentSearch();
+                autoComplete="off"
+                placeholder={t("documentSearch.placeholder")}
+                ref={documentSearchInputRef}
+                type="search"
+                value={documentSearchQuery}
+                onChange={(event) => updateDocumentSearchQuery(event.target.value)}
+                onFocus={() => {
+                  if (isMobileViewport && !documentSearchOpen) {
+                    openDocumentSearch(false);
                   }
                 }}
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  moveDocumentSearch(1);
-                }}
-              >
-                <label className="document-search__field">
-                  <SearchIcon />
-                  <input
-                    aria-label={t("documentSearch.label")}
-                    autoComplete="off"
-                    placeholder={t("documentSearch.placeholder")}
-                    ref={documentSearchInputRef}
-                    type="search"
-                    value={documentSearchQuery}
-                    onChange={(event) => updateDocumentSearchQuery(event.target.value)}
-                    onFocus={() => {
-                      if (isMobileViewport && !documentSearchOpen) {
-                        openDocumentSearch(false);
-                      }
-                    }}
-                    onKeyDown={handleDocumentSearchInputKeyDown}
-                  />
-                  {documentSearchQuery ? (
-                    <button
-                      aria-label={t("documentSearch.clear")}
-                      className="document-search__clear"
-                      onClick={clearDocumentSearch}
-                      type="button"
-                    >
-                      <SearchCloseIcon />
-                    </button>
-                  ) : null}
-                </label>
-                <span className="document-search__status" role="status">
-                  {documentSearchStatus}
-                </span>
+                onKeyDown={handleDocumentSearchInputKeyDown}
+              />
+              {documentSearchQuery ? (
                 <button
-                  aria-label={t("documentSearch.previous")}
-                  className="document-search__button"
-                  disabled={documentSearchMatchCount <= 0}
-                  onClick={() => moveDocumentSearch(-1)}
-                  type="button"
-                >
-                  <SearchPreviousIcon />
-                </button>
-                <button
-                  aria-label={t("documentSearch.next")}
-                  className="document-search__button"
-                  disabled={documentSearchMatchCount <= 0}
-                  onClick={() => moveDocumentSearch(1)}
-                  type="button"
-                >
-                  <SearchNextIcon />
-                </button>
-                <button
-                  aria-label={t("documentSearch.close")}
-                  className="document-search__button"
-                  onClick={closeDocumentSearch}
+                  aria-label={t("documentSearch.clear")}
+                  className="document-search__clear"
+                  onClick={clearDocumentSearch}
                   type="button"
                 >
                   <SearchCloseIcon />
                 </button>
-              </form>
-            ) : null}
-            {hasOpenDocument && !settingsViewOpen ? (
-              <button
-                aria-label={
-                  editorMode === "edit"
-                    ? t("toolbar.previewMode.open")
-                    : t("toolbar.sourceMode.open")
-                }
-                aria-pressed={editorMode === "edit"}
-                aria-disabled={noteModeEnabled}
-                className={`editor-mode-toggle mobile-editor-mode-toggle ${
-                  editorMode === "edit" ? "is-active" : ""
-                }`}
-                onClick={toggleEditorMode}
-                ref={mobileSourceModeButtonRef}
-                type="button"
-              >
-                <SourceModeIcon />
-              </button>
-            ) : null}
-            {annotationToolsAvailable ? (
-              <div
-                aria-label={t("app.editorTools")}
-                className="editor-toolbar"
-                data-expanded={noteModeEnabled ? "true" : "false"}
-              >
-                <button
-                  aria-label={`${t("toolbar.editorMode")}: ${
-                    editorMode === "edit" ? t("toolbar.sourceMode") : t("toolbar.previewMode")
-                  }`}
-                  aria-pressed={editorMode === "edit"}
-                  aria-disabled={noteModeEnabled}
-                  className={`editor-mode-toggle ${editorMode === "edit" ? "is-active" : ""}`}
-                  onClick={toggleEditorMode}
-                  ref={desktopSourceModeButtonRef}
-                  title={
-                    editorMode === "edit"
-                      ? t("toolbar.previewMode.open")
-                      : t("toolbar.sourceMode.open")
-                  }
-                  type="button"
-                >
-                  <SourceModeIcon />
-                </button>
-                <span aria-hidden="true" className="editor-toolbar__divider" />
-                <button
-                  aria-checked={noteModeEnabled}
-                  aria-label={
-                    noteModeEnabled ? t("toolbar.noteMode.close") : t("toolbar.noteMode.open")
-                  }
-                  className="note-mode-switch note-mode-switch--primary"
-                  onClick={toggleNoteMode}
-                  role="switch"
-                  type="button"
-                >
-                  <span
-                    aria-hidden="true"
-                    className="note-mode-switch__icon note-mode-switch__icon--note"
-                  />
-                  <span className="note-mode-switch__label">{t("mobileToolbar.note")}</span>
-                </button>
-                <span
-                  aria-hidden="true"
-                  className="editor-toolbar__divider note-mode-switch--dependent"
-                />
-                <button
-                  aria-checked={glossaryModeActive}
-                  aria-hidden={!noteModeEnabled}
-                  aria-label={
-                    glossaryModeActive
-                      ? t("toolbar.glossaryMode.close")
-                      : t("toolbar.glossaryMode.open")
-                  }
-                  className="note-mode-switch note-mode-switch--secondary note-mode-switch--dependent"
-                  disabled={!noteModeEnabled}
-                  onClick={toggleGlossaryMode}
-                  role="switch"
-                  type="button"
-                >
-                  <span
-                    aria-hidden="true"
-                    className="note-mode-switch__icon note-mode-switch__icon--glossary"
-                  />
-                  <span className="note-mode-switch__label">{t("mobileToolbar.terms")}</span>
-                </button>
-              </div>
-            ) : null}
-            {hasOpenDocument ? (
-              <div className="editor-document-title" title={selectedDocument.title}>
-                <h1 className="editor-document-title__text">{selectedDocument.title}</h1>
-              </div>
-            ) : null}
+              ) : null}
+            </label>
+            <span className="document-search__status" role="status">
+              {documentSearchStatus}
+            </span>
+            <button
+              aria-label={t("documentSearch.previous")}
+              className="document-search__button"
+              disabled={documentSearchMatchCount <= 0}
+              onClick={() => moveDocumentSearch(-1)}
+              type="button"
+            >
+              <SearchPreviousIcon />
+            </button>
+            <button
+              aria-label={t("documentSearch.next")}
+              className="document-search__button"
+              disabled={documentSearchMatchCount <= 0}
+              onClick={() => moveDocumentSearch(1)}
+              type="button"
+            >
+              <SearchNextIcon />
+            </button>
+            <button
+              aria-label={t("documentSearch.close")}
+              className="document-search__button"
+              onClick={closeDocumentSearch}
+              type="button"
+            >
+              <SearchCloseIcon />
+            </button>
+          </form>
+        ) : null}
+        {hasOpenDocument && !settingsViewOpen ? (
+          <button
+            aria-label={
+              editorMode === "edit" ? t("toolbar.previewMode.open") : t("toolbar.sourceMode.open")
+            }
+            aria-pressed={editorMode === "edit"}
+            aria-disabled={noteModeEnabled}
+            className={`editor-mode-toggle mobile-editor-mode-toggle ${
+              editorMode === "edit" ? "is-active" : ""
+            }`}
+            onClick={toggleEditorMode}
+            ref={mobileSourceModeButtonRef}
+            type="button"
+          >
+            <SourceModeIcon />
+          </button>
+        ) : null}
+        {annotationToolsAvailable ? (
+          <div
+            aria-label={t("app.editorTools")}
+            className="editor-toolbar"
+            data-expanded={noteModeEnabled ? "true" : "false"}
+          >
+            <button
+              aria-label={`${t("toolbar.editorMode")}: ${
+                editorMode === "edit" ? t("toolbar.sourceMode") : t("toolbar.previewMode")
+              }`}
+              aria-pressed={editorMode === "edit"}
+              aria-disabled={noteModeEnabled}
+              className={`editor-mode-toggle ${editorMode === "edit" ? "is-active" : ""}`}
+              onClick={toggleEditorMode}
+              ref={desktopSourceModeButtonRef}
+              title={
+                editorMode === "edit" ? t("toolbar.previewMode.open") : t("toolbar.sourceMode.open")
+              }
+              type="button"
+            >
+              <SourceModeIcon />
+            </button>
+            <span aria-hidden="true" className="editor-toolbar__divider" />
+            <button
+              aria-checked={noteModeEnabled}
+              aria-label={noteModeEnabled ? t("toolbar.noteMode.close") : t("toolbar.noteMode.open")}
+              className="note-mode-switch note-mode-switch--primary"
+              onClick={toggleNoteMode}
+              role="switch"
+              type="button"
+            >
+              <span
+                aria-hidden="true"
+                className="note-mode-switch__icon note-mode-switch__icon--note"
+              />
+              <span className="note-mode-switch__label">{t("mobileToolbar.note")}</span>
+            </button>
+            <span
+              aria-hidden="true"
+              className="editor-toolbar__divider note-mode-switch--dependent"
+            />
+            <button
+              aria-checked={glossaryModeActive}
+              aria-hidden={!noteModeEnabled}
+              aria-label={
+                glossaryModeActive
+                  ? t("toolbar.glossaryMode.close")
+                  : t("toolbar.glossaryMode.open")
+              }
+              className="note-mode-switch note-mode-switch--secondary note-mode-switch--dependent"
+              disabled={!noteModeEnabled}
+              onClick={toggleGlossaryMode}
+              role="switch"
+              type="button"
+            >
+              <span
+                aria-hidden="true"
+                className="note-mode-switch__icon note-mode-switch__icon--glossary"
+              />
+              <span className="note-mode-switch__label">{t("mobileToolbar.terms")}</span>
+            </button>
+          </div>
+        ) : null}
+        <div className="editor-grid">
+          <div className="editor-surface" style={editorSurfaceStyle}>
             {noteModeEnabled ? (
               <p
                 aria-hidden={

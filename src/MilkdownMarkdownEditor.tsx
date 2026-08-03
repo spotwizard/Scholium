@@ -2174,6 +2174,10 @@ export function MilkdownMarkdownEditor({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const crepeRef = useRef<Crepe | null>(null);
+  const valueRefreshScrollSnapshotRef = useRef<{
+    scrollContainer: HTMLElement;
+    scrollTop: number;
+  } | null>(null);
   const currentMarkdownRef = useRef(normalizeMarkdownForScholium(value));
   const editorMarkdownRef = useRef(editorMarkdownFromFullSource(currentMarkdownRef.current));
   const annotationsRef = useRef(annotations);
@@ -3812,6 +3816,16 @@ export function MilkdownMarkdownEditor({
     const normalizedValue = normalizeMarkdownForScholium(value);
     if (normalizedValue === currentMarkdownRef.current) return;
 
+    const root = rootRef.current;
+    const scrollContainer = root?.closest<HTMLElement>(".editor-pane");
+    if (root && scrollContainer) {
+      root.style.minHeight = `${root.scrollHeight}px`;
+      valueRefreshScrollSnapshotRef.current = {
+        scrollContainer,
+        scrollTop: scrollContainer.scrollTop,
+      };
+    }
+
     currentMarkdownRef.current = normalizedValue;
     editorMarkdownRef.current = editorMarkdownFromFullSource(normalizedValue);
     editorAnnotationsRef.current = annotationsForEditorSource(
@@ -3821,6 +3835,15 @@ export function MilkdownMarkdownEditor({
     setTouchBlockCommittedSelectionOverlay(null);
     setEditorRevision((revision) => revision + 1);
   }, [value]);
+
+  function restoreScrollAfterValueRefresh(root: HTMLElement) {
+    const snapshot = valueRefreshScrollSnapshotRef.current;
+    root.style.minHeight = "";
+    if (!snapshot) return;
+
+    snapshot.scrollContainer.scrollTop = snapshot.scrollTop;
+    valueRefreshScrollSnapshotRef.current = null;
+  }
 
   function currentEditorView(): EditorView | null {
     const crepe = crepeRef.current;
@@ -5762,6 +5785,7 @@ export function MilkdownMarkdownEditor({
       .create()
       .then(() => {
         if (disposed) return;
+        restoreScrollAfterValueRefresh(root);
         acceptsMarkdownUpdates = true;
         syncMilkdownReadOnlyState();
         hydrateLocalMarkdownImages();
@@ -5769,6 +5793,7 @@ export function MilkdownMarkdownEditor({
         dispatchSearchUpdate();
       })
       .catch((error: unknown) => {
+        if (!disposed) restoreScrollAfterValueRefresh(root);
         console.error("failed to create Milkdown editor", error);
       });
 

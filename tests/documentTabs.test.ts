@@ -102,6 +102,11 @@ assert.match(
   /struct FocusedWindowState\(Mutex<Option<String>>\);/,
   "desktop menu routing must remember the last focused Scholium window",
 );
+assert.doesNotMatch(
+  tauriSource,
+  /#\[cfg\(desktop\)\]\s*#\[derive\(Default\)\]\s*struct FocusedWindowState/,
+  "shared window state must remain available when the mobile builder registers it",
+);
 assert.match(
   tauriSource,
   /last_focused_label\.or_else\(\|\| webview_windows\.keys\(\)\.next\(\)\.cloned\(\)\)/,
