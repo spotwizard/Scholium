@@ -65,6 +65,19 @@ assert.match(
   appSource,
   /function handlePreviewPaste[\s\S]*?event\.clipboardData[\s\S]*?getData\("text\/plain"\)[\s\S]*?commitPreviewChange\(nextValue\)/,
 );
+assert.match(
+  appSource,
+  /function handlePreviewPaste[\s\S]*?if \(!selectedRange && selection\.isCollapsed && previewValueRef\.current\.length === 0\)[\s\S]*?selectedRange = \{ from: 0, to: 0 \};/,
+);
+assert.match(
+  appSource,
+  /function handlePreviewPaste[\s\S]*?sourceRangeForPreviewTextOffsets\([\s\S]*?getPreviewBlockTextMap\(previewValueRef\.current, block\),[\s\S]*?offsets\.from,[\s\S]*?offsets\.to,/,
+);
+assert.match(
+  appSource,
+  /function undoPreviewChange\(\)[\s\S]*?const previousValue = previewUndoStackRef\.current\.pop\(\);[\s\S]*?if \(previousValue === undefined\) return false;/,
+);
+assert.doesNotMatch(appSource, /function undoPreviewChange\(\)[\s\S]*?if \(!previousValue\) return false;/);
 assert.match(appSource, /onPaste=\{handlePreviewPaste\}/);
 assert.match(
   appSource,

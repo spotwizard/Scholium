@@ -6471,17 +6471,50 @@ export function MarkdownPreview({
     if (readOnly || !commitOnInput) return;
 
     const selection = window.getSelection();
-    if (!selection || selection.isCollapsed || selection.rangeCount === 0) return;
+    if (!selection || selection.rangeCount === 0) return;
 
     const previewElement = event.currentTarget;
-    const selectedRange = selectionCoversAllPreviewContent(previewElement, selection)
-      ? { from: 0, to: previewValueRef.current.length }
-      : makePreviewAnchorFromSelection(
-          previewValueRef.current,
-          blocks,
-          previewElement,
-          selection,
-        );
+    if (
+      !selection.focusNode ||
+      !previewElement.contains(selection.focusNode) ||
+      (selection.anchorNode && !previewElement.contains(selection.anchorNode))
+    ) {
+      return;
+    }
+
+    let selectedRange =
+      selectionCoversAllPreviewContent(previewElement, selection)
+        ? { from: 0, to: previewValueRef.current.length }
+        : selection.isCollapsed
+          ? null
+          : makePreviewAnchorFromSelection(
+              previewValueRef.current,
+              blocks,
+              previewElement,
+              selection,
+            );
+
+    if (!selectedRange && selection.isCollapsed && previewValueRef.current.length === 0) {
+      selectedRange = { from: 0, to: 0 };
+    }
+
+    if (!selectedRange && selection.isCollapsed) {
+      const blockElement = previewBlockElementFromSelection();
+      const block = blockElement ? blockForPreviewElement(blockElement) : null;
+      const offsets =
+        blockElement ? selectionOffsetsWithInlineBreaksInElement(blockElement, selection) : null;
+      const sourceRange =
+        block && offsets
+          ? sourceRangeForPreviewTextOffsets(
+              getPreviewBlockTextMap(previewValueRef.current, block),
+              offsets.from,
+              offsets.to,
+            )
+          : null;
+
+      selectedRange = sourceRange;
+    }
+
     if (!selectedRange) return;
 
     const pastedText = event.clipboardData
@@ -7056,7 +7089,7 @@ export function MarkdownPreview({
 
   function undoPreviewChange() {
     const previousValue = previewUndoStackRef.current.pop();
-    if (!previousValue) return false;
+    if (previousValue === undefined) return false;
 
     previewRedoStackRef.current.push(previewValueRef.current);
     previewValueRef.current = previousValue;
