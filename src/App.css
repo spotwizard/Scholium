@@ -3783,7 +3783,8 @@ button.document-tag-chip__label:focus-visible {
   pointer-events: auto;
 }
 
-.milkdown-markdown-editor .milkdown .milkdown-code-block .tools .copy-button {
+.milkdown-markdown-editor .milkdown .milkdown-code-block .tools .copy-button,
+.milkdown-markdown-editor .milkdown .milkdown-code-block .tools .delete-button {
   display: inline-flex;
   align-items: center;
   gap: 0;
@@ -3813,6 +3814,17 @@ button.document-tag-chip__label:focus-visible {
   flex: 0 0 auto;
   -webkit-mask: url("./assets/copy-page.svg") center / contain no-repeat;
   mask: url("./assets/copy-page.svg") center / contain no-repeat;
+}
+
+.milkdown-markdown-editor .milkdown .milkdown-code-block .tools .delete-button::before {
+  content: "";
+  display: block;
+  width: 14px;
+  height: 14px;
+  background-color: currentColor;
+  flex: 0 0 auto;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2024%2024'%3E%3Cpath%20d='M4%207h16M10%2011v6M14%2011v6M6%207l1%2014h10l1-14M9%207V4h6v3'%20fill='none'%20stroke='black'%20stroke-width='2'%20stroke-linecap='round'%20stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2024%2024'%3E%3Cpath%20d='M4%207h16M10%2011v6M14%2011v6M6%207l1%2014h10l1-14M9%207V4h6v3'%20fill='none'%20stroke='black'%20stroke-width='2'%20stroke-linecap='round'%20stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
 }
 
 .milkdown-markdown-editor .milkdown .milkdown-code-block .tools .copy-button.is-copy-success {

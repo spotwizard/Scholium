@@ -19472,6 +19472,7 @@ function App() {
                   value={selectedDocument.body}
                   codeBlockCopyLabel={t("codeBlock.copy")}
                   codeBlockCopiedLabel={t("codeBlock.copy.copied")}
+                  codeBlockDeleteLabel={t("codeBlock.delete")}
                   onAnnotationClick={showAnnotationViewer}
                   onAnnotationDoubleClick={showAnnotationViewer}
                   onChange={updateSelectedDocumentBody}

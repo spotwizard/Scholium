@@ -86,6 +86,7 @@ type MilkdownMarkdownEditorProps = {
   toolbarEnabled?: boolean;
   codeBlockCopyLabel: string;
   codeBlockCopiedLabel: string;
+  codeBlockDeleteLabel: string;
   mermaidEmptyDefinitionLabel: string;
   mermaidErrorLabel: string;
   mermaidLoadingLabel: string;
@@ -2160,6 +2161,7 @@ export function MilkdownMarkdownEditor({
   toolbarEnabled = true,
   codeBlockCopyLabel,
   codeBlockCopiedLabel,
+  codeBlockDeleteLabel,
   mermaidEmptyDefinitionLabel,
   mermaidErrorLabel,
   mermaidLoadingLabel,
@@ -2195,6 +2197,7 @@ export function MilkdownMarkdownEditor({
   const onChangeRef = useRef(onChange);
   const codeBlockCopyLabelRef = useRef(codeBlockCopyLabel);
   const codeBlockCopiedLabelRef = useRef(codeBlockCopiedLabel);
+  const codeBlockDeleteLabelRef = useRef(codeBlockDeleteLabel);
   const mermaidLabelsRef = useRef({
     empty: mermaidEmptyDefinitionLabel,
     error: mermaidErrorLabel,
@@ -2291,6 +2294,61 @@ export function MilkdownMarkdownEditor({
       button.setAttribute("aria-label", codeBlockCopyLabelRef.current);
       button.setAttribute("title", codeBlockCopyLabelRef.current);
     });
+  }
+
+  function syncCodeBlockDeleteButtons() {
+    const root = rootRef.current;
+    if (!root) return;
+
+    const disabled = readOnlyRef.current || noteModeEnabledRef.current;
+    root.querySelectorAll<HTMLElement>(".milkdown-code-block .tools-button-group").forEach((group) => {
+      let button = group.querySelector<HTMLButtonElement>(".delete-button");
+      if (!button) {
+        button = document.createElement("button");
+        button.type = "button";
+        button.className = "delete-button";
+        group.querySelector(".copy-button")?.after(button);
+      }
+
+      if (button.textContent !== codeBlockDeleteLabelRef.current) {
+        button.textContent = codeBlockDeleteLabelRef.current;
+      }
+      if (button.disabled !== disabled) {
+        button.disabled = disabled;
+      }
+      if (button.getAttribute("aria-label") !== codeBlockDeleteLabelRef.current) {
+        button.setAttribute("aria-label", codeBlockDeleteLabelRef.current);
+      }
+      if (button.getAttribute("title") !== codeBlockDeleteLabelRef.current) {
+        button.setAttribute("title", codeBlockDeleteLabelRef.current);
+      }
+    });
+  }
+
+  function deleteCodeBlockFromButton(button: HTMLElement) {
+    if (readOnlyRef.current || noteModeEnabledRef.current) return;
+
+    const view = currentEditorView();
+    if (!view) return;
+
+    let targetPosition: number | null = null;
+    let targetSize = 0;
+    view.state.doc.descendants((node, position) => {
+      const isCodeBlock = node.type.name === "code_block" || node.type.spec.code === true;
+      if (!isCodeBlock) return true;
+
+      const nodeDom = view.nodeDOM(position);
+      if (nodeDom instanceof HTMLElement && nodeDom.contains(button)) {
+        targetPosition = position;
+        targetSize = node.nodeSize;
+        return false;
+      }
+      return true;
+    });
+
+    if (targetPosition === null || targetSize <= 0) return;
+
+    view.dispatch(view.state.tr.delete(targetPosition, targetPosition + targetSize).scrollIntoView());
   }
 
   function showCodeBlockCopyFeedback(button: HTMLElement) {
@@ -2405,6 +2463,19 @@ export function MilkdownMarkdownEditor({
       rememberPendingCodeBlockCopyButton(button);
     };
 
+    const handleCodeBlockDeleteClick = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      const button = target.closest<HTMLButtonElement>(".milkdown-code-block .delete-button");
+      if (!button || button.disabled) return;
+
+      const codeBlock = button.closest<HTMLElement>(".milkdown-code-block");
+      if (!codeBlock) return;
+
+      e.preventDefault();
+      e.stopPropagation();
+      deleteCodeBlockFromButton(button);
+    };
+
     const handleLinkClick = (e: MouseEvent) => {
       if (e.button !== 0) return;
       const target =
@@ -2428,6 +2499,7 @@ export function MilkdownMarkdownEditor({
     container.addEventListener("copy", handleMarkdownCopy, true);
     container.addEventListener("click", handleLinkClick, true);
     container.addEventListener("click", handleCodeBlockCopyClick, true);
+    container.addEventListener("click", handleCodeBlockDeleteClick, true);
 
     return () => {
       container.removeEventListener("mousedown", preventFocus, { capture: true });
@@ -2436,6 +2508,7 @@ export function MilkdownMarkdownEditor({
       container.removeEventListener("copy", handleMarkdownCopy, true);
       container.removeEventListener("click", handleLinkClick, true);
       container.removeEventListener("click", handleCodeBlockCopyClick, true);
+      container.removeEventListener("click", handleCodeBlockDeleteClick, true);
     };
   }, []);
 
@@ -3608,6 +3681,11 @@ export function MilkdownMarkdownEditor({
   }, [codeBlockCopiedLabel]);
 
   useEffect(() => {
+    codeBlockDeleteLabelRef.current = codeBlockDeleteLabel;
+    syncCodeBlockDeleteButtons();
+  }, [codeBlockDeleteLabel]);
+
+  useEffect(() => {
     mermaidLabelsRef.current = {
       empty: mermaidEmptyDefinitionLabel,
       error: mermaidErrorLabel,
@@ -3645,6 +3723,7 @@ export function MilkdownMarkdownEditor({
 
   useEffect(() => {
     noteModeEnabledRef.current = noteModeEnabled;
+    syncCodeBlockDeleteButtons();
     scheduleReadonlyDomFocusSync();
     if (!noteModeEnabled) {
       clearTouchBlockSelectionSession();
@@ -3683,6 +3762,7 @@ export function MilkdownMarkdownEditor({
 
   useEffect(() => {
     readOnlyRef.current = readOnly;
+    syncCodeBlockDeleteButtons();
     syncMilkdownReadOnlyState();
   }, [readOnly]);
 
@@ -3692,6 +3772,7 @@ export function MilkdownMarkdownEditor({
 
     const observer = new MutationObserver(() => {
       syncCodeBlockCopyButtonLabels();
+      syncCodeBlockDeleteButtons();
       if (readOnlyRef.current || noteModeEnabledRef.current) {
         scheduleReadonlyDomFocusSync();
       }
@@ -3704,6 +3785,7 @@ export function MilkdownMarkdownEditor({
     });
 
     syncCodeBlockCopyButtonLabels();
+    syncCodeBlockDeleteButtons();
     scheduleReadonlyDomFocusSync();
 
     const blockedEvents = ["beforeinput", "input", "compositionstart", "cut", "paste", "drop"];
