@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { history, redo, undo } from "@milkdown/prose/history";
+import { closeHistory, history, redo, undo } from "@milkdown/prose/history";
 import { Schema } from "@milkdown/prose/model";
 import { bulletList, listItem, orderedList } from "@milkdown/prose/schema-list";
-import { EditorState, TextSelection } from "@milkdown/prose/state";
+import { EditorState, NodeSelection, TextSelection } from "@milkdown/prose/state";
 import {
   deleteAtListItemStart,
+  insertEmptyFirstChildListItem,
   mergeRemovedListMarkerLineBackward,
   moveToNextEmptyListItem,
   sinkSingleListItem,
@@ -101,6 +102,397 @@ assert.equal(
     }),
   ),
   false,
+);
+
+const enterAfterParentWithChildrenDocument = schema.nodes.doc.create(null, [
+  schema.nodes.bullet_list.create(null, [
+    item("父項目", [item("子項目")]),
+    item("下一個同層項目"),
+  ]),
+]);
+let enterAfterParentWithChildrenPosition = -1;
+enterAfterParentWithChildrenDocument.descendants((node, position) => {
+  if (node.isText && node.text === "父項目") {
+    enterAfterParentWithChildrenPosition = position + node.nodeSize;
+  }
+});
+assert.notEqual(enterAfterParentWithChildrenPosition, -1);
+let enterAfterParentWithChildrenState = EditorState.create({
+  doc: enterAfterParentWithChildrenDocument,
+  selection: TextSelection.create(
+    enterAfterParentWithChildrenDocument,
+    enterAfterParentWithChildrenPosition,
+  ),
+  plugins: [history()],
+});
+assert.equal(
+  insertEmptyFirstChildListItem(schema.nodes.list_item)(
+    enterAfterParentWithChildrenState,
+    (transaction) => {
+      enterAfterParentWithChildrenState =
+        enterAfterParentWithChildrenState.apply(transaction);
+    },
+  ),
+  true,
+);
+const listAfterParentEnter = enterAfterParentWithChildrenState.doc.firstChild;
+assert.equal(listAfterParentEnter?.childCount, 2);
+assert.equal(listAfterParentEnter?.child(0).firstChild?.textContent, "父項目");
+const nestedListAfterParentEnter = listAfterParentEnter?.child(0).child(1);
+assert.equal(nestedListAfterParentEnter?.type, schema.nodes.bullet_list);
+assert.equal(nestedListAfterParentEnter?.childCount, 2);
+assert.equal(
+  nestedListAfterParentEnter?.child(0).firstChild?.textContent,
+  "",
+);
+assert.equal(
+  nestedListAfterParentEnter?.child(1).firstChild?.textContent,
+  "子項目",
+);
+assert.equal(
+  listAfterParentEnter?.child(1).firstChild?.textContent,
+  "下一個同層項目",
+);
+assert.equal(enterAfterParentWithChildrenState.selection.$from.parent.textContent, "");
+assert.equal(enterAfterParentWithChildrenState.selection.$from.parentOffset, 0);
+assert.equal(
+  undo(enterAfterParentWithChildrenState, (transaction) => {
+    enterAfterParentWithChildrenState =
+      enterAfterParentWithChildrenState.apply(transaction);
+  }),
+  true,
+);
+assert.deepEqual(
+  enterAfterParentWithChildrenState.doc.toJSON(),
+  enterAfterParentWithChildrenDocument.toJSON(),
+);
+
+let enterThenDeleteState = EditorState.create({
+  doc: enterAfterParentWithChildrenDocument,
+  selection: TextSelection.create(
+    enterAfterParentWithChildrenDocument,
+    enterAfterParentWithChildrenPosition,
+  ),
+  plugins: [history()],
+});
+assert.equal(
+  insertEmptyFirstChildListItem(schema.nodes.list_item)(
+    enterThenDeleteState,
+    (transaction) => {
+      enterThenDeleteState = enterThenDeleteState.apply(transaction);
+    },
+  ),
+  true,
+);
+const documentAfterParentEnter = enterThenDeleteState.doc.toJSON();
+enterThenDeleteState = enterThenDeleteState.apply(
+  closeHistory(enterThenDeleteState.tr),
+);
+assert.equal(
+  deleteAtListItemStart(schema.nodes.list_item, "backward")(
+    enterThenDeleteState,
+    (transaction) => {
+      enterThenDeleteState = enterThenDeleteState.apply(transaction);
+    },
+  ),
+  true,
+);
+assert.equal(
+  mergeRemovedListMarkerLineBackward(schema.nodes.list_item)(
+    enterThenDeleteState,
+    (transaction) => {
+      enterThenDeleteState = enterThenDeleteState.apply(transaction);
+    },
+  ),
+  true,
+);
+assert.deepEqual(
+  enterThenDeleteState.doc.toJSON(),
+  enterAfterParentWithChildrenDocument.toJSON(),
+);
+
+let enterThenNodeDeleteState = EditorState.create({
+  doc: enterAfterParentWithChildrenDocument,
+  selection: TextSelection.create(
+    enterAfterParentWithChildrenDocument,
+    enterAfterParentWithChildrenPosition,
+  ),
+  plugins: [history()],
+});
+assert.equal(
+  insertEmptyFirstChildListItem(schema.nodes.list_item)(
+    enterThenNodeDeleteState,
+    (transaction) => {
+      enterThenNodeDeleteState = enterThenNodeDeleteState.apply(transaction);
+    },
+  ),
+  true,
+);
+const documentBeforeNodeDelete = enterThenNodeDeleteState.doc.toJSON();
+enterThenNodeDeleteState = enterThenNodeDeleteState.apply(
+  closeHistory(enterThenNodeDeleteState.tr),
+);
+enterThenNodeDeleteState = enterThenNodeDeleteState.apply(
+  enterThenNodeDeleteState.tr
+    .setSelection(
+      NodeSelection.create(
+        enterThenNodeDeleteState.doc,
+        enterThenNodeDeleteState.selection.from - 2,
+      ),
+    )
+    .deleteSelection(),
+);
+assert.equal(
+  undo(enterThenNodeDeleteState, (transaction) => {
+    enterThenNodeDeleteState = enterThenNodeDeleteState.apply(transaction);
+  }),
+  true,
+);
+assert.deepEqual(
+  enterThenNodeDeleteState.doc.toJSON(),
+  documentBeforeNodeDelete,
+  "Undo must restore a whole item deleted through a node selection",
+);
+assert.equal(
+  undo(enterThenNodeDeleteState, (transaction) => {
+    enterThenNodeDeleteState = enterThenNodeDeleteState.apply(transaction);
+  }),
+  true,
+);
+assert.deepEqual(
+  enterThenNodeDeleteState.doc.toJSON(),
+  enterAfterParentWithChildrenDocument.toJSON(),
+);
+assert.equal(
+  undo(enterThenDeleteState, (transaction) => {
+    enterThenDeleteState = enterThenDeleteState.apply(transaction);
+  }),
+  true,
+);
+assert.deepEqual(
+  enterThenDeleteState.doc.toJSON(),
+  documentAfterParentEnter,
+  "Undo after deleting the new whole item must restore that item first",
+);
+assert.equal(
+  undo(enterThenDeleteState, (transaction) => {
+    enterThenDeleteState = enterThenDeleteState.apply(transaction);
+  }),
+  true,
+);
+assert.deepEqual(
+  enterThenDeleteState.doc.toJSON(),
+  enterAfterParentWithChildrenDocument.toJSON(),
+);
+assert.equal(
+  insertEmptyFirstChildListItem(schema.nodes.list_item)(
+    EditorState.create({
+      doc: enterAfterParentWithChildrenDocument,
+      selection: TextSelection.create(
+        enterAfterParentWithChildrenDocument,
+        enterAfterParentWithChildrenPosition - 1,
+      ),
+    }),
+  ),
+  false,
+);
+const leafListItemDocument = schema.nodes.doc.create(null, [
+  schema.nodes.bullet_list.create(null, [item("一般項目")]),
+]);
+let leafListItemEndPosition = -1;
+leafListItemDocument.descendants((node, position) => {
+  if (node.isText && node.text === "一般項目") {
+    leafListItemEndPosition = position + node.nodeSize;
+  }
+});
+assert.notEqual(leafListItemEndPosition, -1);
+assert.equal(
+  insertEmptyFirstChildListItem(schema.nodes.list_item)(
+    EditorState.create({
+      doc: leafListItemDocument,
+      selection: TextSelection.create(
+        leafListItemDocument,
+        leafListItemEndPosition,
+      ),
+    }),
+  ),
+  false,
+);
+
+const orderedParentWithChildrenDocument = schema.nodes.doc.create(null, [
+  schema.nodes.ordered_list.create({ order: 1 }, [
+    orderedItem("父項目", [orderedItem("子項目")]),
+  ]),
+]);
+let orderedParentWithChildrenPosition = -1;
+orderedParentWithChildrenDocument.descendants((node, position) => {
+  if (node.isText && node.text === "父項目") {
+    orderedParentWithChildrenPosition = position + node.nodeSize;
+  }
+});
+assert.notEqual(orderedParentWithChildrenPosition, -1);
+assert.equal(
+  insertEmptyFirstChildListItem(schema.nodes.list_item)(
+    EditorState.create({
+      doc: orderedParentWithChildrenDocument,
+      selection: TextSelection.create(
+        orderedParentWithChildrenDocument,
+        orderedParentWithChildrenPosition,
+      ),
+    }),
+  ),
+  false,
+);
+
+const enterAfterParentBeforeEmptyDocument = schema.nodes.doc.create(null, [
+  schema.nodes.bullet_list.create(null, [
+    item("父項目", [item(""), item("子項目")]),
+    item("下一個同層項目"),
+  ]),
+]);
+let enterAfterParentBeforeEmptyPosition = -1;
+enterAfterParentBeforeEmptyDocument.descendants((node, position) => {
+  if (node.isText && node.text === "父項目") {
+    enterAfterParentBeforeEmptyPosition = position + node.nodeSize;
+  }
+});
+assert.notEqual(enterAfterParentBeforeEmptyPosition, -1);
+let enterAfterParentBeforeEmptyState = EditorState.create({
+  doc: enterAfterParentBeforeEmptyDocument,
+  selection: TextSelection.create(
+    enterAfterParentBeforeEmptyDocument,
+    enterAfterParentBeforeEmptyPosition,
+  ),
+});
+assert.equal(
+  insertEmptyFirstChildListItem(schema.nodes.list_item)(
+    enterAfterParentBeforeEmptyState,
+    (transaction) => {
+      enterAfterParentBeforeEmptyState =
+        enterAfterParentBeforeEmptyState.apply(transaction);
+    },
+  ),
+  true,
+);
+assert.deepEqual(
+  enterAfterParentBeforeEmptyState.doc.toJSON(),
+  enterAfterParentBeforeEmptyDocument.toJSON(),
+);
+assert.equal(enterAfterParentBeforeEmptyState.selection.$from.parent.textContent, "");
+assert.equal(enterAfterParentBeforeEmptyState.selection.$from.parentOffset, 0);
+
+const parentBeforeOuterEmptyDocument = schema.nodes.doc.create(null, [
+  schema.nodes.bullet_list.create(null, [
+    item("父項目", [item("子項目")]),
+    item(""),
+  ]),
+]);
+let parentBeforeOuterEmptyPosition = -1;
+parentBeforeOuterEmptyDocument.descendants((node, position) => {
+  if (node.isText && node.text === "父項目") {
+    parentBeforeOuterEmptyPosition = position + node.nodeSize;
+  }
+});
+assert.notEqual(parentBeforeOuterEmptyPosition, -1);
+let parentBeforeOuterEmptyState = EditorState.create({
+  doc: parentBeforeOuterEmptyDocument,
+  selection: TextSelection.create(
+    parentBeforeOuterEmptyDocument,
+    parentBeforeOuterEmptyPosition,
+  ),
+});
+assert.equal(
+  insertEmptyFirstChildListItem(schema.nodes.list_item)(
+    parentBeforeOuterEmptyState,
+    (transaction) => {
+      parentBeforeOuterEmptyState =
+        parentBeforeOuterEmptyState.apply(transaction);
+    },
+  ),
+  true,
+);
+const listBeforeOuterEmptyAfterEnter = parentBeforeOuterEmptyState.doc.firstChild;
+const nestedListBeforeOuterEmptyAfterEnter =
+  listBeforeOuterEmptyAfterEnter?.child(0).child(1);
+assert.equal(listBeforeOuterEmptyAfterEnter?.childCount, 2);
+assert.equal(nestedListBeforeOuterEmptyAfterEnter?.childCount, 2);
+assert.equal(
+  nestedListBeforeOuterEmptyAfterEnter?.child(0).firstChild?.textContent,
+  "",
+);
+assert.equal(
+  nestedListBeforeOuterEmptyAfterEnter?.child(1).firstChild?.textContent,
+  "子項目",
+);
+assert.equal(listBeforeOuterEmptyAfterEnter?.child(1).firstChild?.textContent, "");
+assert.equal(
+  parentBeforeOuterEmptyState.selection.$from.parent,
+  nestedListBeforeOuterEmptyAfterEnter?.child(0).firstChild,
+);
+
+const taskListItemAttrs = {
+  label: "•",
+  listType: "bullet",
+  spread: false,
+  checked: true,
+};
+const taskListSchema = new Schema({
+  nodes: {
+    doc: { content: "block+" },
+    paragraph: { content: "inline*", group: "block" },
+    text: { group: "inline" },
+    bullet_list: { ...bulletList, content: "list_item+", group: "block" },
+    list_item: {
+      ...listItem,
+      attrs: {
+        label: { default: "•" },
+        listType: { default: "bullet" },
+        spread: { default: true },
+        checked: { default: null },
+      },
+      content: "paragraph block*",
+    },
+  },
+});
+const taskParagraph = (text: string) =>
+  taskListSchema.nodes.paragraph.create(null, taskListSchema.text(text));
+const taskParentWithChildrenDocument = taskListSchema.nodes.doc.create(null, [
+  taskListSchema.nodes.bullet_list.create(null, [
+    taskListSchema.nodes.list_item.create(taskListItemAttrs, [
+      taskParagraph("已完成父項目"),
+      taskListSchema.nodes.bullet_list.create(null, [
+        taskListSchema.nodes.list_item.create(null, [taskParagraph("子項目")]),
+      ]),
+    ]),
+  ]),
+]);
+let taskParentWithChildrenPosition = -1;
+taskParentWithChildrenDocument.descendants((node, position) => {
+  if (node.isText && node.text === "已完成父項目") {
+    taskParentWithChildrenPosition = position + node.nodeSize;
+  }
+});
+assert.notEqual(taskParentWithChildrenPosition, -1);
+let taskParentWithChildrenState = EditorState.create({
+  doc: taskParentWithChildrenDocument,
+  selection: TextSelection.create(
+    taskParentWithChildrenDocument,
+    taskParentWithChildrenPosition,
+  ),
+});
+assert.equal(
+  insertEmptyFirstChildListItem(taskListSchema.nodes.list_item)(
+    taskParentWithChildrenState,
+    (transaction) => {
+      taskParentWithChildrenState =
+        taskParentWithChildrenState.apply(transaction);
+    },
+  ),
+  false,
+);
+assert.deepEqual(
+  taskParentWithChildrenState.doc.toJSON(),
+  taskParentWithChildrenDocument.toJSON(),
 );
 
 const document = schema.nodes.doc.create(null, [
@@ -1122,6 +1514,18 @@ assert.equal(
   "",
 );
 assert.equal(forwardDeleteAfterSelectionState.selection.$from.parentOffset, 0);
+assert.equal(
+  undo(forwardDeleteAfterSelectionState, (transaction) => {
+    forwardDeleteAfterSelectionState =
+      forwardDeleteAfterSelectionState.apply(transaction);
+  }),
+  true,
+);
+assert.deepEqual(
+  forwardDeleteAfterSelectionState.doc.toJSON(),
+  forwardDeleteAfterSelectionDocument.toJSON(),
+  "Deleting selected item text and its marker must remain one undo event",
+);
 
 const nestedOrderedMarkerDocument = schema.nodes.doc.create(null, [
   schema.nodes.ordered_list.create(null, [
@@ -1284,7 +1688,11 @@ assert.match(
 );
 assert.match(
   editorSource,
-  /event\.key === "Enter"[\s\S]*?moveToNextEmptyListItem\(listItemType\)/,
+  /event\.key === "Enter"[\s\S]*?insertEmptyFirstChildListItem\(listItemType\)[\s\S]*?moveToNextEmptyListItem\(listItemType\)/,
+);
+assert.match(
+  editorSource,
+  /insertedFirstChild = transaction\.docChanged[\s\S]*?view\.dispatch\(closeHistory\(view\.state\.tr\)\)/,
 );
 const singleListItemIndentPluginStart = editorSource.indexOf(
   "function createSingleListItemIndentPlugin()",

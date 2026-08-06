@@ -35,6 +35,12 @@ export function normalizeListItemStrongTrailingWhitespace(markdown: string) {
     .join("\n");
 }
 
+export function normalizeSerializedBulletMarkers(markdown: string) {
+  return markdown
+    .replace(/^([ \t]*)\*[ \t]+(?=\S)/gm, "$1- ")
+    .replace(/^([ \t]*)\*[ \t]*$/gm, "$1-");
+}
+
 export function escapeListLeadingAsterisksForPreview(markdown: string) {
   return transformListLeadingAsterisks(markdown, true);
 }

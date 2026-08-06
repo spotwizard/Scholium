@@ -6,9 +6,9 @@ import { openUrl as openExternalUrl } from "@tauri-apps/plugin-opener";
 import {
   type ChangeEvent,
   type ClipboardEvent as ReactClipboardEvent,
+  type CompositionEvent,
   createElement,
   Fragment,
-  type CompositionEvent,
   type CSSProperties,
   type FocusEvent,
   type FormEvent,
@@ -974,7 +974,7 @@ const previewAnnotationLineJoinMaxGap = 20;
 const previewAnnotationLineEndTolerance = 2;
 const previewAnnotationFrameCornerRadius = "4px";
 const annotationLayoutSettleDelaysMs = [80, 180, 360, 720];
-const noteLibraryFocusAlignmentRatio = 0.2;
+const noteLibraryFocusAlignmentRatio = 0.35;
 const notePanelAnimationMs = 180;
 const selectionWarningAutoDismissMs = 2600;
 const appDrivenSelectionClearGuardMs = 1200;
@@ -7517,8 +7517,8 @@ function NoteMarkdownEditor({
   mermaidLoadingLabel: string;
   onChange: (value: string) => void;
   onClick?: (event: MouseEvent<HTMLElement>) => void;
-  onCompositionEnd?: () => void;
-  onCompositionStart?: () => void;
+  onCompositionEnd?: (event: CompositionEvent<HTMLElement>) => void;
+  onCompositionStart?: (event: CompositionEvent<HTMLElement>) => void;
   onEditingBlur?: () => void;
   onKeyDown?: (event: ReactKeyboardEvent<HTMLElement>) => void;
   onRequestEdit?: () => void;
@@ -9329,23 +9329,22 @@ function App() {
   }
 
   function alignRectToVerticalViewportPosition(
-    rect: Pick<TextRangeRect, "top">,
+    rect: DOMRect,
     scrollContainer: HTMLElement | null,
     behavior: ScrollBehavior = "instant",
   ) {
-    const targetViewportTop = window.innerHeight * noteLibraryFocusAlignmentRatio;
-
     if (scrollContainer) {
-      const rawTop = scrollContainer.scrollTop + rect.top - targetViewportTop;
-      const maxTop = Math.max(0, scrollContainer.scrollHeight - scrollContainer.clientHeight);
-      const nextTop = clampNumber(rawTop, 0, maxTop);
-
-      if (Math.abs(scrollContainer.scrollTop - nextTop) > 1) {
-        scrollContainer.scrollTo({ top: nextTop, behavior });
+      const containerRect = scrollContainer.getBoundingClientRect();
+      const targetViewportTop = containerRect.top + containerRect.height * noteLibraryFocusAlignmentRatio;
+      const currentViewportTop = rect.top;
+      const offset = currentViewportTop - targetViewportTop;
+      if (Math.abs(offset) > 1) {
+        scrollContainer.scrollBy({ top: offset, behavior });
       }
       return true;
     }
 
+    const targetViewportTop = window.innerHeight * noteLibraryFocusAlignmentRatio;
     const scrollingElement = document.scrollingElement ?? document.documentElement;
     const rawTop = window.scrollY + rect.top - targetViewportTop;
     const maxTop = Math.max(0, scrollingElement.scrollHeight - window.innerHeight);
@@ -9390,7 +9389,7 @@ function App() {
     if (!anchorRect) return false;
 
     alignRectToVerticalViewportPosition(
-      anchorRect,
+      annotationElements[0].getBoundingClientRect(),
       scrollableAncestor(annotationElements[0]),
       behavior,
     );
@@ -16003,10 +16002,12 @@ function App() {
       return false;
     }
 
-    notesRef.current = notesRef.current.filter((candidate) => candidate.id !== noteId);
-    setNotes((currentNotes) => currentNotes.filter((candidate) => candidate.id !== noteId));
     transientSelectionNoteIdRef.current = "";
-    markDocumentNotesDirty(note.documentId);
+    window.setTimeout(() => {
+      notesRef.current = notesRef.current.filter((candidate) => candidate.id !== noteId);
+      setNotes((currentNotes) => currentNotes.filter((candidate) => candidate.id !== noteId));
+      markDocumentNotesDirty(note.documentId);
+    }, 0);
     return true;
   }
 
@@ -16029,26 +16030,28 @@ function App() {
       return false;
     }
 
-    glossaryBindingsRef.current = glossaryBindingsRef.current.filter(
-      (candidate) => candidate.id !== bindingId,
-    );
-    setGlossaryBindings((currentBindings) =>
-      currentBindings.filter((candidate) => candidate.id !== bindingId),
-    );
-
-    const hasOtherBindings = glossaryBindingsRef.current.some(
-      (candidate) => candidate.termId === termId && candidate.status !== "deleted",
-    );
-    if (!hasOtherBindings) {
-      glossaryTermsRef.current = glossaryTermsRef.current.filter((candidate) => candidate.id !== termId);
-      setGlossaryTerms((currentTerms) =>
-        currentTerms.filter((candidate) => candidate.id !== termId),
-      );
-    }
-
     transientGlossaryBindingIdRef.current = "";
     transientGlossaryTermIdRef.current = "";
-    markDocumentNotesDirty(binding?.documentId ?? selectedDocument.id);
+
+    window.setTimeout(() => {
+      glossaryBindingsRef.current = glossaryBindingsRef.current.filter(
+        (candidate) => candidate.id !== bindingId,
+      );
+      setGlossaryBindings((currentBindings) =>
+        currentBindings.filter((candidate) => candidate.id !== bindingId),
+      );
+
+      const hasOtherBindings = glossaryBindingsRef.current.some(
+        (candidate) => candidate.termId === termId && candidate.status !== "deleted",
+      );
+      if (!hasOtherBindings) {
+        glossaryTermsRef.current = glossaryTermsRef.current.filter((candidate) => candidate.id !== termId);
+        setGlossaryTerms((currentTerms) =>
+          currentTerms.filter((candidate) => candidate.id !== termId),
+        );
+      }
+      markDocumentNotesDirty(binding?.documentId ?? selectedDocument.id);
+    }, 0);
     return true;
   }
 
@@ -16178,24 +16181,38 @@ function App() {
     }, notePanelAnimationMs);
   }
 
-  function handleNoteEditorCompositionStart() {
+  function handleNoteEditorCompositionStart(event: CompositionEvent<HTMLElement>) {
     noteEditorIsComposingRef.current = true;
     noteEditorEnterIgnoredDuringCompositionRef.current = false;
     noteEditorPostCompositionGuardUntilRef.current = 0;
+    const shell = event.currentTarget.closest(".milkdown-markdown-editor-shell");
+    if (shell) shell.classList.add("is-composing");
   }
 
-  function handleNoteEditorCompositionEnd() {
+  function handleNoteEditorCompositionEnd(event: CompositionEvent<HTMLElement>) {
     const hadEnterDuringComposition = noteEditorEnterIgnoredDuringCompositionRef.current;
-
     noteEditorIsComposingRef.current = false;
     noteEditorEnterIgnoredDuringCompositionRef.current = false;
-    noteEditorPostCompositionGuardUntilRef.current =
-      Date.now() + (hadEnterDuringComposition ? 500 : 180);
+    noteEditorPostCompositionGuardUntilRef.current = Date.now() + (hadEnterDuringComposition ? 500 : 180);
+    const shell = event.currentTarget.closest(".milkdown-markdown-editor-shell");
+    if (shell) shell.classList.remove("is-composing");
   }
 
   function handleNoteEditorKeyDown(event: ReactKeyboardEvent<HTMLElement>) {
     if (event.key === "Enter" && keyboardEventIsComposing(event)) {
       noteEditorEnterIgnoredDuringCompositionRef.current = true;
+      return;
+    }
+
+    if (event.key === "Enter" && event.nativeEvent.isComposing) {
+      return;
+    }
+
+    if (event.key === "Enter" && Date.now() < noteEditorPostCompositionGuardUntilRef.current) {
+      event.preventDefault();
+      event.stopPropagation();
+      event.nativeEvent.preventDefault();
+      event.nativeEvent.stopImmediatePropagation();
       return;
     }
 
@@ -16211,6 +16228,23 @@ function App() {
     event: ReactKeyboardEvent<HTMLElement>,
   ) {
     if (focusAdjacentLibraryNote(noteId, event)) {
+      return;
+    }
+
+    if (event.key === "Enter" && keyboardEventIsComposing(event)) {
+      noteEditorEnterIgnoredDuringCompositionRef.current = true;
+      return;
+    }
+
+    if (event.key === "Enter" && event.nativeEvent.isComposing) {
+      return;
+    }
+
+    if (event.key === "Enter" && Date.now() < noteEditorPostCompositionGuardUntilRef.current) {
+      event.preventDefault();
+      event.stopPropagation();
+      event.nativeEvent.preventDefault();
+      event.nativeEvent.stopImmediatePropagation();
       return;
     }
 

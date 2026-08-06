@@ -145,6 +145,84 @@ export function moveToNextEmptyListItem(itemType: NodeType): Command {
   };
 }
 
+export function insertEmptyFirstChildListItem(
+  itemType: NodeType,
+): Command {
+  return (state, dispatch) => {
+    const { selection } = state;
+    if (!(selection instanceof TextSelection) || !selection.empty) return false;
+
+    const { $from } = selection;
+    let itemDepth = $from.depth;
+    while (itemDepth > 0 && $from.node(itemDepth).type !== itemType) {
+      itemDepth -= 1;
+    }
+    if (itemDepth === 0) return false;
+
+    const item = $from.node(itemDepth);
+    const paragraph = $from.parent;
+    if (
+      item.firstChild !== paragraph ||
+      paragraph.content.size === 0 ||
+      $from.parentOffset !== paragraph.content.size
+    ) {
+      return false;
+    }
+
+    const parentList = $from.node(itemDepth - 1);
+    if (
+      (parentList.type.name !== "bullet_list" &&
+        parentList.type.name !== "bulletList") ||
+      item.attrs.checked != null ||
+      item.childCount !== 2
+    ) {
+      return false;
+    }
+
+    const childList = item.child(1);
+    if (
+      childList.type !== parentList.type ||
+      childList.childCount === 0
+    ) {
+      return false;
+    }
+    for (let index = 0; index < childList.childCount; index += 1) {
+      const childItem = childList.child(index);
+      if (childItem.type !== itemType || childItem.attrs.checked != null) {
+        return false;
+      }
+    }
+
+    const insertPosition = $from.after(itemDepth + 1) + 1;
+    const firstChildItem = childList.firstChild;
+    const firstChildParagraph = firstChildItem?.firstChild;
+    if (
+      firstChildItem?.type === itemType &&
+      firstChildItem.childCount === 1 &&
+      firstChildParagraph?.isTextblock &&
+      firstChildParagraph.content.size === 0
+    ) {
+      if (dispatch) {
+        dispatch(
+          state.tr
+            .setSelection(TextSelection.create(state.doc, insertPosition + 2))
+            .scrollIntoView(),
+        );
+      }
+      return true;
+    }
+
+    const emptyItem = itemType.createAndFill(firstChildItem?.attrs);
+    if (!emptyItem) return false;
+    if (dispatch) {
+      const tr = state.tr.insert(insertPosition, emptyItem);
+      tr.setSelection(TextSelection.create(tr.doc, insertPosition + 2));
+      dispatch(tr.scrollIntoView());
+    }
+    return true;
+  };
+}
+
 export function deleteAtListItemStart(
   itemType: NodeType,
   direction: "backward" | "forward",

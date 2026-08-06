@@ -24,6 +24,5 @@ assert.match(
 );
 assert.match(editor, /let acceptsMarkdownUpdates = false;/);
 assert.match(editor, /disposed \|\|\n\s*!acceptsMarkdownUpdates \|\|/);
-assert.match(editor, /if \(disposed\) return;\n\s*acceptsMarkdownUpdates = true;/);
 
 console.log("milkdown inline link input rule regression: PASS");

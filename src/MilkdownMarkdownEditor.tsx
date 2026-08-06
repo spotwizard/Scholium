@@ -2,10 +2,10 @@ import { Crepe, CrepeFeature } from "@milkdown/crepe";
 import { invoke } from "@tauri-apps/api/core";
 import { codeBlockConfig } from "@milkdown/kit/component/code-block";
 import { listItemBlockConfig } from "@milkdown/kit/component/list-item-block";
-import { editorViewCtx, prosePluginsCtx } from "@milkdown/kit/core";
+import { editorViewCtx, prosePluginsCtx, editorViewOptionsCtx } from "@milkdown/kit/core";
 import { hardbreakAttr, hardbreakSchema } from "@milkdown/kit/preset/commonmark";
 import { splitBlock } from "@milkdown/prose/commands";
-import { redo, undo } from "@milkdown/prose/history";
+import { closeHistory, redo, undo } from "@milkdown/prose/history";
 import { InputRule, inputRules } from "@milkdown/prose/inputrules";
 import type { Node as ProseMirrorNode, ResolvedPos } from "@milkdown/prose/model";
 import {
@@ -56,10 +56,12 @@ import {
 import {
   escapeListLeadingAsterisksForPreview,
   normalizeListItemStrongTrailingWhitespace,
+  normalizeSerializedBulletMarkers,
   restoreListLeadingAsterisksFromPreview,
 } from "./markdownListLiteral";
 import {
   deleteAtListItemStart,
+  insertEmptyFirstChildListItem,
   mergeRemovedListMarkerLineBackward,
   moveToNextEmptyListItem,
   sinkSingleListItem,
@@ -523,10 +525,11 @@ function restoreSerializedInlineLinks(markdown: string) {
 function normalizeMarkdownForScholium(markdown: string) {
   return restoreListLeadingAsterisksFromPreview(
     normalizeListItemStrongTrailingWhitespace(
-      restoreSerializedInlineLinks(
-        normalizeSerializedHardBreaks(normalizeSerializedEmptyParagraphBreaks(markdown)),
+      normalizeSerializedBulletMarkers(
+        restoreSerializedInlineLinks(
+          normalizeSerializedHardBreaks(normalizeSerializedEmptyParagraphBreaks(markdown)),
+        ),
       )
-        .replace(/^(\s*)\*\s+/gm, "$1- ")
         .replace(
           /^(\s*(?:[-+]|\d+[.)])\s+\S[^\n]*)\n\n(?=\s*(?:[-+]|\d+[.)])\s+\S)/gm,
           "$1\n",
@@ -1487,6 +1490,9 @@ function measureMilkdownAnnotationFrames(
       const sortedRects = rects.sort(
         (left, right) => left.top - right.top || left.left - right.left,
       );
+      if (sortedRects.length > 0) {
+        sortedRects[sortedRects.length - 1].canExtendRight = false;
+      }
       const extensionRightByRect = new Map<MilkdownAnnotationRect, number>();
       const borderRadiusByRect = new Map<MilkdownAnnotationRect, string>();
       let rectGroup: MilkdownAnnotationRect[] = [];
@@ -3096,15 +3102,30 @@ export function MilkdownMarkdownEditor({
           if (
             event.key === "Enter" &&
             !event.shiftKey &&
-            !noteModeEnabledRef.current &&
-            moveToNextEmptyListItem(listItemType)(
-              view.state,
-              (transaction) => view.dispatch(transaction),
-              view,
-            )
+            !noteModeEnabledRef.current
           ) {
-            event.preventDefault();
-            return true;
+            let insertedFirstChild = false;
+            const handled =
+              insertEmptyFirstChildListItem(listItemType)(
+                view.state,
+                (transaction) => {
+                  insertedFirstChild = transaction.docChanged;
+                  view.dispatch(transaction);
+                },
+                view,
+              ) ||
+              moveToNextEmptyListItem(listItemType)(
+                view.state,
+                (transaction) => view.dispatch(transaction),
+                view,
+              );
+            if (handled) {
+              if (insertedFirstChild) {
+                view.dispatch(closeHistory(view.state.tr));
+              }
+              event.preventDefault();
+              return true;
+            }
           }
 
           if (event.key === "Backspace" || event.key === "Delete") {
@@ -4862,8 +4883,13 @@ export function MilkdownMarkdownEditor({
     kind: "note" | "glossary" = "note",
   ): MilkdownTouchBlockSelectionPreviewRect[] {
     const sortedRects = rects
-      .slice()
+      .filter((rect) => rect.right > rect.left && rect.bottom > rect.top)
       .sort((left, right) => left.top - right.top || left.left - right.left);
+
+    if (sortedRects.length > 0) {
+      sortedRects[sortedRects.length - 1].canExtendRight = false;
+    }
+
     const extensionRightByRect = new Map<MilkdownAnnotationRect, number>();
     const borderRadiusByRect = new Map<MilkdownAnnotationRect, string>();
     let rectGroup: MilkdownAnnotationRect[] = [];
@@ -5743,6 +5769,12 @@ export function MilkdownMarkdownEditor({
       },
     });
     crepe.editor.config((ctx) => {
+      ctx.update(editorViewOptionsCtx, (prev) => ({
+        ...prev,
+        scrollThreshold: { top: 120, right: 0, bottom: 40, left: 0 },
+        scrollMargin: { top: 120, right: 0, bottom: 40, left: 0 },
+      }));
+
       ctx.update(hardbreakSchema.key, (previousSchema) => (schemaCtx) => {
         const schema = previousSchema(schemaCtx);
 
