@@ -197,6 +197,7 @@ export function MarkdownEditor({
   const onChangeRef = useRef(onChange);
   const onSearchMatchCountChangeRef = useRef(onSearchMatchCountChange);
   const suppressNextChangeRef = useRef(false);
+  const handledSelectAllRequestKeyRef = useRef(selectAllRequestKey);
   const searchMatchCount = useMemo(
     () => findDocumentSearchMatches(value, search.query).length,
     [search.query, value],
@@ -290,7 +291,8 @@ export function MarkdownEditor({
   }, [value]);
 
   useEffect(() => {
-    if (selectAllRequestKey === 0) return;
+    if (handledSelectAllRequestKeyRef.current === selectAllRequestKey) return;
+    handledSelectAllRequestKeyRef.current = selectAllRequestKey;
 
     const view = viewRef.current;
     if (!view) return;

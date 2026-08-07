@@ -187,3 +187,4 @@ npm run build
 ```bash
 npm run tauri dev
 ```
+

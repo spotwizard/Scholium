@@ -2215,6 +2215,7 @@ export function MilkdownMarkdownEditor({
   const onSearchMatchCountChangeRef = useRef(onSearchMatchCountChange);
   const onSelectionChangeRef = useRef(onSelectionChange);
   const onSelectionEnterRef = useRef(onSelectionEnter);
+  const handledSelectAllRequestKeyRef = useRef(selectAllRequestKey);
   const onLinkClickRef = useRef(onLinkClick);
   const onAnnotationClickRef = useRef(onAnnotationClick);
   const onAnnotationDoubleClickRef = useRef(onAnnotationDoubleClick);
@@ -3980,7 +3981,8 @@ export function MilkdownMarkdownEditor({
   }
 
   useEffect(() => {
-    if (selectAllRequestKey === 0) return;
+    if (handledSelectAllRequestKeyRef.current === selectAllRequestKey) return;
+    handledSelectAllRequestKeyRef.current = selectAllRequestKey;
 
     const view = currentEditorView();
     if (!view) return;
