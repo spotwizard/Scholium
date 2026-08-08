@@ -94,10 +94,6 @@ export function mergeRemovedListMarkerLineBackward(
     const container = $from.node(containerDepth);
     if (paragraphIndex > 0) {
       const previousList = container.child(paragraphIndex - 1);
-      if (nodeIsMarkdownList(previousList) && nodeIsEmptyParagraph(paragraph)) {
-        return true;
-      }
-
       const previousItem = previousList.lastChild;
       const previousParagraph = previousItem?.firstChild;
       if (

@@ -916,7 +916,6 @@ const protectedInsertionLineDocument = schema.nodes.doc.create(null, [
         item("非業配文"),
         item("非網路行銷文"),
         item("Test"),
-        item(""),
       ]),
       item("大致上分五部分：", [item("文章標題")]),
     ]),
@@ -924,12 +923,8 @@ const protectedInsertionLineDocument = schema.nodes.doc.create(null, [
 ]);
 let protectedInsertionLinePosition = -1;
 protectedInsertionLineDocument.descendants((node, position) => {
-  if (
-    node.type === schema.nodes.list_item &&
-    node.firstChild?.textContent === "" &&
-    node.childCount === 1
-  ) {
-    protectedInsertionLinePosition = position + 2;
+  if (node.isText && node.text === "Test") {
+    protectedInsertionLinePosition = position + node.nodeSize;
   }
 });
 assert.notEqual(protectedInsertionLinePosition, -1);
@@ -941,6 +936,16 @@ let protectedInsertionLineState = EditorState.create({
   ),
   plugins: [history()],
 });
+for (let character = 0; character < "Test".length; character += 1) {
+  protectedInsertionLineState = protectedInsertionLineState.apply(
+    protectedInsertionLineState.tr.delete(
+      protectedInsertionLineState.selection.from - 1,
+      protectedInsertionLineState.selection.from,
+    ),
+  );
+}
+assert.equal(protectedInsertionLineState.selection.$from.parent.textContent, "");
+assert.equal(protectedInsertionLineState.selection.$from.parentOffset, 0);
 assert.equal(
   deleteAtListItemStart(schema.nodes.list_item, "backward")(
     protectedInsertionLineState,
@@ -959,23 +964,6 @@ assert.equal(
 );
 assert.equal(protectedInsertionLineState.selection.$from.parent.childCount, 0);
 assert.equal(protectedInsertionLineState.selection.$from.parentOffset, 0);
-for (let repeat = 0; repeat < 3; repeat += 1) {
-  assert.equal(
-    mergeRemovedListMarkerLineBackward(schema.nodes.list_item)(
-      protectedInsertionLineState,
-      (transaction) => {
-        protectedInsertionLineState =
-          protectedInsertionLineState.apply(transaction);
-      },
-    ),
-    true,
-  );
-}
-assert.deepEqual(
-  protectedInsertionLineState.doc.toJSON(),
-  protectedInsertionLineAfterMarkerDelete,
-  "Backspace on the protected insertion line must not merge it back into Test",
-);
 assert.match(
   preserveSerializedEmptyParagraphListBoundaries(
     "    - 非業配文\n    - 非網路行銷文\n\n  - 大致上分五部分：",
@@ -989,6 +977,29 @@ const protectedPlainTextState = protectedInsertionLineState.apply(
 );
 assert.equal(protectedPlainTextState.selection.$from.parent.textContent, "插入純文字");
 assert.equal(protectedPlainTextState.selection.$from.parent.childCount, 1);
+assert.equal(
+  mergeRemovedListMarkerLineBackward(schema.nodes.list_item)(
+    protectedInsertionLineState,
+    (transaction) => {
+      protectedInsertionLineState =
+        protectedInsertionLineState.apply(transaction);
+    },
+  ),
+  true,
+);
+assert.notDeepEqual(
+  protectedInsertionLineState.doc.toJSON(),
+  protectedInsertionLineAfterMarkerDelete,
+  "A second Backspace must delete the empty insertion line",
+);
+assert.equal(
+  protectedInsertionLineState.selection.$from.parent.textContent,
+  "非網路行銷文",
+);
+assert.equal(
+  protectedInsertionLineState.selection.$from.parentOffset,
+  "非網路行銷文".length,
+);
 assert.equal(
   undo(protectedInsertionLineState, (transaction) => {
     protectedInsertionLineState =
