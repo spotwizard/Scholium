@@ -1,47 +1,45 @@
-export function markdownCopyTextFromRange(markdown: string, rangeFrom: number, rangeTo: number) {
-  let from = rangeFrom;
-  let to = rangeTo;
-  const pairedMarkers = ["**", "__", "`", "*", "_"] as const;
+import type { Node as ProseMirrorNode, Slice } from "@milkdown/prose/model";
+import type { EditorView } from "@milkdown/prose/view";
 
-  let expanded = true;
-  while (expanded) {
-    expanded = false;
-    for (const marker of pairedMarkers) {
-      if (
-        from >= marker.length &&
-        markdown.slice(from - marker.length, from) === marker &&
-        markdown.slice(to, to + marker.length) === marker
-      ) {
-        from -= marker.length;
-        to += marker.length;
-        expanded = true;
-        break;
-      }
+type MarkdownSerializer = (node: ProseMirrorNode) => string;
+
+function sliceHasMarkedText(slice: Slice) {
+  let hasMarkedText = false;
+
+  slice.content.descendants((node) => {
+    if (node.isText && node.marks.length > 0) {
+      hasMarkedText = true;
+      return false;
     }
-  }
 
-  if (from > 0 && markdown[from - 1] === "[" && markdown.slice(to, to + 2) === "](") {
-    const linkEnd = markdown.indexOf(")", to + 2);
-    if (linkEnd > to + 2) {
-      from -= 1;
-      to = linkEnd + 1;
-    }
-  }
+    return !hasMarkedText;
+  });
 
-  const lineStart = markdown.lastIndexOf("\n", from - 1) + 1;
-  const blockPrefix = /^([ \t]*)(?:#{1,6}|>|[-+*]|\d+[.)])[ \t]+$/.exec(
-    markdown.slice(lineStart, from),
+  return hasMarkedText;
+}
+
+export function serializeMarkedTextClipboardSlice(
+  slice: Slice,
+  view: EditorView,
+  serializeMarkdown: MarkdownSerializer,
+) {
+  if (!sliceHasMarkedText(slice)) return null;
+
+  const { $from, $to } = view.state.selection;
+  if (!$from.sameParent($to) || !$from.parent.isTextblock) return null;
+
+  const selectsWholeTextBlock =
+    $from.parentOffset === 0 && $to.parentOffset === $from.parent.content.size;
+  const selectedContent = selectsWholeTextBlock
+    ? slice.content
+    : $from.parent.cut($from.parentOffset, $to.parentOffset);
+  const selectedDocument = view.state.schema.topNodeType.createAndFill(
+    undefined,
+    selectedContent,
   );
-  if (blockPrefix) {
-    from = lineStart;
-  }
 
-  const copiedMarkdown = markdown.slice(from, to);
-  const indentation = blockPrefix?.[1] ?? "";
-  if (!indentation) return copiedMarkdown;
+  if (!selectedDocument) return null;
 
-  return copiedMarkdown
-    .split("\n")
-    .map((line) => (line.startsWith(indentation) ? line.slice(indentation.length) : line))
-    .join("\n");
+  const markdown = serializeMarkdown(selectedDocument);
+  return selectsWholeTextBlock ? markdown : markdown.replace(/\n$/, "");
 }

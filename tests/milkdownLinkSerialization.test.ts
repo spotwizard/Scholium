@@ -15,7 +15,7 @@ assert.match(
 );
 assert.match(
   editor,
-  /return restoreListLeadingAsterisksFromPreview\(\s*normalizeListItemStrongTrailingWhitespace\(\s*normalizeSerializedBulletMarkers\(\s*restoreSerializedInlineLinks\(\s*normalizeSerializedHardBreaks\(normalizeSerializedEmptyParagraphBreaks\(markdown\)\),\s*\),\s*\)/,
+  /return restoreListLeadingAsterisksFromPreview\(\s*normalizeAdjacentSerializedListItems\(\s*normalizeListItemStrongTrailingWhitespace\(\s*normalizeSerializedBulletMarkers\(\s*restoreSerializedInlineLinks\(\s*normalizeSerializedHardBreaks\(normalizeSerializedEmptyParagraphBreaks\(markdown\)\),\s*\),\s*\)/,
 );
 assert.ok(
   editor.includes("/^(\\s*(?:[-+*]|\\d+[.)]))\\s+<br\\s*\\/?>\\s*$/i"),

@@ -10,6 +10,8 @@ import {
   insertEmptyFirstChildListItem,
   mergeRemovedListMarkerLineBackward,
   moveToNextEmptyListItem,
+  normalizeAdjacentSerializedListItems,
+  preserveSerializedEmptyParagraphListBoundaries,
   sinkSingleListItem,
 } from "../src/milkdownListIndent.ts";
 
@@ -44,6 +46,15 @@ const orderedItem = (
       ? [paragraph(text), schema.nodes.ordered_list.create(null, children)]
       : [paragraph(text)],
   );
+
+assert.equal(
+  normalizeAdjacentSerializedListItems("- 第一項\n\n- 第二項"),
+  "- 第一項\n- 第二項",
+);
+assert.equal(
+  normalizeAdjacentSerializedListItems("- 第一項\n\n\n- 第二項"),
+  "- 第一項\n\n\n- 第二項",
+);
 
 const enterBeforeEmptyDocument = schema.nodes.doc.create(null, [
   schema.nodes.bullet_list.create(null, [
@@ -897,6 +908,99 @@ assert.equal(
   true,
 );
 assert.deepEqual(siblingDeletionState.doc.toJSON(), siblingDeletionDocument.toJSON());
+
+const protectedInsertionLineDocument = schema.nodes.doc.create(null, [
+  schema.nodes.bullet_list.create(null, [
+    item("撰寫咖啡館報導散文", [
+      item("形式為真實旅遊報導文章", [
+        item("非業配文"),
+        item("非網路行銷文"),
+        item("Test"),
+        item(""),
+      ]),
+      item("大致上分五部分：", [item("文章標題")]),
+    ]),
+  ]),
+]);
+let protectedInsertionLinePosition = -1;
+protectedInsertionLineDocument.descendants((node, position) => {
+  if (
+    node.type === schema.nodes.list_item &&
+    node.firstChild?.textContent === "" &&
+    node.childCount === 1
+  ) {
+    protectedInsertionLinePosition = position + 2;
+  }
+});
+assert.notEqual(protectedInsertionLinePosition, -1);
+let protectedInsertionLineState = EditorState.create({
+  doc: protectedInsertionLineDocument,
+  selection: TextSelection.create(
+    protectedInsertionLineDocument,
+    protectedInsertionLinePosition,
+  ),
+  plugins: [history()],
+});
+assert.equal(
+  deleteAtListItemStart(schema.nodes.list_item, "backward")(
+    protectedInsertionLineState,
+    (transaction) => {
+      protectedInsertionLineState =
+        protectedInsertionLineState.apply(transaction);
+    },
+  ),
+  true,
+);
+const protectedInsertionLineAfterMarkerDelete =
+  protectedInsertionLineState.doc.toJSON();
+assert.equal(
+  protectedInsertionLineState.selection.$from.parent.type,
+  schema.nodes.paragraph,
+);
+assert.equal(protectedInsertionLineState.selection.$from.parent.childCount, 0);
+assert.equal(protectedInsertionLineState.selection.$from.parentOffset, 0);
+for (let repeat = 0; repeat < 3; repeat += 1) {
+  assert.equal(
+    mergeRemovedListMarkerLineBackward(schema.nodes.list_item)(
+      protectedInsertionLineState,
+      (transaction) => {
+        protectedInsertionLineState =
+          protectedInsertionLineState.apply(transaction);
+      },
+    ),
+    true,
+  );
+}
+assert.deepEqual(
+  protectedInsertionLineState.doc.toJSON(),
+  protectedInsertionLineAfterMarkerDelete,
+  "Backspace on the protected insertion line must not merge it back into Test",
+);
+assert.match(
+  preserveSerializedEmptyParagraphListBoundaries(
+    "    - 非業配文\n    - 非網路行銷文\n\n  - 大致上分五部分：",
+    protectedInsertionLineState.doc,
+  ),
+  /非網路行銷文\n\n\n  - 大致上分五部分：/,
+  "The nested insertion line must survive the controlled Markdown writeback",
+);
+const protectedPlainTextState = protectedInsertionLineState.apply(
+  protectedInsertionLineState.tr.insertText("插入純文字"),
+);
+assert.equal(protectedPlainTextState.selection.$from.parent.textContent, "插入純文字");
+assert.equal(protectedPlainTextState.selection.$from.parent.childCount, 1);
+assert.equal(
+  undo(protectedInsertionLineState, (transaction) => {
+    protectedInsertionLineState =
+      protectedInsertionLineState.apply(transaction);
+  }),
+  true,
+);
+assert.deepEqual(
+  protectedInsertionLineState.doc.toJSON(),
+  protectedInsertionLineDocument.toJSON(),
+  "Undo after marker deletion must restore the empty list item",
+);
 
 const topLevelEmptyItemDocument = schema.nodes.doc.create(null, [
   schema.nodes.bullet_list.create(null, [

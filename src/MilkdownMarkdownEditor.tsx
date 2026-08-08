@@ -2,7 +2,12 @@ import { Crepe, CrepeFeature } from "@milkdown/crepe";
 import { invoke } from "@tauri-apps/api/core";
 import { codeBlockConfig } from "@milkdown/kit/component/code-block";
 import { listItemBlockConfig } from "@milkdown/kit/component/list-item-block";
-import { editorViewCtx, prosePluginsCtx, editorViewOptionsCtx } from "@milkdown/kit/core";
+import {
+  editorViewCtx,
+  prosePluginsCtx,
+  editorViewOptionsCtx,
+  serializerCtx,
+} from "@milkdown/kit/core";
 import { hardbreakAttr, hardbreakSchema } from "@milkdown/kit/preset/commonmark";
 import { splitBlock } from "@milkdown/prose/commands";
 import { closeHistory, redo, undo } from "@milkdown/prose/history";
@@ -46,7 +51,7 @@ import {
   splitMarkdownFrontmatter,
   stripMarkdownFrontmatter,
 } from "./markdownFrontmatter";
-import { markdownCopyTextFromRange } from "./markdownClipboard";
+import { serializeMarkedTextClipboardSlice } from "./markdownClipboard";
 import {
   appendInlineMarkdownTextMap,
   appendTextMap,
@@ -64,6 +69,8 @@ import {
   insertEmptyFirstChildListItem,
   mergeRemovedListMarkerLineBackward,
   moveToNextEmptyListItem,
+  normalizeAdjacentSerializedListItems,
+  preserveSerializedEmptyParagraphListBoundaries,
   sinkSingleListItem,
 } from "./milkdownListIndent";
 import { createListItemInlineStrongSyntaxPlugin } from "./milkdownInlineMarkdownSyntax";
@@ -524,16 +531,14 @@ function restoreSerializedInlineLinks(markdown: string) {
 
 function normalizeMarkdownForScholium(markdown: string) {
   return restoreListLeadingAsterisksFromPreview(
-    normalizeListItemStrongTrailingWhitespace(
-      normalizeSerializedBulletMarkers(
-        restoreSerializedInlineLinks(
-          normalizeSerializedHardBreaks(normalizeSerializedEmptyParagraphBreaks(markdown)),
+    normalizeAdjacentSerializedListItems(
+      normalizeListItemStrongTrailingWhitespace(
+        normalizeSerializedBulletMarkers(
+          restoreSerializedInlineLinks(
+            normalizeSerializedHardBreaks(normalizeSerializedEmptyParagraphBreaks(markdown)),
+          ),
         ),
-      )
-        .replace(
-          /^(\s*(?:[-+]|\d+[.)])\s+\S[^\n]*)\n\n(?=\s*(?:[-+]|\d+[.)])\s+\S)/gm,
-          "$1\n",
-        ),
+      ),
     )
   );
 }
@@ -1641,10 +1646,6 @@ function makeAnchorFromSourceRange(markdown: string, from: number, to: number) {
   };
 }
 
-function markdownCopyTextFromAnchor(markdown: string, anchor: TextSelectionAnchor) {
-  return markdownCopyTextFromRange(markdown, anchor.from, anchor.to);
-}
-
 function buildAnchor(
   markdown: string,
   selectedText: string,
@@ -2503,7 +2504,6 @@ export function MilkdownMarkdownEditor({
     container.addEventListener("mousedown", preventFocus, { capture: true });
     container.addEventListener("touchstart", preventFocus, { capture: true, passive: false });
     container.addEventListener("touchend", handleTouchEnd, { capture: true, passive: false });
-    container.addEventListener("copy", handleMarkdownCopy, true);
     container.addEventListener("click", handleLinkClick, true);
     container.addEventListener("click", handleCodeBlockCopyClick, true);
     container.addEventListener("click", handleCodeBlockDeleteClick, true);
@@ -2512,7 +2512,6 @@ export function MilkdownMarkdownEditor({
       container.removeEventListener("mousedown", preventFocus, { capture: true });
       container.removeEventListener("touchstart", preventFocus, { capture: true });
       container.removeEventListener("touchend", handleTouchEnd, { capture: true });
-      container.removeEventListener("copy", handleMarkdownCopy, true);
       container.removeEventListener("click", handleLinkClick, true);
       container.removeEventListener("click", handleCodeBlockCopyClick, true);
       container.removeEventListener("click", handleCodeBlockDeleteClick, true);
@@ -4147,40 +4146,6 @@ export function MilkdownMarkdownEditor({
     );
   }
 
-  function selectionMatchesWholeMilkdownDocument(selectedText: string) {
-    const view = currentEditorView();
-    if (!view) return false;
-
-    return (
-      normalizeSelectedText(selectedText) ===
-      normalizeSelectedText(view.state.doc.textBetween(0, view.state.doc.content.size, " "))
-    );
-  }
-
-  function markdownCopyTextFromCurrentSelection() {
-    const selectedText = window.getSelection()?.toString() ?? "";
-    if (!normalizeSelectedText(selectedText)) return null;
-
-    if (selectionMatchesWholeMilkdownDocument(selectedText)) {
-      return stripMarkdownFrontmatter(currentMarkdownRef.current);
-    }
-
-    const anchor = anchorFromCurrentSelection();
-    return anchor ? markdownCopyTextFromAnchor(currentMarkdownRef.current, anchor) : null;
-  }
-
-  function handleMarkdownCopy(event: ClipboardEvent) {
-    if (!event.clipboardData) return;
-
-    const copyText = markdownCopyTextFromCurrentSelection();
-    if (!copyText) return;
-
-    event.preventDefault();
-    event.stopPropagation();
-    event.clipboardData.clearData();
-    event.clipboardData.setData("text/plain", copyText);
-  }
-
   function touchBlockSelectionEnabled() {
     return (
       noteModeEnabledRef.current &&
@@ -5773,6 +5738,10 @@ export function MilkdownMarkdownEditor({
     crepe.editor.config((ctx) => {
       ctx.update(editorViewOptionsCtx, (prev) => ({
         ...prev,
+        clipboardTextSerializer: (slice, view) =>
+          serializeMarkedTextClipboardSlice(slice, view, ctx.get(serializerCtx)) ??
+          prev.clipboardTextSerializer?.(slice, view) ??
+          "",
         scrollThreshold: { top: 120, right: 0, bottom: 40, left: 0 },
         scrollMargin: { top: 120, right: 0, bottom: 40, left: 0 },
       }));
@@ -5859,7 +5828,15 @@ export function MilkdownMarkdownEditor({
 
     crepe.on((listener) => {
       listener.markdownUpdated((_ctx, markdown) => {
-        const normalizedEditorMarkdown = normalizeMarkdownForScholium(markdown);
+        const normalizedMarkdownWithoutEmptyListParagraphs =
+          normalizeMarkdownForScholium(markdown);
+        const view = currentEditorView();
+        const normalizedEditorMarkdown = view
+          ? preserveSerializedEmptyParagraphListBoundaries(
+              normalizedMarkdownWithoutEmptyListParagraphs,
+              view.state.doc,
+            )
+          : normalizedMarkdownWithoutEmptyListParagraphs;
         const normalizedMarkdown = mergeMarkdownFrontmatter(
           currentMarkdownRef.current,
           normalizedEditorMarkdown,

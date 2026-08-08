@@ -6,25 +6,98 @@ import {
   type Transaction,
 } from "@milkdown/prose/state";
 
+function nodeIsMarkdownList(node: ProseMirrorNode) {
+  return (
+    node.type.name === "bullet_list" ||
+    node.type.name === "bulletList" ||
+    node.type.name === "ordered_list" ||
+    node.type.name === "orderedList"
+  );
+}
+
+function nodeIsEmptyParagraph(node: ProseMirrorNode) {
+  return (
+    node.type.name === "paragraph" &&
+    (node.content.size === 0 ||
+      (node.childCount === 1 && node.firstChild?.type.name === "hardbreak"))
+  );
+}
+
+export function normalizeAdjacentSerializedListItems(markdown: string) {
+  return markdown.replace(
+    /^([ \t]*(?:[-+]|\d+[.)])[ \t]+\S[^\n]*)\n\n(?=[ \t]*(?:[-+]|\d+[.)])[ \t]+\S)/gm,
+    "$1\n",
+  );
+}
+
+function countEmptyParagraphListBoundaries(doc: ProseMirrorNode) {
+  let count = 0;
+
+  const scanNode = (node: ProseMirrorNode) => {
+    for (let index = 0; index < node.childCount; index += 1) {
+      if (!nodeIsEmptyParagraph(node.child(index))) continue;
+
+      const previousNode = index > 0 ? node.child(index - 1) : null;
+      const nextNode = index + 1 < node.childCount ? node.child(index + 1) : null;
+      if (
+        (previousNode && nodeIsMarkdownList(previousNode)) ||
+        (nextNode && nodeIsMarkdownList(nextNode))
+      ) {
+        count += 1;
+      }
+    }
+  };
+
+  scanNode(doc);
+  doc.descendants(scanNode);
+
+  return count;
+}
+
+export function preserveSerializedEmptyParagraphListBoundaries(
+  markdown: string,
+  doc: ProseMirrorNode,
+) {
+  let remaining = countEmptyParagraphListBoundaries(doc);
+  if (remaining === 0) return markdown;
+
+  return markdown.replace(
+    /^([ \t]*(?:[-+*]|\d+[.)])[ \t]+\S[^\n]*)\n\n(?=[ \t]*(?:[-+*]|\d+[.)])[ \t]+\S)/gm,
+    (match, listItemLine) => {
+      if (remaining === 0) return match;
+      remaining -= 1;
+      return `${listItemLine}\n\n\n`;
+    },
+  );
+}
+
 export function mergeRemovedListMarkerLineBackward(
   itemType: NodeType,
 ): Command {
   return (state, dispatch) => {
     const { $from } = state.selection;
+    const paragraph = $from.parent;
+    const selectionAtEmptyParagraphStart =
+      $from.parentOffset === 0 ||
+      (nodeIsEmptyParagraph(paragraph) &&
+        $from.parentOffset === paragraph.content.size);
     if (
       !(state.selection instanceof TextSelection) ||
       !state.selection.empty ||
-      $from.parentOffset !== 0
+      !selectionAtEmptyParagraphStart
     ) {
       return false;
     }
 
-    const paragraph = $from.parent;
     const containerDepth = $from.depth - 1;
     const paragraphIndex = $from.index(containerDepth);
     const container = $from.node(containerDepth);
     if (paragraphIndex > 0) {
       const previousList = container.child(paragraphIndex - 1);
+      if (nodeIsMarkdownList(previousList) && nodeIsEmptyParagraph(paragraph)) {
+        return true;
+      }
+
       const previousItem = previousList.lastChild;
       const previousParagraph = previousItem?.firstChild;
       if (
@@ -34,7 +107,9 @@ export function mergeRemovedListMarkerLineBackward(
         if (!dispatch) return true;
 
         const mergedParagraph = previousParagraph.copy(
-          previousParagraph.content.append(paragraph.content),
+          nodeIsEmptyParagraph(paragraph)
+            ? previousParagraph.content
+            : previousParagraph.content.append(paragraph.content),
         );
         const itemBlocks: ProseMirrorNode[] = [mergedParagraph];
         for (let index = 1; index < previousItem.childCount; index += 1) {
@@ -92,7 +167,9 @@ export function mergeRemovedListMarkerLineBackward(
     if (!canMergeInsideItem) return false;
     if (dispatch) {
       const paragraphBoundary = $from.before($from.depth);
-      const tr = state.tr.join(paragraphBoundary);
+      const tr = nodeIsEmptyParagraph(paragraph)
+        ? state.tr.delete(paragraphBoundary, paragraphBoundary + paragraph.nodeSize)
+        : state.tr.join(paragraphBoundary);
       tr.setSelection(TextSelection.create(tr.doc, paragraphBoundary - 1));
       dispatch(tr.scrollIntoView());
     }

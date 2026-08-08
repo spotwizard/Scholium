@@ -13,19 +13,15 @@ assert.match(
 );
 assert.match(
   milkdown,
-  /container\.addEventListener\("copy", handleMarkdownCopy, true\)/,
+  /clipboardTextSerializer: \(slice, view\) =>[\s\S]*?serializeMarkedTextClipboardSlice\(slice, view, ctx\.get\(serializerCtx\)\)/,
 );
 assert.match(
   milkdown,
-  /event\.clipboardData\.setData\("text\/plain", copyText\)/,
+  /prev\.clipboardTextSerializer\?\.\(slice, view\) \?\?\s*""/,
 );
-assert.match(
-  milkdown,
-  /return stripMarkdownFrontmatter\(currentMarkdownRef\.current\);/,
-);
-assert.match(
-  milkdown,
-  /function markdownCopyTextFromAnchor[\s\S]*markdownCopyTextFromRange\(markdown, anchor\.from, anchor\.to\)/,
-);
+assert.doesNotMatch(milkdown, /addEventListener\("copy"/);
+assert.doesNotMatch(milkdown, /removeEventListener\("copy"/);
+assert.doesNotMatch(milkdown, /function handleMarkdownCopy/);
+assert.doesNotMatch(milkdown, /markdownCopyTextFromRange/);
 
 console.log("markdown copy syntax regression: PASS");

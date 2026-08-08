@@ -6,7 +6,8 @@ const editor = readFileSync(
   "utf8",
 );
 
-assert.match(editor, /container\.addEventListener\("copy", handleMarkdownCopy, true\)/);
+assert.doesNotMatch(editor, /addEventListener\("copy"/);
+assert.match(editor, /clipboardTextSerializer: \(slice, view\) =>/);
 assert.doesNotMatch(editor, /markdownWithClipboardSyntaxInserted/);
 assert.doesNotMatch(editor, /function handleMarkdownPaste/);
 assert.doesNotMatch(editor, /function sourceOffsetFromEditorPosition/);

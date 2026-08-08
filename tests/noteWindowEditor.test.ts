@@ -75,6 +75,23 @@ assert.match(
 );
 assert.match(
   appSource,
+  /function handlePlainTextCopy[\s\S]*?clipboardData\.setData\("text\/plain", selectedText\)/,
+);
+assert.doesNotMatch(appSource, /function markdownPreviewCopyTextFromSelection/);
+assert.match(
+  appSource,
+  /function previewTextOffsetForSourcePosition\([\s\S]*?sourceOffset !== null && sourceOffset >= sourcePosition[\s\S]*?return textMap\.text\.length;/,
+);
+assert.match(
+  appSource,
+  /function handlePreviewPaste[\s\S]*?const caretSourcePosition = selectedRange\.from \+ pastedText\.length;[\s\S]*?focusPreviewBlockTextOffset\([\s\S]*?previewTextOffsetForSourcePosition\([\s\S]*?getPreviewBlockTextMap\(nextValue, focusBlock\),[\s\S]*?caretSourcePosition,[\s\S]*?\)[\s\S]*?\);[\s\S]*?commitPreviewChange\(nextValue\)/,
+);
+assert.doesNotMatch(
+  appSource,
+  /function handlePreviewPaste[\s\S]*?focusPreviewBlockEnd\(focusBlock\.key\)/,
+);
+assert.match(
+  appSource,
   /function undoPreviewChange\(\)[\s\S]*?const previousValue = previewUndoStackRef\.current\.pop\(\);[\s\S]*?if \(previousValue === undefined\) return false;/,
 );
 assert.doesNotMatch(appSource, /function undoPreviewChange\(\)[\s\S]*?if \(!previousValue\) return false;/);

@@ -5176,6 +5176,17 @@ function sourcePositionForPreviewTextOffset(textMap: PreviewTextMap, offset: num
   return null;
 }
 
+function previewTextOffsetForSourcePosition(textMap: PreviewTextMap, sourcePosition: number) {
+  if (textMap.sourceOffsets.length === 0) return 0;
+
+  const exactOffset = textMap.sourceOffsets.findIndex(
+    (sourceOffset) => sourceOffset !== null && sourceOffset >= sourcePosition,
+  );
+  if (exactOffset >= 0) return exactOffset;
+
+  return textMap.text.length;
+}
+
 function sourceRangeForPreviewTextOffsets(textMap: PreviewTextMap, from: number, to: number) {
   if (from === to) {
     const sourcePosition = sourcePositionForPreviewTextOffset(textMap, from);
@@ -6532,10 +6543,9 @@ export function MarkdownPreview({
       previewValueRef.current.slice(0, selectedRange.from) +
       pastedText +
       previewValueRef.current.slice(selectedRange.to);
-    commitPreviewChange(nextValue);
-
+    const caretSourcePosition = selectedRange.from + pastedText.length;
     const caretLine =
-      nextValue.slice(0, selectedRange.from + pastedText.length).split("\n").length - 1;
+      nextValue.slice(0, caretSourcePosition).split("\n").length - 1;
     const nextBlocks = parseMarkdownPreviewBlocks(nextValue);
     const focusBlock =
       nextBlocks.find(
@@ -6544,8 +6554,15 @@ export function MarkdownPreview({
       nextBlocks.filter((block) => block.endLine < caretLine).slice(-1)[0] ??
       nextBlocks[0];
     if (focusBlock) {
-      focusPreviewBlockEnd(focusBlock.key);
+      focusPreviewBlockTextOffset(
+        focusBlock.key,
+        previewTextOffsetForSourcePosition(
+          getPreviewBlockTextMap(nextValue, focusBlock),
+          caretSourcePosition,
+        ),
+      );
     }
+    commitPreviewChange(nextValue);
   }
 
   function handlePreviewInput(event: FormEvent<HTMLDivElement>) {
