@@ -14,6 +14,20 @@ type DocumentSearchKeyEvent = Pick<
   "isComposing" | "key" | "keyCode" | "shiftKey"
 >;
 
+type DocumentSearchShortcutEvent = Pick<
+  KeyboardEvent,
+  "altKey" | "code" | "ctrlKey" | "key" | "metaKey" | "shiftKey"
+>;
+
+export function isDocumentSearchSelectAllShortcut(event: DocumentSearchShortcutEvent) {
+  return (
+    ((event.metaKey && !event.ctrlKey) || (event.ctrlKey && !event.metaKey)) &&
+    !event.altKey &&
+    !event.shiftKey &&
+    (event.code === "KeyA" || event.key.toLowerCase() === "a")
+  );
+}
+
 export function documentSearchMoveDeltaForKeyDown(event: DocumentSearchKeyEvent) {
   if (event.key !== "Enter" || event.isComposing || event.keyCode === 229) return 0;
 

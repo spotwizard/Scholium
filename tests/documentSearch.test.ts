@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
   documentSearchMoveDeltaForKeyDown,
+  isDocumentSearchSelectAllShortcut,
 } from "../src/documentSearch.ts";
 
 const appCss = readFileSync(new URL("../src/App.css", import.meta.url), "utf8");
@@ -75,6 +76,33 @@ assert.match(
 assert.match(
   app,
   /function closeDocumentSearch\(\) \{\s*setDocumentSearchOpen\(false\);\s*if \(!isMobileViewport\) \{\s*setDocumentSearchQuery\(""\);\s*setDocumentSearchActiveIndex\(0\);\s*setDocumentSearchMatchCount\(0\);/,
+);
+
+const selectAllShortcut = {
+  altKey: false,
+  code: "KeyA",
+  ctrlKey: true,
+  key: "a",
+  metaKey: false,
+  shiftKey: false,
+};
+
+assert.equal(isDocumentSearchSelectAllShortcut(selectAllShortcut), true);
+assert.equal(isDocumentSearchSelectAllShortcut({ ...selectAllShortcut, key: "ㄇ" }), true);
+assert.equal(
+  isDocumentSearchSelectAllShortcut({ ...selectAllShortcut, ctrlKey: false, metaKey: true }),
+  true,
+);
+assert.equal(isDocumentSearchSelectAllShortcut({ ...selectAllShortcut, metaKey: true }), false);
+assert.equal(isDocumentSearchSelectAllShortcut({ ...selectAllShortcut, shiftKey: true }), false);
+assert.equal(isDocumentSearchSelectAllShortcut({ ...selectAllShortcut, altKey: true }), false);
+assert.equal(
+  isDocumentSearchSelectAllShortcut({ ...selectAllShortcut, code: "KeyB", key: "b" }),
+  false,
+);
+assert.match(
+  app,
+  /if \(isDocumentSearchSelectAllShortcut\(event\.nativeEvent\)\) \{\s*event\.preventDefault\(\);\s*event\.stopPropagation\(\);\s*event\.currentTarget\.select\(\);/,
 );
 
 const candidateCommitEnter = {

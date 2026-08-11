@@ -37,6 +37,7 @@ import {
 } from "./MarkdownEditor";
 import {
   documentSearchMoveDeltaForKeyDown,
+  isDocumentSearchSelectAllShortcut,
   type DocumentSearchState,
 } from "./documentSearch";
 import {
@@ -9928,6 +9929,13 @@ function App() {
   }
 
   function handleDocumentSearchInputKeyDown(event: ReactKeyboardEvent<HTMLInputElement>) {
+    if (isDocumentSearchSelectAllShortcut(event.nativeEvent)) {
+      event.preventDefault();
+      event.stopPropagation();
+      event.currentTarget.select();
+      return;
+    }
+
     const moveDelta = documentSearchMoveDeltaForKeyDown(event.nativeEvent);
     if (moveDelta !== 0) {
       event.preventDefault();
