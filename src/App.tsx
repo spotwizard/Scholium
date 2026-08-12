@@ -8207,7 +8207,8 @@ function App() {
     (binding) => binding.documentId === selectedDocument.id && binding.status !== "deleted",
   );
   const nativeStorageAvailable = hasNativeStorageAccess();
-  const documentSearchVisible = hasOpenDocument && !settingsViewOpen;
+  const documentSearchVisible =
+    hasOpenDocument && !settingsViewOpen && (isMobileViewport || documentSearchOpen);
   const documentTabsVisible = !settingsViewOpen && openDocumentTabs.length > 1;
 
   useLayoutEffect(() => {

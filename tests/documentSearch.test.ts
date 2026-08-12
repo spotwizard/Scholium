@@ -22,7 +22,7 @@ const documentSearchIndex = app.indexOf('className="document-search"', editorPan
 
 assert.match(
   desktopSearchRule,
-  /position:\s*absolute;/,
+  /position:\s*fixed;/,
 );
 assert.ok(documentSearchIndex > editorPaneIndex);
 assert.ok(
@@ -31,11 +31,11 @@ assert.ok(
 );
 assert.match(
   desktopSearchRule,
-  /top:\s*var\(--editor-top-control-offset\);/,
+  /top:\s*0;/,
 );
 assert.match(
-  appCss,
-  /\.scholium-shell\.has-document-tabs \.document-search \{\s*top:\s*calc\(var\(--editor-top-control-offset\) \+ var\(--document-tab-bar-occupied-height\)\);/,
+  desktopSearchRule,
+  /right:\s*0;[\s\S]*?left:\s*0;[\s\S]*?z-index:\s*90;[\s\S]*?width:\s*100%;/,
 );
 assert.doesNotMatch(
   desktopSearchRule,
@@ -63,7 +63,7 @@ assert.match(
 );
 assert.match(
   appCss,
-  /@media \(max-width: 640px\) \{[\s\S]*?\.document-search \{[\s\S]*?position:\s*absolute;[\s\S]*?top:\s*calc\(var\(--mobile-safe-area-top\) \+ 12px\);/,
+  /@media \(max-width: 640px\) \{[\s\S]*?\.document-search \{[\s\S]*?position:\s*absolute;[\s\S]*?top:\s*calc\(var\(--mobile-safe-area-top\) \+ 12px\);[\s\S]*?right:\s*16px;[\s\S]*?left:\s*auto;/,
 );
 assert.match(
   appCss,
@@ -71,7 +71,7 @@ assert.match(
 );
 assert.match(
   app,
-  /const documentSearchVisible = hasOpenDocument && !settingsViewOpen;/,
+  /const documentSearchVisible =\s*hasOpenDocument && !settingsViewOpen && \(isMobileViewport \|\| documentSearchOpen\);/,
 );
 assert.match(
   app,

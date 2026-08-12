@@ -2843,12 +2843,14 @@ button.document-tag-chip__label:focus-visible {
 }
 
 .document-search {
-  position: absolute;
-  top: var(--editor-top-control-offset);
-  right: calc(var(--editor-content-end-offset) + 24px);
-  z-index: 8;
+  position: fixed;
+  top: 0;
+  right: 0;
+  left: 0;
+  z-index: 90;
+  box-sizing: border-box;
   display: grid;
-  width: min(460px, calc(100% - var(--editor-content-offset) - 48px));
+  width: 100%;
   grid-template-columns: minmax(160px, 1fr) auto 30px 30px 30px;
   gap: 6px;
   align-items: center;
@@ -2858,10 +2860,6 @@ button.document-tag-chip__label:focus-visible {
   background: rgba(255, 255, 255, 0.88);
   box-shadow: var(--shadow-low);
   backdrop-filter: blur(12px);
-}
-
-.scholium-shell.has-document-tabs .document-search {
-  top: calc(var(--editor-top-control-offset) + var(--document-tab-bar-occupied-height));
 }
 
 :root[data-theme="dark"] .document-search {
@@ -6582,6 +6580,7 @@ button.document-tag-chip__label:focus-visible {
     position: absolute;
     top: calc(var(--mobile-safe-area-top) + 12px);
     right: 16px;
+    left: auto;
     bottom: auto;
     z-index: 74;
     box-sizing: border-box;
