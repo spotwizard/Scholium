@@ -7756,6 +7756,61 @@ function App() {
 
   useEffect(() => {
     let keyboardCloseTimer = 0;
+    let restoreScrollFrame = 0;
+    let floatingNoteScrollLock: {
+      editorPane: HTMLElement;
+      left: number;
+      top: number;
+      windowX: number;
+      windowY: number;
+    } | null = null;
+
+    function floatingNoteEditableFromTarget(target: EventTarget | null) {
+      if (!(target instanceof Element)) return null;
+      const editable = target.closest<HTMLElement>(
+        "input, textarea, [contenteditable='true']",
+      );
+      return editable?.closest(".floating-note-panel:not(.is-expanded-sidebar)")
+        ? editable
+        : null;
+    }
+
+    function captureFloatingNoteScrollPosition(event: Event) {
+      if (!window.matchMedia(mobileSafeLayoutViewportQuery).matches) return;
+      if (!floatingNoteEditableFromTarget(event.target)) return;
+      if (event.type === "focusin" && floatingNoteScrollLock) return;
+
+      const editorPane = document.querySelector<HTMLElement>(".editor-pane");
+      if (!editorPane) return;
+      floatingNoteScrollLock = {
+        editorPane,
+        left: editorPane.scrollLeft,
+        top: editorPane.scrollTop,
+        windowX: window.scrollX,
+        windowY: window.scrollY,
+      };
+    }
+
+    function restoreFloatingNoteScrollPosition() {
+      const lock = floatingNoteScrollLock;
+      if (!lock || !lock.editorPane.isConnected) return;
+
+      if (lock.editorPane.scrollLeft !== lock.left) {
+        lock.editorPane.scrollLeft = lock.left;
+      }
+      if (lock.editorPane.scrollTop !== lock.top) {
+        lock.editorPane.scrollTop = lock.top;
+      }
+      if (window.scrollX !== lock.windowX || window.scrollY !== lock.windowY) {
+        window.scrollTo(lock.windowX, lock.windowY);
+      }
+    }
+
+    function keepFloatingNoteScrollPosition() {
+      restoreFloatingNoteScrollPosition();
+      window.cancelAnimationFrame(restoreScrollFrame);
+      restoreScrollFrame = window.requestAnimationFrame(restoreFloatingNoteScrollPosition);
+    }
 
     function syncVisualViewportProperties() {
       const visualViewport = window.visualViewport;
@@ -7787,6 +7842,10 @@ function App() {
         visualViewport !== null &&
         Math.max(window.innerHeight, rootElement.clientHeight) - visualViewport.height > 96;
 
+      if (floatingNoteScrollLock) {
+        keepFloatingNoteScrollPosition();
+      }
+
       if (softwareKeyboardOpen) {
         window.clearTimeout(keyboardCloseTimer);
         keyboardCloseTimer = 0;
@@ -7797,6 +7856,7 @@ function App() {
       ) {
         keyboardCloseTimer = window.setTimeout(() => {
           rootElement.classList.remove("is-mobile-keyboard-open");
+          floatingNoteScrollLock = null;
           keyboardCloseTimer = 0;
         }, 180);
       }
@@ -7806,13 +7866,18 @@ function App() {
     visualViewport?.addEventListener("scroll", syncVisualViewportProperties);
     visualViewport?.addEventListener("resize", syncVisualViewportProperties);
     window.addEventListener("resize", syncVisualViewportProperties);
+    document.addEventListener("pointerdown", captureFloatingNoteScrollPosition, true);
+    document.addEventListener("focusin", captureFloatingNoteScrollPosition, true);
     syncVisualViewportProperties();
 
     return () => {
       window.clearTimeout(keyboardCloseTimer);
+      window.cancelAnimationFrame(restoreScrollFrame);
       visualViewport?.removeEventListener("scroll", syncVisualViewportProperties);
       visualViewport?.removeEventListener("resize", syncVisualViewportProperties);
       window.removeEventListener("resize", syncVisualViewportProperties);
+      document.removeEventListener("pointerdown", captureFloatingNoteScrollPosition, true);
+      document.removeEventListener("focusin", captureFloatingNoteScrollPosition, true);
       document.documentElement.classList.remove("is-mobile-keyboard-open");
       document.documentElement.style.removeProperty("--visual-viewport-offset-top");
       document.documentElement.style.removeProperty("--visual-viewport-offset-left");
