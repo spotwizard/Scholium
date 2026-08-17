@@ -2,6 +2,14 @@
   --color-text: #202329;
   --color-heading: #111318;
   --color-source-editor-text: #374151;
+  --color-source-syntax-code: #9a4e00;
+  --color-source-syntax-emphasis: #75459a;
+  --color-source-syntax-heading: #c83278;
+  --color-source-syntax-link: #a83b72;
+  --color-source-syntax-meta: #596579;
+  --color-source-syntax-quote: #047857;
+  --color-source-syntax-strong: #1d5f99;
+  --color-source-syntax-url: #9a4e00;
   --color-preview-editor-text: #000000;
   --color-muted: #6b7280;
   --color-app-bg: #f6f0e6;
@@ -76,6 +84,14 @@
   --color-text: #d7dbe3;
   --color-heading: #f3f5f8;
   --color-source-editor-text: #cbd5e1;
+  --color-source-syntax-code: #fbbf24;
+  --color-source-syntax-emphasis: #c084fc;
+  --color-source-syntax-heading: #fb7185;
+  --color-source-syntax-link: #fda4af;
+  --color-source-syntax-meta: #94a3b8;
+  --color-source-syntax-quote: #34d399;
+  --color-source-syntax-strong: #60a5fa;
+  --color-source-syntax-url: #f59e0b;
   --color-preview-editor-text: #f8fafc;
   --color-muted: #9aa3b2;
   --color-app-bg: #15171b;
@@ -167,16 +183,14 @@ button:disabled {
   --document-tab-bar-height: 40px;
   --document-tab-bar-offset: 0px;
   --document-tab-bar-occupied-height: var(--document-tab-bar-height);
-  --editor-content-gutter: 72px;
-  --editor-content-top-gutter: 80px;
+  --editor-content-gutter: 56px;
+  --editor-content-top-gutter: 20px;
   --editor-content-inline-start-gutter: clamp(96px, 7vw, 120px);
   --editor-content-inline-end-gutter: var(--editor-content-gutter);
   --editor-content-offset: var(--side-panel-reserved-width);
   --editor-content-end-offset: var(--side-panel-reserved-width);
   --editor-left-control-gutter: clamp(56px, 4vw, 72px);
   --editor-top-control-offset: 20px;
-  --editor-document-title-top: var(--editor-top-control-offset);
-  --editor-document-title-max-width: min(36rem, 34vw);
   --settings-editor-font-size: 18px;
   --settings-editor-line-height: 1.72;
   --settings-editor-line-height-px: 31px;
@@ -405,6 +419,11 @@ button:disabled {
   opacity: 1;
 }
 
+.mobile-note-selection-hint.is-source-mode-blocked {
+  width: min(320px, calc(100vw - 32px));
+  transform: none;
+}
+
 .mobile-storage-status {
   position: fixed;
   top: 50%;
@@ -447,6 +466,36 @@ button:disabled {
   display: block;
   min-height: 0;
   background: var(--color-surface);
+}
+
+.workspace-sort-control {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  border-bottom: 1px solid var(--color-border-soft);
+  padding: 7px 12px;
+  color: var(--color-muted);
+  font-size: 0.75rem;
+  font-weight: 650;
+}
+
+.workspace-sort-control select {
+  width: 100%;
+  min-width: 0;
+  height: 30px;
+  border: 1px solid var(--color-border);
+  border-radius: 7px;
+  padding: 0 8px;
+  color: var(--color-heading);
+  background: var(--color-surface-raised);
+  font: inherit;
+  outline: none;
+}
+
+.workspace-sort-control select:focus-visible {
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-accent) 18%, transparent);
 }
 
 .document-browser-search {
@@ -2085,6 +2134,7 @@ button:disabled {
 }
 
 .editor-pane {
+  position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr);
@@ -2661,40 +2711,6 @@ button.document-tag-chip__label:focus-visible {
   top: calc(var(--editor-top-control-offset) + var(--document-tab-bar-occupied-height));
 }
 
-.editor-document-title {
-  position: absolute;
-  top: var(--editor-document-title-top);
-  right: var(--editor-content-end-offset);
-  left: calc(var(--editor-content-offset) + var(--editor-left-control-gutter));
-  z-index: 3;
-  display: flex;
-  min-height: 40px;
-  align-items: center;
-  justify-content: center;
-  pointer-events: none;
-  transition:
-    left var(--side-panel-transition-duration) var(--side-panel-transition-easing),
-    right var(--side-panel-transition-duration) var(--side-panel-transition-easing);
-}
-
-.scholium-shell.has-document-tabs .editor-document-title {
-  top: calc(var(--editor-document-title-top) + var(--document-tab-bar-occupied-height));
-}
-
-.editor-document-title__text {
-  max-width: var(--editor-document-title-max-width);
-  margin: 0;
-  overflow: hidden;
-  color: var(--color-preview-editor-text);
-  font-size: 1.75rem;
-  font-weight: 760;
-  letter-spacing: 0;
-  line-height: 1.22;
-  text-align: center;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .editor-toolbar:not([data-expanded="true"]) .note-mode-switch--dependent {
   display: none;
 }
@@ -2730,6 +2746,14 @@ button.document-tag-chip__label:focus-visible {
 
 .editor-mode-toggle:hover {
   background: rgba(31, 41, 55, 0.08);
+}
+
+.editor-mode-toggle[aria-disabled="true"] {
+  cursor: not-allowed;
+}
+
+.editor-mode-toggle[aria-disabled="true"]:hover {
+  background: transparent;
 }
 
 .editor-mode-toggle.is-active {
@@ -2773,13 +2797,14 @@ button.document-tag-chip__label:focus-visible {
   display: inline-flex;
   flex: 0 0 auto;
   width: auto;
-  min-width: 74px;
+  min-width: 0;
   height: 34px;
   align-items: center;
+  gap: 4px;
   justify-content: center;
   border: 1px solid transparent;
   border-radius: 8px;
-  padding: 0 14px;
+  padding: 0 6px;
   color: var(--color-accent-ink);
   background: transparent;
   box-shadow: none;
@@ -2848,12 +2873,14 @@ button.document-tag-chip__label:focus-visible {
 }
 
 .document-search {
-  position: absolute;
-  top: 20px;
-  right: calc(var(--editor-content-end-offset) + 24px);
-  z-index: 8;
+  position: fixed;
+  top: 0;
+  right: 0;
+  left: 0;
+  z-index: 90;
+  box-sizing: border-box;
   display: grid;
-  width: min(460px, calc(100% - var(--editor-content-offset) - 48px));
+  width: 100%;
   grid-template-columns: minmax(160px, 1fr) auto 30px 30px 30px;
   gap: 6px;
   align-items: center;
@@ -2863,10 +2890,6 @@ button.document-tag-chip__label:focus-visible {
   background: rgba(255, 255, 255, 0.88);
   box-shadow: var(--shadow-low);
   backdrop-filter: blur(12px);
-}
-
-.scholium-shell.has-document-tabs .document-search {
-  top: calc(20px + var(--document-tab-bar-occupied-height));
 }
 
 :root[data-theme="dark"] .document-search {
@@ -2999,6 +3022,24 @@ button.document-tag-chip__label:focus-visible {
   transition: color 120ms ease, text-shadow 120ms ease;
 }
 
+.note-mode-switch__icon {
+  display: block;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  background-color: currentColor;
+}
+
+.note-mode-switch__icon--note {
+  -webkit-mask: url("./assets/note-mode.svg") center / contain no-repeat;
+  mask: url("./assets/note-mode.svg") center / contain no-repeat;
+}
+
+.note-mode-switch__icon--glossary {
+  -webkit-mask: url("./assets/glossary-mode.svg") center / contain no-repeat;
+  mask: url("./assets/glossary-mode.svg") center / contain no-repeat;
+}
+
 .note-mode-switch[aria-checked="true"] .note-mode-switch__label,
 .note-mode-switch[aria-expanded="true"] .note-mode-switch__label {
   text-shadow: 0 0 5px rgba(198, 154, 77, 0.32);
@@ -3108,44 +3149,6 @@ button.document-tag-chip__label:focus-visible {
   background: var(--color-document-search-active);
   outline: 1px solid var(--color-document-search-active-border);
   outline-offset: 1px;
-}
-
-.cm-note-annotation {
-  border-radius: 2px;
-  cursor: pointer;
-  -webkit-user-select: text;
-  user-select: text;
-}
-
-.cm-glossary-annotation {
-  text-decoration: underline;
-  text-decoration-color: var(--color-glossary-border);
-  text-decoration-thickness: 2px;
-  text-underline-offset: 0.18em;
-  text-decoration-skip-ink: none;
-}
-
-.cm-annotation-layer {
-  position: absolute;
-  inset: 0;
-  z-index: 0;
-  overflow: visible;
-  pointer-events: none;
-}
-
-.cm-annotation-frame {
-  position: absolute;
-  box-sizing: border-box;
-  border-radius: 0;
-  background: var(--color-annotation-surface-soft);
-}
-
-.cm-annotation-frame[data-note-tone="1"] {
-  background: var(--color-annotation-surface-alt-soft);
-}
-
-.cm-annotation-frame[data-annotation-kind="glossary"] {
-  background: var(--color-glossary-surface-soft);
 }
 
 .markdown-preview {
@@ -3271,6 +3274,10 @@ button.document-tag-chip__label:focus-visible {
   max-width: 100%;
   height: auto;
   margin: 4px 0;
+}
+
+.milkdown-markdown-editor .ProseMirror a[href] {
+  cursor: pointer;
 }
 
 .milkdown-markdown-editor .ProseMirror img[data-scholium-local-image-error="true"] {
@@ -3594,6 +3601,36 @@ button.document-tag-chip__label:focus-visible {
 
 .milkdown-markdown-editor
   .milkdown
+  .milkdown-list-item-block:has(
+    > .list-item
+      > .children
+      > .content-dom
+      > p:first-child
+      > br.ProseMirror-trailingBreak:only-child
+  ):has(> .list-item > .children > .content-dom > :is(ul, ol))
+  > .list-item
+  > .label-wrapper:has(.label.bullet) {
+  visibility: hidden;
+}
+
+.milkdown-markdown-editor
+  .milkdown
+  .milkdown-list-item-block:has(
+    > .list-item
+      > .children
+      > .content-dom
+      > p:first-child
+      > br.ProseMirror-trailingBreak:only-child
+  ):has(> .list-item > .children > .content-dom > :is(ul, ol))
+  > .list-item
+  > .children
+  > .content-dom
+  > p:first-child {
+  display: none;
+}
+
+.milkdown-markdown-editor
+  .milkdown
   .milkdown-list-item-block
   > .list-item
   > .label-wrapper
@@ -3774,7 +3811,8 @@ button.document-tag-chip__label:focus-visible {
   pointer-events: auto;
 }
 
-.milkdown-markdown-editor .milkdown .milkdown-code-block .tools .copy-button {
+.milkdown-markdown-editor .milkdown .milkdown-code-block .tools .copy-button,
+.milkdown-markdown-editor .milkdown .milkdown-code-block .tools .delete-button {
   display: inline-flex;
   align-items: center;
   gap: 0;
@@ -3804,6 +3842,17 @@ button.document-tag-chip__label:focus-visible {
   flex: 0 0 auto;
   -webkit-mask: url("./assets/copy-page.svg") center / contain no-repeat;
   mask: url("./assets/copy-page.svg") center / contain no-repeat;
+}
+
+.milkdown-markdown-editor .milkdown .milkdown-code-block .tools .delete-button::before {
+  content: "";
+  display: block;
+  width: 14px;
+  height: 14px;
+  background-color: currentColor;
+  flex: 0 0 auto;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2024%2024'%3E%3Cpath%20d='M4%207h16M10%2011v6M14%2011v6M6%207l1%2014h10l1-14M9%207V4h6v3'%20fill='none'%20stroke='black'%20stroke-width='2'%20stroke-linecap='round'%20stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2024%2024'%3E%3Cpath%20d='M4%207h16M10%2011v6M14%2011v6M6%207l1%2014h10l1-14M9%207V4h6v3'%20fill='none'%20stroke='black'%20stroke-width='2'%20stroke-linecap='round'%20stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
 }
 
 .milkdown-markdown-editor .milkdown .milkdown-code-block .tools .copy-button.is-copy-success {
@@ -4023,6 +4072,11 @@ button.document-tag-chip__label:focus-visible {
   background: color-mix(in srgb, var(--color-annotation-surface-alt) 74%, transparent);
 }
 
+.milkdown-touch-block-selection-overlay.is-glossary
+  .milkdown-touch-block-selection-preview {
+  background: color-mix(in srgb, var(--color-glossary-surface) 82%, transparent);
+}
+
 .milkdown-touch-block-selection-overlay.is-committed
   .milkdown-touch-block-selection-preview {
   background: color-mix(in srgb, var(--color-annotation-surface) 82%, transparent);
@@ -4031,6 +4085,11 @@ button.document-tag-chip__label:focus-visible {
 .milkdown-touch-block-selection-overlay.is-committed[data-note-tone="1"]
   .milkdown-touch-block-selection-preview {
   background: color-mix(in srgb, var(--color-annotation-surface-alt) 82%, transparent);
+}
+
+.milkdown-touch-block-selection-overlay.is-committed.is-glossary
+  .milkdown-touch-block-selection-preview {
+  background: color-mix(in srgb, var(--color-glossary-surface) 88%, transparent);
 }
 
 .milkdown-touch-block-selection-rect {
@@ -4075,7 +4134,6 @@ button.document-tag-chip__label:focus-visible {
   text-decoration-skip-ink: none;
 }
 
-.scholium-shell.is-note-library-focus-active .cm-note-annotation,
 .scholium-shell.is-note-library-focus-active .preview-note-annotation,
 .scholium-shell.is-note-library-focus-active .milkdown-note-annotation {
   opacity: 1;
@@ -4087,20 +4145,17 @@ button.document-tag-chip__label:focus-visible {
   z-index: auto;
 }
 
-.scholium-shell.is-note-library-focus-active .cm-annotation-layer:has(.is-focus-target),
 .scholium-shell.is-note-library-focus-active .preview-annotation-layer:has(.is-focus-target),
 .scholium-shell.is-note-library-focus-active .milkdown-annotation-layer:has(.is-focus-target) {
   z-index: 64;
 }
 
-.scholium-shell.is-note-library-focus-active .cm-annotation-frame,
 .scholium-shell.is-note-library-focus-active .preview-annotation-frame,
 .scholium-shell.is-note-library-focus-active .milkdown-annotation-frame {
   opacity: 0;
   filter: none;
 }
 
-.scholium-shell.is-note-library-focus-active .cm-note-annotation.is-focus-target,
 .scholium-shell.is-note-library-focus-active .preview-note-annotation.is-focus-target,
 .scholium-shell.is-note-library-focus-active .milkdown-note-annotation.is-focus-target {
   position: relative;
@@ -4110,8 +4165,6 @@ button.document-tag-chip__label:focus-visible {
   filter: none;
 }
 
-.scholium-shell.is-note-library-focus-active
-  .cm-line:has(.cm-note-annotation.is-focus-target),
 .scholium-shell.is-note-library-focus-active
   .markdown-preview
   li:has(.preview-note-annotation.is-focus-target),
@@ -4124,7 +4177,6 @@ button.document-tag-chip__label:focus-visible {
   z-index: 65;
 }
 
-.scholium-shell.is-note-library-focus-active .cm-annotation-frame.is-focus-target,
 .scholium-shell.is-note-library-focus-active .preview-annotation-frame.is-focus-target,
 .scholium-shell.is-note-library-focus-active .milkdown-annotation-frame.is-focus-target {
   z-index: 64;
@@ -4133,11 +4185,6 @@ button.document-tag-chip__label:focus-visible {
   box-shadow: none;
 }
 
-.scholium-shell.is-note-library-focus-active
-  .cm-note-annotation.is-focus-target
-  .cm-glossary-annotation,
-.scholium-shell.is-note-library-focus-active
-  .cm-note-annotation.is-focus-target.cm-glossary-annotation,
 .scholium-shell.is-note-library-focus-active
   .preview-note-annotation.is-focus-target
   .preview-note-annotation[data-annotation-kind="glossary"],
@@ -4157,20 +4204,16 @@ button.document-tag-chip__label:focus-visible {
   filter: none;
 }
 
-.scholium-shell.is-note-panel-modal-active .cm-annotation-layer,
 .scholium-shell.is-note-panel-modal-active .preview-annotation-layer,
 .scholium-shell.is-note-panel-modal-active .milkdown-annotation-layer {
   z-index: 86;
 }
 
-.scholium-shell.is-note-panel-modal-active .cm-editor,
 .scholium-shell.is-note-panel-modal-active .markdown-preview > :not(.preview-annotation-layer),
 .scholium-shell.is-note-panel-modal-active .milkdown-markdown-editor {
   z-index: auto;
 }
 
-.scholium-shell.is-note-panel-modal-active
-  .cm-annotation-frame:not([data-focus-target="true"]),
 .scholium-shell.is-note-panel-modal-active
   .preview-annotation-frame:not([data-focus-target="true"]),
 .scholium-shell.is-note-panel-modal-active
@@ -4179,8 +4222,6 @@ button.document-tag-chip__label:focus-visible {
   filter: none;
 }
 
-.scholium-shell.is-note-panel-modal-active .cm-annotation-frame.is-focus-target,
-.scholium-shell.is-note-panel-modal-active .cm-annotation-frame[data-focus-target="true"],
 .scholium-shell.is-note-panel-modal-active .preview-annotation-frame.is-focus-target,
 .scholium-shell.is-note-panel-modal-active .preview-annotation-frame[data-focus-target="true"],
 .scholium-shell.is-note-panel-modal-active .milkdown-annotation-frame.is-focus-target,
@@ -4190,7 +4231,6 @@ button.document-tag-chip__label:focus-visible {
   filter: none;
 }
 
-.scholium-shell.is-note-panel-modal-active .cm-note-annotation.is-focus-target,
 .scholium-shell.is-note-panel-modal-active .preview-note-annotation.is-focus-target,
 .scholium-shell.is-note-panel-modal-active .milkdown-note-annotation.is-focus-target {
   position: relative;
@@ -4202,8 +4242,6 @@ button.document-tag-chip__label:focus-visible {
   filter: none;
 }
 
-.scholium-shell.is-note-panel-modal-active
-  .cm-line:has(.cm-note-annotation.is-focus-target),
 .scholium-shell.is-note-panel-modal-active
   .markdown-preview
   li:has(.preview-note-annotation.is-focus-target),
@@ -4217,16 +4255,12 @@ button.document-tag-chip__label:focus-visible {
 }
 
 .scholium-shell.is-note-panel-modal-active
-  .cm-note-annotation.is-focus-target[data-note-tone="1"],
-.scholium-shell.is-note-panel-modal-active
   .preview-note-annotation.is-focus-target[data-note-tone="1"],
 .scholium-shell.is-note-panel-modal-active
   .milkdown-note-annotation.is-focus-target[data-note-tone="1"] {
   background: transparent;
 }
 
-.scholium-shell.is-note-panel-modal-active
-  .cm-note-annotation.is-focus-target[data-annotation-kind="glossary"],
 .scholium-shell.is-note-panel-modal-active
   .preview-note-annotation.is-focus-target[data-annotation-kind="glossary"],
 .scholium-shell.is-note-panel-modal-active
@@ -4435,7 +4469,7 @@ button.document-tag-chip__label:focus-visible {
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: 14px 14px 28px;
+  padding: 32px 14px 28px;
   scroll-padding-bottom: 28px;
 }
 
@@ -5309,6 +5343,16 @@ button.document-tag-chip__label:focus-visible {
   max-height: calc(var(--note-markdown-editor-max-height) + var(--note-markdown-editor-chrome-height));
   overflow-y: auto;
   overscroll-behavior: contain;
+}
+
+.floating-note-card .note-markdown-editor.floating-note-card__editor--glossary {
+  --note-edit-focus-ring-inline-padding: 0px;
+}
+
+.floating-note-card__editor--glossary
+  .markdown-preview
+  > [data-preview-block-key]:has(+ .preview-annotation-layer) {
+  margin-bottom: 0;
 }
 
 .scholium-shell .note-library-card__editor .markdown-preview,
@@ -6194,6 +6238,11 @@ button.document-tag-chip__label:focus-visible {
   margin-top: 4px;
 }
 
+.floating-note-card .bottom-note-actions.is-layout-placeholder {
+  visibility: hidden;
+  pointer-events: none;
+}
+
 .floating-note-card .bottom-note-actions button:not(.selection-confirmation-button) {
   width: 32px;
   min-width: 32px;
@@ -6326,14 +6375,6 @@ button.document-tag-chip__label:focus-visible {
   }
 }
 
-@media (max-width: 1680px) {
-  .scholium-shell {
-    --editor-content-top-gutter: 128px;
-    --editor-document-title-top: calc(var(--editor-top-control-offset) + 52px);
-    --editor-document-title-max-width: min(100%, 36rem);
-  }
-}
-
 @media (max-width: 820px) {
   .scholium-shell {
     --editor-content-gutter: 32px;
@@ -6432,7 +6473,7 @@ button.document-tag-chip__label:focus-visible {
     --editor-content-gutter: 32px;
     --editor-content-inline-start-gutter: 32px;
     --editor-content-inline-end-gutter: 32px;
-    --editor-content-top-gutter: 0px;
+    --editor-content-top-gutter: 96px;
     --editor-content-offset: 0px;
     --editor-content-end-offset: 0px;
     --editor-left-control-gutter: 0px;
@@ -6539,31 +6580,8 @@ button.document-tag-chip__label:focus-visible {
     display: none;
   }
 
-  .editor-document-title {
-    position: relative;
-    top: auto;
-    right: auto;
-    left: auto;
-    height: auto;
-    justify-content: flex-start;
-    padding: calc(var(--mobile-editor-top-padding) + 64px) 16px 26px;
-  }
-
-  .scholium-shell.has-document-tabs .editor-document-title {
-    top: auto;
-  }
-
-  .editor-document-title__text {
-    max-width: 100%;
-    overflow: visible;
-    overflow-wrap: anywhere;
-    text-align: left;
-    text-overflow: clip;
-    white-space: normal;
-  }
-
   .mobile-editor-mode-toggle {
-    position: fixed;
+    position: absolute;
     top: calc(var(--mobile-safe-area-top) + 12px);
     left: 16px;
     z-index: 74;
@@ -6589,9 +6607,10 @@ button.document-tag-chip__label:focus-visible {
   }
 
   .document-search {
-    position: fixed;
+    position: absolute;
     top: calc(var(--mobile-safe-area-top) + 12px);
     right: 16px;
+    left: auto;
     bottom: auto;
     z-index: 74;
     box-sizing: border-box;
@@ -6730,6 +6749,16 @@ button.document-tag-chip__label:focus-visible {
     display: block;
     min-height: 0;
     background: var(--color-surface);
+  }
+
+  .workspace-sort-control {
+    padding: 7px 14px;
+    font-size: 0.84rem;
+  }
+
+  .workspace-sort-control select {
+    height: 38px;
+    font-size: 16px;
   }
 
   .file-search-mode-tabs {
@@ -7989,7 +8018,6 @@ button.document-tag-chip__label:focus-visible {
     pointer-events: none;
   }
 
-  .scholium-shell.is-mobile-safe-layout.is-note-panel-modal-active .cm-annotation-layer,
   .scholium-shell.is-mobile-safe-layout.is-note-panel-modal-active
     .preview-annotation-layer,
   .scholium-shell.is-mobile-safe-layout.is-note-panel-modal-active
@@ -8000,16 +8028,12 @@ button.document-tag-chip__label:focus-visible {
   }
 
   .scholium-shell.is-mobile-safe-layout.is-note-panel-modal-active
-    .cm-note-annotation.is-focus-target,
-  .scholium-shell.is-mobile-safe-layout.is-note-panel-modal-active
     .preview-note-annotation.is-focus-target,
   .scholium-shell.is-mobile-safe-layout.is-note-panel-modal-active
     .milkdown-note-annotation.is-focus-target {
     z-index: 67;
   }
 
-  .scholium-shell.is-mobile-safe-layout.is-note-panel-modal-active
-    .cm-line:has(.cm-note-annotation.is-focus-target),
   .scholium-shell.is-mobile-safe-layout.is-note-panel-modal-active
     .markdown-preview
     li:has(.preview-note-annotation.is-focus-target),
@@ -8387,4 +8411,11 @@ button.document-tag-chip__label:focus-visible {
   li
   > ol {
   padding-left: 1.55em;
+}
+
+.milkdown-markdown-editor-shell.is-composing .ProseMirror p.is-empty::before,
+.milkdown-markdown-editor-shell.is-composing .milkdown-placeholder::before,
+.milkdown-markdown-editor-shell.is-composing [data-placeholder]::before {
+  display: none !important;
+  content: none !important;
 }

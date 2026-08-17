@@ -228,5 +228,25 @@ assert.match(
   appSource,
   /const cardSize = \{[\s\S]*?height: card\.offsetHeight \|\| cardRect\.height,[\s\S]*?width: card\.offsetWidth \|\| cardRect\.width,[\s\S]*?\};/,
 );
+assert.match(
+  appSource,
+  /function floatingNoteEditableFromTarget[\s\S]*?\.floating-note-panel:not\(\.is-expanded-sidebar\)/,
+);
+assert.match(
+  appSource,
+  /function captureFloatingNoteScrollPosition[\s\S]*?event\.type === "focusin" && floatingNoteScrollLock[\s\S]*?top: editorPane\.scrollTop/,
+);
+assert.match(
+  appSource,
+  /function restoreFloatingNoteScrollPosition[\s\S]*?lock\.editorPane\.scrollTop = lock\.top[\s\S]*?window\.scrollTo\(lock\.windowX, lock\.windowY\)/,
+);
+assert.match(
+  appSource,
+  /if \(floatingNoteScrollLock\) \{[\s\S]*?keepFloatingNoteScrollPosition\(\)/,
+);
+assert.match(
+  appSource,
+  /document\.addEventListener\("pointerdown", captureFloatingNoteScrollPosition, true\)[\s\S]*?document\.addEventListener\("focusin", captureFloatingNoteScrollPosition, true\)/,
+);
 
 console.log("floating note anchor position regression: PASS");

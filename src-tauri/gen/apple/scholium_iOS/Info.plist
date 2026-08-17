@@ -51,5 +51,21 @@
 			<string>db-bdv6guwbi6ol9mg</string>
 		</dict>
 	</array>
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>All Files and Folders</string>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>public.item</string>
+				<string>public.folder</string>
+			</array>
+		</dict>
+	</array>
 </dict>
 </plist>

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 const appSource = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
+const appCss = readFileSync(new URL("../src/App.css", import.meta.url), "utf8");
 const milkdownSource = readFileSync(
   new URL("../src/MilkdownMarkdownEditor.tsx", import.meta.url),
   "utf8",
@@ -12,15 +13,27 @@ const noteEditorSource = appSource.slice(componentStart, componentEnd);
 const selectionEnterStart = appSource.indexOf("function handleSelectionEnter(");
 const selectionEnterEnd = appSource.indexOf("\n  function showNoteViewer(", selectionEnterStart);
 const selectionEnterSource = appSource.slice(selectionEnterStart, selectionEnterEnd);
+const glossaryEditorAriaLabel = appSource.indexOf('ariaLabel={t("glossary.edit")}');
+const glossaryEditorStart = appSource.lastIndexOf("<NoteMarkdownEditor", glossaryEditorAriaLabel);
+const glossaryEditorEnd = appSource.indexOf(
+  "\n              {!pendingAnchor && activeGlossaryTerm ? (\n                <div\n                  aria-hidden",
+  glossaryEditorStart,
+);
+const glossaryEditorSource = appSource.slice(glossaryEditorStart, glossaryEditorEnd);
 
 assert.ok(componentStart >= 0 && componentEnd > componentStart);
 assert.ok(selectionEnterStart >= 0 && selectionEnterEnd > selectionEnterStart);
+assert.ok(glossaryEditorStart >= 0 && glossaryEditorEnd > glossaryEditorStart);
 assert.match(noteEditorSource, /<MarkdownPreview[\s\S]*?commitOnInput/);
 assert.match(noteEditorSource, /readOnly=\{!isEditable\}/);
 assert.match(noteEditorSource, /editingSurface === "source" && isEditable[\s\S]*?<textarea/);
+assert.doesNotMatch(
+  appSource,
+  /function MarkdownPreviewContent\([\s\S]*?onClick\?: \(\) => void;/,
+);
 assert.match(
   selectionEnterSource,
-  /if \(!noteModeEnabled\) return false;[\s\S]*?selectionShouldSuppressNewAnnotation\(anchor\)/,
+  /if \(!noteModeEnabled\) return false;[\s\S]*?selectionShouldSuppressNewAnnotation\(selectionAnchor\)/,
 );
 assert.doesNotMatch(selectionEnterSource, /setActiveDocumentModeState/);
 assert.match(
@@ -52,6 +65,36 @@ assert.match(
   appSource,
   /function handlePreviewPaste[\s\S]*?event\.clipboardData[\s\S]*?getData\("text\/plain"\)[\s\S]*?commitPreviewChange\(nextValue\)/,
 );
+assert.match(
+  appSource,
+  /function handlePreviewPaste[\s\S]*?if \(!selectedRange && selection\.isCollapsed && previewValueRef\.current\.length === 0\)[\s\S]*?selectedRange = \{ from: 0, to: 0 \};/,
+);
+assert.match(
+  appSource,
+  /function handlePreviewPaste[\s\S]*?sourceRangeForPreviewTextOffsets\([\s\S]*?getPreviewBlockTextMap\(previewValueRef\.current, block\),[\s\S]*?offsets\.from,[\s\S]*?offsets\.to,/,
+);
+assert.match(
+  appSource,
+  /function handlePlainTextCopy[\s\S]*?clipboardData\.setData\("text\/plain", selectedText\)/,
+);
+assert.doesNotMatch(appSource, /function markdownPreviewCopyTextFromSelection/);
+assert.match(
+  appSource,
+  /function previewTextOffsetForSourcePosition\([\s\S]*?sourceOffset !== null && sourceOffset >= sourcePosition[\s\S]*?return textMap\.text\.length;/,
+);
+assert.match(
+  appSource,
+  /function handlePreviewPaste[\s\S]*?const caretSourcePosition = selectedRange\.from \+ pastedText\.length;[\s\S]*?focusPreviewBlockTextOffset\([\s\S]*?previewTextOffsetForSourcePosition\([\s\S]*?getPreviewBlockTextMap\(nextValue, focusBlock\),[\s\S]*?caretSourcePosition,[\s\S]*?\)[\s\S]*?\);[\s\S]*?commitPreviewChange\(nextValue\)/,
+);
+assert.doesNotMatch(
+  appSource,
+  /function handlePreviewPaste[\s\S]*?focusPreviewBlockEnd\(focusBlock\.key\)/,
+);
+assert.match(
+  appSource,
+  /function undoPreviewChange\(\)[\s\S]*?const previousValue = previewUndoStackRef\.current\.pop\(\);[\s\S]*?if \(previousValue === undefined\) return false;/,
+);
+assert.doesNotMatch(appSource, /function undoPreviewChange\(\)[\s\S]*?if \(!previousValue\) return false;/);
 assert.match(appSource, /onPaste=\{handlePreviewPaste\}/);
 assert.match(
   appSource,
@@ -119,6 +162,10 @@ assert.match(
 );
 assert.match(
   appSource,
+  /function commitPreviewListEnter[\s\S]*?const nextListItem = listItem\.nextElementSibling;[\s\S]*?!nextListLine\.text\.trim\(\)[\s\S]*?focusPreviewListItem\(block\.key, itemIndex \+ 1\);[\s\S]*?return true;/,
+);
+assert.match(
+  appSource,
   /const preserveSoftBreaks = transientEdit\.transientNodes\.some[\s\S]*?node\.dataset\.previewSoftBreaks === "true"[\s\S]*?join\("<br>"\)/,
 );
 assert.match(
@@ -137,9 +184,31 @@ assert.match(
   appSource,
   /className="floating-note-close-button"[\s\S]*?onPointerDown=\{flushActiveNoteMarkdownEditor\}[\s\S]*?onClick=\{closeNotePanel\}/,
 );
+assert.doesNotMatch(glossaryEditorSource, /editingSurface="source"/);
+assert.match(glossaryEditorSource, /<NoteMarkdownEditor/);
+assert.match(
+  glossaryEditorSource,
+  /className="floating-note-card__editor floating-note-card__editor--glossary"[\s\S]*?editing=\{activeGlossaryIsEditing\}[\s\S]*?onRequestEdit=\{\(\) => openGlossaryEditor\(activeGlossaryTerm\.id\)\}/,
+);
+assert.doesNotMatch(
+  appSource,
+  /activeGlossaryTerm && !activeGlossaryIsEditing[\s\S]*?<MarkdownPreviewContent/,
+);
 assert.match(
   appSource,
-  /ariaLabel=\{t\("glossary\.edit"\)\}[\s\S]*?editingSurface="source"/,
+  /aria-hidden=\{activeGlossaryIsEditing \|\| undefined\}[\s\S]*?activeGlossaryIsEditing \? "is-layout-placeholder" : ""/,
+);
+assert.match(
+  appCss,
+  /\.floating-note-card \.note-markdown-editor\.floating-note-card__editor--glossary\s*\{[\s\S]*?--note-edit-focus-ring-inline-padding: 0px;/,
+);
+assert.match(
+  appCss,
+  /\.floating-note-card__editor--glossary[\s\S]*?\[data-preview-block-key\]:has\(\+ \.preview-annotation-layer\)[\s\S]*?margin-bottom: 0;/,
+);
+assert.match(
+  appCss,
+  /\.bottom-note-actions\.is-layout-placeholder\s*\{[\s\S]*?visibility: hidden;[\s\S]*?pointer-events: none;/,
 );
 assert.match(
   milkdownSource,

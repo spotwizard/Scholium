@@ -84,6 +84,9 @@ struct LocationEntry {
 #[derive(Default)]
 struct NewWindowDocumentTargetState(Mutex<HashMap<String, LocationEntry>>);
 
+#[derive(Default)]
+struct FocusedWindowState(Mutex<Option<String>>);
+
 fn default_location_source() -> String {
     "local".to_string()
 }
@@ -1469,17 +1472,18 @@ async fn upload_dropbox_markdown_file(
     dropbox_file_from_write_metadata(app, metadata, body, normalized_path)
 }
 
-async fn read_dropbox_list_page(
+async fn read_dropbox_list_page_with_recursive(
     client: &reqwest::Client,
     access_token: &str,
     path: &str,
+    recursive: bool,
 ) -> Result<DropboxListFolderResponse, String> {
     let response = client
         .post(DROPBOX_LIST_FOLDER_URL)
         .bearer_auth(access_token)
         .json(&serde_json::json!({
             "path": path,
-            "recursive": false,
+            "recursive": recursive,
             "include_media_info": false,
             "include_deleted": false,
             "include_has_explicit_shared_members": false,
@@ -1498,6 +1502,14 @@ async fn read_dropbox_list_page(
         .json::<DropboxListFolderResponse>()
         .await
         .map_err(|error| format!("failed to parse Dropbox folder response: {error}"))
+}
+
+async fn read_dropbox_list_page(
+    client: &reqwest::Client,
+    access_token: &str,
+    path: &str,
+) -> Result<DropboxListFolderResponse, String> {
+    read_dropbox_list_page_with_recursive(client, access_token, path, false).await
 }
 
 async fn read_dropbox_list_continue_page(
@@ -1637,6 +1649,7 @@ fn create_new_scholium_window(
         .ok_or_else(|| "missing base window configuration".to_string())?;
 
     window_config.label = label.clone();
+    window_config.url = tauri::WebviewUrl::App("index.html?scholium-window=secondary".into());
     window_config.fullscreen = start_fullscreen;
     window_config.focus = true;
 
@@ -1678,13 +1691,30 @@ fn target_window_is_fullscreen(app_handle: &tauri::AppHandle) -> bool {
 fn target_webview_window_label(app_handle: &tauri::AppHandle) -> Option<String> {
     let webview_windows = app_handle.webview_windows();
 
-    webview_windows
-        .iter()
-        .find_map(|(label, window)| match window.is_focused() {
-            Ok(true) => Some(label.clone()),
-            _ => None,
-        })
-        .or_else(|| webview_windows.keys().next().cloned())
+    let focused_label =
+        webview_windows
+            .iter()
+            .find_map(|(label, window)| match window.is_focused() {
+                Ok(true) => Some(label.clone()),
+                _ => None,
+            });
+
+    if let Some(label) = focused_label {
+        if let Ok(mut last_focused_label) = app_handle.state::<FocusedWindowState>().0.lock() {
+            *last_focused_label = Some(label.clone());
+        }
+        return Some(label);
+    }
+
+    let last_focused_label = app_handle
+        .state::<FocusedWindowState>()
+        .0
+        .lock()
+        .ok()
+        .and_then(|label| label.clone())
+        .filter(|label| webview_windows.contains_key(label));
+
+    last_focused_label.or_else(|| webview_windows.keys().next().cloned())
 }
 
 #[cfg(desktop)]
@@ -2794,6 +2824,66 @@ fn delete_markdown_file(app: AppHandle, path: String) -> Result<DeleteMarkdownFi
     })
 }
 
+fn markdown_paths_in_directory(directory: &Path) -> Result<Vec<PathBuf>, String> {
+    let mut markdown_paths = Vec::new();
+    let mut directories = vec![directory.to_path_buf()];
+
+    while let Some(current_directory) = directories.pop() {
+        for entry in fs::read_dir(&current_directory)
+            .map_err(|error| format!("failed to read directory for deletion: {error}"))?
+        {
+            let entry = entry
+                .map_err(|error| format!("failed to read directory item for deletion: {error}"))?;
+            let file_type = entry
+                .file_type()
+                .map_err(|error| format!("failed to read directory item type: {error}"))?;
+            if file_type.is_dir() {
+                directories.push(entry.path());
+            } else if file_type.is_file() && is_markdown_path(&entry.path()) {
+                markdown_paths.push(entry.path());
+            }
+        }
+    }
+
+    Ok(markdown_paths)
+}
+
+fn validate_directory_delete_target(path: &Path, root_path: &Path) -> Result<PathBuf, String> {
+    let root_path = root_path
+        .canonicalize()
+        .map_err(|error| format!("failed to resolve workspace root: {error}"))?;
+    let target_path = path
+        .canonicalize()
+        .map_err(|error| format!("failed to resolve selected directory: {error}"))?;
+
+    if !target_path.is_dir() {
+        return Err("selected path is not a directory".to_string());
+    }
+    if target_path == root_path || !target_path.starts_with(&root_path) {
+        return Err("selected directory must be inside the workspace root".to_string());
+    }
+
+    Ok(target_path)
+}
+
+#[tauri::command]
+fn delete_markdown_directory(
+    app: AppHandle,
+    path: String,
+    root_path: String,
+) -> Result<(), String> {
+    let directory_path = validate_directory_delete_target(Path::new(&path), Path::new(&root_path))?;
+    let markdown_paths = markdown_paths_in_directory(&directory_path)?;
+
+    fs::remove_dir_all(&directory_path)
+        .map_err(|error| format!("failed to delete directory: {error}"))?;
+    for markdown_path in markdown_paths {
+        remove_document_notes(&app, &markdown_path)?;
+    }
+
+    Ok(())
+}
+
 #[tauri::command]
 fn rename_markdown_file(
     app: AppHandle,
@@ -3637,6 +3727,84 @@ async fn delete_dropbox_markdown_file(
     Ok(deleted_file)
 }
 
+fn dropbox_path_is_strict_descendant(path: &str, root_path: &str) -> bool {
+    let path = normalize_dropbox_path(path).to_lowercase();
+    let root_path = normalize_dropbox_path(root_path).to_lowercase();
+    if path.is_empty() || path == root_path {
+        return false;
+    }
+
+    root_path.is_empty() || path.starts_with(&format!("{}/", root_path.trim_end_matches('/')))
+}
+
+async fn dropbox_markdown_paths_in_directory(
+    client: &reqwest::Client,
+    access_token: &str,
+    path: &str,
+) -> Result<Vec<String>, String> {
+    let mut page = read_dropbox_list_page_with_recursive(client, access_token, path, true).await?;
+    let mut markdown_paths = Vec::new();
+
+    loop {
+        markdown_paths.extend(page.entries.into_iter().filter_map(|entry| match entry {
+            DropboxMetadata::File {
+                name,
+                path_display,
+                path_lower,
+                ..
+            } => {
+                let path = dropbox_metadata_path(path_display, path_lower, &name);
+                is_markdown_dropbox_path(&path).then_some(path)
+            }
+            _ => None,
+        }));
+
+        if !page.has_more {
+            break;
+        }
+        page = read_dropbox_list_continue_page(client, access_token, &page.cursor).await?;
+    }
+
+    Ok(markdown_paths)
+}
+
+#[tauri::command]
+async fn delete_dropbox_markdown_directory(
+    app: tauri::AppHandle,
+    path: String,
+    root_path: String,
+) -> Result<(), String> {
+    let normalized_path = normalize_dropbox_path(&path);
+    if !dropbox_path_is_strict_descendant(&normalized_path, &root_path) {
+        return Err("selected Dropbox directory must be inside the workspace root".to_string());
+    }
+
+    let access_token = dropbox_access_token(&app).await?;
+    let client = reqwest::Client::new();
+    let markdown_paths =
+        dropbox_markdown_paths_in_directory(&client, &access_token, &normalized_path).await?;
+    let response = client
+        .post(DROPBOX_DELETE_URL)
+        .bearer_auth(access_token)
+        .json(&serde_json::json!({ "path": normalized_path }))
+        .send()
+        .await
+        .map_err(|error| format!("failed to delete Dropbox directory: {error}"))?;
+
+    if response.status() == StatusCode::UNAUTHORIZED {
+        return Err("Dropbox authorization failed; reconnect Dropbox.".to_string());
+    }
+    if !response.status().is_success() {
+        return Err(dropbox_response_error(response, "failed to delete Dropbox directory").await);
+    }
+
+    for markdown_path in markdown_paths {
+        remove_document_notes(&app, &dropbox_notes_markdown_path(&markdown_path))?;
+    }
+
+    Ok(())
+}
+
 async fn move_dropbox_path(
     app: &tauri::AppHandle,
     from_path: String,
@@ -4144,8 +4312,24 @@ pub fn run() {
         .plugin(tauri_plugin_deep_link::init())
         .manage(LocationMenuState::default())
         .manage(NewWindowDocumentTargetState::default())
+        .manage(FocusedWindowState::default())
         .manage(DropboxState::default())
         .manage(OpenedFileState::default())
+        .on_window_event(|window, event| match event {
+            tauri::WindowEvent::Focused(true) => {
+                if let Ok(mut last_focused_label) = window.state::<FocusedWindowState>().0.lock() {
+                    *last_focused_label = Some(window.label().to_string());
+                }
+            }
+            tauri::WindowEvent::Destroyed => {
+                if let Ok(mut last_focused_label) = window.state::<FocusedWindowState>().0.lock() {
+                    if last_focused_label.as_deref() == Some(window.label()) {
+                        *last_focused_label = None;
+                    }
+                }
+            }
+            _ => {}
+        })
         .on_page_load(|webview, payload| {
             if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
                 if let Err(error) = webview.window().show() {
@@ -4271,6 +4455,7 @@ pub fn run() {
             search_markdown_files,
             duplicate_markdown_file,
             delete_markdown_file,
+            delete_markdown_directory,
             rename_markdown_file,
             rename_markdown_directory,
             create_markdown_directory,
@@ -4294,6 +4479,7 @@ pub fn run() {
             create_dropbox_markdown_directory,
             duplicate_dropbox_markdown_file,
             delete_dropbox_markdown_file,
+            delete_dropbox_markdown_directory,
             rename_dropbox_markdown_file,
             rename_dropbox_markdown_directory
         ])
@@ -4336,6 +4522,46 @@ mod tests {
         assert!(dropped_markdown_path(&["draft.txt".to_string()]).is_err());
         assert!(dropped_markdown_path(&[]).is_err());
         assert!(dropped_markdown_path(&["one.md".to_string(), "two.md".to_string()]).is_err());
+    }
+
+    #[test]
+    fn directory_delete_targets_must_be_strict_descendants() {
+        assert!(dropbox_path_is_strict_descendant(
+            "/Notes/Archive",
+            "/Notes"
+        ));
+        assert!(dropbox_path_is_strict_descendant(
+            "/Notes/Archive/2026",
+            "/Notes"
+        ));
+        assert!(!dropbox_path_is_strict_descendant("/Notes", "/Notes"));
+        assert!(!dropbox_path_is_strict_descendant("/Notes-Old", "/Notes"));
+        assert!(!dropbox_path_is_strict_descendant("/Other", "/Notes"));
+
+        let test_root = std::env::temp_dir().join(format!(
+            "scholium-directory-delete-{}-{}",
+            std::process::id(),
+            now_timestamp_millis()
+        ));
+        let target = test_root.join("Archive");
+        let nested = target.join("2026");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(nested.join("note.md"), "# Note").unwrap();
+        fs::write(nested.join("attachment.txt"), "attachment").unwrap();
+
+        assert!(validate_directory_delete_target(&test_root, &test_root).is_err());
+        let validated_target = validate_directory_delete_target(&target, &test_root).unwrap();
+        assert_eq!(
+            markdown_paths_in_directory(&validated_target)
+                .unwrap()
+                .len(),
+            1
+        );
+        fs::remove_dir_all(&validated_target).unwrap();
+        assert!(!target.exists());
+        assert!(test_root.exists());
+
+        fs::remove_dir_all(test_root).unwrap();
     }
 
     #[test]

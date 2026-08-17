@@ -6,9 +6,9 @@ import { openUrl as openExternalUrl } from "@tauri-apps/plugin-opener";
 import {
   type ChangeEvent,
   type ClipboardEvent as ReactClipboardEvent,
+  type CompositionEvent,
   createElement,
   Fragment,
-  type CompositionEvent,
   type CSSProperties,
   type FocusEvent,
   type FormEvent,
@@ -35,11 +35,16 @@ import {
   type TextSelectionAnchor,
   type TextSelectionEnterContext,
 } from "./MarkdownEditor";
-import type { DocumentSearchState } from "./documentSearch";
+import {
+  documentSearchMoveDeltaForKeyDown,
+  isDocumentSearchSelectAllShortcut,
+  type DocumentSearchState,
+} from "./documentSearch";
 import {
   availableDocumentTabSession,
   createDocumentTabSession,
   documentTabIdsAfterClosingOthers,
+  documentTabIdAtPoint,
   parseDocumentTabSession,
   type DocumentTabSessionState,
 } from "./documentTabs";
@@ -64,7 +69,12 @@ import {
   stripMarkdownFrontmatter,
   writeMarkdownTags,
 } from "./markdownFrontmatter";
+import { resolveMarkdownLinkTarget } from "./markdownLinkTarget";
 import { parseMarkdownTableAt, type MarkdownTable } from "./markdownTable";
+import {
+  sortWorkspaceEntriesForDirectory,
+  type WorkspaceSortMode,
+} from "./workspaceSort";
 import {
   readSettingsSnapshot,
   resetSetting,
@@ -969,7 +979,7 @@ const previewAnnotationLineJoinMaxGap = 20;
 const previewAnnotationLineEndTolerance = 2;
 const previewAnnotationFrameCornerRadius = "4px";
 const annotationLayoutSettleDelaysMs = [80, 180, 360, 720];
-const noteLibraryFocusAlignmentRatio = 0.2;
+const noteLibraryFocusAlignmentRatio = 0.35;
 const notePanelAnimationMs = 180;
 const selectionWarningAutoDismissMs = 2600;
 const appDrivenSelectionClearGuardMs = 1200;
@@ -987,10 +997,18 @@ const lastOpenedMarkdownRootDirectoryStorageKey =
   "scholium:last-opened-markdown-root-directory";
 const lastOpenedDropboxWorkspaceStorageKey = "scholium:last-opened-dropbox-workspace";
 const documentTabSessionStorageKey = "scholium:document-tab-session";
+const secondaryWorkspaceStorageSeededKey = "scholium:secondary-workspace-seeded";
+const workspaceStorageKeys = [
+  lastOpenedMarkdownPathStorageKey,
+  lastOpenedMarkdownRootDirectoryStorageKey,
+  lastOpenedDropboxWorkspaceStorageKey,
+  documentTabSessionStorageKey,
+];
 const mobileViewportQuery = "(max-width: 640px)";
 const mobileSafeLayoutViewportQuery =
   "((max-width: 640px) and (any-pointer: coarse)), ((max-width: 980px) and (max-height: 520px) and (any-pointer: coarse))";
 const dropboxDocumentIdPrefix = "dropbox:";
+const draftDocumentIdPrefix = "draft:";
 const configuredDropboxAppKey = import.meta.env.VITE_DROPBOX_APP_KEY?.trim() ?? "";
 
 function previewAnnotationFramePaddingForKind(kind: AnnotationKind) {
@@ -1276,22 +1294,48 @@ function normalizeDoubledFinalConsonant(token: string) {
   return token;
 }
 
-function glossaryTermWordCount(term: string) {
-  const normalizedTerm = term.replace(/\s+/g, " ").trim();
-  if (!normalizedTerm) return 0;
+function glossarySelectionBoundaryCharacter(character: string) {
+  return /[\s.,，。!?！？;；:：、"'“”‘’()[\]{}《》〈〉【】]/u.test(character);
+}
 
-  return normalizedTerm.split(" ").length;
+function normalizeGlossarySelectionAnchor(anchor: TextSelectionAnchor) {
+  let leadingLength = 0;
+  for (const character of anchor.selectedText) {
+    if (!glossarySelectionBoundaryCharacter(character)) break;
+    leadingLength += character.length;
+  }
+
+  let trailingLength = 0;
+  for (const character of Array.from(anchor.selectedText.slice(leadingLength)).reverse()) {
+    if (!glossarySelectionBoundaryCharacter(character)) break;
+    trailingLength += character.length;
+  }
+
+  const selectedText = anchor.selectedText.slice(
+    leadingLength,
+    anchor.selectedText.length - trailingLength,
+  );
+  if (!selectedText) return null;
+
+  return {
+    ...anchor,
+    from: anchor.from + leadingLength,
+    to: anchor.to - trailingLength,
+    selectedText,
+    prefix: `${anchor.prefix}${anchor.selectedText.slice(0, leadingLength)}`.slice(-48),
+    suffix: `${anchor.selectedText.slice(anchor.selectedText.length - trailingLength)}${
+      anchor.suffix
+    }`.slice(0, 48),
+  };
 }
 
 function isGlossarySelectionCandidate(anchor: TextSelectionAnchor) {
-  const normalizedTerm = anchor.selectedText.replace(/\s+/g, " ").trim();
-  const wordCount = glossaryTermWordCount(normalizedTerm);
+  const normalizedAnchor = normalizeGlossarySelectionAnchor(anchor);
+  if (!normalizedAnchor) return false;
 
   return (
-    wordCount >= 1 &&
-    wordCount <= 3 &&
-    !/[\r\n]/.test(anchor.selectedText) &&
-    !/[.!?。！？,，;；:：]$/.test(normalizedTerm)
+    !/[\r\n]/.test(normalizedAnchor.selectedText) &&
+    /[\p{L}\p{N}]/u.test(normalizedAnchor.selectedText)
   );
 }
 
@@ -1337,8 +1381,22 @@ function dropboxDocumentId(path: string) {
   return `${dropboxDocumentIdPrefix}${path || "/"}`;
 }
 
+function draftDocumentId(source: WorkspaceSource | null) {
+  return `${draftDocumentIdPrefix}${source ?? "local"}:${Date.now()}:${Math.random()
+    .toString(36)
+    .slice(2)}`;
+}
+
 function isDropboxDocumentId(documentId: string) {
   return documentId.startsWith(dropboxDocumentIdPrefix);
+}
+
+function isDraftDocumentId(documentId: string) {
+  return documentId.startsWith(draftDocumentIdPrefix);
+}
+
+function draftDocumentSource(document: MarkdownDocument): WorkspaceSource {
+  return document.id.startsWith(`${draftDocumentIdPrefix}dropbox:`) ? "dropbox" : "local";
 }
 
 function documentIsFromDropbox(document: MarkdownDocument) {
@@ -1359,74 +1417,6 @@ function workspaceEntryFromDocument(
     depth,
     source: documentIsFromDropbox(document) ? "dropbox" : "local",
   };
-}
-
-function workspaceEntrySortRank(entry: WorkspaceEntry) {
-  if (entry.kind === "parent-directory") return 0;
-  if (entry.kind === "directory") return 1;
-  return 2;
-}
-
-function workspaceEntryModifiedAt(entry: WorkspaceEntry) {
-  return entry.modifiedAt ?? Number.NEGATIVE_INFINITY;
-}
-
-function compareWorkspaceEntries(left: WorkspaceEntry, right: WorkspaceEntry) {
-  const rankDifference = workspaceEntrySortRank(left) - workspaceEntrySortRank(right);
-  if (rankDifference !== 0) return rankDifference;
-
-  const modifiedDifference = workspaceEntryModifiedAt(right) - workspaceEntryModifiedAt(left);
-  if (modifiedDifference !== 0) return modifiedDifference;
-
-  const leftTitle = left.title.toLowerCase();
-  const rightTitle = right.title.toLowerCase();
-  if (leftTitle < rightTitle) return -1;
-  if (leftTitle > rightTitle) return 1;
-
-  const leftPath = left.path.toLowerCase();
-  const rightPath = right.path.toLowerCase();
-  if (leftPath < rightPath) return -1;
-  if (leftPath > rightPath) return 1;
-
-  return 0;
-}
-
-function sortWorkspaceEntriesForDirectory(entries: WorkspaceEntry[]) {
-  type WorkspaceEntryNode = { entry: WorkspaceEntry; children: WorkspaceEntryNode[] };
-  const parentEntries = entries.filter((entry) => entry.kind === "parent-directory");
-  const rootNodes: WorkspaceEntryNode[] = [];
-  const stack: WorkspaceEntryNode[] = [];
-
-  entries
-    .filter((entry) => entry.kind !== "parent-directory")
-    .forEach((entry) => {
-      const node = { entry, children: [] };
-      const depth = entry.depth ?? 1;
-
-      while (stack.length > 0 && (stack[stack.length - 1].entry.depth ?? 1) >= depth) {
-        stack.pop();
-      }
-
-      const parent = stack[stack.length - 1];
-      if (parent) {
-        parent.children.push(node);
-      } else {
-        rootNodes.push(node);
-      }
-      stack.push(node);
-    });
-
-  const sortedEntries: WorkspaceEntry[] = [...parentEntries];
-  const appendNodes = (nodes: WorkspaceEntryNode[]) => {
-    nodes.sort((left, right) => compareWorkspaceEntries(left.entry, right.entry));
-    nodes.forEach((node) => {
-      sortedEntries.push(node.entry);
-      appendNodes(node.children);
-    });
-  };
-
-  appendNodes(rootNodes);
-  return sortedEntries;
 }
 
 function directoryTreeKey(entry: Pick<WorkspaceEntry, "path" | "source">) {
@@ -1776,9 +1766,29 @@ function glossaryTermHasContent(term: GlossaryTerm | null | undefined): term is 
   return Boolean(term?.definition.trim());
 }
 
+function currentWindowWorkspaceStorage() {
+  const isSecondaryWindow =
+    new URLSearchParams(window.location.search).get("scholium-window") === "secondary";
+  if (!isSecondaryWindow) return window.localStorage;
+
+  if (window.sessionStorage.getItem(secondaryWorkspaceStorageSeededKey) !== "true") {
+    workspaceStorageKeys.forEach((key) => {
+      const value = window.localStorage.getItem(key);
+      if (value === null) {
+        window.sessionStorage.removeItem(key);
+      } else {
+        window.sessionStorage.setItem(key, value);
+      }
+    });
+    window.sessionStorage.setItem(secondaryWorkspaceStorageSeededKey, "true");
+  }
+
+  return window.sessionStorage;
+}
+
 function readLastOpenedMarkdownPath() {
   try {
-    return window.localStorage.getItem(lastOpenedMarkdownPathStorageKey)?.trim() ?? "";
+    return currentWindowWorkspaceStorage().getItem(lastOpenedMarkdownPathStorageKey)?.trim() ?? "";
   } catch {
     return "";
   }
@@ -1787,7 +1797,7 @@ function readLastOpenedMarkdownPath() {
 function readDocumentTabSession() {
   try {
     return parseDocumentTabSession(
-      window.localStorage.getItem(documentTabSessionStorageKey),
+      currentWindowWorkspaceStorage().getItem(documentTabSessionStorageKey),
     );
   } catch {
     return null;
@@ -1797,9 +1807,9 @@ function readDocumentTabSession() {
 function rememberDocumentTabSession(session: DocumentTabSessionState | null) {
   try {
     if (session) {
-      window.localStorage.setItem(documentTabSessionStorageKey, JSON.stringify(session));
+      currentWindowWorkspaceStorage().setItem(documentTabSessionStorageKey, JSON.stringify(session));
     } else {
-      window.localStorage.removeItem(documentTabSessionStorageKey);
+      currentWindowWorkspaceStorage().removeItem(documentTabSessionStorageKey);
     }
   } catch {
     // Remembering open tabs is best-effort only.
@@ -1825,7 +1835,7 @@ function rememberLastOpenedMarkdownPath(path: string | null | undefined) {
   if (!path) return;
 
   try {
-    window.localStorage.setItem(lastOpenedMarkdownPathStorageKey, path);
+    currentWindowWorkspaceStorage().setItem(lastOpenedMarkdownPathStorageKey, path);
     forgetLastOpenedDropboxWorkspace();
   } catch {
     // Remembering the last file is best-effort only.
@@ -1834,7 +1844,9 @@ function rememberLastOpenedMarkdownPath(path: string | null | undefined) {
 
 function readLastOpenedMarkdownRootDirectoryPath() {
   try {
-    return window.localStorage.getItem(lastOpenedMarkdownRootDirectoryStorageKey)?.trim() ?? "";
+    return currentWindowWorkspaceStorage()
+      .getItem(lastOpenedMarkdownRootDirectoryStorageKey)
+      ?.trim() ?? "";
   } catch {
     return "";
   }
@@ -1844,7 +1856,7 @@ function rememberLastOpenedMarkdownRootDirectoryPath(path: string | null | undef
   if (!path) return;
 
   try {
-    window.localStorage.setItem(lastOpenedMarkdownRootDirectoryStorageKey, path);
+    currentWindowWorkspaceStorage().setItem(lastOpenedMarkdownRootDirectoryStorageKey, path);
     forgetLastOpenedDropboxWorkspace();
   } catch {
     // Remembering the last root directory is best-effort only.
@@ -1853,7 +1865,7 @@ function rememberLastOpenedMarkdownRootDirectoryPath(path: string | null | undef
 
 function forgetLastOpenedMarkdownRootDirectoryPath() {
   try {
-    window.localStorage.removeItem(lastOpenedMarkdownRootDirectoryStorageKey);
+    currentWindowWorkspaceStorage().removeItem(lastOpenedMarkdownRootDirectoryStorageKey);
   } catch {
     // Remembering the last root directory is best-effort only.
   }
@@ -1861,7 +1873,9 @@ function forgetLastOpenedMarkdownRootDirectoryPath() {
 
 function readLastOpenedDropboxWorkspace() {
   try {
-    const rawValue = window.localStorage.getItem(lastOpenedDropboxWorkspaceStorageKey);
+    const rawValue = currentWindowWorkspaceStorage().getItem(
+      lastOpenedDropboxWorkspaceStorageKey,
+    );
     if (!rawValue) return null;
 
     const parsedValue = JSON.parse(rawValue) as Partial<LastOpenedDropboxWorkspaceState>;
@@ -1896,7 +1910,7 @@ function rememberLastOpenedDropboxWorkspace(
   };
 
   try {
-    window.localStorage.setItem(
+    currentWindowWorkspaceStorage().setItem(
       lastOpenedDropboxWorkspaceStorageKey,
       JSON.stringify(nextState),
     );
@@ -1909,7 +1923,7 @@ function rememberLastOpenedDropboxWorkspace(
 
 function forgetLastOpenedDropboxWorkspace() {
   try {
-    window.localStorage.removeItem(lastOpenedDropboxWorkspaceStorageKey);
+    currentWindowWorkspaceStorage().removeItem(lastOpenedDropboxWorkspaceStorageKey);
   } catch {
     // Remembering the last Dropbox workspace is best-effort only.
   }
@@ -1970,6 +1984,26 @@ function localPathIsInsideDirectory(path: string, directoryPath: string) {
   return normalizedPath.startsWith(`${normalizedDirectoryPath}/`);
 }
 
+function workspacePathIsInsideDirectory(
+  path: string,
+  directoryPath: string,
+  source: WorkspaceSource,
+) {
+  if (source === "local") return localPathIsInsideDirectory(path, directoryPath);
+
+  const normalizedPath = path.trim().replace(/^\/+|\/+$/g, "").toLowerCase();
+  const normalizedDirectoryPath = directoryPath
+    .trim()
+    .replace(/^\/+|\/+$/g, "")
+    .toLowerCase();
+  if (!normalizedPath || !normalizedDirectoryPath) return false;
+
+  return (
+    normalizedPath === normalizedDirectoryPath ||
+    normalizedPath.startsWith(`${normalizedDirectoryPath}/`)
+  );
+}
+
 function ancestorDirectoryPathsForFile(rootDirectoryPath: string, filePath: string) {
   const rootPath = normalizeLocalPathForCompare(rootDirectoryPath);
   const selectedDirectoryPath = normalizeLocalPathForCompare(parentDirectoryPath(filePath));
@@ -1993,7 +2027,7 @@ function ancestorDirectoryPathsForFile(rootDirectoryPath: string, filePath: stri
 
 function forgetLastOpenedMarkdownPath() {
   try {
-    window.localStorage.removeItem(lastOpenedMarkdownPathStorageKey);
+    currentWindowWorkspaceStorage().removeItem(lastOpenedMarkdownPathStorageKey);
   } catch {
     // Remembering the last file is best-effort only.
   }
@@ -5079,6 +5113,17 @@ function sourcePositionForPreviewTextOffset(textMap: PreviewTextMap, offset: num
   return null;
 }
 
+function previewTextOffsetForSourcePosition(textMap: PreviewTextMap, sourcePosition: number) {
+  if (textMap.sourceOffsets.length === 0) return 0;
+
+  const exactOffset = textMap.sourceOffsets.findIndex(
+    (sourceOffset) => sourceOffset !== null && sourceOffset >= sourcePosition,
+  );
+  if (exactOffset >= 0) return exactOffset;
+
+  return textMap.text.length;
+}
+
 function sourceRangeForPreviewTextOffsets(textMap: PreviewTextMap, from: number, to: number) {
   if (from === to) {
     const sourcePosition = sourcePositionForPreviewTextOffset(textMap, from);
@@ -6374,17 +6419,50 @@ export function MarkdownPreview({
     if (readOnly || !commitOnInput) return;
 
     const selection = window.getSelection();
-    if (!selection || selection.isCollapsed || selection.rangeCount === 0) return;
+    if (!selection || selection.rangeCount === 0) return;
 
     const previewElement = event.currentTarget;
-    const selectedRange = selectionCoversAllPreviewContent(previewElement, selection)
-      ? { from: 0, to: previewValueRef.current.length }
-      : makePreviewAnchorFromSelection(
-          previewValueRef.current,
-          blocks,
-          previewElement,
-          selection,
-        );
+    if (
+      !selection.focusNode ||
+      !previewElement.contains(selection.focusNode) ||
+      (selection.anchorNode && !previewElement.contains(selection.anchorNode))
+    ) {
+      return;
+    }
+
+    let selectedRange =
+      selectionCoversAllPreviewContent(previewElement, selection)
+        ? { from: 0, to: previewValueRef.current.length }
+        : selection.isCollapsed
+          ? null
+          : makePreviewAnchorFromSelection(
+              previewValueRef.current,
+              blocks,
+              previewElement,
+              selection,
+            );
+
+    if (!selectedRange && selection.isCollapsed && previewValueRef.current.length === 0) {
+      selectedRange = { from: 0, to: 0 };
+    }
+
+    if (!selectedRange && selection.isCollapsed) {
+      const blockElement = previewBlockElementFromSelection();
+      const block = blockElement ? blockForPreviewElement(blockElement) : null;
+      const offsets =
+        blockElement ? selectionOffsetsWithInlineBreaksInElement(blockElement, selection) : null;
+      const sourceRange =
+        block && offsets
+          ? sourceRangeForPreviewTextOffsets(
+              getPreviewBlockTextMap(previewValueRef.current, block),
+              offsets.from,
+              offsets.to,
+            )
+          : null;
+
+      selectedRange = sourceRange;
+    }
+
     if (!selectedRange) return;
 
     const pastedText = event.clipboardData
@@ -6402,10 +6480,9 @@ export function MarkdownPreview({
       previewValueRef.current.slice(0, selectedRange.from) +
       pastedText +
       previewValueRef.current.slice(selectedRange.to);
-    commitPreviewChange(nextValue);
-
+    const caretSourcePosition = selectedRange.from + pastedText.length;
     const caretLine =
-      nextValue.slice(0, selectedRange.from + pastedText.length).split("\n").length - 1;
+      nextValue.slice(0, caretSourcePosition).split("\n").length - 1;
     const nextBlocks = parseMarkdownPreviewBlocks(nextValue);
     const focusBlock =
       nextBlocks.find(
@@ -6414,8 +6491,15 @@ export function MarkdownPreview({
       nextBlocks.filter((block) => block.endLine < caretLine).slice(-1)[0] ??
       nextBlocks[0];
     if (focusBlock) {
-      focusPreviewBlockEnd(focusBlock.key);
+      focusPreviewBlockTextOffset(
+        focusBlock.key,
+        previewTextOffsetForSourcePosition(
+          getPreviewBlockTextMap(nextValue, focusBlock),
+          caretSourcePosition,
+        ),
+      );
     }
+    commitPreviewChange(nextValue);
   }
 
   function handlePreviewInput(event: FormEvent<HTMLDivElement>) {
@@ -6510,6 +6594,19 @@ export function MarkdownPreview({
     const listLine = parseMarkdownListLine(currentLine);
     const nextLine = listContinuationLine(currentLine);
     if (!listLine || nextLine === null) return false;
+
+    const nextListItem = listItem.nextElementSibling;
+    const nextListLine = parseMarkdownListLine(lines[lineIndex + 1] ?? "");
+    if (
+      nextListItem instanceof HTMLLIElement &&
+      Number(nextListItem.dataset.previewListItemIndex) === flatIndex + 1 &&
+      nextListLine &&
+      !nextListLine.text.trim() &&
+      !directPreviewListItemText(nextListItem).trim()
+    ) {
+      focusPreviewListItem(block.key, itemIndex + 1);
+      return true;
+    }
 
     const splitOffset = caretOffset === null
       ? currentItem.length
@@ -6946,7 +7043,7 @@ export function MarkdownPreview({
 
   function undoPreviewChange() {
     const previousValue = previewUndoStackRef.current.pop();
-    if (!previousValue) return false;
+    if (previousValue === undefined) return false;
 
     previewRedoStackRef.current.push(previewValueRef.current);
     previewValueRef.current = previousValue;
@@ -7374,8 +7471,8 @@ function NoteMarkdownEditor({
   mermaidLoadingLabel: string;
   onChange: (value: string) => void;
   onClick?: (event: MouseEvent<HTMLElement>) => void;
-  onCompositionEnd?: () => void;
-  onCompositionStart?: () => void;
+  onCompositionEnd?: (event: CompositionEvent<HTMLElement>) => void;
+  onCompositionStart?: (event: CompositionEvent<HTMLElement>) => void;
   onEditingBlur?: () => void;
   onKeyDown?: (event: ReactKeyboardEvent<HTMLElement>) => void;
   onRequestEdit?: () => void;
@@ -7545,8 +7642,10 @@ function NoteMarkdownEditor({
 function App() {
   const [documents, setDocuments] = useState(documentsSeed);
   const [workspaceTitle, setWorkspaceTitle] = useState("Scholium");
+  const [workspaceSortMode, setWorkspaceSortMode] = useState<WorkspaceSortMode>("name");
+  const workspaceSortModeRef = useRef(workspaceSortMode);
   const [workspaceEntries, setWorkspaceEntries] = useState<WorkspaceEntry[]>(() =>
-    documentsSeed.map(workspaceEntryFromDocument),
+    sortWorkspaceEntriesForDirectory(documentsSeed.map(workspaceEntryFromDocument)),
   );
   const [workspaceRootPath, setWorkspaceRootPath] = useState<string | null>(null);
   const [workspaceSource, setWorkspaceSource] = useState<WorkspaceSource | null>(null);
@@ -7563,6 +7662,7 @@ function App() {
   const [documentSearchQuery, setDocumentSearchQuery] = useState("");
   const [documentSearchActiveIndex, setDocumentSearchActiveIndex] = useState(0);
   const [documentSearchMatchCount, setDocumentSearchMatchCount] = useState(0);
+  const [documentSearchScrollRequestKey, setDocumentSearchScrollRequestKey] = useState(0);
   const [tagDraft, setTagDraft] = useState("");
   const [documentTagsExpanded, setDocumentTagsExpanded] = useState(false);
   const [hiddenDocumentTagCount, setHiddenDocumentTagCount] = useState(0);
@@ -7594,6 +7694,61 @@ function App() {
 
   useEffect(() => {
     let keyboardCloseTimer = 0;
+    let restoreScrollFrame = 0;
+    let floatingNoteScrollLock: {
+      editorPane: HTMLElement;
+      left: number;
+      top: number;
+      windowX: number;
+      windowY: number;
+    } | null = null;
+
+    function floatingNoteEditableFromTarget(target: EventTarget | null) {
+      if (!(target instanceof Element)) return null;
+      const editable = target.closest<HTMLElement>(
+        "input, textarea, [contenteditable='true']",
+      );
+      return editable?.closest(".floating-note-panel:not(.is-expanded-sidebar)")
+        ? editable
+        : null;
+    }
+
+    function captureFloatingNoteScrollPosition(event: Event) {
+      if (!window.matchMedia(mobileSafeLayoutViewportQuery).matches) return;
+      if (!floatingNoteEditableFromTarget(event.target)) return;
+      if (event.type === "focusin" && floatingNoteScrollLock) return;
+
+      const editorPane = document.querySelector<HTMLElement>(".editor-pane");
+      if (!editorPane) return;
+      floatingNoteScrollLock = {
+        editorPane,
+        left: editorPane.scrollLeft,
+        top: editorPane.scrollTop,
+        windowX: window.scrollX,
+        windowY: window.scrollY,
+      };
+    }
+
+    function restoreFloatingNoteScrollPosition() {
+      const lock = floatingNoteScrollLock;
+      if (!lock || !lock.editorPane.isConnected) return;
+
+      if (lock.editorPane.scrollLeft !== lock.left) {
+        lock.editorPane.scrollLeft = lock.left;
+      }
+      if (lock.editorPane.scrollTop !== lock.top) {
+        lock.editorPane.scrollTop = lock.top;
+      }
+      if (window.scrollX !== lock.windowX || window.scrollY !== lock.windowY) {
+        window.scrollTo(lock.windowX, lock.windowY);
+      }
+    }
+
+    function keepFloatingNoteScrollPosition() {
+      restoreFloatingNoteScrollPosition();
+      window.cancelAnimationFrame(restoreScrollFrame);
+      restoreScrollFrame = window.requestAnimationFrame(restoreFloatingNoteScrollPosition);
+    }
 
     function syncVisualViewportProperties() {
       const visualViewport = window.visualViewport;
@@ -7625,6 +7780,10 @@ function App() {
         visualViewport !== null &&
         Math.max(window.innerHeight, rootElement.clientHeight) - visualViewport.height > 96;
 
+      if (floatingNoteScrollLock) {
+        keepFloatingNoteScrollPosition();
+      }
+
       if (softwareKeyboardOpen) {
         window.clearTimeout(keyboardCloseTimer);
         keyboardCloseTimer = 0;
@@ -7635,6 +7794,7 @@ function App() {
       ) {
         keyboardCloseTimer = window.setTimeout(() => {
           rootElement.classList.remove("is-mobile-keyboard-open");
+          floatingNoteScrollLock = null;
           keyboardCloseTimer = 0;
         }, 180);
       }
@@ -7644,13 +7804,18 @@ function App() {
     visualViewport?.addEventListener("scroll", syncVisualViewportProperties);
     visualViewport?.addEventListener("resize", syncVisualViewportProperties);
     window.addEventListener("resize", syncVisualViewportProperties);
+    document.addEventListener("pointerdown", captureFloatingNoteScrollPosition, true);
+    document.addEventListener("focusin", captureFloatingNoteScrollPosition, true);
     syncVisualViewportProperties();
 
     return () => {
       window.clearTimeout(keyboardCloseTimer);
+      window.cancelAnimationFrame(restoreScrollFrame);
       visualViewport?.removeEventListener("scroll", syncVisualViewportProperties);
       visualViewport?.removeEventListener("resize", syncVisualViewportProperties);
       window.removeEventListener("resize", syncVisualViewportProperties);
+      document.removeEventListener("pointerdown", captureFloatingNoteScrollPosition, true);
+      document.removeEventListener("focusin", captureFloatingNoteScrollPosition, true);
       document.documentElement.classList.remove("is-mobile-keyboard-open");
       document.documentElement.style.removeProperty("--visual-viewport-offset-top");
       document.documentElement.style.removeProperty("--visual-viewport-offset-left");
@@ -7681,6 +7846,8 @@ function App() {
     useState<SelectionWarningPosition | null>(null);
   const [mobileNoteSelectionHintVisible, setMobileNoteSelectionHintVisible] =
     useState(false);
+  const [noteModeSourceBlockedNoticePosition, setNoteModeSourceBlockedNoticePosition] =
+    useState<CSSProperties | null>(null);
   const [isNotePanelClosing, setIsNotePanelClosing] = useState(false);
   const [isMobileViewport, setIsMobileViewport] = useState(() =>
     window.matchMedia(mobileViewportQuery).matches,
@@ -7762,6 +7929,8 @@ function App() {
   const renameInputRef = useRef<HTMLInputElement | null>(null);
   const createEntryInputRef = useRef<HTMLInputElement | null>(null);
   const documentSearchInputRef = useRef<HTMLInputElement | null>(null);
+  const desktopSourceModeButtonRef = useRef<HTMLButtonElement | null>(null);
+  const mobileSourceModeButtonRef = useRef<HTMLButtonElement | null>(null);
   const noteEditorRootRef = useRef<HTMLDivElement | null>(null);
   const noteModeDefaultAppliedRef = useRef(noteModeEnabled);
   const returnToViewTimerRef = useRef(0);
@@ -7864,6 +8033,7 @@ function App() {
   >(() => undefined);
 
   documentsRef.current = documents;
+  workspaceSortModeRef.current = workspaceSortMode;
   workspaceEntriesRef.current = workspaceEntries;
   notesRef.current = notes;
   glossaryTermsRef.current = glossaryTerms;
@@ -8041,7 +8211,8 @@ function App() {
     (binding) => binding.documentId === selectedDocument.id && binding.status !== "deleted",
   );
   const nativeStorageAvailable = hasNativeStorageAccess();
-  const documentSearchVisible = hasOpenDocument && !settingsViewOpen && (documentSearchOpen || isMobileViewport);
+  const documentSearchVisible =
+    hasOpenDocument && !settingsViewOpen && (isMobileViewport || documentSearchOpen);
   const documentTabsVisible = !settingsViewOpen && openDocumentTabs.length > 1;
 
   useLayoutEffect(() => {
@@ -8101,8 +8272,13 @@ function App() {
     () => ({
       activeIndex: documentSearchActiveIndex,
       query: activeDocumentSearchQuery,
+      scrollRequestKey: documentSearchScrollRequestKey,
     }),
-    [activeDocumentSearchQuery, documentSearchActiveIndex],
+    [
+      activeDocumentSearchQuery,
+      documentSearchActiveIndex,
+      documentSearchScrollRequestKey,
+    ],
   );
   const documentSearchStatus =
     documentSearchQuery.trim() && documentSearchVisible
@@ -8416,6 +8592,7 @@ function App() {
 
   useEffect(() => {
     setMobileNoteSelectionHintVisible(false);
+    setNoteModeSourceBlockedNoticePosition(null);
   }, [selectedDocumentId]);
 
   useEffect(() => {
@@ -8428,6 +8605,7 @@ function App() {
     ) {
       if (!noteModeEnabled || settingsViewOpen) {
         setMobileNoteSelectionHintVisible(false);
+        setNoteModeSourceBlockedNoticePosition(null);
       }
       return;
     }
@@ -8461,6 +8639,22 @@ function App() {
       window.removeEventListener("pointerdown", hideOnPointerDown, true);
     };
   }, [mobileNoteSelectionHintVisible]);
+
+  useEffect(() => {
+    if (!noteModeSourceBlockedNoticePosition) return undefined;
+
+    const hideTimer = window.setTimeout(
+      () => setNoteModeSourceBlockedNoticePosition(null),
+      3000,
+    );
+    const hideOnPointerDown = () => setNoteModeSourceBlockedNoticePosition(null);
+    window.addEventListener("pointerdown", hideOnPointerDown, true);
+
+    return () => {
+      window.clearTimeout(hideTimer);
+      window.removeEventListener("pointerdown", hideOnPointerDown, true);
+    };
+  }, [noteModeSourceBlockedNoticePosition]);
 
   useEffect(() => {
     if (noteModeEnabled) return;
@@ -8629,9 +8823,18 @@ function App() {
 
   useEffect(() => {
     function handlePlainTextCopy(event: ClipboardEvent) {
-      const selectedText = window.getSelection()?.toString() ?? "";
+      const selection = window.getSelection();
+      const selectedText = selection?.toString() ?? "";
       if (!selectedText) return;
       if (!event.clipboardData) return;
+      const selectionElements = [selection?.anchorNode, selection?.focusNode]
+        .map((node) => (node instanceof Element ? node : node?.parentElement ?? null))
+        .filter((element): element is Element => Boolean(element));
+      if (
+        selectionElements.some((element) => element.closest(".milkdown-markdown-editor"))
+      ) {
+        return;
+      }
 
       event.preventDefault();
       event.clipboardData.clearData();
@@ -9083,11 +9286,7 @@ function App() {
       if (selectionRect) return selectionRect;
     }
 
-    const editorSelectionRects = Array.from(
-      document.querySelectorAll<HTMLElement>(".cm-selectionBackground"),
-    ).flatMap((element) => Array.from(element.getClientRects()));
-
-    return textAnchorRectFromClientRects(editorSelectionRects);
+    return null;
   }
 
   function clearSelectionWarning() {
@@ -9098,7 +9297,7 @@ function App() {
   function annotationAnchorRect(annotationId: string) {
     const textElements = Array.from(
       document.querySelectorAll<HTMLElement>(
-        ".cm-note-annotation[data-note-id], .preview-note-annotation[data-note-id], .milkdown-note-annotation[data-note-id]",
+        ".preview-note-annotation[data-note-id], .milkdown-note-annotation[data-note-id]",
       ),
     ).filter((element) => element.dataset.noteId === annotationId);
     const textRects = textElements.flatMap((element) =>
@@ -9109,7 +9308,7 @@ function App() {
 
     const frameElements = Array.from(
       document.querySelectorAll<HTMLElement>(
-        ".cm-annotation-frame[data-note-id], .preview-annotation-frame[data-note-id], .milkdown-annotation-frame[data-note-id]",
+        ".preview-annotation-frame[data-note-id], .milkdown-annotation-frame[data-note-id]",
       ),
     ).filter((element) => element.dataset.noteId === annotationId);
     const frameRects = frameElements.flatMap((element) =>
@@ -9153,23 +9352,22 @@ function App() {
   }
 
   function alignRectToVerticalViewportPosition(
-    rect: Pick<TextRangeRect, "top">,
+    rect: DOMRect,
     scrollContainer: HTMLElement | null,
     behavior: ScrollBehavior = "instant",
   ) {
-    const targetViewportTop = window.innerHeight * noteLibraryFocusAlignmentRatio;
-
     if (scrollContainer) {
-      const rawTop = scrollContainer.scrollTop + rect.top - targetViewportTop;
-      const maxTop = Math.max(0, scrollContainer.scrollHeight - scrollContainer.clientHeight);
-      const nextTop = clampNumber(rawTop, 0, maxTop);
-
-      if (Math.abs(scrollContainer.scrollTop - nextTop) > 1) {
-        scrollContainer.scrollTo({ top: nextTop, behavior });
+      const containerRect = scrollContainer.getBoundingClientRect();
+      const targetViewportTop = containerRect.top + containerRect.height * noteLibraryFocusAlignmentRatio;
+      const currentViewportTop = rect.top;
+      const offset = currentViewportTop - targetViewportTop;
+      if (Math.abs(offset) > 1) {
+        scrollContainer.scrollBy({ top: offset, behavior });
       }
       return true;
     }
 
+    const targetViewportTop = window.innerHeight * noteLibraryFocusAlignmentRatio;
     const scrollingElement = document.scrollingElement ?? document.documentElement;
     const rawTop = window.scrollY + rect.top - targetViewportTop;
     const maxTop = Math.max(0, scrollingElement.scrollHeight - window.innerHeight);
@@ -9185,7 +9383,7 @@ function App() {
     const safeNoteId = cssAttributeSelectorValue(noteId);
     return Array.from(
       document.querySelectorAll<HTMLElement>(
-        `.cm-annotation-frame[data-note-id="${safeNoteId}"], .preview-annotation-frame[data-note-id="${safeNoteId}"], .milkdown-annotation-frame[data-note-id="${safeNoteId}"], .cm-note-annotation[data-note-id="${safeNoteId}"], .preview-note-annotation[data-note-id="${safeNoteId}"], .milkdown-note-annotation[data-note-id="${safeNoteId}"]`,
+        `.preview-annotation-frame[data-note-id="${safeNoteId}"], .milkdown-annotation-frame[data-note-id="${safeNoteId}"], .preview-note-annotation[data-note-id="${safeNoteId}"], .milkdown-note-annotation[data-note-id="${safeNoteId}"]`,
       ),
     )
       .filter((element) => {
@@ -9214,7 +9412,7 @@ function App() {
     if (!anchorRect) return false;
 
     alignRectToVerticalViewportPosition(
-      anchorRect,
+      annotationElements[0].getBoundingClientRect(),
       scrollableAncestor(annotationElements[0]),
       behavior,
     );
@@ -9538,7 +9736,7 @@ function App() {
 
     const targetElement = elementFromEventTarget(target);
     const noteElement = targetElement?.closest<HTMLElement>(
-      ".cm-note-annotation[data-note-id], .cm-annotation-frame[data-note-id], .preview-note-annotation[data-note-id], .preview-annotation-frame[data-note-id], .milkdown-note-annotation[data-note-id], .milkdown-annotation-frame[data-note-id]",
+      ".preview-note-annotation[data-note-id], .preview-annotation-frame[data-note-id], .milkdown-note-annotation[data-note-id], .milkdown-annotation-frame[data-note-id]",
     );
 
     return (
@@ -9550,7 +9748,7 @@ function App() {
   function pointHitsLibraryNoteRange(noteId: string, clientX: number, clientY: number) {
     return Array.from(
       document.querySelectorAll<HTMLElement>(
-        ".cm-note-annotation[data-note-id], .cm-annotation-frame[data-note-id], .preview-note-annotation[data-note-id], .preview-annotation-frame[data-note-id], .milkdown-note-annotation[data-note-id], .milkdown-annotation-frame[data-note-id]",
+        ".preview-note-annotation[data-note-id], .preview-annotation-frame[data-note-id], .milkdown-note-annotation[data-note-id], .milkdown-annotation-frame[data-note-id]",
       ),
     ).some((element) => {
       if (element.dataset.noteId !== noteId) return false;
@@ -9564,7 +9762,7 @@ function App() {
 
     const targetElement = elementFromEventTarget(event.target);
     const noteElement = targetElement?.closest<HTMLElement>(
-      ".cm-note-annotation[data-note-id], .cm-annotation-frame[data-note-id], .preview-note-annotation[data-note-id], .preview-annotation-frame[data-note-id], .milkdown-note-annotation[data-note-id], .milkdown-annotation-frame[data-note-id]",
+      ".preview-note-annotation[data-note-id], .preview-annotation-frame[data-note-id], .milkdown-note-annotation[data-note-id], .milkdown-annotation-frame[data-note-id]",
     );
 
     return (
@@ -9613,7 +9811,7 @@ function App() {
 
     return Array.from(
       document.querySelectorAll<HTMLElement>(
-        ".cm-note-annotation[data-note-id], .cm-annotation-frame[data-note-id], .preview-note-annotation[data-note-id], .preview-annotation-frame[data-note-id], .milkdown-note-annotation[data-note-id], .milkdown-annotation-frame[data-note-id]",
+        ".preview-note-annotation[data-note-id], .preview-annotation-frame[data-note-id], .milkdown-note-annotation[data-note-id], .milkdown-annotation-frame[data-note-id]",
       ),
     ).some((element) => {
       const isActiveNote = element.dataset.noteId === activeNoteId;
@@ -9641,9 +9839,7 @@ function App() {
       }
     }
 
-    return Array.from(document.querySelectorAll<HTMLElement>(".cm-selectionBackground")).some(
-      (element) => pointHitsAnyRect(clientX, clientY, Array.from(element.getClientRects())),
-    );
+    return false;
   }
 
   function notePanelKeepsFocus(target: EventTarget | null, clientX?: number, clientY?: number) {
@@ -9699,6 +9895,11 @@ function App() {
 
   function closeDocumentSearch() {
     setDocumentSearchOpen(false);
+    if (!isMobileViewport) {
+      setDocumentSearchQuery("");
+      setDocumentSearchActiveIndex(0);
+      setDocumentSearchMatchCount(0);
+    }
     if (isMobileViewport) {
       const activeElement = document.activeElement;
       if (activeElement instanceof HTMLElement && activeElement.closest(".document-search")) {
@@ -9717,11 +9918,15 @@ function App() {
   function updateDocumentSearchQuery(value: string) {
     setDocumentSearchQuery(value);
     setDocumentSearchActiveIndex(0);
+    if (value.trim()) {
+      setDocumentSearchScrollRequestKey((requestKey) => requestKey + 1);
+    }
   }
 
   function moveDocumentSearch(delta: number) {
     if (documentSearchMatchCount <= 0) return;
 
+    setDocumentSearchScrollRequestKey((requestKey) => requestKey + 1);
     setDocumentSearchActiveIndex(
       (currentIndex) =>
         (currentIndex + delta + documentSearchMatchCount) % documentSearchMatchCount,
@@ -9729,9 +9934,17 @@ function App() {
   }
 
   function handleDocumentSearchInputKeyDown(event: ReactKeyboardEvent<HTMLInputElement>) {
-    if (event.key === "Enter") {
+    if (isDocumentSearchSelectAllShortcut(event.nativeEvent)) {
       event.preventDefault();
-      moveDocumentSearch(event.shiftKey ? -1 : 1);
+      event.stopPropagation();
+      event.currentTarget.select();
+      return;
+    }
+
+    const moveDelta = documentSearchMoveDeltaForKeyDown(event.nativeEvent);
+    if (moveDelta !== 0) {
+      event.preventDefault();
+      moveDocumentSearch(moveDelta);
       return;
     }
 
@@ -10430,30 +10643,31 @@ function App() {
     let unlistenOpenDropbox: (() => void) | null = null;
     let unlistenOpenLocation: (() => void) | null = null;
     let unlistenSelectAll: (() => void) | null = null;
+    const appWindow = getCurrentWindow();
 
     void Promise.all([
-      listen("scholium-new-file", () => {
+      appWindow.listen("scholium-new-file", () => {
         newMarkdownFileHandlerRef.current();
       }),
-      listen("scholium-new-folder", () => {
+      appWindow.listen("scholium-new-folder", () => {
         newMarkdownFolderHandlerRef.current();
       }),
-      listen("scholium-open-settings", () => {
+      appWindow.listen("scholium-open-settings", () => {
         openSettingsHandlerRef.current();
       }),
-      listen("scholium-open-file", () => {
+      appWindow.listen("scholium-open-file", () => {
         openMarkdownFileHandlerRef.current();
       }),
-      listen("scholium-open-folder", () => {
+      appWindow.listen("scholium-open-folder", () => {
         openMarkdownFolderHandlerRef.current();
       }),
-      listen("scholium-open-dropbox", () => {
+      appWindow.listen("scholium-open-dropbox", () => {
         openDropboxCloudHandlerRef.current();
       }),
-      listen<OpenLocationEventPayload>("scholium-open-location", (event) => {
+      appWindow.listen<OpenLocationEventPayload>("scholium-open-location", (event) => {
         void openNativeMenuLocation(event.payload);
       }),
-      listen("scholium-select-all", () => {
+      appWindow.listen("scholium-select-all", () => {
         const activeElement = document.activeElement;
         if (
           activeElement instanceof HTMLInputElement ||
@@ -10717,6 +10931,23 @@ function App() {
         return;
       }
 
+      const isSaveShortcut =
+        event.key.toLowerCase() === "s" &&
+        !event.altKey &&
+        !event.shiftKey &&
+        ((event.metaKey && !event.ctrlKey) || (event.ctrlKey && !event.metaKey));
+      if (isSaveShortcut) {
+        const documentToSave = documentsRef.current.find(
+          (document) => document.id === selectedDocumentIdRef.current,
+        );
+        if (documentToSave && isDraftDocumentId(documentToSave.id)) {
+          event.preventDefault();
+          event.stopPropagation();
+          void saveDraftDocument(documentToSave);
+        }
+        return;
+      }
+
       if (event.key === "Escape" && (notePanelHasContentRef.current || pendingAnchor)) {
         event.preventDefault();
         closeNotePanel();
@@ -10791,6 +11022,11 @@ function App() {
       }
 
       event.preventDefault();
+      if (noteModeEnabled) {
+        event.stopPropagation();
+        showNoteModeSourceBlockedNotice();
+        return;
+      }
       closeNotePanel();
       toggleEditorMode();
     }
@@ -11009,7 +11245,7 @@ function App() {
 
   function normalizeDocumentModeState(modeState: DocumentModeState): DocumentModeState {
     return {
-      editorMode: modeState.editorMode,
+      editorMode: modeState.noteModeEnabled ? "preview" : modeState.editorMode,
       noteModeEnabled: modeState.noteModeEnabled,
       glossaryModeEnabled: modeState.noteModeEnabled
         ? modeState.glossaryModeEnabled
@@ -11085,12 +11321,41 @@ function App() {
     setGlossaryModeEnabled(normalizedModeState.glossaryModeEnabled);
   }
 
-  function toggleEditorMode() {
+  function toggleEditorMode(event?: MouseEvent<HTMLButtonElement>) {
+    if (noteModeEnabledRef.current) {
+      showNoteModeSourceBlockedNotice(event?.currentTarget);
+      return;
+    }
+
     const nextEditorMode = editorModeRef.current === "preview" ? "edit" : "preview";
     setActiveDocumentModeState({
       editorMode: nextEditorMode,
       noteModeEnabled: noteModeEnabledRef.current,
       glossaryModeEnabled: glossaryModeEnabledRef.current,
+    });
+  }
+
+  function showNoteModeSourceBlockedNotice(button?: HTMLButtonElement | null) {
+    const sourceModeButton =
+      button ??
+      [mobileSourceModeButtonRef.current, desktopSourceModeButtonRef.current].find(
+        (candidate) => {
+          const rect = candidate?.getBoundingClientRect();
+          return Boolean(rect && rect.width > 0 && rect.height > 0);
+        },
+      );
+    if (!sourceModeButton) return;
+
+    const buttonRect = sourceModeButton.getBoundingClientRect();
+    const noticeWidth = Math.min(320, window.innerWidth - 32);
+    const noticeLeft = Math.min(
+      Math.max(16, buttonRect.left + buttonRect.width / 2 - noticeWidth / 2),
+      window.innerWidth - 16 - noticeWidth,
+    );
+    setMobileNoteSelectionHintVisible(false);
+    setNoteModeSourceBlockedNoticePosition({
+      top: Math.round(buttonRect.bottom + 12),
+      left: Math.round(noticeLeft),
     });
   }
 
@@ -11194,19 +11459,28 @@ function App() {
     clearReturnToViewTimer();
   }
 
-  function closeDocumentTab(documentId: string, event?: MouseEvent<HTMLButtonElement>) {
+  async function closeDocumentTab(documentId: string, event?: MouseEvent<HTMLButtonElement>) {
     event?.preventDefault();
     event?.stopPropagation();
 
+    let documentIdToClose = documentId;
+    if (isDraftDocumentId(documentId)) {
+      const result = await prepareDraftDocumentForLeaving(documentId);
+      if (result === "blocked" || result === "discarded") return;
+      if (result === "saved") {
+        documentIdToClose = selectedDocumentIdRef.current;
+      }
+    }
+
     const currentIds = openDocumentTabIdsRef.current;
-    const closedIndex = currentIds.indexOf(documentId);
+    const closedIndex = currentIds.indexOf(documentIdToClose);
     if (closedIndex < 0) return;
 
-    const nextIds = currentIds.filter((currentId) => currentId !== documentId);
+    const nextIds = currentIds.filter((currentId) => currentId !== documentIdToClose);
     openDocumentTabIdsRef.current = nextIds;
     setOpenDocumentTabIds(nextIds);
 
-    if (documentId !== selectedDocumentIdRef.current) return;
+    if (documentIdToClose !== selectedDocumentIdRef.current) return;
 
     if (nextIds.length === 0) {
       clearActiveDocumentSelection();
@@ -11217,8 +11491,16 @@ function App() {
     selectDocument(nextIds[nextIndex], { tabBehavior: "none" });
   }
 
-  function closeOtherDocumentTabs(documentId: string) {
+  async function closeOtherDocumentTabs(documentId: string) {
     setDocumentTabContextMenu(null);
+    const documentIdsToClose = openDocumentTabIdsRef.current.filter(
+      (currentId) => currentId !== documentId,
+    );
+    for (const currentId of documentIdsToClose) {
+      const result = await prepareDraftDocumentForLeaving(currentId);
+      if (result === "blocked") return;
+    }
+
     const currentIds = openDocumentTabIdsRef.current;
     const nextIds = documentTabIdsAfterClosingOthers(currentIds, documentId);
     if (nextIds === currentIds) return;
@@ -11232,6 +11514,13 @@ function App() {
 
   async function openDocumentTabInNewWindow(documentId: string) {
     setDocumentTabContextMenu(null);
+    let documentIdToOpen = documentId;
+    if (isDraftDocumentId(documentIdToOpen)) {
+      const result = await prepareDraftDocumentForLeaving(documentIdToOpen);
+      if (result !== "saved") return;
+      documentIdToOpen = selectedDocumentIdRef.current;
+    }
+
     window.clearTimeout(autosaveTimerRef.current);
 
     for (let attempts = 0; autosaveInFlightRef.current && attempts < 300; attempts += 1) {
@@ -11242,13 +11531,13 @@ function App() {
       return;
     }
 
-    if (hasDirtyState(dirtyDocumentStatesRef.current[documentId])) {
+    if (hasDirtyState(dirtyDocumentStatesRef.current[documentIdToOpen])) {
       await saveDirtyDocuments();
-      if (hasDirtyState(dirtyDocumentStatesRef.current[documentId])) return;
+      if (hasDirtyState(dirtyDocumentStatesRef.current[documentIdToOpen])) return;
     }
 
     const documentToOpen = documentsRef.current.find(
-      (document) => document.id === documentId,
+      (document) => document.id === documentIdToOpen,
     );
     if (!documentToOpen) return;
 
@@ -11450,7 +11739,9 @@ function App() {
         ...otherEntries,
       ];
 
-      return options.sortEntries ? sortWorkspaceEntriesForDirectory(nextEntries) : nextEntries;
+      return options.sortEntries
+        ? sortWorkspaceEntriesForDirectory(nextEntries, workspaceSortModeRef.current)
+        : nextEntries;
     });
     setWorkspaceTitle(fileNameFromPath(rootPath) || rootPath || "Scholium");
     setWorkspaceRootPath(rootPath);
@@ -11556,7 +11847,10 @@ function App() {
     discardTransientEmptySelectionNote();
     discardTransientEmptyGlossary();
 
-    const nextEntries = workspaceEntriesFromOpenedDropboxDirectory(openedDirectory, 1);
+    const nextEntries = sortWorkspaceEntriesForDirectory(
+      workspaceEntriesFromOpenedDropboxDirectory(openedDirectory, 1),
+      workspaceSortModeRef.current,
+    );
     const tagIndexRequestId = ++dropboxTagIndexRequestRef.current;
 
     setDocuments([]);
@@ -11642,6 +11936,7 @@ function App() {
 
       return sortWorkspaceEntriesForDirectory(
         insertOrUpdateWorkspaceFileEntry(currentEntries, fileEntry, workspaceRootPath),
+        workspaceSortModeRef.current,
       );
     });
     setNotes((currentNotes) => [
@@ -11859,7 +12154,10 @@ function App() {
     const loadedGlossaryTerms = loadedFiles.flatMap(
       (loadedFile) => loadedFile.glossaryTerms ?? [],
     );
-    const nextEntries = workspaceEntriesFromOpenedDirectory(openedDirectory, 1);
+    const nextEntries = sortWorkspaceEntriesForDirectory(
+      workspaceEntriesFromOpenedDirectory(openedDirectory, 1),
+      workspaceSortModeRef.current,
+    );
     const firstDocument = loadedDocuments[0];
     const selectedDocument = selectedPath
       ? loadedDocuments.find((document) => document.id === selectedPath)
@@ -11867,6 +12165,7 @@ function App() {
     const documentToSelect =
       selectedDocument ?? (options.selectFallback === false ? null : firstDocument);
 
+    documentsRef.current = loadedDocuments;
     setDocuments(loadedDocuments);
     setNotes(loadedNotes);
     setGlossaryBindings(loadedGlossaryBindings);
@@ -12049,7 +12348,9 @@ function App() {
     }
 
     mergeLoadedFilesIntoDocumentState(loadedDescendantFiles);
-    setWorkspaceEntries(nextEntries);
+    setWorkspaceEntries(
+      sortWorkspaceEntriesForDirectory(nextEntries, workspaceSortModeRef.current),
+    );
     setExpandedDirectoryKeys(nextExpandedDirectoryKeys);
     setActiveDocumentId(selectedFile.path);
     resetDocumentTabs(selectedFile.path);
@@ -13115,7 +13416,10 @@ function App() {
       }
 
       setWorkspaceEntries((currentEntries) =>
-        insertWorkspaceDirectoryChildren(currentEntries, entry, childEntries),
+        sortWorkspaceEntriesForDirectory(
+          insertWorkspaceDirectoryChildren(currentEntries, entry, childEntries),
+          workspaceSortModeRef.current,
+        ),
       );
       setExpandedDirectoryKeys((currentKeys) => new Set(currentKeys).add(entryKey));
       setStorageError("");
@@ -13482,12 +13786,303 @@ function App() {
         },
       );
       applyLoadedDropboxFile(loaded);
-      setActiveDocumentModeState({ editorMode: "edit" });
+      setActiveDocumentModeState({ editorMode: "preview" });
       setStorageError("");
       return true;
     } catch (error) {
       setStorageError(translatedError(error, "error.createFileFailed"));
       return false;
+    }
+  }
+
+  function draftDocumentHasContent(document: MarkdownDocument) {
+    return Boolean(
+      document.body.trim() ||
+        notesForDocument(document.id).length > 0 ||
+        glossaryBindingsForDocument(document.id).length > 0,
+    );
+  }
+
+  function replaceDraftWithLoadedDocument(
+    draftId: string,
+    loadedDocument: MarkdownDocument,
+    loadedNotes: SelectionNote[],
+    loadedGlossaryTerms: GlossaryTerm[],
+    loadedGlossaryBindings: GlossaryBinding[],
+  ) {
+    const nextDocuments = documentsRef.current.flatMap((document) => {
+      if (document.id === draftId) return [loadedDocument];
+      if (document.id === loadedDocument.id) return [];
+      return [document];
+    });
+    if (!nextDocuments.some((document) => document.id === loadedDocument.id)) {
+      nextDocuments.unshift(loadedDocument);
+    }
+
+    const nextNotes = [
+      ...loadedNotes,
+      ...notesRef.current.filter(
+        (note) => note.documentId !== draftId && note.documentId !== loadedDocument.id,
+      ),
+    ];
+    const nextGlossaryBindings = [
+      ...loadedGlossaryBindings,
+      ...glossaryBindingsRef.current.filter(
+        (binding) =>
+          binding.documentId !== draftId && binding.documentId !== loadedDocument.id,
+      ),
+    ];
+    const nextGlossaryTerms = mergeGlossaryTerms(
+      loadedGlossaryTerms,
+      glossaryTermsRef.current,
+    );
+    const nextDirtyDocumentStates = { ...dirtyDocumentStatesRef.current };
+    delete nextDirtyDocumentStates[draftId];
+    delete nextDirtyDocumentStates[loadedDocument.id];
+
+    const nextDocumentModeStates = { ...documentModeStatesRef.current };
+    const draftModeState = nextDocumentModeStates[draftId];
+    delete nextDocumentModeStates[draftId];
+    if (draftModeState) {
+      nextDocumentModeStates[loadedDocument.id] = draftModeState;
+    }
+
+    const nextOpenDocumentTabIds = availableDocumentTabIds(
+      openDocumentTabIdsRef.current.map((documentId) =>
+        documentId === draftId || documentId === loadedDocument.id
+          ? loadedDocument.id
+          : documentId,
+      ),
+      nextDocuments,
+    );
+    const nextWorkspaceEntries = sortWorkspaceEntriesForDirectory(
+      insertOrUpdateWorkspaceFileEntry(
+        workspaceEntriesRef.current.filter(
+          (entry) => entry.kind !== "file" || entry.documentId !== draftId,
+        ),
+        workspaceEntryFromDocument(loadedDocument),
+        workspaceRootPath,
+      ),
+      workspaceSortModeRef.current,
+    );
+
+    documentsRef.current = nextDocuments;
+    notesRef.current = nextNotes;
+    glossaryBindingsRef.current = nextGlossaryBindings;
+    glossaryTermsRef.current = nextGlossaryTerms;
+    dirtyDocumentStatesRef.current = nextDirtyDocumentStates;
+    documentModeStatesRef.current = nextDocumentModeStates;
+    openDocumentTabIdsRef.current = nextOpenDocumentTabIds;
+    workspaceEntriesRef.current = nextWorkspaceEntries;
+
+    setDocuments(nextDocuments);
+    setNotes(nextNotes);
+    setGlossaryBindings(nextGlossaryBindings);
+    setGlossaryTerms(nextGlossaryTerms);
+    setDirtyDocumentStates(nextDirtyDocumentStates);
+    setDocumentModeStates(nextDocumentModeStates);
+    setOpenDocumentTabIds(nextOpenDocumentTabIds);
+    setWorkspaceEntries(nextWorkspaceEntries);
+    setSavedDocumentBodies((currentBodies) => {
+      const nextBodies = { ...currentBodies };
+      delete nextBodies[draftId];
+      nextBodies[loadedDocument.id] = loadedDocument.body;
+      savedDocumentBodiesRef.current = nextBodies;
+      return nextBodies;
+    });
+    if (selectedDocumentIdRef.current === draftId) {
+      setActiveDocumentId(loadedDocument.id);
+    }
+  }
+
+  function replaceDraftWithLoadedLocalFile(
+    draftId: string,
+    loadedFile: OpenMarkdownFileResult,
+  ) {
+    const loadedDocument = documentFromLoadedFile(loadedFile);
+    replaceDraftWithLoadedDocument(
+      draftId,
+      loadedDocument,
+      loadedFile.notes.map((note) => localLoadedNoteFromFile(loadedFile, note)),
+      loadedFile.glossaryTerms ?? [],
+      (loadedFile.glossaryBindings ?? []).map((binding) =>
+        localLoadedGlossaryBindingFromFile(loadedFile, binding),
+      ),
+    );
+    rememberLastOpenedMarkdownPath(loadedDocument.filePath);
+  }
+
+  function replaceDraftWithLoadedDropboxFile(
+    draftId: string,
+    loadedFile: OpenDropboxMarkdownFileResult,
+  ) {
+    const loadedDocument = documentFromDropboxFile(loadedFile);
+    replaceDraftWithLoadedDocument(
+      draftId,
+      loadedDocument,
+      loadedFile.notes.map((note) =>
+        dropboxLoadedNoteFromFile(loadedFile, note, loadedDocument.id),
+      ),
+      loadedFile.glossaryTerms ?? [],
+      (loadedFile.glossaryBindings ?? []).map((binding) =>
+        dropboxLoadedGlossaryBindingFromFile(loadedFile, binding, loadedDocument.id),
+      ),
+    );
+    rememberLastOpenedDropboxWorkspace(
+      workspaceRootPath ??
+        readLastOpenedDropboxWorkspace()?.workspacePath ??
+        dropboxParentDirectoryPath(loadedDocument.path),
+      loadedDocument.path,
+    );
+  }
+
+  async function saveDraftDocument(
+    documentToSave: MarkdownDocument,
+  ): Promise<"saved" | "cancelled" | "failed"> {
+    if (!nativeStorageAvailable) {
+      setStorageError(t("error.nativeRuntimeRequired"));
+      return "failed";
+    }
+    if (!isDraftDocumentId(documentToSave.id)) return "saved";
+
+    const notesToSave = notesForDocument(documentToSave.id);
+    const glossaryBindingsToSave = glossaryBindingsForDocument(documentToSave.id);
+    const glossaryTermsToSave = glossaryTermsForDocument(documentToSave.id);
+    const source = draftDocumentSource(documentToSave);
+    const defaultFileName = ensureMarkdownExtension(
+      documentToSave.title || t("app.untitledFile"),
+    );
+
+    try {
+      if (source === "dropbox") {
+        if (workspaceRootPath === null) {
+          setStorageError(t("dropbox.error.noWorkspace"));
+          return "failed";
+        }
+
+        const fileName = window.prompt(
+          t("newFile.namePrompt"),
+          stripMarkdownExtension(defaultFileName),
+        );
+        if (fileName === null) return "cancelled";
+        const trimmedFileName = fileName.trim();
+        if (!trimmedFileName) {
+          setStorageError(t("error.fileNameRequired"));
+          return "failed";
+        }
+
+        const created = await invoke<OpenDropboxMarkdownFileResult>(
+          "create_dropbox_markdown_file",
+          {
+            parentPath: workspaceRootPath,
+            fileName: trimmedFileName,
+          },
+        );
+        const saved = await invoke<OpenDropboxMarkdownFileResult>(
+          "save_dropbox_markdown_file",
+          {
+            path: created.path,
+            body: documentToSave.body,
+            rev: created.rev ?? null,
+            notes: notesToSave,
+            glossaryTerms: glossaryTermsToSave,
+            glossaryBindings: glossaryBindingsToSave,
+          },
+        );
+        replaceDraftWithLoadedDropboxFile(documentToSave.id, saved);
+        setStorageError("");
+        return "saved";
+      }
+
+      const selectedPath = await save({
+        defaultPath:
+          workspaceSource === "local" && workspaceRootPath
+            ? filePathInDirectory(workspaceRootPath, defaultFileName)
+            : defaultFileName,
+        filters: markdownFilters,
+      });
+      if (!selectedPath) return "cancelled";
+
+      const path = ensureMarkdownExtension(selectedPath);
+      const saved = await invoke<SaveMarkdownFileResult>("save_markdown_file", {
+        path,
+        body: documentToSave.body,
+        notes: notesToSave,
+        glossaryTerms: glossaryTermsToSave,
+        glossaryBindings: glossaryBindingsToSave,
+      });
+      const loaded = await invoke<OpenMarkdownFileResult>("open_markdown_file", {
+        path: saved.path,
+      });
+      replaceDraftWithLoadedLocalFile(documentToSave.id, loaded);
+      setStorageError("");
+      return "saved";
+    } catch (error) {
+      setStorageError(translatedError(error, "error.saveFailed"));
+      return "failed";
+    }
+  }
+
+  function confirmDiscardDraftDocument(documentId: string) {
+    const shouldDiscard = window.confirm(t("confirm.discardDraftFile"));
+    if (!shouldDiscard) return false;
+
+    removeDocumentsFromWorkspace([documentId]);
+    return true;
+  }
+
+  async function prepareDraftDocumentForLeaving(
+    documentId: string,
+  ): Promise<"unchanged" | "saved" | "discarded" | "blocked"> {
+    const documentToLeave = documentsRef.current.find((document) => document.id === documentId);
+    if (!documentToLeave || !isDraftDocumentId(documentToLeave.id)) return "unchanged";
+    if (!draftDocumentHasContent(documentToLeave)) {
+      removeDocumentsFromWorkspace([documentToLeave.id]);
+      return "discarded";
+    }
+
+    const shouldSave = window.confirm(t("confirm.saveDraftFile"));
+    if (!shouldSave) {
+      return confirmDiscardDraftDocument(documentToLeave.id) ? "discarded" : "blocked";
+    }
+
+    const saveResult = await saveDraftDocument(documentToLeave);
+    if (saveResult === "saved") return "saved";
+    if (saveResult === "cancelled") {
+      return confirmDiscardDraftDocument(documentToLeave.id) ? "discarded" : "blocked";
+    }
+    return "blocked";
+  }
+
+  function createDraftMarkdownDocument(source: WorkspaceSource | null) {
+    const title = stripMarkdownExtension(t("app.untitledFile"));
+    const draftDocument: MarkdownDocument = {
+      id: draftDocumentId(source),
+      title,
+      path: "",
+      filePath: null,
+      notesPath: null,
+      updatedAt: "",
+      modifiedAt: null,
+      body: "",
+    };
+    const nextDocuments = [
+      draftDocument,
+      ...documentsRef.current.filter((document) => document.id !== draftDocument.id),
+    ];
+
+    documentsRef.current = nextDocuments;
+    setDocuments(nextDocuments);
+    setSavedDocumentBodies((currentBodies) => ({
+      ...currentBodies,
+      [draftDocument.id]: "",
+    }));
+    setActiveDocumentId(draftDocument.id);
+    addDocumentTab(draftDocument.id);
+    setActiveDocumentModeState({ editorMode: "preview" });
+    setStorageError("");
+    if (isMobileViewport) {
+      setDirectoryPaneOpen(false);
     }
   }
 
@@ -13497,45 +14092,7 @@ function App() {
       return;
     }
 
-    setStorageError("");
-
-    if (workspaceSource === "dropbox") {
-      openCreateEntryDialog("file");
-      return;
-    }
-
-    try {
-      const defaultFileName = t("app.untitledFile");
-      const selectedPath = await save({
-        defaultPath:
-          workspaceSource === "local" && workspaceRootPath
-            ? filePathInDirectory(workspaceRootPath, defaultFileName)
-            : defaultFileName,
-        filters: markdownFilters,
-      });
-      if (!selectedPath) return;
-
-      const path = ensureMarkdownExtension(selectedPath);
-      const body = "";
-      const saved = await invoke<SaveMarkdownFileResult>("save_markdown_file", {
-        path,
-        body,
-        notes: [],
-        glossaryTerms: [],
-        glossaryBindings: [],
-      });
-      const loaded = await invoke<OpenMarkdownFileResult>("open_markdown_file", {
-        path: saved.path,
-      });
-
-      applyLoadedFiles([loaded], { sortEntries: true });
-      setActiveDocumentModeState({ editorMode: "edit" });
-      if (isMobileViewport) {
-        setDirectoryPaneOpen(false);
-      }
-    } catch (error) {
-      setStorageError(translatedError(error, "error.createFileFailed"));
-    }
+    createDraftMarkdownDocument(workspaceSource === "dropbox" ? "dropbox" : "local");
   }
 
   async function createWorkspaceFolder(name: string) {
@@ -13577,15 +14134,18 @@ function App() {
       };
 
       setWorkspaceEntries((currentEntries) =>
-        sortWorkspaceEntriesForDirectory([
-          ...currentEntries.filter(
-            (entry) =>
-              entry.kind === "parent-directory" ||
-              entry.source !== source ||
-              entry.path !== created.path,
-          ),
-          createdEntry,
-        ]),
+        sortWorkspaceEntriesForDirectory(
+          [
+            ...currentEntries.filter(
+              (entry) =>
+                entry.kind === "parent-directory" ||
+                entry.source !== source ||
+                entry.path !== created.path,
+            ),
+            createdEntry,
+          ],
+          workspaceSortModeRef.current,
+        ),
       );
       setStorageError("");
       return true;
@@ -13617,7 +14177,7 @@ function App() {
       setStorageError(kind === "file" ? t("dropbox.error.noWorkspace") : t("newFolder.noWorkspace"));
       return;
     }
-    if (kind === "file" && workspaceSource !== "dropbox") {
+    if (kind === "file") {
       void newMarkdownFile();
       return;
     }
@@ -13625,7 +14185,7 @@ function App() {
     setStorageError("");
     setCreateEntryDialog({
       kind,
-      name: kind === "file" ? stripMarkdownExtension(t("app.untitledFile")) : "",
+      name: "",
       isSubmitting: false,
     });
   }
@@ -13812,6 +14372,7 @@ function App() {
               }
             : entry,
         ),
+        workspaceSortModeRef.current,
       ),
     );
     markDocumentSnapshotSaved(documentToSave.id, bodyToSave, savedSidecarFingerprint);
@@ -13868,6 +14429,7 @@ function App() {
               }
             : entry,
         ),
+        workspaceSortModeRef.current,
       ),
     );
     markDocumentSnapshotSaved(documentToSave.id, bodyToSave, savedSidecarFingerprint);
@@ -14209,7 +14771,12 @@ function App() {
     setGlossaryTerms(glossaryTermsSeed);
     setGlossaryBindings(glossaryBindingsSeed);
     setWorkspaceTitle("Scholium");
-    setWorkspaceEntries(documentsSeed.map(workspaceEntryFromDocument));
+    setWorkspaceEntries(
+      sortWorkspaceEntriesForDirectory(
+        documentsSeed.map(workspaceEntryFromDocument),
+        workspaceSortModeRef.current,
+      ),
+    );
     setWorkspaceRootPath(null);
     setWorkspaceSource(null);
     resetFileSearch();
@@ -14718,6 +15285,94 @@ function App() {
     }
   }
 
+  async function deleteWorkspaceDirectory(target: DirectoryActionTarget) {
+    setFileContextMenu(null);
+    if (!nativeStorageAvailable) {
+      setStorageError(t("error.nativeRuntimeRequired"));
+      return;
+    }
+    if (autosaveInFlightRef.current) {
+      setStorageError(t("error.waitForAutosaveBeforeDeleteDirectory"));
+      return;
+    }
+    if (!workspaceRootPath) {
+      setStorageError(t("error.operationFailed"));
+      return;
+    }
+
+    const source = target.source ?? workspaceSource ?? "local";
+    const confirmed = window.confirm(
+      t(source === "dropbox" ? "confirm.deleteDropboxDirectory" : "confirm.deleteDirectory", {
+        title: target.title,
+      }),
+    );
+    if (!confirmed) return;
+
+    setStorageError(t("status.deletingDirectory"));
+    try {
+      await invoke<void>(
+        source === "dropbox"
+          ? "delete_dropbox_markdown_directory"
+          : "delete_markdown_directory",
+        { path: target.path, rootPath: workspaceRootPath },
+      );
+
+      const deletedDocumentIds = new Set(
+        documentsRef.current
+          .filter((document) => {
+            const documentSource = documentIsFromDropbox(document) ? "dropbox" : "local";
+            const documentPath = documentSource === "dropbox" ? document.path : document.filePath;
+            return (
+              documentSource === source &&
+              Boolean(documentPath) &&
+              workspacePathIsInsideDirectory(documentPath ?? "", target.path, source)
+            );
+          })
+          .map((document) => document.id),
+      );
+      workspaceEntriesRef.current.forEach((entry) => {
+        if (
+          entry.kind === "file" &&
+          entry.source === source &&
+          workspacePathIsInsideDirectory(entry.path, target.path, source)
+        ) {
+          deletedDocumentIds.add(entry.documentId);
+        }
+      });
+
+      removeDocumentsFromWorkspace(deletedDocumentIds);
+      const deletedDirectoryKeys = new Set(
+        workspaceEntriesRef.current
+          .filter(
+            (entry) =>
+              entry.kind === "directory" &&
+              entry.source === source &&
+              workspacePathIsInsideDirectory(entry.path, target.path, source),
+          )
+          .map(directoryTreeKey),
+      );
+      const nextWorkspaceEntries = workspaceEntriesRef.current.filter(
+        (entry) =>
+          entry.source !== source ||
+          !workspacePathIsInsideDirectory(entry.path, target.path, source),
+      );
+      workspaceEntriesRef.current = nextWorkspaceEntries;
+      setWorkspaceEntries(nextWorkspaceEntries);
+      setExpandedDirectoryKeys(
+        (currentKeys) => new Set([...currentKeys].filter((key) => !deletedDirectoryKeys.has(key))),
+      );
+      setLoadingDirectoryKeys(
+        (currentKeys) => new Set([...currentKeys].filter((key) => !deletedDirectoryKeys.has(key))),
+      );
+      setDropboxIndexedDocumentTags((currentEntries) =>
+        currentEntries.filter((entry) => !deletedDocumentIds.has(entry.documentId)),
+      );
+      setStorageError("");
+    } catch (error) {
+      setStorageError(translatedError(error));
+    }
+  }
+
   function renamedPath(path: string, oldPath: string, newPath: string, source?: WorkspaceSource) {
     if (source === "dropbox") {
       if (path === oldPath) return newPath;
@@ -14776,6 +15431,7 @@ function App() {
             title: nextPath === newPath ? renamed.title : entry.title,
           };
         }),
+        workspaceSortModeRef.current,
       );
       workspaceEntriesRef.current = nextEntries;
       return nextEntries;
@@ -15112,6 +15768,20 @@ function App() {
       manualDocumentSelectionRevisionRef.current += 1;
     }
 
+    const currentDocumentId = selectedDocumentIdRef.current;
+    if (
+      options.userInitiated !== false &&
+      currentDocumentId &&
+      currentDocumentId !== documentId &&
+      isDraftDocumentId(currentDocumentId)
+    ) {
+      void prepareDraftDocumentForLeaving(currentDocumentId).then((result) => {
+        if (result === "blocked") return;
+        selectDocument(documentId, { ...options, userInitiated: false });
+      });
+      return;
+    }
+
     const nextDocument = documentsRef.current.find((document) => document.id === documentId);
     if (!nextDocument) return;
 
@@ -15135,6 +15805,10 @@ function App() {
     setActiveNoteMode("view");
     setActiveGlossaryMode("view");
     clearReturnToViewTimer();
+    if (isDraftDocumentId(nextDocument.id)) {
+      return;
+    }
+
     if (documentIsFromDropbox(nextDocument)) {
       rememberLastOpenedDropboxWorkspace(
         workspaceRootPath ??
@@ -15147,6 +15821,63 @@ function App() {
     }
   }
 
+  async function openMarkdownLink(href: string) {
+    const sourceDocument = documentsRef.current.find(
+      (document) => document.id === selectedDocumentIdRef.current,
+    );
+    if (!sourceDocument) return;
+
+    const source = documentIsFromDropbox(sourceDocument) ? "dropbox" : "local";
+    const target = resolveMarkdownLinkTarget(
+      href,
+      sourceDocument.filePath ?? sourceDocument.path,
+      source,
+    );
+
+    if (target.kind === "external") {
+      try {
+        await openExternalUrl(target.href);
+        setStorageError("");
+      } catch (error) {
+        setStorageError(translatedError(error));
+      }
+      return;
+    }
+    if (target.kind !== "document") return;
+
+    const loadedDocument = documentsRef.current.find((document) =>
+      source === "dropbox"
+        ? documentIsFromDropbox(document) && document.path === target.path
+        : !documentIsFromDropbox(document) && localPathsMatch(document.filePath, target.path),
+    );
+    if (loadedDocument) {
+      selectDocument(loadedDocument.id);
+      return;
+    }
+
+    if (source === "dropbox") {
+      await openDropboxMarkdownFilePath(target.path);
+      return;
+    }
+    if (!nativeStorageAvailable) {
+      setStorageError(t("error.nativeRuntimeRequired"));
+      return;
+    }
+
+    setStorageError(t("status.openingFile"));
+    try {
+      const loaded = await invoke<OpenMarkdownFileResult>("open_markdown_file", {
+        path: target.path,
+      });
+      mergeLoadedFilesIntoDocumentState([loaded]);
+      selectDocument(loaded.path);
+      rememberLastOpenedMarkdownPath(loaded.path);
+      setStorageError("");
+    } catch (error) {
+      setStorageError(translatedError(error, "error.openFileFailed"));
+    }
+  }
+
   function handleDocumentTabPointerDown(
     documentId: string,
     event: ReactPointerEvent<HTMLButtonElement>,
@@ -15154,9 +15885,29 @@ function App() {
     if (event.button !== 0) return;
     if (event.pointerType === "touch") return;
 
-    documentTabPointerActivationRef.current = documentId;
+    const visibleDocumentId = documentTabIdAtPoint(
+      Array.from(
+        documentTabsScrollerRef.current?.querySelectorAll<HTMLElement>(
+          ".document-tab[data-document-id]",
+        ) ?? [],
+      ).map((tab) => {
+        const bounds = tab.getBoundingClientRect();
+        return {
+          documentId: tab.dataset.documentId ?? "",
+          left: bounds.left,
+          right: bounds.right,
+          top: bounds.top,
+          bottom: bounds.bottom,
+        };
+      }),
+      event.clientX,
+      event.clientY,
+      documentId,
+    );
+
+    documentTabPointerActivationRef.current = visibleDocumentId;
     window.getSelection()?.removeAllRanges();
-    selectDocument(documentId, { tabBehavior: "none" });
+    selectDocument(visibleDocumentId, { tabBehavior: "none" });
   }
 
   function showDocumentTabContextMenu(documentId: string, left: number, top: number) {
@@ -15268,13 +16019,14 @@ function App() {
       return;
     }
 
-    const pointerAlreadySelectedThisTab =
-      documentTabPointerActivationRef.current === documentId &&
-      selectedDocumentIdRef.current === documentId;
+    const pointerActivatedDocumentId = documentTabPointerActivationRef.current;
 
     documentTabPointerActivationRef.current = "";
 
-    if (pointerAlreadySelectedThisTab) {
+    if (pointerActivatedDocumentId) {
+      if (selectedDocumentIdRef.current !== pointerActivatedDocumentId) {
+        selectDocument(pointerActivatedDocumentId, { tabBehavior: "none" });
+      }
       return;
     }
 
@@ -15306,10 +16058,12 @@ function App() {
       return false;
     }
 
-    notesRef.current = notesRef.current.filter((candidate) => candidate.id !== noteId);
-    setNotes((currentNotes) => currentNotes.filter((candidate) => candidate.id !== noteId));
     transientSelectionNoteIdRef.current = "";
-    markDocumentNotesDirty(note.documentId);
+    window.setTimeout(() => {
+      notesRef.current = notesRef.current.filter((candidate) => candidate.id !== noteId);
+      setNotes((currentNotes) => currentNotes.filter((candidate) => candidate.id !== noteId));
+      markDocumentNotesDirty(note.documentId);
+    }, 0);
     return true;
   }
 
@@ -15332,26 +16086,28 @@ function App() {
       return false;
     }
 
-    glossaryBindingsRef.current = glossaryBindingsRef.current.filter(
-      (candidate) => candidate.id !== bindingId,
-    );
-    setGlossaryBindings((currentBindings) =>
-      currentBindings.filter((candidate) => candidate.id !== bindingId),
-    );
-
-    const hasOtherBindings = glossaryBindingsRef.current.some(
-      (candidate) => candidate.termId === termId && candidate.status !== "deleted",
-    );
-    if (!hasOtherBindings) {
-      glossaryTermsRef.current = glossaryTermsRef.current.filter((candidate) => candidate.id !== termId);
-      setGlossaryTerms((currentTerms) =>
-        currentTerms.filter((candidate) => candidate.id !== termId),
-      );
-    }
-
     transientGlossaryBindingIdRef.current = "";
     transientGlossaryTermIdRef.current = "";
-    markDocumentNotesDirty(binding?.documentId ?? selectedDocument.id);
+
+    window.setTimeout(() => {
+      glossaryBindingsRef.current = glossaryBindingsRef.current.filter(
+        (candidate) => candidate.id !== bindingId,
+      );
+      setGlossaryBindings((currentBindings) =>
+        currentBindings.filter((candidate) => candidate.id !== bindingId),
+      );
+
+      const hasOtherBindings = glossaryBindingsRef.current.some(
+        (candidate) => candidate.termId === termId && candidate.status !== "deleted",
+      );
+      if (!hasOtherBindings) {
+        glossaryTermsRef.current = glossaryTermsRef.current.filter((candidate) => candidate.id !== termId);
+        setGlossaryTerms((currentTerms) =>
+          currentTerms.filter((candidate) => candidate.id !== termId),
+        );
+      }
+      markDocumentNotesDirty(binding?.documentId ?? selectedDocument.id);
+    }, 0);
     return true;
   }
 
@@ -15481,24 +16237,38 @@ function App() {
     }, notePanelAnimationMs);
   }
 
-  function handleNoteEditorCompositionStart() {
+  function handleNoteEditorCompositionStart(event: CompositionEvent<HTMLElement>) {
     noteEditorIsComposingRef.current = true;
     noteEditorEnterIgnoredDuringCompositionRef.current = false;
     noteEditorPostCompositionGuardUntilRef.current = 0;
+    const shell = event.currentTarget.closest(".milkdown-markdown-editor-shell");
+    if (shell) shell.classList.add("is-composing");
   }
 
-  function handleNoteEditorCompositionEnd() {
+  function handleNoteEditorCompositionEnd(event: CompositionEvent<HTMLElement>) {
     const hadEnterDuringComposition = noteEditorEnterIgnoredDuringCompositionRef.current;
-
     noteEditorIsComposingRef.current = false;
     noteEditorEnterIgnoredDuringCompositionRef.current = false;
-    noteEditorPostCompositionGuardUntilRef.current =
-      Date.now() + (hadEnterDuringComposition ? 500 : 180);
+    noteEditorPostCompositionGuardUntilRef.current = Date.now() + (hadEnterDuringComposition ? 500 : 180);
+    const shell = event.currentTarget.closest(".milkdown-markdown-editor-shell");
+    if (shell) shell.classList.remove("is-composing");
   }
 
   function handleNoteEditorKeyDown(event: ReactKeyboardEvent<HTMLElement>) {
     if (event.key === "Enter" && keyboardEventIsComposing(event)) {
       noteEditorEnterIgnoredDuringCompositionRef.current = true;
+      return;
+    }
+
+    if (event.key === "Enter" && event.nativeEvent.isComposing) {
+      return;
+    }
+
+    if (event.key === "Enter" && Date.now() < noteEditorPostCompositionGuardUntilRef.current) {
+      event.preventDefault();
+      event.stopPropagation();
+      event.nativeEvent.preventDefault();
+      event.nativeEvent.stopImmediatePropagation();
       return;
     }
 
@@ -15514,6 +16284,23 @@ function App() {
     event: ReactKeyboardEvent<HTMLElement>,
   ) {
     if (focusAdjacentLibraryNote(noteId, event)) {
+      return;
+    }
+
+    if (event.key === "Enter" && keyboardEventIsComposing(event)) {
+      noteEditorEnterIgnoredDuringCompositionRef.current = true;
+      return;
+    }
+
+    if (event.key === "Enter" && event.nativeEvent.isComposing) {
+      return;
+    }
+
+    if (event.key === "Enter" && Date.now() < noteEditorPostCompositionGuardUntilRef.current) {
+      event.preventDefault();
+      event.stopPropagation();
+      event.nativeEvent.preventDefault();
+      event.nativeEvent.stopImmediatePropagation();
       return;
     }
 
@@ -15602,13 +16389,22 @@ function App() {
       notePanelHasContentRef.current = false;
     }
 
-    if (isMobileViewport && !pendingGlossaryTerm) {
-      if (selectionShouldSuppressNewAnnotation(anchor)) {
+    if (mobileAnnotationKeyboardShouldStayClosed && !pendingGlossaryTerm) {
+      const glossaryAnchor = glossaryModeActive
+        ? normalizeGlossarySelectionAnchor(anchor)
+        : null;
+      const selectionAnchor = glossaryAnchor ?? anchor;
+
+      if (glossaryModeActive && !isGlossarySelectionCandidate(selectionAnchor)) {
         return;
       }
 
-      if (glossaryModeActive && isGlossarySelectionCandidate(anchor)) {
-        startGlossaryFlowForAnchor(anchor);
+      if (selectionShouldSuppressNewAnnotation(selectionAnchor)) {
+        return;
+      }
+
+      if (glossaryModeActive) {
+        startGlossaryFlowForAnchor(selectionAnchor);
         return;
       }
 
@@ -15648,15 +16444,15 @@ function App() {
   }
 
   function selectionIsBlockedByExistingAnnotations(anchor: TextSelectionAnchor) {
-    if (glossaryModeActive && isGlossarySelectionCandidate(anchor)) {
+    if (glossaryModeActive) {
       return selectionOverlapsActiveGlossary(anchor);
     }
 
-    return selectionOverlapsActiveNote(anchor) || selectionOverlapsActiveGlossary(anchor);
+    return selectionOverlapsActiveNote(anchor);
   }
 
   function selectionShouldSuppressNewAnnotation(anchor: TextSelectionAnchor) {
-    if (isMobileViewport && !(glossaryModeActive && isGlossarySelectionCandidate(anchor))) {
+    if (mobileAnnotationKeyboardShouldStayClosed && !glossaryModeActive) {
       return false;
     }
 
@@ -15714,15 +16510,19 @@ function App() {
   }
 
   function openExistingAnnotationForSelection(anchor: TextSelectionAnchor) {
+    if (glossaryModeActive) {
+      const overlappingGlossaryBinding = activeGlossaryBindingOverlappingSelection(anchor);
+      if (overlappingGlossaryBinding) {
+        return openGlossaryBindingPanel(overlappingGlossaryBinding);
+      }
+
+      return false;
+    }
+
     const overlappingNote = activeNoteOverlappingSelection(anchor);
     if (overlappingNote) {
       openSelectionNoteViewer(overlappingNote);
       return true;
-    }
-
-    const overlappingGlossaryBinding = activeGlossaryBindingOverlappingSelection(anchor);
-    if (overlappingGlossaryBinding) {
-      return openGlossaryBindingPanel(overlappingGlossaryBinding);
     }
 
     return false;
@@ -15733,6 +16533,10 @@ function App() {
     context?: TextSelectionEnterContext,
   ) {
     const contextAnchorRect = textRangeRectFromSelectionEnterContext(context);
+    const glossaryAnchor = glossaryModeActive
+      ? normalizeGlossarySelectionAnchor(anchor)
+      : null;
+    const selectionAnchor = glossaryAnchor ?? anchor;
 
     if (!hasOpenDocument) return false;
     if (
@@ -15746,23 +16550,26 @@ function App() {
       return false;
     }
     if (!noteModeEnabled) return false;
+    if (glossaryModeActive && !isGlossarySelectionCandidate(selectionAnchor)) {
+      return false;
+    }
 
-    if (selectionShouldSuppressNewAnnotation(anchor)) {
+    if (selectionShouldSuppressNewAnnotation(selectionAnchor)) {
       if (noteLibraryOpen) {
         setNoteLibraryOpen(false);
       }
       if (contextAnchorRect) {
         floatingNoteAnchorRectRef.current = contextAnchorRect;
       }
-      openExistingAnnotationForSelection(anchor);
+      openExistingAnnotationForSelection(selectionAnchor);
       return true;
     }
 
-    if (glossaryModeActive && isGlossarySelectionCandidate(anchor)) {
+    if (glossaryModeActive) {
       if (noteLibraryOpen) {
         setNoteLibraryOpen(false);
       }
-      startGlossaryFlowForAnchor(anchor, { anchorRect: contextAnchorRect });
+      startGlossaryFlowForAnchor(selectionAnchor, { anchorRect: contextAnchorRect });
       return true;
     }
 
@@ -15910,6 +16717,8 @@ function App() {
     options: { anchorRect?: TextRangeRect | null } = {},
   ) {
     if (!glossaryModeActive) return;
+    const selectionAnchor = normalizeGlossarySelectionAnchor(anchor);
+    if (!selectionAnchor || !isGlossarySelectionCandidate(selectionAnchor)) return;
 
     discardTransientEmptySelectionNote();
     setSelectionWarningPosition(null);
@@ -15923,12 +16732,12 @@ function App() {
       floatingNoteAnchorRectRef.current = anchorRect;
     }
 
-    const existingTerm = glossaryTermForAnchor(anchor);
+    const existingTerm = glossaryTermForAnchor(selectionAnchor);
     if (existingTerm) {
       clearNotePanelCloseTimer();
       clearReturnToViewTimer();
       setIsNotePanelClosing(false);
-      setPendingAnchor(anchor);
+      setPendingAnchor(selectionAnchor);
       setPendingGlossaryTerm(existingTerm);
       pendingGlossaryPromptLockUntilRef.current = Date.now() + 350;
       setActiveNoteId("");
@@ -15941,7 +16750,7 @@ function App() {
     }
 
     const now = nowLabel();
-    const termText = anchor.selectedText.replace(/\s+/g, " ").trim();
+    const termText = selectionAnchor.selectedText.replace(/\s+/g, " ").trim();
     const term: GlossaryTerm = {
       id: crypto.randomUUID(),
       term: termText,
@@ -15952,7 +16761,7 @@ function App() {
     };
 
     setGlossaryTerms((currentTerms) => [term, ...currentTerms]);
-    const binding = createGlossaryBinding(term, anchor);
+    const binding = createGlossaryBinding(term, selectionAnchor);
     transientGlossaryBindingIdRef.current = binding.id;
     transientGlossaryTermIdRef.current = term.id;
     setPendingAnchor(null);
@@ -16292,6 +17101,7 @@ function App() {
     }
 
     setActiveDocumentModeState({
+      editorMode: nextNoteModeEnabled ? "preview" : editorModeRef.current,
       noteModeEnabled: nextNoteModeEnabled,
       glossaryModeEnabled: nextNoteModeEnabled ? glossaryModeEnabled : false,
     });
@@ -16304,6 +17114,9 @@ function App() {
     const nextGlossaryModeEnabled = !glossaryModeEnabled;
     if (!nextGlossaryModeEnabled) {
       resetGlossaryModeInteractionState();
+    } else {
+      setNoteLibraryOpen(false);
+      setFocusedLibraryNoteId("");
     }
 
     setActiveDocumentModeState({
@@ -16837,10 +17650,10 @@ function App() {
           transform: `translateY(-50%) rotate(${floatingNotePanelPosition.connector.angle}deg)`,
           width: floatingNotePanelPosition.connector.width,
         };
-  const editorReadOnly = notePanelModalActive || noteModeEnabled;
   const previewEditorReadOnly =
     notePanelModalActive || (noteModeEnabled && mobileAnnotationKeyboardShouldStayClosed);
-  const mobileCommittedSelectionAnchor = pendingAnchor ?? activeNote?.anchor ?? null;
+  const mobileCommittedSelectionAnchor =
+    pendingAnchor ?? activeNote?.anchor ?? activeGlossaryBinding?.anchor ?? null;
   const mobileCommittedSelectionKey =
     mobileAnnotationKeyboardShouldStayClosed &&
     noteModeEnabled &&
@@ -16858,6 +17671,15 @@ function App() {
               icon: <PencilIcon />,
               onSelect: () => {
                 openRenameDialog(fileContextMenu);
+              },
+            },
+            {
+              id: "delete",
+              label: t("directory.delete"),
+              icon: <TrashIcon />,
+              tone: "danger",
+              onSelect: () => {
+                void deleteWorkspaceDirectory(fileContextMenu);
               },
             },
           ];
@@ -16956,7 +17778,9 @@ function App() {
           id: "close-other-tabs",
           label: t("documentTab.closeOthers"),
           icon: <SearchCloseIcon />,
-          onSelect: () => closeOtherDocumentTabs(documentTabContextMenu.documentId),
+          onSelect: () => {
+            void closeOtherDocumentTabs(documentTabContextMenu.documentId);
+          },
         },
         {
           id: "open-in-new-window",
@@ -17384,6 +18208,7 @@ function App() {
               return (
                 <div
                   className={`document-tab ${tabActive ? "is-active" : ""}`}
+                  data-document-id={document.id}
                   key={document.id}
                   onContextMenu={(event) => openDocumentTabContextMenu(document.id, event)}
                 >
@@ -17407,7 +18232,9 @@ function App() {
                   <button
                     aria-label={`${t("documentTab.close")}: ${document.title}`}
                     className="document-tab__close"
-                    onClick={(event) => closeDocumentTab(document.id, event)}
+                    onClick={(event) => {
+                      void closeDocumentTab(document.id, event);
+                    }}
                     title={t("documentTab.close")}
                     type="button"
                   >
@@ -17471,6 +18298,24 @@ function App() {
                   ×
                 </button>
               ) : null}
+            </label>
+            <label className="workspace-sort-control">
+              <span>{t("documentSort.label")}</span>
+              <select
+                aria-label={t("documentSort.label")}
+                value={workspaceSortMode}
+                onChange={(event) => {
+                  const nextMode = event.currentTarget.value as WorkspaceSortMode;
+                  workspaceSortModeRef.current = nextMode;
+                  setWorkspaceSortMode(nextMode);
+                  setWorkspaceEntries((entries) =>
+                    sortWorkspaceEntriesForDirectory(entries, nextMode),
+                  );
+                }}
+              >
+                <option value="name">{t("documentSort.name")}</option>
+                <option value="modified">{t("documentSort.modified")}</option>
+              </select>
             </label>
           </div>
 
@@ -18369,179 +19214,187 @@ function App() {
       ) : null}
 
       <section className="editor-pane" aria-label={t("app.markdownEditor")}>
-        <div className="editor-grid">
-          <div className="editor-surface" style={editorSurfaceStyle}>
-            {documentSearchVisible ? (
-              <form
+        {documentSearchVisible ? (
+          <form
+            aria-label={t("documentSearch.label")}
+            className="document-search"
+            data-has-query={documentSearchQuery.trim() ? "true" : "false"}
+            data-expanded={documentSearchOpen ? "true" : "false"}
+            onBlur={(event) => {
+              const nextTarget = event.relatedTarget;
+              if (
+                isMobileViewport &&
+                !(nextTarget instanceof Node && event.currentTarget.contains(nextTarget))
+              ) {
+                closeDocumentSearch();
+              }
+            }}
+            onSubmit={(event) => {
+              event.preventDefault();
+              moveDocumentSearch(1);
+            }}
+          >
+            <label className="document-search__field">
+              <SearchIcon />
+              <input
                 aria-label={t("documentSearch.label")}
-                className="document-search"
-                data-has-query={documentSearchQuery.trim() ? "true" : "false"}
-                data-expanded={documentSearchOpen ? "true" : "false"}
-                onBlur={(event) => {
-                  const nextTarget = event.relatedTarget;
-                  if (
-                    isMobileViewport &&
-                    !(nextTarget instanceof Node && event.currentTarget.contains(nextTarget))
-                  ) {
-                    closeDocumentSearch();
+                autoComplete="off"
+                placeholder={t("documentSearch.placeholder")}
+                ref={documentSearchInputRef}
+                type="search"
+                value={documentSearchQuery}
+                onChange={(event) => updateDocumentSearchQuery(event.target.value)}
+                onFocus={() => {
+                  if (isMobileViewport && !documentSearchOpen) {
+                    openDocumentSearch(false);
                   }
                 }}
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  moveDocumentSearch(1);
-                }}
-              >
-                <label className="document-search__field">
-                  <SearchIcon />
-                  <input
-                    aria-label={t("documentSearch.label")}
-                    autoComplete="off"
-                    placeholder={t("documentSearch.placeholder")}
-                    ref={documentSearchInputRef}
-                    type="search"
-                    value={documentSearchQuery}
-                    onChange={(event) => updateDocumentSearchQuery(event.target.value)}
-                    onFocus={() => {
-                      if (isMobileViewport && !documentSearchOpen) {
-                        openDocumentSearch(false);
-                      }
-                    }}
-                    onKeyDown={handleDocumentSearchInputKeyDown}
-                  />
-                  {documentSearchQuery ? (
-                    <button
-                      aria-label={t("documentSearch.clear")}
-                      className="document-search__clear"
-                      onClick={clearDocumentSearch}
-                      type="button"
-                    >
-                      <SearchCloseIcon />
-                    </button>
-                  ) : null}
-                </label>
-                <span className="document-search__status" role="status">
-                  {documentSearchStatus}
-                </span>
+                onKeyDown={handleDocumentSearchInputKeyDown}
+              />
+              {documentSearchQuery ? (
                 <button
-                  aria-label={t("documentSearch.previous")}
-                  className="document-search__button"
-                  disabled={documentSearchMatchCount <= 0}
-                  onClick={() => moveDocumentSearch(-1)}
-                  type="button"
-                >
-                  <SearchPreviousIcon />
-                </button>
-                <button
-                  aria-label={t("documentSearch.next")}
-                  className="document-search__button"
-                  disabled={documentSearchMatchCount <= 0}
-                  onClick={() => moveDocumentSearch(1)}
-                  type="button"
-                >
-                  <SearchNextIcon />
-                </button>
-                <button
-                  aria-label={t("documentSearch.close")}
-                  className="document-search__button"
-                  onClick={closeDocumentSearch}
+                  aria-label={t("documentSearch.clear")}
+                  className="document-search__clear"
+                  onClick={clearDocumentSearch}
                   type="button"
                 >
                   <SearchCloseIcon />
                 </button>
-              </form>
-            ) : null}
-            {hasOpenDocument && !settingsViewOpen ? (
-              <button
-                aria-label={
-                  editorMode === "edit"
-                    ? t("toolbar.previewMode.open")
-                    : t("toolbar.sourceMode.open")
-                }
-                aria-pressed={editorMode === "edit"}
-                className={`editor-mode-toggle mobile-editor-mode-toggle ${
-                  editorMode === "edit" ? "is-active" : ""
-                }`}
-                onClick={toggleEditorMode}
-                type="button"
-              >
-                <SourceModeIcon />
-              </button>
-            ) : null}
-            {annotationToolsAvailable ? (
-              <div
-                aria-label={t("app.editorTools")}
-                className="editor-toolbar"
-                data-expanded={noteModeEnabled ? "true" : "false"}
-              >
-                <button
-                  aria-label={`${t("toolbar.editorMode")}: ${
-                    editorMode === "edit" ? t("toolbar.sourceMode") : t("toolbar.previewMode")
-                  }`}
-                  aria-pressed={editorMode === "edit"}
-                  className={`editor-mode-toggle ${editorMode === "edit" ? "is-active" : ""}`}
-                  onClick={toggleEditorMode}
-                  title={
-                    editorMode === "edit"
-                      ? t("toolbar.previewMode.open")
-                      : t("toolbar.sourceMode.open")
-                  }
-                  type="button"
-                >
-                  <SourceModeIcon />
-                </button>
-                <span aria-hidden="true" className="editor-toolbar__divider" />
-                <button
-                  aria-checked={noteModeEnabled}
-                  aria-label={
-                    noteModeEnabled ? t("toolbar.noteMode.close") : t("toolbar.noteMode.open")
-                  }
-                  className="note-mode-switch note-mode-switch--primary"
-                  onClick={toggleNoteMode}
-                  role="switch"
-                  type="button"
-                >
-                  <span className="note-mode-switch__label">{t("toolbar.noteMode")}</span>
-                </button>
-                <span
-                  aria-hidden="true"
-                  className="editor-toolbar__divider note-mode-switch--dependent"
-                />
-                <button
-                  aria-checked={glossaryModeActive}
-                  aria-hidden={!noteModeEnabled}
-                  aria-label={
-                    glossaryModeActive
-                      ? t("toolbar.glossaryMode.close")
-                      : t("toolbar.glossaryMode.open")
-                  }
-                  className="note-mode-switch note-mode-switch--secondary note-mode-switch--dependent"
-                  disabled={!noteModeEnabled}
-                  onClick={toggleGlossaryMode}
-                  role="switch"
-                  type="button"
-                >
-                  <span className="note-mode-switch__label">{t("toolbar.glossaryMode")}</span>
-                </button>
-              </div>
-            ) : null}
-            {hasOpenDocument ? (
-              <div className="editor-document-title" title={selectedDocument.title}>
-                <h1 className="editor-document-title__text">{selectedDocument.title}</h1>
-              </div>
-            ) : null}
+              ) : null}
+            </label>
+            <span className="document-search__status" role="status">
+              {documentSearchStatus}
+            </span>
+            <button
+              aria-label={t("documentSearch.previous")}
+              className="document-search__button"
+              disabled={documentSearchMatchCount <= 0}
+              onClick={() => moveDocumentSearch(-1)}
+              type="button"
+            >
+              <SearchPreviousIcon />
+            </button>
+            <button
+              aria-label={t("documentSearch.next")}
+              className="document-search__button"
+              disabled={documentSearchMatchCount <= 0}
+              onClick={() => moveDocumentSearch(1)}
+              type="button"
+            >
+              <SearchNextIcon />
+            </button>
+            <button
+              aria-label={t("documentSearch.close")}
+              className="document-search__button"
+              onClick={closeDocumentSearch}
+              type="button"
+            >
+              <SearchCloseIcon />
+            </button>
+          </form>
+        ) : null}
+        {hasOpenDocument && !settingsViewOpen ? (
+          <button
+            aria-label={
+              editorMode === "edit" ? t("toolbar.previewMode.open") : t("toolbar.sourceMode.open")
+            }
+            aria-pressed={editorMode === "edit"}
+            aria-disabled={noteModeEnabled}
+            className={`editor-mode-toggle mobile-editor-mode-toggle ${
+              editorMode === "edit" ? "is-active" : ""
+            }`}
+            onClick={toggleEditorMode}
+            ref={mobileSourceModeButtonRef}
+            type="button"
+          >
+            <SourceModeIcon />
+          </button>
+        ) : null}
+        {annotationToolsAvailable ? (
+          <div
+            aria-label={t("app.editorTools")}
+            className="editor-toolbar"
+            data-expanded={noteModeEnabled ? "true" : "false"}
+          >
+            <button
+              aria-label={`${t("toolbar.editorMode")}: ${
+                editorMode === "edit" ? t("toolbar.sourceMode") : t("toolbar.previewMode")
+              }`}
+              aria-pressed={editorMode === "edit"}
+              aria-disabled={noteModeEnabled}
+              className={`editor-mode-toggle ${editorMode === "edit" ? "is-active" : ""}`}
+              onClick={toggleEditorMode}
+              ref={desktopSourceModeButtonRef}
+              title={
+                editorMode === "edit" ? t("toolbar.previewMode.open") : t("toolbar.sourceMode.open")
+              }
+              type="button"
+            >
+              <SourceModeIcon />
+            </button>
+            <span aria-hidden="true" className="editor-toolbar__divider" />
+            <button
+              aria-checked={noteModeEnabled}
+              aria-label={noteModeEnabled ? t("toolbar.noteMode.close") : t("toolbar.noteMode.open")}
+              className="note-mode-switch note-mode-switch--primary"
+              onClick={toggleNoteMode}
+              role="switch"
+              type="button"
+            >
+              <span
+                aria-hidden="true"
+                className="note-mode-switch__icon note-mode-switch__icon--note"
+              />
+              <span className="note-mode-switch__label">{t("mobileToolbar.note")}</span>
+            </button>
+            <span
+              aria-hidden="true"
+              className="editor-toolbar__divider note-mode-switch--dependent"
+            />
+            <button
+              aria-checked={glossaryModeActive}
+              aria-hidden={!noteModeEnabled}
+              aria-label={
+                glossaryModeActive
+                  ? t("toolbar.glossaryMode.close")
+                  : t("toolbar.glossaryMode.open")
+              }
+              className="note-mode-switch note-mode-switch--secondary note-mode-switch--dependent"
+              disabled={!noteModeEnabled}
+              onClick={toggleGlossaryMode}
+              role="switch"
+              type="button"
+            >
+              <span
+                aria-hidden="true"
+                className="note-mode-switch__icon note-mode-switch__icon--glossary"
+              />
+              <span className="note-mode-switch__label">{t("mobileToolbar.terms")}</span>
+            </button>
+          </div>
+        ) : null}
+        <div className="editor-grid">
+          <div className="editor-surface" style={editorSurfaceStyle}>
             {noteModeEnabled ? (
               <p
-                aria-hidden={!mobileNoteSelectionHintVisible}
+                aria-hidden={
+                  !mobileNoteSelectionHintVisible && !noteModeSourceBlockedNoticePosition
+                }
                 className={`mobile-feedback-surface mobile-note-selection-hint ${
-                  mobileNoteSelectionHintVisible ? "is-visible" : ""
-                }`}
+                  mobileNoteSelectionHintVisible || noteModeSourceBlockedNoticePosition
+                    ? "is-visible"
+                    : ""
+                } ${noteModeSourceBlockedNoticePosition ? "is-source-mode-blocked" : ""}`}
                 role="status"
+                style={noteModeSourceBlockedNoticePosition ?? undefined}
               >
-                {t(
-                  mobileAnnotationKeyboardShouldStayClosed
-                    ? "selection.mobileNoteModeHint"
-                    : "selection.desktopNoteModeHint",
-                )}
+                {noteModeSourceBlockedNoticePosition
+                  ? t("toolbar.sourceMode.blockedByNoteMode")
+                  : t(
+                      mobileAnnotationKeyboardShouldStayClosed
+                        ? "selection.mobileNoteModeHint"
+                        : "selection.desktopNoteModeHint",
+                    )}
               </p>
             ) : null}
             <div className="editor-content-frame">
@@ -18707,7 +19560,12 @@ function App() {
                   documentFilePath={selectedDocument.filePath}
                   key={selectedDocument.id}
                   mobileBlockSelectionEnabled={mobileAnnotationKeyboardShouldStayClosed}
-                  mobileBlockSelectionHint={t("selection.dragToCreateNote")}
+                  mobileBlockSelectionHint={t(
+                    glossaryModeActive
+                      ? "selection.mobileGlossaryModeHint"
+                      : "selection.dragToCreateNote",
+                  )}
+                  mobileSelectionKind={glossaryModeActive ? "glossary" : "note"}
                   mobileCommittedSelectionKey={mobileCommittedSelectionKey}
                   mobileCommittedSelectionTone={floatingNoteTone}
                   mobileSelectionToneForAnchor={toneForNewSelectionNote}
@@ -18722,29 +19580,23 @@ function App() {
                   value={selectedDocument.body}
                   codeBlockCopyLabel={t("codeBlock.copy")}
                   codeBlockCopiedLabel={t("codeBlock.copy.copied")}
+                  codeBlockDeleteLabel={t("codeBlock.delete")}
                   onAnnotationClick={showAnnotationViewer}
                   onAnnotationDoubleClick={showAnnotationViewer}
                   onChange={updateSelectedDocumentBody}
                   onFocusTargetAnnotationPress={dismissFocusTargetAnnotationFromEditor}
+                  onLinkClick={(href) => void openMarkdownLink(href)}
                   onSearchMatchCountChange={handleDocumentSearchMatchCountChange}
                   onSelectionChange={handleSelectionChange}
                   onSelectionEnter={handleSelectionEnter}
                 />
               ) : (
                 <MarkdownEditor
-                  annotations={annotations}
-                  noteModeEnabled={noteModeEnabled}
-                  readOnly={editorReadOnly}
                   search={documentSearchState}
                   selectAllRequestKey={editorSelectAllRequestKey}
                   value={selectedDocument.body}
-                  onAnnotationClick={showAnnotationViewer}
-                  onAnnotationDoubleClick={showAnnotationViewer}
                   onChange={updateSelectedDocumentBody}
-                  onFocusTargetAnnotationPress={dismissFocusTargetAnnotationFromEditor}
                   onSearchMatchCountChange={handleDocumentSearchMatchCountChange}
-                  onSelectionChange={handleSelectionChange}
-                  onSelectionEnter={handleSelectionEnter}
                 />
               )}
             </div>
@@ -19349,40 +20201,38 @@ function App() {
                 </div>
               ) : null}
 
-              {!pendingAnchor && activeGlossaryIsEditing ? (
-                <NoteMarkdownEditor
-                  ariaLabel={t("glossary.edit")}
-                  autoFocusOnEdit={noteEditorShouldRefocusRef.current}
-                  className="floating-note-card__editor"
-                  editingSurface="source"
-                  editorRootRef={(element) => {
-                    noteEditorRootRef.current = element;
-                  }}
-                  mermaidEmptyDefinitionLabel={t("mermaid.empty")}
-                  mermaidErrorLabel={t("mermaid.error")}
-                  mermaidLoadingLabel={t("mermaid.loading")}
-                  value={glossaryDraft}
-                  onChange={updateActiveGlossaryDraft}
-                  onCompositionStart={handleNoteEditorCompositionStart}
-                  onCompositionEnd={handleNoteEditorCompositionEnd}
-                  onKeyDown={handleNoteEditorKeyDown}
-                />
+              {!pendingAnchor && activeGlossaryTerm ? (
+                <div className="floating-note-card__body-shell">
+                  <div className="floating-note-card__body-measure">
+                    <NoteMarkdownEditor
+                      ariaLabel={t("glossary.edit")}
+                      autoFocusOnEdit={noteEditorShouldRefocusRef.current}
+                      className="floating-note-card__editor floating-note-card__editor--glossary"
+                      editing={activeGlossaryIsEditing}
+                      editorRootRef={(element) => {
+                        noteEditorRootRef.current = element;
+                      }}
+                      mermaidEmptyDefinitionLabel={t("mermaid.empty")}
+                      mermaidErrorLabel={t("mermaid.error")}
+                      mermaidLoadingLabel={t("mermaid.loading")}
+                      value={glossaryDraft}
+                      onChange={updateActiveGlossaryDraft}
+                      onCompositionStart={handleNoteEditorCompositionStart}
+                      onCompositionEnd={handleNoteEditorCompositionEnd}
+                      onKeyDown={handleNoteEditorKeyDown}
+                      onRequestEdit={() => openGlossaryEditor(activeGlossaryTerm.id)}
+                    />
+                  </div>
+                </div>
               ) : null}
 
-              {!pendingAnchor && activeGlossaryTerm && !activeGlossaryIsEditing ? (
-                <MarkdownPreviewContent
-                  className="bottom-note-body"
-                  emptyLabel={t("glossary.emptyDefinition")}
-                  mermaidEmptyDefinitionLabel={t("mermaid.empty")}
-                  mermaidErrorLabel={t("mermaid.error")}
-                  mermaidLoadingLabel={t("mermaid.loading")}
-                  onDoubleClick={() => openGlossaryEditor(activeGlossaryTerm.id)}
-                  value={activeGlossaryTerm.definition}
-                />
-              ) : null}
-
-              {!pendingAnchor && activeGlossaryTerm && !activeGlossaryIsEditing ? (
-                <div className="note-actions bottom-note-actions">
+              {!pendingAnchor && activeGlossaryTerm ? (
+                <div
+                  aria-hidden={activeGlossaryIsEditing || undefined}
+                  className={`note-actions bottom-note-actions ${
+                    activeGlossaryIsEditing ? "is-layout-placeholder" : ""
+                  }`}
+                >
                   <button
                     type="button"
                     aria-label={t("glossary.edit")}

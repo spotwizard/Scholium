@@ -2,11 +2,24 @@ import { Crepe, CrepeFeature } from "@milkdown/crepe";
 import { invoke } from "@tauri-apps/api/core";
 import { codeBlockConfig } from "@milkdown/kit/component/code-block";
 import { listItemBlockConfig } from "@milkdown/kit/component/list-item-block";
-import { editorViewCtx, prosePluginsCtx } from "@milkdown/kit/core";
+import {
+  editorViewCtx,
+  prosePluginsCtx,
+  editorViewOptionsCtx,
+  serializerCtx,
+} from "@milkdown/kit/core";
 import { hardbreakAttr, hardbreakSchema } from "@milkdown/kit/preset/commonmark";
 import { splitBlock } from "@milkdown/prose/commands";
+import { closeHistory, redo, undo } from "@milkdown/prose/history";
+import { InputRule, inputRules } from "@milkdown/prose/inputrules";
 import type { Node as ProseMirrorNode, ResolvedPos } from "@milkdown/prose/model";
-import { Plugin, PluginKey } from "@milkdown/prose/state";
+import {
+  Plugin,
+  PluginKey,
+  TextSelection,
+  type EditorState,
+  type Transaction,
+} from "@milkdown/prose/state";
 import { Decoration, DecorationSet, type EditorView } from "@milkdown/prose/view";
 import "@milkdown/crepe/theme/common/style.css";
 import "@milkdown/crepe/theme/frame.css";
@@ -38,12 +51,30 @@ import {
   splitMarkdownFrontmatter,
   stripMarkdownFrontmatter,
 } from "./markdownFrontmatter";
+import { serializeMarkedTextClipboardSlice } from "./markdownClipboard";
 import {
   appendInlineMarkdownTextMap,
   appendTextMap,
   markdownListItemContentStartOffset,
   type MarkdownTextMap as MilkdownTextMap,
 } from "./markdownInlineTextMap";
+import {
+  escapeListLeadingAsterisksForPreview,
+  normalizeListItemStrongTrailingWhitespace,
+  normalizeSerializedBulletMarkers,
+  restoreListLeadingAsterisksFromPreview,
+} from "./markdownListLiteral";
+import {
+  deleteAtListItemStart,
+  insertEmptyFirstChildListItem,
+  mergeRemovedListMarkerLineBackward,
+  moveToNextEmptyListItem,
+  normalizeAdjacentSerializedListItems,
+  preserveSerializedEmptyParagraphListBoundaries,
+  sinkSingleListItem,
+} from "./milkdownListIndent";
+import { createListItemInlineStrongSyntaxPlugin } from "./milkdownInlineMarkdownSyntax";
+import { createPastedInlineMarkBoundaryPlugin } from "./milkdownPastedInlineMarkBoundary";
 import { loadScholiumMermaid } from "./mermaid";
 
 type MilkdownMarkdownEditorProps = {
@@ -54,6 +85,7 @@ type MilkdownMarkdownEditorProps = {
   readOnly?: boolean;
   mobileBlockSelectionEnabled?: boolean;
   mobileBlockSelectionHint: string;
+  mobileSelectionKind?: "note" | "glossary";
   mobileCommittedSelectionKey?: string;
   mobileCommittedSelectionTone?: AnnotationTone;
   mobileSelectionToneForAnchor?: (anchor: TextSelectionAnchor) => AnnotationTone;
@@ -63,6 +95,7 @@ type MilkdownMarkdownEditorProps = {
   toolbarEnabled?: boolean;
   codeBlockCopyLabel: string;
   codeBlockCopiedLabel: string;
+  codeBlockDeleteLabel: string;
   mermaidEmptyDefinitionLabel: string;
   mermaidErrorLabel: string;
   mermaidLoadingLabel: string;
@@ -72,6 +105,7 @@ type MilkdownMarkdownEditorProps = {
     anchor: TextSelectionAnchor,
     context?: TextSelectionEnterContext,
   ) => boolean;
+  onLinkClick?: (href: string) => void;
   onAnnotationClick: (noteId: string) => void;
   onAnnotationDoubleClick: (noteId: string) => void;
   onFocusTargetAnnotationPress?: (noteId: string) => void;
@@ -87,9 +121,39 @@ const milkdownTouchBlockSelectionPluginKey = new PluginKey(
 const milkdownReadonlyGuardPluginKey = new PluginKey(
   "scholium-milkdown-readonly-guard",
 );
-const milkdownPlainEnterHardBreakPluginKey = new PluginKey(
-  "scholium-milkdown-plain-enter-hard-break",
+const milkdownShiftEnterParagraphSplitPluginKey = new PluginKey(
+  "scholium-milkdown-shift-enter-paragraph-split",
 );
+const milkdownSoftLineBlockInputRulePluginKey = new PluginKey(
+  "scholium-milkdown-soft-line-block-input-rule",
+);
+const milkdownPairedSymbolPluginKey = new PluginKey(
+  "scholium-milkdown-paired-symbols",
+);
+const milkdownSingleListItemIndentPluginKey = new PluginKey(
+  "scholium-milkdown-single-list-item-indent",
+);
+const milkdownControlHistoryPluginKey = new PluginKey(
+  "scholium-milkdown-control-history",
+);
+const inlineMarkdownLinkPattern = /(^|[^!])\[([^\]\n]+)\]\(([^)\n]*)\)$/;
+const markdownPairedSymbols: Readonly<Record<string, string>> = {
+  "(": ")",
+  "[": "]",
+  "{": "}",
+  "\"": "\"",
+  "'": "'",
+  "（": "）",
+  "［": "］",
+  "｛": "｝",
+  "【": "】",
+  "「": "」",
+  "『": "』",
+  "〈": "〉",
+  "《": "》",
+};
+const markdownClosingSymbols = new Set(Object.values(markdownPairedSymbols));
+const markdownSymmetricQuoteSymbols = new Set(["\"", "'"]);
 const codeBlockCopyFeedbackDurationMs = 1500;
 const milkdownStructuredTextAncestorNames = new Set([
   "list_item",
@@ -114,10 +178,13 @@ const milkdownAnnotationFrameCornerRadius = "4px";
 const milkdownAnnotationClassPrefix = "scholium-milkdown-annotation-";
 const milkdownSelectionFallbackMs = 220;
 const milkdownTouchBlockLongPressMs = 2000;
+const milkdownTouchGlossaryLongPressMs = 650;
 const milkdownTouchBlockActivationMoveTolerancePx = 12;
 const milkdownTouchBlockMinimumDragPx = 8;
 const milkdownTouchBlockHintVisibleMs = 1200;
 const milkdownTouchSelectionPublishSuppressionMs = 900;
+const milkdownTouchSelectionDiagnosticKey =
+  "scholium:mobile-selection-diagnostic";
 const milkdownTouchBlockDomSelector =
   "p, h1, h2, h3, h4, h5, h6, li, blockquote, pre, .milkdown-code-block";
 const milkdownReadonlyFocusableSelector =
@@ -127,6 +194,54 @@ const milkdownNoteModeCodeBlockFocusableSelector =
 const annotationClickDelayMs = 500;
 const annotationFocusTargetPressSuppressionMs = annotationClickDelayMs + 350;
 const imeSelectionSuppressionMs = 350;
+
+type SoftLineIsolation = {
+  state: EditorState;
+  transaction: Transaction;
+};
+
+function isolateSelectedSoftLine(state: EditorState): SoftLineIsolation | null {
+  const { selection } = state;
+  if (!(selection instanceof TextSelection) || !selection.empty) return null;
+
+  const { $from } = selection;
+  if ($from.parent.type.name !== "paragraph") return null;
+
+  let previousHardbreakOffset: number | null = null;
+  let nextHardbreakOffset: number | null = null;
+  $from.parent.forEach((node, offset) => {
+    if (node.type.name !== "hardbreak") return;
+
+    if (offset < $from.parentOffset) {
+      previousHardbreakOffset = offset;
+    } else if (nextHardbreakOffset === null) {
+      nextHardbreakOffset = offset;
+    }
+  });
+  if (previousHardbreakOffset === null && nextHardbreakOffset === null) return null;
+
+  const paragraphStart = $from.start();
+  const tr = state.tr;
+  if (nextHardbreakOffset !== null) {
+    const nextHardbreakPosition = paragraphStart + nextHardbreakOffset;
+    tr.delete(nextHardbreakPosition, nextHardbreakPosition + 1);
+    tr.split(nextHardbreakPosition);
+  }
+  if (previousHardbreakOffset !== null) {
+    const previousHardbreakPosition = paragraphStart + previousHardbreakOffset;
+    tr.delete(previousHardbreakPosition, previousHardbreakPosition + 1);
+    tr.split(previousHardbreakPosition);
+  }
+
+  tr.setSelection(
+    TextSelection.create(
+      tr.doc,
+      tr.mapping.map(selection.from),
+      tr.mapping.map(selection.to),
+    ),
+  );
+  return { state: state.apply(tr), transaction: tr };
+}
 
 function shouldClearTouchButtonFocus() {
   return Boolean(
@@ -218,13 +333,17 @@ type MilkdownTouchBlockSelectionPreviewRect = {
 
 type MilkdownTouchBlockSelectionOverlay = {
   hintPhase: "entering" | "visible" | "hiding";
+  kind: "note" | "glossary";
   previewRects: MilkdownTouchBlockSelectionPreviewRect[];
   rect: ClientSelectionRect;
   tone: AnnotationTone;
 };
 
 type MilkdownTouchBlockCommittedSelectionOverlay = {
+  from: number;
+  kind: "note" | "glossary";
   previewRects: MilkdownTouchBlockSelectionPreviewRect[];
+  to: number;
 };
 
 function viewportAnchorRectFromTouchBlockPreviewRects(
@@ -269,10 +388,20 @@ function viewportAnchorRectFromTouchBlockPreviewRects(
 
 type MilkdownTouchBlockSelectionSession = {
   active: boolean;
+  blockFrom?: number;
+  blockTo?: number;
+  codeBlockIndex?: number;
+  codeLineIndex?: number;
   currentClientX: number;
   currentClientY: number;
+  currentFrom?: number;
+  currentTo?: number;
+  kind: "note" | "glossary";
+  selecting: boolean;
   startClientX: number;
   startClientY: number;
+  startFrom?: number;
+  startTo?: number;
   target: EventTarget | null;
 };
 
@@ -332,6 +461,16 @@ function normalizeSerializedEmptyParagraphBreaks(markdown: string) {
       continue;
     }
 
+    if (!inFencedCodeBlock) {
+      const emptyListItemBreak = line.match(
+        /^(\s*(?:[-+*]|\d+[.)]))\s+<br\s*\/?>\s*$/i,
+      );
+      if (emptyListItemBreak) {
+        normalizedLines.push(emptyListItemBreak[1] ?? line);
+        continue;
+      }
+    }
+
     normalizedLines.push(line);
   }
 
@@ -363,13 +502,45 @@ function normalizeSerializedHardBreaks(markdown: string) {
   return normalizedLines.join("\n");
 }
 
-function normalizeMarkdownForScholium(markdown: string) {
-  return normalizeSerializedHardBreaks(normalizeSerializedEmptyParagraphBreaks(markdown))
-    .replace(/^(\s*)\*\s+/gm, "$1- ")
-    .replace(
-      /^(\s*(?:[-+]|\d+[.)])\s+\S[^\n]*)\n\n(?=\s*(?:[-+]|\d+[.)])\s+\S)/gm,
-      "$1\n",
+function restoreSerializedInlineLinks(markdown: string) {
+  const lines = markdown.replace(/\r\n/g, "\n").split("\n");
+  const normalizedLines: string[] = [];
+  let inFencedCodeBlock = false;
+
+  for (const line of lines) {
+    if (/^ {0,3}(```|~~~)/.test(line)) {
+      inFencedCodeBlock = !inFencedCodeBlock;
+      normalizedLines.push(line);
+      continue;
+    }
+
+    if (inFencedCodeBlock) {
+      normalizedLines.push(line);
+      continue;
+    }
+
+    normalizedLines.push(
+      line.replace(/\\\[([^\]\n]*)\]\\\(([^)\n]*)\)/g, (match, label, href, offset) =>
+        line[offset - 1] === "!" ? match : `[${label}](${href})`,
+      ),
     );
+  }
+
+  return normalizedLines.join("\n");
+}
+
+function normalizeMarkdownForScholium(markdown: string) {
+  return restoreListLeadingAsterisksFromPreview(
+    normalizeAdjacentSerializedListItems(
+      normalizeListItemStrongTrailingWhitespace(
+        normalizeSerializedBulletMarkers(
+          restoreSerializedInlineLinks(
+            normalizeSerializedHardBreaks(normalizeSerializedEmptyParagraphBreaks(markdown)),
+          ),
+        ),
+      ),
+    )
+  );
 }
 
 function encodeEmptyParagraphsForMilkdown(markdown: string) {
@@ -1324,6 +1495,9 @@ function measureMilkdownAnnotationFrames(
       const sortedRects = rects.sort(
         (left, right) => left.top - right.top || left.left - right.left,
       );
+      if (sortedRects.length > 0) {
+        sortedRects[sortedRects.length - 1].canExtendRight = false;
+      }
       const extensionRightByRect = new Map<MilkdownAnnotationRect, number>();
       const borderRadiusByRect = new Map<MilkdownAnnotationRect, string>();
       let rectGroup: MilkdownAnnotationRect[] = [];
@@ -1519,7 +1693,7 @@ function buildAnchor(
 }
 
 function editorMarkdownFromFullSource(markdown: string) {
-  return stripMarkdownFrontmatter(markdown);
+  return escapeListLeadingAsterisksForPreview(stripMarkdownFrontmatter(markdown));
 }
 
 function sourceAnchorFromEditorAnchor(markdown: string, anchor: TextSelectionAnchor | null) {
@@ -1984,6 +2158,7 @@ export function MilkdownMarkdownEditor({
   readOnly = false,
   mobileBlockSelectionEnabled = false,
   mobileBlockSelectionHint,
+  mobileSelectionKind = "note",
   mobileCommittedSelectionKey = "",
   mobileCommittedSelectionTone = 0,
   mobileSelectionToneForAnchor,
@@ -1993,12 +2168,14 @@ export function MilkdownMarkdownEditor({
   toolbarEnabled = true,
   codeBlockCopyLabel,
   codeBlockCopiedLabel,
+  codeBlockDeleteLabel,
   mermaidEmptyDefinitionLabel,
   mermaidErrorLabel,
   mermaidLoadingLabel,
   onChange,
   onSelectionChange,
   onSelectionEnter,
+  onLinkClick,
   onAnnotationClick,
   onAnnotationDoubleClick,
   onFocusTargetAnnotationPress,
@@ -2006,6 +2183,10 @@ export function MilkdownMarkdownEditor({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const crepeRef = useRef<Crepe | null>(null);
+  const valueRefreshScrollSnapshotRef = useRef<{
+    scrollContainer: HTMLElement;
+    scrollTop: number;
+  } | null>(null);
   const currentMarkdownRef = useRef(normalizeMarkdownForScholium(value));
   const editorMarkdownRef = useRef(editorMarkdownFromFullSource(currentMarkdownRef.current));
   const annotationsRef = useRef(annotations);
@@ -2017,11 +2198,13 @@ export function MilkdownMarkdownEditor({
   const noteModeEnabledRef = useRef(noteModeEnabled);
   const readOnlyRef = useRef(readOnly);
   const mobileBlockSelectionEnabledRef = useRef(mobileBlockSelectionEnabled);
+  const mobileSelectionKindRef = useRef(mobileSelectionKind);
   const mobileCommittedSelectionKeyRef = useRef(mobileCommittedSelectionKey);
   const mobileSelectionToneForAnchorRef = useRef(mobileSelectionToneForAnchor);
   const onChangeRef = useRef(onChange);
   const codeBlockCopyLabelRef = useRef(codeBlockCopyLabel);
   const codeBlockCopiedLabelRef = useRef(codeBlockCopiedLabel);
+  const codeBlockDeleteLabelRef = useRef(codeBlockDeleteLabel);
   const mermaidLabelsRef = useRef({
     empty: mermaidEmptyDefinitionLabel,
     error: mermaidErrorLabel,
@@ -2033,6 +2216,8 @@ export function MilkdownMarkdownEditor({
   const onSearchMatchCountChangeRef = useRef(onSearchMatchCountChange);
   const onSelectionChangeRef = useRef(onSelectionChange);
   const onSelectionEnterRef = useRef(onSelectionEnter);
+  const handledSelectAllRequestKeyRef = useRef(selectAllRequestKey);
+  const onLinkClickRef = useRef(onLinkClick);
   const onAnnotationClickRef = useRef(onAnnotationClick);
   const onAnnotationDoubleClickRef = useRef(onAnnotationDoubleClick);
   const onFocusTargetAnnotationPressRef = useRef(onFocusTargetAnnotationPress);
@@ -2067,7 +2252,7 @@ export function MilkdownMarkdownEditor({
     useState<MilkdownTouchBlockSelectionOverlay | null>(null);
   const [touchBlockCommittedSelectionOverlay, setTouchBlockCommittedSelectionOverlay] =
     useState<MilkdownTouchBlockCommittedSelectionOverlay | null>(null);
-  const searchSignature = `${search.query}\n${search.activeIndex}`;
+  const searchSignature = `${search.query}\n${search.activeIndex}\n${search.scrollRequestKey ?? 0}`;
   const annotationSignature = useMemo(
     () =>
       annotations
@@ -2117,6 +2302,61 @@ export function MilkdownMarkdownEditor({
       button.setAttribute("aria-label", codeBlockCopyLabelRef.current);
       button.setAttribute("title", codeBlockCopyLabelRef.current);
     });
+  }
+
+  function syncCodeBlockDeleteButtons() {
+    const root = rootRef.current;
+    if (!root) return;
+
+    const disabled = readOnlyRef.current || noteModeEnabledRef.current;
+    root.querySelectorAll<HTMLElement>(".milkdown-code-block .tools-button-group").forEach((group) => {
+      let button = group.querySelector<HTMLButtonElement>(".delete-button");
+      if (!button) {
+        button = document.createElement("button");
+        button.type = "button";
+        button.className = "delete-button";
+        group.querySelector(".copy-button")?.after(button);
+      }
+
+      if (button.textContent !== codeBlockDeleteLabelRef.current) {
+        button.textContent = codeBlockDeleteLabelRef.current;
+      }
+      if (button.disabled !== disabled) {
+        button.disabled = disabled;
+      }
+      if (button.getAttribute("aria-label") !== codeBlockDeleteLabelRef.current) {
+        button.setAttribute("aria-label", codeBlockDeleteLabelRef.current);
+      }
+      if (button.getAttribute("title") !== codeBlockDeleteLabelRef.current) {
+        button.setAttribute("title", codeBlockDeleteLabelRef.current);
+      }
+    });
+  }
+
+  function deleteCodeBlockFromButton(button: HTMLElement) {
+    if (readOnlyRef.current || noteModeEnabledRef.current) return;
+
+    const view = currentEditorView();
+    if (!view) return;
+
+    let targetPosition: number | null = null;
+    let targetSize = 0;
+    view.state.doc.descendants((node, position) => {
+      const isCodeBlock = node.type.name === "code_block" || node.type.spec.code === true;
+      if (!isCodeBlock) return true;
+
+      const nodeDom = view.nodeDOM(position);
+      if (nodeDom instanceof HTMLElement && nodeDom.contains(button)) {
+        targetPosition = position;
+        targetSize = node.nodeSize;
+        return false;
+      }
+      return true;
+    });
+
+    if (targetPosition === null || targetSize <= 0) return;
+
+    view.dispatch(view.state.tr.delete(targetPosition, targetPosition + targetSize).scrollIntoView());
   }
 
   function showCodeBlockCopyFeedback(button: HTMLElement) {
@@ -2231,16 +2471,50 @@ export function MilkdownMarkdownEditor({
       rememberPendingCodeBlockCopyButton(button);
     };
 
+    const handleCodeBlockDeleteClick = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      const button = target.closest<HTMLButtonElement>(".milkdown-code-block .delete-button");
+      if (!button || button.disabled) return;
+
+      const codeBlock = button.closest<HTMLElement>(".milkdown-code-block");
+      if (!codeBlock) return;
+
+      e.preventDefault();
+      e.stopPropagation();
+      deleteCodeBlockFromButton(button);
+    };
+
+    const handleLinkClick = (e: MouseEvent) => {
+      if (e.button !== 0) return;
+      const target =
+        e.target instanceof Element
+          ? e.target
+          : e.target instanceof Node
+            ? e.target.parentElement
+            : null;
+      const link = target?.closest<HTMLAnchorElement>("a[href]");
+      const href = link?.getAttribute("href")?.trim() ?? "";
+      if (!href || href.startsWith("#")) return;
+
+      e.preventDefault();
+      e.stopPropagation();
+      onLinkClickRef.current?.(href);
+    };
+
     container.addEventListener("mousedown", preventFocus, { capture: true });
     container.addEventListener("touchstart", preventFocus, { capture: true, passive: false });
     container.addEventListener("touchend", handleTouchEnd, { capture: true, passive: false });
+    container.addEventListener("click", handleLinkClick, true);
     container.addEventListener("click", handleCodeBlockCopyClick, true);
+    container.addEventListener("click", handleCodeBlockDeleteClick, true);
 
     return () => {
       container.removeEventListener("mousedown", preventFocus, { capture: true });
       container.removeEventListener("touchstart", preventFocus, { capture: true });
       container.removeEventListener("touchend", handleTouchEnd, { capture: true });
+      container.removeEventListener("click", handleLinkClick, true);
       container.removeEventListener("click", handleCodeBlockCopyClick, true);
+      container.removeEventListener("click", handleCodeBlockDeleteClick, true);
     };
   }, []);
 
@@ -2263,6 +2537,17 @@ export function MilkdownMarkdownEditor({
       milkdownAnnotationFramesAreEqual(currentFrames, nextFrames)
         ? currentFrames
         : nextFrames,
+    );
+    setTouchBlockCommittedSelectionOverlay((currentOverlay) =>
+      currentOverlay &&
+      editorAnnotationsRef.current.some(
+        (annotation) =>
+          annotation.kind === currentOverlay.kind &&
+          annotation.from === currentOverlay.from &&
+          annotation.to === currentOverlay.to,
+      )
+        ? null
+        : currentOverlay,
     );
   }
 
@@ -2406,50 +2691,6 @@ export function MilkdownMarkdownEditor({
     return false;
   }
 
-  function shouldInsertPlainEnterHardBreak(view: EditorView, event: KeyboardEvent) {
-    const isPlainEnter =
-      event.key === "Enter" &&
-      !event.metaKey &&
-      !event.ctrlKey &&
-      !event.altKey &&
-      !event.shiftKey;
-    if (!isPlainEnter) return false;
-    if (keyboardEventIsComposing(event)) return false;
-    if (readOnlyRef.current) return false;
-
-    const { selection, schema } = view.state;
-    if (!selection.empty) return false;
-
-    const { $from } = selection;
-    const parent = $from.parent;
-    if (!parent.isTextblock || parent.content.size === 0) return false;
-    if (parent.type.name === "code_block" || parent.type.name === "heading") {
-      return false;
-    }
-    if (resolvedPositionHasAncestor($from, milkdownStructuredTextAncestorNames)) {
-      return false;
-    }
-
-    const hardbreakType = schema.nodes.hardbreak;
-    if (!hardbreakType) return false;
-
-    return parent.canReplaceWith($from.index(), $from.index(), hardbreakType);
-  }
-
-  function insertPlainEnterHardBreak(view: EditorView) {
-    const hardbreakType = view.state.schema.nodes.hardbreak;
-    if (!hardbreakType) return false;
-
-    view.dispatch(
-      view.state.tr
-        .setMeta("hardbreak", true)
-        .replaceSelectionWith(hardbreakType.create())
-        .scrollIntoView(),
-    );
-
-    return true;
-  }
-
   function shouldSplitParagraphWithShiftEnter(view: EditorView, event: KeyboardEvent) {
     const isShiftEnter =
       event.key === "Enter" &&
@@ -2478,16 +2719,523 @@ export function MilkdownMarkdownEditor({
     return splitBlock(view.state, (transaction) => view.dispatch(transaction), view);
   }
 
-  function createPlainEnterHardBreakPlugin() {
+  function createInlineMarkdownLinkInputRule() {
+    return inputRules({
+      rules: [
+        new InputRule(
+          inlineMarkdownLinkPattern,
+          createInlineMarkdownLinkTransaction,
+        ),
+      ],
+    });
+  }
+
+  function applyInputRuleToIsolatedSoftLine(
+    view: EditorView,
+    isolation: SoftLineIsolation,
+    runInputRule: (
+      plugin: Plugin,
+      inputRuleView: EditorView,
+      from: number,
+      to: number,
+    ) => boolean,
+  ) {
+    let matchedTransaction: Transaction | null = null;
+    let matchedPlugin: Plugin | null = null;
+    const isolatedFrom = isolation.state.selection.from;
+    const isolatedTo = isolation.state.selection.to;
+
+    for (const plugin of isolation.state.plugins) {
+      if (
+        plugin.spec.key === milkdownSoftLineBlockInputRulePluginKey ||
+        !(plugin.spec as { isInputRules?: boolean }).isInputRules
+      ) {
+        continue;
+      }
+
+      const inputRuleView = Object.create(view) as EditorView;
+      Object.defineProperties(inputRuleView, {
+        composing: { value: false },
+        dispatch: {
+          value: (transaction: Transaction) => {
+            matchedTransaction = transaction;
+          },
+        },
+        state: { value: isolation.state },
+      });
+      if (!runInputRule(plugin, inputRuleView, isolatedFrom, isolatedTo)) continue;
+      if (!matchedTransaction) continue;
+
+      matchedPlugin = plugin;
+      break;
+    }
+    const inputRuleTransaction = matchedTransaction as Transaction | null;
+    const inputRulePlugin = matchedPlugin as Plugin | null;
+    if (!inputRuleTransaction || !inputRulePlugin) return false;
+
+    view.dispatch(isolation.transaction);
+    return runInputRule(inputRulePlugin, view, isolatedFrom, isolatedTo);
+  }
+
+  function createSoftLineBlockInputRulePlugin() {
     return new Plugin({
-      key: milkdownPlainEnterHardBreakPluginKey,
+      key: milkdownSoftLineBlockInputRulePluginKey,
       props: {
-        handleKeyDown(view, event) {
-          if (shouldInsertPlainEnterHardBreak(view, event)) {
-            event.preventDefault();
-            return insertPlainEnterHardBreak(view);
+        handleTextInput(view, _from, _to, text) {
+          if (
+            view.composing ||
+            readOnlyRef.current ||
+            noteModeEnabledRef.current
+          ) {
+            return false;
           }
 
+          const isolation = isolateSelectedSoftLine(view.state);
+          if (!isolation) return false;
+
+          return applyInputRuleToIsolatedSoftLine(
+            view,
+            isolation,
+            (plugin, inputRuleView, from, to) => {
+              const handler = plugin.props.handleTextInput;
+              return (
+                handler?.call(
+                  plugin,
+                  inputRuleView,
+                  from,
+                  to,
+                  text,
+                  () => inputRuleView.state.tr.insertText(text, from, to),
+                ) ?? false
+              );
+            },
+          );
+        },
+        handleKeyDown(view, event) {
+          if (
+            event.key !== "Enter" ||
+            event.isComposing ||
+            readOnlyRef.current ||
+            noteModeEnabledRef.current
+          ) {
+            return false;
+          }
+
+          const isolation = isolateSelectedSoftLine(view.state);
+          if (!isolation) return false;
+
+          return applyInputRuleToIsolatedSoftLine(
+            view,
+            isolation,
+            (plugin, inputRuleView) => {
+              const handler = plugin.props.handleKeyDown;
+              return handler?.call(plugin, inputRuleView, event) ?? false;
+            },
+          );
+        },
+      },
+    });
+  }
+
+  function createInlineMarkdownLinkTransaction(
+    state: EditorState,
+    match: RegExpMatchArray,
+    start: number,
+    end: number,
+  ) {
+    const prefix = match[1] ?? "";
+    const label = match[2] ?? "";
+    const href = match[3] ?? "";
+    if (!label) return null;
+
+    const linkMarkType = state.schema.marks.link;
+    if (!linkMarkType) return null;
+
+    const linkStart = start + prefix.length;
+    const linkEnd = linkStart + label.length;
+    const tr = state.tr.insertText(label, linkStart, end);
+
+    tr.addMark(linkStart, linkEnd, linkMarkType.create({ href, title: null }));
+    tr.removeStoredMark(linkMarkType);
+
+    return tr;
+  }
+
+  function completedInlineMarkdownLinkBeforeClosingParenthesis(
+    state: EditorState,
+    cursorPosition: number,
+  ) {
+    const $cursor = state.doc.resolve(cursorPosition);
+    const nextCharacter = state.doc.textBetween(cursorPosition, cursorPosition + 1);
+    if (nextCharacter !== ")") return null;
+
+    const textBeforeCursor = $cursor.parent.textBetween(
+      0,
+      $cursor.parentOffset,
+      undefined,
+      "\uFFFC",
+    );
+    const match = `${textBeforeCursor})`.match(inlineMarkdownLinkPattern);
+    if (!match) return null;
+
+    const start = $cursor.start() + (match.index ?? 0);
+    return {
+      end: cursorPosition + 1,
+      linkStart: start + (match[1]?.length ?? 0),
+      match,
+      start,
+    };
+  }
+
+  function createPairedSymbolPlugin() {
+    return new Plugin({
+      key: milkdownPairedSymbolPluginKey,
+      appendTransaction(transactions, oldState, newState) {
+        if (
+          transactions.some((transaction) => transaction.docChanged) ||
+          !transactions.some((transaction) => transaction.selectionSet) ||
+          !oldState.selection.empty ||
+          oldState.selection.eq(newState.selection)
+        ) {
+          return null;
+        }
+
+        const completedLink = completedInlineMarkdownLinkBeforeClosingParenthesis(
+          oldState,
+          oldState.selection.from,
+        );
+        if (!completedLink) return null;
+
+        const selectionStayedInsideLink =
+          newState.selection.from >= completedLink.linkStart &&
+          newState.selection.to < completedLink.end;
+        if (selectionStayedInsideLink) return null;
+
+        return createInlineMarkdownLinkTransaction(
+          newState,
+          completedLink.match,
+          completedLink.start,
+          completedLink.end,
+        );
+      },
+      props: {
+        handleTextInput(view, from, to, text) {
+          if (
+            view.composing ||
+            readOnlyRef.current ||
+            noteModeEnabledRef.current
+          ) {
+            return false;
+          }
+
+          const closingSymbol = markdownPairedSymbols[text];
+          if (!closingSymbol) return false;
+
+          if (from === to && markdownSymmetricQuoteSymbols.has(text)) {
+            const previousCharacter = view.state.doc.textBetween(
+              Math.max(0, from - 1),
+              from,
+            );
+            const nextCharacter = view.state.doc.textBetween(from, from + 1);
+            if (/[\p{L}\p{N}]/u.test(previousCharacter + nextCharacter)) {
+              return false;
+            }
+          }
+
+          const tr = view.state.tr;
+
+          if (from === to) {
+            tr.insertText(`${text}${closingSymbol}`, from, to);
+            tr.setSelection(TextSelection.create(tr.doc, from + text.length));
+          } else {
+            tr.insertText(closingSymbol, to);
+            tr.insertText(text, from);
+            tr.setSelection(
+              TextSelection.create(tr.doc, from + text.length, to + text.length),
+            );
+          }
+
+          view.dispatch(tr.scrollIntoView());
+          return true;
+        },
+        handleDOMEvents: {
+          compositionend(view, event) {
+            const openingSymbol = event.data;
+            const closingSymbol = markdownPairedSymbols[openingSymbol];
+            if (!closingSymbol) return false;
+
+            window.setTimeout(() => {
+              if (
+                readOnlyRef.current ||
+                noteModeEnabledRef.current ||
+                !view.dom.isConnected
+              ) {
+                return;
+              }
+
+              const { selection } = view.state;
+              if (!selection.empty) return;
+
+              const { $from } = selection;
+              const previousCharacter = view.state.doc.textBetween(
+                Math.max(0, $from.pos - openingSymbol.length),
+                $from.pos,
+              );
+              const nextCharacter = view.state.doc.textBetween(
+                $from.pos,
+                $from.pos + closingSymbol.length,
+              );
+              if (
+                previousCharacter !== openingSymbol ||
+                nextCharacter === closingSymbol
+              ) {
+                return;
+              }
+
+              const tr = view.state.tr.insertText(closingSymbol, $from.pos);
+              tr.setSelection(TextSelection.create(tr.doc, $from.pos));
+              view.dispatch(tr.scrollIntoView());
+            });
+
+            return false;
+          },
+        },
+        handleKeyDown(view, event) {
+          if (
+            event.isComposing ||
+            imeCompositionActiveRef.current ||
+            event.metaKey ||
+            event.ctrlKey ||
+            event.altKey ||
+            event.shiftKey ||
+            readOnlyRef.current ||
+            noteModeEnabledRef.current
+          ) {
+            return false;
+          }
+
+          const { selection } = view.state;
+          if (!selection.empty) return false;
+
+          const { $from } = selection;
+
+          if (event.key === "Backspace") {
+            const previousCharacter = view.state.doc.textBetween(
+              Math.max(0, $from.pos - 1),
+              $from.pos,
+            );
+            const nextCharacter = view.state.doc.textBetween($from.pos, $from.pos + 1);
+            if (markdownPairedSymbols[previousCharacter] !== nextCharacter) {
+              return false;
+            }
+
+            event.preventDefault();
+            view.dispatch(
+              view.state.tr
+                .delete($from.pos - previousCharacter.length, $from.pos + nextCharacter.length)
+                .scrollIntoView(),
+            );
+            return true;
+          }
+
+          if (!markdownClosingSymbols.has(event.key)) return false;
+
+          const nextCharacter = view.state.doc.textBetween(
+            $from.pos,
+            $from.pos + event.key.length,
+          );
+          if (nextCharacter !== event.key) return false;
+
+          if (event.key === ")") {
+            const completedLink = completedInlineMarkdownLinkBeforeClosingParenthesis(
+              view.state,
+              $from.pos,
+            );
+
+            if (completedLink) {
+              const tr = createInlineMarkdownLinkTransaction(
+                view.state,
+                completedLink.match,
+                completedLink.start,
+                completedLink.end,
+              );
+
+              if (tr) {
+                event.preventDefault();
+                view.dispatch(tr.scrollIntoView());
+                return true;
+              }
+            }
+          }
+
+          event.preventDefault();
+          view.dispatch(
+            view.state.tr
+              .setSelection(TextSelection.create(view.state.doc, $from.pos + event.key.length))
+              .scrollIntoView(),
+          );
+          return true;
+        },
+      },
+    });
+  }
+
+  function createSingleListItemIndentPlugin() {
+    return new Plugin({
+      key: milkdownSingleListItemIndentPluginKey,
+      props: {
+        handleKeyDown(view, event) {
+          if (
+            event.metaKey ||
+            event.ctrlKey ||
+            event.altKey ||
+            event.isComposing ||
+            imeCompositionActiveRef.current ||
+            readOnlyRef.current
+          ) {
+            return false;
+          }
+
+          const listItemType = view.state.schema.nodes.list_item;
+          if (!listItemType) return false;
+
+          if (
+            event.key === "Enter" &&
+            !event.shiftKey &&
+            !noteModeEnabledRef.current
+          ) {
+            let insertedFirstChild = false;
+            const handled =
+              insertEmptyFirstChildListItem(listItemType)(
+                view.state,
+                (transaction) => {
+                  insertedFirstChild = transaction.docChanged;
+                  view.dispatch(transaction);
+                },
+                view,
+              ) ||
+              moveToNextEmptyListItem(listItemType)(
+                view.state,
+                (transaction) => view.dispatch(transaction),
+                view,
+              );
+            if (handled) {
+              if (insertedFirstChild) {
+                view.dispatch(closeHistory(view.state.tr));
+              }
+              event.preventDefault();
+              return true;
+            }
+          }
+
+          if (event.key === "Backspace" || event.key === "Delete") {
+            if (
+              event.key === "Backspace" &&
+              mergeRemovedListMarkerLineBackward(listItemType)(
+                view.state,
+                (transaction) => view.dispatch(transaction),
+                view,
+              )
+            ) {
+              event.preventDefault();
+              return true;
+            }
+
+            const handled = deleteAtListItemStart(
+              listItemType,
+              event.key === "Delete" ? "forward" : "backward",
+            )(
+              view.state,
+              (transaction) => view.dispatch(transaction),
+              view,
+            );
+            if (!handled) return false;
+
+            event.preventDefault();
+            return true;
+          }
+
+          if (noteModeEnabledRef.current) return false;
+          if (event.key !== "Tab" || event.shiftKey) return false;
+
+          const handled = sinkSingleListItem(listItemType)(
+            view.state,
+            (transaction) => view.dispatch(transaction),
+            view,
+          );
+          if (!handled) return false;
+
+          event.preventDefault();
+          return true;
+        },
+      },
+    });
+  }
+
+  function createControlHistoryPlugin() {
+    function runHistoryCommand(view: EditorView, shouldRedo: boolean) {
+      const command = shouldRedo ? redo : undo;
+      return command(
+        view.state,
+        (transaction) => view.dispatch(transaction),
+        view,
+      );
+    }
+
+    return new Plugin({
+      key: milkdownControlHistoryPluginKey,
+      props: {
+        handleDOMEvents: {
+          beforeinput(view, event) {
+            if (
+              !(event instanceof InputEvent) ||
+              (event.inputType !== "historyUndo" &&
+                event.inputType !== "historyRedo") ||
+              readOnlyRef.current ||
+              noteModeEnabledRef.current
+            ) {
+              return false;
+            }
+
+            const handled = runHistoryCommand(
+              view,
+              event.inputType === "historyRedo",
+            );
+            if (!handled) return false;
+
+            event.preventDefault();
+            return true;
+          },
+        },
+        handleKeyDown(view, event) {
+          if (
+            event.key.toLowerCase() !== "z" ||
+            !event.ctrlKey ||
+            event.metaKey ||
+            event.altKey ||
+            event.isComposing ||
+            imeCompositionActiveRef.current ||
+            readOnlyRef.current ||
+            noteModeEnabledRef.current
+          ) {
+            return false;
+          }
+
+          const handled = runHistoryCommand(view, event.shiftKey);
+          if (!handled) return false;
+
+          event.preventDefault();
+          return true;
+        },
+      },
+    });
+  }
+
+  function createShiftEnterParagraphSplitPlugin() {
+    return new Plugin({
+      key: milkdownShiftEnterParagraphSplitPluginKey,
+      props: {
+        handleKeyDown(view, event) {
           if (!shouldSplitParagraphWithShiftEnter(view, event)) return false;
 
           event.preventDefault();
@@ -2954,6 +3702,11 @@ export function MilkdownMarkdownEditor({
   }, [codeBlockCopiedLabel]);
 
   useEffect(() => {
+    codeBlockDeleteLabelRef.current = codeBlockDeleteLabel;
+    syncCodeBlockDeleteButtons();
+  }, [codeBlockDeleteLabel]);
+
+  useEffect(() => {
     mermaidLabelsRef.current = {
       empty: mermaidEmptyDefinitionLabel,
       error: mermaidErrorLabel,
@@ -2974,6 +3727,10 @@ export function MilkdownMarkdownEditor({
   }, [onSelectionEnter]);
 
   useEffect(() => {
+    onLinkClickRef.current = onLinkClick;
+  }, [onLinkClick]);
+
+  useEffect(() => {
     onAnnotationClickRef.current = onAnnotationClick;
   }, [onAnnotationClick]);
 
@@ -2987,6 +3744,7 @@ export function MilkdownMarkdownEditor({
 
   useEffect(() => {
     noteModeEnabledRef.current = noteModeEnabled;
+    syncCodeBlockDeleteButtons();
     scheduleReadonlyDomFocusSync();
     if (!noteModeEnabled) {
       clearTouchBlockSelectionSession();
@@ -3007,6 +3765,12 @@ export function MilkdownMarkdownEditor({
   }, [mobileBlockSelectionEnabled]);
 
   useEffect(() => {
+    mobileSelectionKindRef.current = mobileSelectionKind;
+    clearTouchBlockSelectionSession();
+    setTouchBlockCommittedSelectionOverlay(null);
+  }, [mobileSelectionKind]);
+
+  useEffect(() => {
     mobileCommittedSelectionKeyRef.current = mobileCommittedSelectionKey;
     if (!mobileCommittedSelectionKey) {
       setTouchBlockCommittedSelectionOverlay(null);
@@ -3019,6 +3783,7 @@ export function MilkdownMarkdownEditor({
 
   useEffect(() => {
     readOnlyRef.current = readOnly;
+    syncCodeBlockDeleteButtons();
     syncMilkdownReadOnlyState();
   }, [readOnly]);
 
@@ -3028,6 +3793,7 @@ export function MilkdownMarkdownEditor({
 
     const observer = new MutationObserver(() => {
       syncCodeBlockCopyButtonLabels();
+      syncCodeBlockDeleteButtons();
       if (readOnlyRef.current || noteModeEnabledRef.current) {
         scheduleReadonlyDomFocusSync();
       }
@@ -3040,6 +3806,7 @@ export function MilkdownMarkdownEditor({
     });
 
     syncCodeBlockCopyButtonLabels();
+    syncCodeBlockDeleteButtons();
     scheduleReadonlyDomFocusSync();
 
     const blockedEvents = ["beforeinput", "input", "compositionstart", "cut", "paste", "drop"];
@@ -3152,6 +3919,16 @@ export function MilkdownMarkdownEditor({
     const normalizedValue = normalizeMarkdownForScholium(value);
     if (normalizedValue === currentMarkdownRef.current) return;
 
+    const root = rootRef.current;
+    const scrollContainer = root?.closest<HTMLElement>(".editor-pane");
+    if (root && scrollContainer) {
+      root.style.minHeight = `${root.scrollHeight}px`;
+      valueRefreshScrollSnapshotRef.current = {
+        scrollContainer,
+        scrollTop: scrollContainer.scrollTop,
+      };
+    }
+
     currentMarkdownRef.current = normalizedValue;
     editorMarkdownRef.current = editorMarkdownFromFullSource(normalizedValue);
     editorAnnotationsRef.current = annotationsForEditorSource(
@@ -3162,6 +3939,15 @@ export function MilkdownMarkdownEditor({
     setEditorRevision((revision) => revision + 1);
   }, [value]);
 
+  function restoreScrollAfterValueRefresh(root: HTMLElement) {
+    const snapshot = valueRefreshScrollSnapshotRef.current;
+    root.style.minHeight = "";
+    if (!snapshot) return;
+
+    snapshot.scrollContainer.scrollTop = snapshot.scrollTop;
+    valueRefreshScrollSnapshotRef.current = null;
+  }
+
   function currentEditorView(): EditorView | null {
     const crepe = crepeRef.current;
     if (!crepe) return null;
@@ -3169,7 +3955,10 @@ export function MilkdownMarkdownEditor({
     let view: EditorView | null = null;
     try {
       crepe.editor.action((ctx) => {
-        view = ctx.get(editorViewCtx) as EditorView;
+        const candidate = ctx.get(editorViewCtx) as EditorView | undefined;
+        if (candidate?.state && typeof candidate.dispatch === "function") {
+          view = candidate;
+        }
       });
     } catch {
       return null;
@@ -3191,7 +3980,8 @@ export function MilkdownMarkdownEditor({
   }
 
   useEffect(() => {
-    if (selectAllRequestKey === 0) return;
+    if (handledSelectAllRequestKeyRef.current === selectAllRequestKey) return;
+    handledSelectAllRequestKeyRef.current = selectAllRequestKey;
 
     const view = currentEditorView();
     if (!view) return;
@@ -3232,22 +4022,37 @@ export function MilkdownMarkdownEditor({
   }
 
   function scrollActiveSearchMatchIntoView() {
-    window.requestAnimationFrame(() => {
-      rootRef.current
-        ?.querySelector<HTMLElement>(".milkdown-document-search-match.is-active")
-        ?.scrollIntoView({
-          block: "center",
-          inline: "nearest",
-        });
-    });
+    window.setTimeout(() => {
+      const activeMatch = rootRef.current?.querySelector<HTMLElement>(
+        ".milkdown-document-search-match.is-active",
+      );
+      if (!activeMatch) return;
+
+      const editorPane = activeMatch.closest<HTMLElement>(".editor-pane");
+      const scrollContainer =
+        editorPane && editorPane.scrollHeight > editorPane.clientHeight
+          ? editorPane
+          : document.scrollingElement;
+      if (!scrollContainer) return;
+
+      const matchRect = activeMatch.getBoundingClientRect();
+      const viewportRect =
+        scrollContainer === document.scrollingElement
+          ? {
+              height: window.visualViewport?.height ?? window.innerHeight,
+              top: window.visualViewport?.offsetTop ?? 0,
+            }
+          : scrollContainer.getBoundingClientRect();
+      scrollContainer.scrollTop +=
+        matchRect.top -
+        viewportRect.top -
+        (viewportRect.height - matchRect.height) / 2;
+    }, 0);
   }
 
   function dispatchSearchUpdate() {
     const view = currentEditorView();
-    if (!view) {
-      onSearchMatchCountChangeRef.current?.(0);
-      return;
-    }
+    if (!view) return;
 
     view.dispatch(view.state.tr.setMeta(milkdownSearchPluginKey, true));
     reportSearchMatchCount(view);
@@ -3349,6 +4154,30 @@ export function MilkdownMarkdownEditor({
     );
   }
 
+  function recordTouchBlockSelectionDiagnostic(
+    stage: string,
+    details: Record<string, unknown> = {},
+  ) {
+    try {
+      const existingValue = window.localStorage.getItem(
+        milkdownTouchSelectionDiagnosticKey,
+      );
+      const existingEntries = existingValue ? JSON.parse(existingValue) : [];
+      const entries = Array.isArray(existingEntries) ? existingEntries : [];
+      entries.push({
+        at: Date.now(),
+        details,
+        stage,
+      });
+      window.localStorage.setItem(
+        milkdownTouchSelectionDiagnosticKey,
+        JSON.stringify(entries.slice(-40)),
+      );
+    } catch {
+      // Diagnostics must never affect the selection interaction.
+    }
+  }
+
   function touchBlockSelectionPublishSuppressed() {
     return Date.now() < touchBlockSelectionPublishSuppressedUntilRef.current;
   }
@@ -3377,6 +4206,7 @@ export function MilkdownMarkdownEditor({
     const targetElement = elementFromEventTarget(target);
     if (!targetElement) return false;
     if (
+      mobileSelectionKindRef.current !== "glossary" &&
       targetElement.closest(
         ".milkdown-note-annotation, .milkdown-annotation-frame[data-note-id]",
       )
@@ -3387,6 +4217,405 @@ export function MilkdownMarkdownEditor({
 
     const editorElement = targetElement.closest(".ProseMirror");
     return Boolean(editorElement && root.contains(editorElement));
+  }
+
+  function graphemeRangeAtOffset(text: string, offset: number) {
+    let from = 0;
+    const clampedOffset = Math.max(0, Math.min(offset, text.length));
+
+    for (const character of Array.from(text)) {
+      const to = from + character.length;
+      if (clampedOffset < to || (clampedOffset === to && to === text.length)) {
+        return { from, to };
+      }
+      from = to;
+    }
+
+    return null;
+  }
+
+  function graphemeBoundaryAtOrAfter(text: string, offset: number) {
+    const clampedOffset = Math.max(0, Math.min(offset, text.length));
+    if (clampedOffset === 0 || clampedOffset === text.length) return clampedOffset;
+
+    let boundary = 0;
+    for (const character of Array.from(text)) {
+      boundary += character.length;
+      if (boundary >= clampedOffset) return boundary;
+    }
+
+    return text.length;
+  }
+
+  function touchGlossaryTextBlockAtPosition(view: EditorView, position: number) {
+    const safePosition = Math.max(0, Math.min(position, view.state.doc.content.size));
+    const resolvedPosition = view.state.doc.resolve(safePosition);
+
+    for (let depth = resolvedPosition.depth; depth > 0; depth -= 1) {
+      const node = resolvedPosition.node(depth);
+      if (!node.isTextblock) continue;
+
+      return {
+        from: resolvedPosition.start(depth),
+        text: node.textContent,
+        to: resolvedPosition.end(depth),
+      };
+    }
+
+    return null;
+  }
+
+  function touchGlossaryTextBlockAtHit(
+    view: EditorView,
+    hit: { inside: number; pos: number },
+  ) {
+    const resolvedBlock = touchGlossaryTextBlockAtPosition(view, hit.pos);
+    if (resolvedBlock || hit.inside < 0) return resolvedBlock;
+
+    const insideNode = view.state.doc.nodeAt(hit.inside);
+    if (!insideNode?.isTextblock) return null;
+
+    return {
+      from: hit.inside + 1,
+      text: insideNode.textContent,
+      to: hit.inside + 1 + insideNode.content.size,
+    };
+  }
+
+  function distanceFromPointToRect(clientX: number, clientY: number, rect: DOMRect) {
+    const deltaX =
+      clientX < rect.left
+        ? rect.left - clientX
+        : clientX > rect.right
+          ? clientX - rect.right
+          : 0;
+    const deltaY =
+      clientY < rect.top
+        ? rect.top - clientY
+        : clientY > rect.bottom
+          ? clientY - rect.bottom
+          : 0;
+
+    return deltaX * deltaX + deltaY * deltaY;
+  }
+
+  function touchGlossaryLineGraphemeAtPoint(
+    lineElement: HTMLElement,
+    clientX: number,
+    clientY: number,
+  ) {
+    const walker = document.createTreeWalker(lineElement, NodeFilter.SHOW_TEXT);
+    const range = document.createRange();
+    let lineOffset = 0;
+    let bestMatch:
+      | {
+          distance: number;
+          from: number;
+          to: number;
+        }
+      | null = null;
+
+    try {
+      let currentNode = walker.nextNode();
+      while (currentNode) {
+        const textNode = currentNode as Text;
+        let nodeOffset = 0;
+
+        for (const character of Array.from(textNode.data)) {
+          const nextOffset = nodeOffset + character.length;
+          range.setStart(textNode, nodeOffset);
+          range.setEnd(textNode, nextOffset);
+
+          for (const rect of Array.from(range.getClientRects())) {
+            if (rect.width <= 0 || rect.height <= 0) continue;
+
+            const distance = distanceFromPointToRect(clientX, clientY, rect);
+            if (bestMatch && bestMatch.distance <= distance) continue;
+
+            bestMatch = {
+              distance,
+              from: lineOffset + nodeOffset,
+              to: lineOffset + nextOffset,
+            };
+          }
+          nodeOffset = nextOffset;
+        }
+
+        lineOffset += textNode.data.length;
+        currentNode = walker.nextNode();
+      }
+    } finally {
+      range.detach();
+    }
+
+    return bestMatch;
+  }
+
+  function touchGlossaryCodeSelectionAtPoint(clientX: number, clientY: number) {
+    const root = rootRef.current;
+    const pointElement = document.elementFromPoint(clientX, clientY);
+    const codeBlock = pointElement?.closest<HTMLElement>(".milkdown-code-block");
+    if (!root || !codeBlock || !root.contains(codeBlock)) return null;
+
+    const codeBlocks = Array.from(
+      root.querySelectorAll<HTMLElement>(".milkdown-code-block"),
+    );
+    const codeBlockIndex = codeBlocks.indexOf(codeBlock);
+    if (codeBlockIndex < 0) return null;
+
+    const lineElements = Array.from(
+      codeBlock.querySelectorAll<HTMLElement>(".cm-line"),
+    );
+    const lineElement = lineElements
+      .slice()
+      .sort(
+        (left, right) =>
+          distanceFromPointToRect(clientX, clientY, left.getBoundingClientRect()) -
+          distanceFromPointToRect(clientX, clientY, right.getBoundingClientRect()),
+      )[0];
+    if (!lineElement) return null;
+
+    const codeLineIndex = lineElements.indexOf(lineElement);
+    const grapheme = touchGlossaryLineGraphemeAtPoint(
+      lineElement,
+      clientX,
+      clientY,
+    );
+    if (!grapheme) return null;
+
+    const lineSourceRange = fencedCodeBlockContentLineSourceRange(
+      editorMarkdownRef.current,
+      codeBlockIndex,
+      codeLineIndex,
+      codeLineIndex + 1,
+    );
+    if (!lineSourceRange) return null;
+
+    const lineLength = lineSourceRange.to - lineSourceRange.from;
+    const from = lineSourceRange.from + Math.min(grapheme.from, lineLength);
+    const to = lineSourceRange.from + Math.min(grapheme.to, lineLength);
+    if (to <= from) return null;
+
+    const anchor = sourceAnchorFromEditorAnchor(
+      currentMarkdownRef.current,
+      makeAnchorFromSourceRange(editorMarkdownRef.current, from, to),
+    );
+    if (!anchor || !normalizeSelectedText(anchor.selectedText)) return null;
+
+    return {
+      anchor,
+      codeBlockIndex,
+      codeLineIndex,
+    };
+  }
+
+  function touchGlossaryCodeSelectionPreviewRects(from: number, to: number) {
+    const container = containerRef.current;
+    if (!container || to <= from) return [];
+
+    const anchor = makeAnchorFromSourceRange(currentMarkdownRef.current, from, to);
+    const annotation: TextAnnotation = {
+      ...anchor,
+      id: "touch-glossary-selection",
+      kind: "glossary",
+      tone: 0,
+    };
+
+    return touchBlockSelectionPreviewRectsFromAnnotationRects(
+      codeBlockAnnotationRects(
+        container,
+        annotation,
+        currentMarkdownRef.current,
+      ),
+      "glossary",
+      "glossary",
+    );
+  }
+
+  function touchGlossarySelectionStartAtPoint(
+    view: EditorView,
+    clientX: number,
+    clientY: number,
+  ) {
+    const codeSelection = touchGlossaryCodeSelectionAtPoint(clientX, clientY);
+    if (codeSelection) {
+      return {
+        blockFrom: codeSelection.anchor.from,
+        blockTo: codeSelection.anchor.to,
+        codeBlockIndex: codeSelection.codeBlockIndex,
+        codeLineIndex: codeSelection.codeLineIndex,
+        from: codeSelection.anchor.from,
+        to: codeSelection.anchor.to,
+      };
+    }
+
+    const hit = view.posAtCoords({ left: clientX, top: clientY });
+    if (!hit) return null;
+
+    const block = touchGlossaryTextBlockAtHit(view, hit);
+    if (!block?.text) return null;
+
+    const position = Math.max(block.from, Math.min(hit.pos, block.to));
+    let relativeOffset = Math.max(0, Math.min(position - block.from, block.text.length));
+    try {
+      if (clientX < view.coordsAtPos(position).left && relativeOffset > 0) {
+        relativeOffset -= 1;
+      }
+    } catch {
+      // Use the position reported by ProseMirror when DOM coordinates are unavailable.
+    }
+
+    const grapheme = graphemeRangeAtOffset(block.text, relativeOffset);
+    if (!grapheme) return null;
+
+    const from = block.from + grapheme.from;
+    const to = block.from + grapheme.to;
+    if (!view.state.doc.textBetween(from, to, " ").trim()) return null;
+
+    return {
+      blockFrom: block.from,
+      blockTo: block.to,
+      from,
+      to,
+    };
+  }
+
+  function touchGlossaryCodeSelectionEndAtPoint(
+    session: MilkdownTouchBlockSelectionSession,
+  ) {
+    if (
+      session.codeBlockIndex == null ||
+      session.codeLineIndex == null ||
+      session.startFrom == null ||
+      session.startTo == null
+    ) {
+      return null;
+    }
+
+    const codeSelection = touchGlossaryCodeSelectionAtPoint(
+      session.currentClientX,
+      session.currentClientY,
+    );
+    if (
+      !codeSelection ||
+      codeSelection.codeBlockIndex !== session.codeBlockIndex ||
+      codeSelection.codeLineIndex !== session.codeLineIndex ||
+      codeSelection.anchor.from < session.startFrom
+    ) {
+      return null;
+    }
+
+    return {
+      from: session.startFrom,
+      to: Math.max(session.startTo, codeSelection.anchor.to),
+    };
+  }
+
+  function touchGlossarySelectionEndAtPoint(
+    view: EditorView,
+    session: MilkdownTouchBlockSelectionSession,
+  ) {
+    if (
+      session.blockFrom == null ||
+      session.blockTo == null ||
+      session.startFrom == null ||
+      session.startTo == null
+    ) {
+      return null;
+    }
+
+    const hit = view.posAtCoords({
+      left: session.currentClientX,
+      top: session.currentClientY,
+    });
+    if (!hit) return null;
+
+    const blockText = view.state.doc.textBetween(session.blockFrom, session.blockTo, "");
+    const position = Math.max(session.blockFrom, Math.min(hit.pos, session.blockTo));
+    const relativeOffset = Math.max(
+      0,
+      Math.min(position - session.blockFrom, blockText.length),
+    );
+    const to = Math.max(
+      session.startTo,
+      session.blockFrom + graphemeBoundaryAtOrAfter(blockText, relativeOffset),
+    );
+
+    if (hit.pos < session.startFrom) {
+      return null;
+    }
+
+    return {
+      from: session.startFrom,
+      to: Math.min(to, session.blockTo),
+    };
+  }
+
+  function sourceAnchorFromProseRange(view: EditorView, from: number, to: number) {
+    if (to <= from) return null;
+
+    const selectedText = view.state.doc.textBetween(from, to, " ");
+    return sourceAnchorFromEditorAnchor(
+      currentMarkdownRef.current,
+      buildAnchor(
+        editorMarkdownRef.current,
+        selectedText,
+        visibleTextIndexFromProsePosition(view.state.doc, from),
+      ),
+    );
+  }
+
+  function touchGlossarySelectionPreviewRects(
+    view: EditorView,
+    from: number,
+    to: number,
+  ) {
+    if (to <= from) return [];
+
+    const range = document.createRange();
+    try {
+      const start = view.domAtPos(from);
+      const end = view.domAtPos(to);
+      range.setStart(start.node, start.offset);
+      range.setEnd(end.node, end.offset);
+
+      const annotationRects = mergedClientTextLineRects(
+        Array.from(range.getClientRects()),
+      ).map((rect) => ({
+        bottom: rect.bottom,
+        canExtendRight: false,
+        left: rect.left,
+        lineRight: rect.right,
+        right: rect.right,
+        top: rect.top,
+      }));
+
+      return touchBlockSelectionPreviewRectsFromAnnotationRects(
+        annotationRects,
+        "glossary",
+        "glossary",
+      );
+    } catch {
+      return [];
+    } finally {
+      range.detach();
+    }
+  }
+
+  function clientSelectionRectFromPreviewRects(
+    previewRects: MilkdownTouchBlockSelectionPreviewRect[],
+  ) {
+    const anchorRect = viewportAnchorRectFromTouchBlockPreviewRects(previewRects);
+    if (!anchorRect) return null;
+
+    return {
+      bottom: anchorRect.bottom,
+      height: anchorRect.height,
+      left: anchorRect.left,
+      right: anchorRect.right,
+      top: anchorRect.top,
+      width: anchorRect.width,
+    };
   }
 
   function visibleTextFromTouchBlockElement(blockElement: HTMLElement) {
@@ -3618,10 +4847,16 @@ export function MilkdownMarkdownEditor({
   function touchBlockSelectionPreviewRectsFromAnnotationRects(
     rects: MilkdownAnnotationRect[],
     keyPrefix: string,
+    kind: "note" | "glossary" = "note",
   ): MilkdownTouchBlockSelectionPreviewRect[] {
     const sortedRects = rects
-      .slice()
+      .filter((rect) => rect.right > rect.left && rect.bottom > rect.top)
       .sort((left, right) => left.top - right.top || left.left - right.left);
+
+    if (sortedRects.length > 0) {
+      sortedRects[sortedRects.length - 1].canExtendRight = false;
+    }
+
     const extensionRightByRect = new Map<MilkdownAnnotationRect, number>();
     const borderRadiusByRect = new Map<MilkdownAnnotationRect, string>();
     let rectGroup: MilkdownAnnotationRect[] = [];
@@ -3673,9 +4908,8 @@ export function MilkdownMarkdownEditor({
     flushRectGroup();
 
     return sortedRects.flatMap((rect, rectIndex) => {
-      const framePadding = milkdownAnnotationFramePaddingForKind("note");
-      const frameHorizontalPadding =
-        milkdownAnnotationFrameHorizontalPaddingForKind("note");
+      const framePadding = milkdownAnnotationFramePaddingForKind(kind);
+      const frameHorizontalPadding = milkdownAnnotationFrameHorizontalPaddingForKind(kind);
       let top = rect.top - framePadding;
       let bottom = rect.bottom + framePadding;
       const previousRect = sortedRects[rectIndex - 1];
@@ -3791,14 +5025,12 @@ export function MilkdownMarkdownEditor({
     return normalizeSelectedText(anchor.selectedText) ? anchor : null;
   }
 
-  function completeTouchBlockSelection(
-    view: EditorView,
-    selectionRect: ClientSelectionRect,
+  function completeTouchSelection(
+    anchor: TextSelectionAnchor,
+    previewRects: MilkdownTouchBlockSelectionPreviewRect[],
+    kind: "note" | "glossary",
     event?: Event,
   ) {
-    const anchor = anchorFromTouchBlockSelectionRect(view, selectionRect);
-    if (!anchor) return false;
-    const previewRects = touchBlockSelectionPreviewRectsFromSelectionRect(selectionRect);
     const handled = onSelectionEnterRef.current(anchor, {
       anchorRect: viewportAnchorRectFromTouchBlockPreviewRects(previewRects),
       source: "touch-block",
@@ -3820,11 +5052,68 @@ export function MilkdownMarkdownEditor({
         }))
       : previewRects;
     setTouchBlockCommittedSelectionOverlay(
-      committedPreviewRects.length > 0 ? { previewRects: committedPreviewRects } : null,
+      committedPreviewRects.length > 0
+        ? {
+            from: anchor.from,
+            kind,
+            previewRects: committedPreviewRects,
+            to: anchor.to,
+          }
+        : null,
     );
     blurReadonlyEditorFocus();
     scheduleAnnotationFrameUpdate();
     return true;
+  }
+
+  function completeTouchBlockSelection(
+    view: EditorView,
+    selectionRect: ClientSelectionRect,
+    event?: Event,
+  ) {
+    const anchor = anchorFromTouchBlockSelectionRect(view, selectionRect);
+    if (!anchor) return false;
+
+    return completeTouchSelection(
+      anchor,
+      touchBlockSelectionPreviewRectsFromSelectionRect(selectionRect),
+      "note",
+      event,
+    );
+  }
+
+  function completeTouchGlossarySelection(
+    view: EditorView,
+    session: MilkdownTouchBlockSelectionSession,
+    event?: Event,
+  ) {
+    if (session.currentFrom == null || session.currentTo == null) return false;
+
+    const anchor =
+      session.codeBlockIndex == null
+        ? sourceAnchorFromProseRange(view, session.currentFrom, session.currentTo)
+        : makeAnchorFromSourceRange(
+            currentMarkdownRef.current,
+            session.currentFrom,
+            session.currentTo,
+          );
+    if (!anchor) return false;
+
+    return completeTouchSelection(
+      anchor,
+      session.codeBlockIndex == null
+        ? touchGlossarySelectionPreviewRects(
+            view,
+            session.currentFrom,
+            session.currentTo,
+          )
+        : touchGlossaryCodeSelectionPreviewRects(
+            session.currentFrom,
+            session.currentTo,
+          ),
+      "glossary",
+      event,
+    );
   }
 
   function clearTouchBlockHintTimers() {
@@ -3858,6 +5147,46 @@ export function MilkdownMarkdownEditor({
   function updateTouchBlockSelectionOverlayRect(
     session: MilkdownTouchBlockSelectionSession,
   ) {
+    if (session.kind === "glossary") {
+      const view = currentEditorView();
+      if (!view) return false;
+
+      const selection =
+        session.codeBlockIndex == null
+          ? touchGlossarySelectionEndAtPoint(view, session)
+          : touchGlossaryCodeSelectionEndAtPoint(session);
+      if (!selection) return false;
+
+      session.currentFrom = selection.from;
+      session.currentTo = selection.to;
+      const previewRects =
+        session.codeBlockIndex == null
+          ? touchGlossarySelectionPreviewRects(
+              view,
+              selection.from,
+              selection.to,
+            )
+          : touchGlossaryCodeSelectionPreviewRects(
+              selection.from,
+              selection.to,
+            );
+      const rect = clientSelectionRectFromPreviewRects(previewRects);
+      if (!rect) return false;
+
+      setTouchBlockSelectionOverlay((currentOverlay) =>
+        currentOverlay
+          ? { ...currentOverlay, kind: "glossary", previewRects, rect, tone: 0 }
+          : {
+              hintPhase: "entering",
+              kind: "glossary",
+              previewRects,
+              rect,
+              tone: 0,
+            },
+      );
+      return true;
+    }
+
     const rect = touchSelectionRectFromSession(session);
     const previewRects = touchBlockSelectionPreviewRectsFromSelectionRect(rect);
     const view = currentEditorView();
@@ -3865,19 +5194,66 @@ export function MilkdownMarkdownEditor({
     const tone = anchor ? (mobileSelectionToneForAnchorRef.current?.(anchor) ?? 0) : 0;
     setTouchBlockSelectionOverlay((currentOverlay) =>
       currentOverlay
-        ? { ...currentOverlay, previewRects, rect, tone }
-        : { hintPhase: "entering", previewRects, rect, tone },
+        ? { ...currentOverlay, kind: "note", previewRects, rect, tone }
+        : { hintPhase: "entering", kind: "note", previewRects, rect, tone },
     );
+    return true;
   }
 
   function showTouchBlockSelectionOverlay(session: MilkdownTouchBlockSelectionSession) {
     clearTouchBlockHintTimers();
-    setTouchBlockSelectionOverlay({
-      hintPhase: "entering",
-      previewRects: [],
-      rect: touchSelectionRectFromSession(session),
-      tone: 0,
-    });
+    if (session.kind === "glossary") {
+      const view = currentEditorView();
+      if (
+        !view ||
+        session.currentFrom == null ||
+        session.currentTo == null
+      ) {
+        recordTouchBlockSelectionDiagnostic("glossary-preview-state-missed", {
+          hasEditorView: Boolean(view),
+          hasFrom: session.currentFrom != null,
+          hasTo: session.currentTo != null,
+        });
+        clearTouchBlockSelectionSession();
+        return;
+      }
+
+      const previewRects =
+        session.codeBlockIndex == null
+          ? touchGlossarySelectionPreviewRects(
+              view,
+              session.currentFrom,
+              session.currentTo,
+            )
+          : touchGlossaryCodeSelectionPreviewRects(
+              session.currentFrom,
+              session.currentTo,
+            );
+      const rect = clientSelectionRectFromPreviewRects(previewRects);
+      if (!rect) {
+        recordTouchBlockSelectionDiagnostic("glossary-preview-rect-missed", {
+          previewRectCount: previewRects.length,
+        });
+        clearTouchBlockSelectionSession();
+        return;
+      }
+
+      setTouchBlockSelectionOverlay({
+        hintPhase: "entering",
+        kind: "glossary",
+        previewRects,
+        rect,
+        tone: 0,
+      });
+    } else {
+      setTouchBlockSelectionOverlay({
+        hintPhase: "entering",
+        kind: "note",
+        previewRects: [],
+        rect: touchSelectionRectFromSession(session),
+        tone: 0,
+      });
+    }
     touchBlockHintFrameRef.current = window.requestAnimationFrame(() => {
       touchBlockHintFrameRef.current = window.requestAnimationFrame(() => {
         touchBlockHintFrameRef.current = 0;
@@ -3902,10 +5278,48 @@ export function MilkdownMarkdownEditor({
 
   function activateTouchBlockSelection() {
     const session = touchBlockSelectionSessionRef.current;
+    recordTouchBlockSelectionDiagnostic("long-press-timer-fired", {
+      hasSession: Boolean(session),
+      sessionActive: Boolean(session?.active),
+    });
     if (!session || session.active) return;
-    if (!touchBlockSelectionEnabled() || !targetSupportsTouchBlockSelection(session.target)) {
+
+    const enabled = touchBlockSelectionEnabled();
+    const targetSupported = targetSupportsTouchBlockSelection(session.target);
+    if (!enabled || !targetSupported) {
+      recordTouchBlockSelectionDiagnostic("activation-rejected", {
+        enabled,
+        targetSupported,
+      });
       clearTouchBlockSelectionSession();
       return;
+    }
+
+    if (session.kind === "glossary") {
+      const view = currentEditorView();
+      const start = view
+        ? touchGlossarySelectionStartAtPoint(
+            view,
+            session.startClientX,
+            session.startClientY,
+          )
+        : null;
+      if (!start) {
+        recordTouchBlockSelectionDiagnostic("glossary-start-missed", {
+          hasEditorView: Boolean(view),
+        });
+        clearTouchBlockSelectionSession();
+        return;
+      }
+
+      session.blockFrom = start.blockFrom;
+      session.blockTo = start.blockTo;
+      session.codeBlockIndex = start.codeBlockIndex;
+      session.codeLineIndex = start.codeLineIndex;
+      session.currentFrom = start.from;
+      session.currentTo = start.to;
+      session.startFrom = start.from;
+      session.startTo = start.to;
     }
 
     session.active = true;
@@ -3916,6 +5330,9 @@ export function MilkdownMarkdownEditor({
     applyReadonlyDomFocusState();
     blurReadonlyEditorFocus();
     showTouchBlockSelectionOverlay(session);
+    recordTouchBlockSelectionDiagnostic("selection-overlay-requested", {
+      kind: session.kind,
+    });
   }
 
   function touchMovedBeyondActivationTolerance(
@@ -3970,16 +5387,52 @@ export function MilkdownMarkdownEditor({
   useEffect(() => {
     const root = rootRef.current;
     if (!root) return undefined;
+    const selectionRoot = root;
+
+    function diagnosticTarget(target: EventTarget | null, selectionRoot: HTMLElement) {
+      const element = elementFromEventTarget(target);
+      return {
+        className:
+          typeof element?.className === "string" ? element.className.slice(0, 160) : "",
+        rootContainsTarget: Boolean(
+          target instanceof Node && selectionRoot.contains(target),
+        ),
+        tagName: element?.tagName ?? "",
+      };
+    }
+
+    function handleDocumentTouchStart(event: TouchEvent) {
+      recordTouchBlockSelectionDiagnostic("document-touchstart", {
+        kind: mobileSelectionKindRef.current,
+        ...diagnosticTarget(event.target, selectionRoot),
+      });
+    }
 
     function handleTouchStart(event: TouchEvent) {
       const touch = event.touches[0];
+      const enabled = touchBlockSelectionEnabled();
+      const targetSupported = targetSupportsTouchBlockSelection(event.target);
+      const codeBlockAnnotationHit = touch
+        ? Boolean(codeBlockAnnotationHitFromPoint(touch.clientX, touch.clientY))
+        : false;
+      recordTouchBlockSelectionDiagnostic("root-touchstart", {
+        codeBlockAnnotationHit,
+        enabled,
+        kind: mobileSelectionKindRef.current,
+        mobileBlockSelectionEnabled: mobileBlockSelectionEnabledRef.current,
+        noteModeEnabled: noteModeEnabledRef.current,
+        targetSupported,
+        touchCount: event.touches.length,
+        ...diagnosticTarget(event.target, selectionRoot),
+      });
       if (
         !touch ||
         event.touches.length !== 1 ||
-        !touchBlockSelectionEnabled() ||
-        !targetSupportsTouchBlockSelection(event.target) ||
-        codeBlockAnnotationHitFromPoint(touch.clientX, touch.clientY)
+        !enabled ||
+        !targetSupported ||
+        codeBlockAnnotationHit
       ) {
+        recordTouchBlockSelectionDiagnostic("touchstart-rejected");
         clearTouchBlockSelectionSession();
         return;
       }
@@ -3989,15 +5442,25 @@ export function MilkdownMarkdownEditor({
         active: false,
         currentClientX: touch.clientX,
         currentClientY: touch.clientY,
+        kind: mobileSelectionKindRef.current,
+        selecting: false,
         startClientX: touch.clientX,
         startClientY: touch.clientY,
         target: event.target,
       };
+      recordTouchBlockSelectionDiagnostic("long-press-timer-started", {
+        delay:
+          mobileSelectionKindRef.current === "glossary"
+            ? milkdownTouchGlossaryLongPressMs
+            : milkdownTouchBlockLongPressMs,
+      });
       applyReadonlyDomFocusState();
       blurReadonlyEditorFocus();
       touchBlockLongPressTimerRef.current = window.setTimeout(
         activateTouchBlockSelection,
-        milkdownTouchBlockLongPressMs,
+        mobileSelectionKindRef.current === "glossary"
+          ? milkdownTouchGlossaryLongPressMs
+          : milkdownTouchBlockLongPressMs,
       );
     }
 
@@ -4016,6 +5479,10 @@ export function MilkdownMarkdownEditor({
 
       if (!session.active) {
         if (touchMovedBeyondActivationTolerance(touch, session)) {
+          recordTouchBlockSelectionDiagnostic("pre-activation-move-cancelled", {
+            deltaX: touch.clientX - session.startClientX,
+            deltaY: touch.clientY - session.startClientY,
+          });
           clearTouchBlockSelectionSession();
         }
         return;
@@ -4023,6 +5490,27 @@ export function MilkdownMarkdownEditor({
 
       event.preventDefault();
       event.stopPropagation();
+      if (session.kind === "glossary") {
+        const deltaX = session.currentClientX - session.startClientX;
+        if (!session.selecting) {
+          if (deltaX <= -milkdownTouchBlockActivationMoveTolerancePx) {
+            clearTouchBlockSelectionSession();
+            return;
+          }
+          if (deltaX < milkdownTouchBlockActivationMoveTolerancePx) {
+            return;
+          }
+          session.selecting = true;
+        }
+
+        if (!updateTouchBlockSelectionOverlayRect(session)) {
+          clearTouchBlockSelectionSession();
+          return;
+        }
+        hideTouchBlockSelectionHint();
+        return;
+      }
+
       updateTouchBlockSelectionOverlayRect(session);
 
       if (clientSelectionRectHasDrag(touchSelectionRectFromSession(session))) {
@@ -4041,7 +5529,7 @@ export function MilkdownMarkdownEditor({
       }
       const wasActive = session.active;
       const selectionRect = touchSelectionRectFromSession(session);
-      if (!wasActive) {
+      if (!wasActive || (session.kind === "glossary" && !session.selecting)) {
         clearTouchBlockSelectionSession();
         return;
       }
@@ -4055,7 +5543,13 @@ export function MilkdownMarkdownEditor({
         return;
       }
 
-      const handled = completeTouchBlockSelection(view, selectionRect, event);
+      const selectionUpdated =
+        session.kind !== "glossary" || updateTouchBlockSelectionOverlayRect(session);
+      const handled =
+        selectionUpdated &&
+        (session.kind === "glossary"
+          ? completeTouchGlossarySelection(view, session, event)
+          : completeTouchBlockSelection(view, selectionRect, event));
       clearTouchBlockSelectionSession();
       if (handled) {
         event.stopImmediatePropagation();
@@ -4063,9 +5557,14 @@ export function MilkdownMarkdownEditor({
     }
 
     function handleTouchCancel() {
+      recordTouchBlockSelectionDiagnostic("touchcancel");
       clearTouchBlockSelectionSession();
     }
 
+    document.addEventListener("touchstart", handleDocumentTouchStart, {
+      capture: true,
+      passive: true,
+    });
     root.addEventListener("touchstart", handleTouchStart, {
       capture: true,
       passive: false,
@@ -4079,8 +5578,14 @@ export function MilkdownMarkdownEditor({
       passive: false,
     });
     root.addEventListener("touchcancel", handleTouchCancel, true);
+    recordTouchBlockSelectionDiagnostic("listeners-attached", {
+      kind: mobileSelectionKindRef.current,
+      mobileBlockSelectionEnabled: mobileBlockSelectionEnabledRef.current,
+      noteModeEnabled: noteModeEnabledRef.current,
+    });
 
     return () => {
+      document.removeEventListener("touchstart", handleDocumentTouchStart, true);
       root.removeEventListener("touchstart", handleTouchStart, true);
       root.removeEventListener("touchmove", handleTouchMove, true);
       root.removeEventListener("touchend", handleTouchEnd, true);
@@ -4205,21 +5710,42 @@ export function MilkdownMarkdownEditor({
     if (!root) return;
 
     let disposed = false;
+    let acceptsMarkdownUpdates = false;
     root.innerHTML = "";
 
     const crepe = new Crepe({
       root,
       defaultValue: encodeEmptyParagraphsForMilkdown(editorMarkdownRef.current),
+      featureConfigs: {
+        [CrepeFeature.Cursor]: {
+          virtual: false,
+        },
+      },
       features: {
         [CrepeFeature.AI]: false,
+        [CrepeFeature.BlockEdit]: true,
         [CrepeFeature.CodeMirror]: true,
         [CrepeFeature.ImageBlock]: false,
         [CrepeFeature.Latex]: false,
+        [CrepeFeature.LinkTooltip]: true,
+        [CrepeFeature.ListItem]: true,
+        [CrepeFeature.Placeholder]: true,
+        [CrepeFeature.Table]: true,
         [CrepeFeature.Toolbar]: toolbarEnabled,
         [CrepeFeature.TopBar]: false,
       },
     });
     crepe.editor.config((ctx) => {
+      ctx.update(editorViewOptionsCtx, (prev) => ({
+        ...prev,
+        clipboardTextSerializer: (slice, view) =>
+          serializeMarkedTextClipboardSlice(slice, view, ctx.get(serializerCtx)) ??
+          prev.clipboardTextSerializer?.(slice, view) ??
+          "",
+        scrollThreshold: { top: 120, right: 0, bottom: 40, left: 0 },
+        scrollMargin: { top: 120, right: 0, bottom: 40, left: 0 },
+      }));
+
       ctx.update(hardbreakSchema.key, (previousSchema) => (schemaCtx) => {
         const schema = previousSchema(schemaCtx);
 
@@ -4276,7 +5802,14 @@ export function MilkdownMarkdownEditor({
 
       ctx.update(prosePluginsCtx, (plugins) => [
         createTouchBlockSelectionPlugin(),
-        createPlainEnterHardBreakPlugin(),
+        createSoftLineBlockInputRulePlugin(),
+        createInlineMarkdownLinkInputRule(),
+        createPastedInlineMarkBoundaryPlugin(),
+        createPairedSymbolPlugin(),
+        createSingleListItemIndentPlugin(),
+        createListItemInlineStrongSyntaxPlugin(),
+        createControlHistoryPlugin(),
+        createShiftEnterParagraphSplitPlugin(),
         createReadonlyGuardPlugin(),
         ...plugins,
         createAnnotationPlugin({
@@ -4295,12 +5828,26 @@ export function MilkdownMarkdownEditor({
 
     crepe.on((listener) => {
       listener.markdownUpdated((_ctx, markdown) => {
-        const normalizedEditorMarkdown = normalizeMarkdownForScholium(markdown);
+        const normalizedMarkdownWithoutEmptyListParagraphs =
+          normalizeMarkdownForScholium(markdown);
+        const view = currentEditorView();
+        const normalizedEditorMarkdown = view
+          ? preserveSerializedEmptyParagraphListBoundaries(
+              normalizedMarkdownWithoutEmptyListParagraphs,
+              view.state.doc,
+            )
+          : normalizedMarkdownWithoutEmptyListParagraphs;
         const normalizedMarkdown = mergeMarkdownFrontmatter(
           currentMarkdownRef.current,
           normalizedEditorMarkdown,
         );
-        if (disposed || normalizedMarkdown === currentMarkdownRef.current) return;
+        if (
+          disposed ||
+          !acceptsMarkdownUpdates ||
+          normalizedMarkdown === currentMarkdownRef.current
+        ) {
+          return;
+        }
         if (readOnlyRef.current || noteModeEnabledRef.current) return;
 
         currentMarkdownRef.current = normalizedMarkdown;
@@ -4330,12 +5877,16 @@ export function MilkdownMarkdownEditor({
     void crepe
       .create()
       .then(() => {
+        if (disposed) return;
+        restoreScrollAfterValueRefresh(root);
+        acceptsMarkdownUpdates = true;
         syncMilkdownReadOnlyState();
         hydrateLocalMarkdownImages();
         scheduleAnnotationFrameUpdate();
         dispatchSearchUpdate();
       })
       .catch((error: unknown) => {
+        if (!disposed) restoreScrollAfterValueRefresh(root);
         console.error("failed to create Milkdown editor", error);
       });
 
@@ -4467,6 +6018,10 @@ export function MilkdownMarkdownEditor({
     (frame) => frame.layer === "foreground",
   );
   const touchBlockSelectionRect = touchBlockSelectionOverlay?.rect ?? null;
+  const touchSelectionKind =
+    touchBlockSelectionOverlay?.kind ??
+    touchBlockCommittedSelectionOverlay?.kind ??
+    mobileSelectionKind;
   const touchBlockPreviewRects = touchBlockSelectionRect
     ? (touchBlockSelectionOverlay?.previewRects ?? [])
     : (touchBlockCommittedSelectionOverlay?.previewRects ?? []);
@@ -4517,7 +6072,8 @@ export function MilkdownMarkdownEditor({
         <div
           className={`milkdown-touch-block-selection-overlay ${
             touchBlockSelectionRect ? "is-dragging" : "is-committed"
-          }`}
+          } ${touchSelectionKind === "glossary" ? "is-glossary" : ""}`}
+          data-annotation-kind={touchSelectionKind}
           data-note-tone={
             touchBlockSelectionRect
               ? (touchBlockSelectionOverlay?.tone ?? 0)
@@ -4540,15 +6096,17 @@ export function MilkdownMarkdownEditor({
           ))}
           {touchBlockSelectionRect ? (
             <>
-              <div
-                className="milkdown-touch-block-selection-rect"
-                style={{
-                  height: Math.max(1, touchBlockSelectionRect.height),
-                  left: touchBlockSelectionRect.left,
-                  top: touchBlockSelectionRect.top,
-                  width: Math.max(1, touchBlockSelectionRect.width),
-                }}
-              />
+              {touchSelectionKind === "note" ? (
+                <div
+                  className="milkdown-touch-block-selection-rect"
+                  style={{
+                    height: Math.max(1, touchBlockSelectionRect.height),
+                    left: touchBlockSelectionRect.left,
+                    top: touchBlockSelectionRect.top,
+                    width: Math.max(1, touchBlockSelectionRect.width),
+                  }}
+                />
+              ) : null}
               <div
                 className={`milkdown-touch-block-selection-hint is-${
                   touchBlockSelectionOverlay?.hintPhase ?? "hiding"

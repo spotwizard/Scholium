@@ -51,11 +51,6 @@ FRONTMOST_BUNDLE_IDENTIFIER="$(
   /usr/bin/swift -e 'import AppKit; print(NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "")' 2>/dev/null || true
 )"
 
-if [[ -z "${FRONTMOST_BUNDLE_IDENTIFIER}" ]]; then
-  echo "Unable to determine the frontmost app; built app is ready, installation skipped." >&2
-  exit 2
-fi
-
 if [[ "${FRONTMOST_BUNDLE_IDENTIFIER}" == "${APP_BUNDLE_IDENTIFIER}" ]]; then
   echo "Scholium is currently in use; built app is ready, installation skipped." >&2
   exit 2
