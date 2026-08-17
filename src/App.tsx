@@ -72,6 +72,10 @@ import {
 import { resolveMarkdownLinkTarget } from "./markdownLinkTarget";
 import { parseMarkdownTableAt, type MarkdownTable } from "./markdownTable";
 import {
+  sortWorkspaceEntriesForDirectory,
+  type WorkspaceSortMode,
+} from "./workspaceSort";
+import {
   readSettingsSnapshot,
   resetSetting,
   resetSettings,
@@ -1413,74 +1417,6 @@ function workspaceEntryFromDocument(
     depth,
     source: documentIsFromDropbox(document) ? "dropbox" : "local",
   };
-}
-
-function workspaceEntrySortRank(entry: WorkspaceEntry) {
-  if (entry.kind === "parent-directory") return 0;
-  if (entry.kind === "directory") return 1;
-  return 2;
-}
-
-function workspaceEntryModifiedAt(entry: WorkspaceEntry) {
-  return entry.modifiedAt ?? Number.NEGATIVE_INFINITY;
-}
-
-function compareWorkspaceEntries(left: WorkspaceEntry, right: WorkspaceEntry) {
-  const rankDifference = workspaceEntrySortRank(left) - workspaceEntrySortRank(right);
-  if (rankDifference !== 0) return rankDifference;
-
-  const modifiedDifference = workspaceEntryModifiedAt(right) - workspaceEntryModifiedAt(left);
-  if (modifiedDifference !== 0) return modifiedDifference;
-
-  const leftTitle = left.title.toLowerCase();
-  const rightTitle = right.title.toLowerCase();
-  if (leftTitle < rightTitle) return -1;
-  if (leftTitle > rightTitle) return 1;
-
-  const leftPath = left.path.toLowerCase();
-  const rightPath = right.path.toLowerCase();
-  if (leftPath < rightPath) return -1;
-  if (leftPath > rightPath) return 1;
-
-  return 0;
-}
-
-function sortWorkspaceEntriesForDirectory(entries: WorkspaceEntry[]) {
-  type WorkspaceEntryNode = { entry: WorkspaceEntry; children: WorkspaceEntryNode[] };
-  const parentEntries = entries.filter((entry) => entry.kind === "parent-directory");
-  const rootNodes: WorkspaceEntryNode[] = [];
-  const stack: WorkspaceEntryNode[] = [];
-
-  entries
-    .filter((entry) => entry.kind !== "parent-directory")
-    .forEach((entry) => {
-      const node = { entry, children: [] };
-      const depth = entry.depth ?? 1;
-
-      while (stack.length > 0 && (stack[stack.length - 1].entry.depth ?? 1) >= depth) {
-        stack.pop();
-      }
-
-      const parent = stack[stack.length - 1];
-      if (parent) {
-        parent.children.push(node);
-      } else {
-        rootNodes.push(node);
-      }
-      stack.push(node);
-    });
-
-  const sortedEntries: WorkspaceEntry[] = [...parentEntries];
-  const appendNodes = (nodes: WorkspaceEntryNode[]) => {
-    nodes.sort((left, right) => compareWorkspaceEntries(left.entry, right.entry));
-    nodes.forEach((node) => {
-      sortedEntries.push(node.entry);
-      appendNodes(node.children);
-    });
-  };
-
-  appendNodes(rootNodes);
-  return sortedEntries;
 }
 
 function directoryTreeKey(entry: Pick<WorkspaceEntry, "path" | "source">) {
@@ -7706,8 +7642,10 @@ function NoteMarkdownEditor({
 function App() {
   const [documents, setDocuments] = useState(documentsSeed);
   const [workspaceTitle, setWorkspaceTitle] = useState("Scholium");
+  const [workspaceSortMode, setWorkspaceSortMode] = useState<WorkspaceSortMode>("name");
+  const workspaceSortModeRef = useRef(workspaceSortMode);
   const [workspaceEntries, setWorkspaceEntries] = useState<WorkspaceEntry[]>(() =>
-    documentsSeed.map(workspaceEntryFromDocument),
+    sortWorkspaceEntriesForDirectory(documentsSeed.map(workspaceEntryFromDocument)),
   );
   const [workspaceRootPath, setWorkspaceRootPath] = useState<string | null>(null);
   const [workspaceSource, setWorkspaceSource] = useState<WorkspaceSource | null>(null);
@@ -8095,6 +8033,7 @@ function App() {
   >(() => undefined);
 
   documentsRef.current = documents;
+  workspaceSortModeRef.current = workspaceSortMode;
   workspaceEntriesRef.current = workspaceEntries;
   notesRef.current = notes;
   glossaryTermsRef.current = glossaryTerms;
@@ -11800,7 +11739,9 @@ function App() {
         ...otherEntries,
       ];
 
-      return options.sortEntries ? sortWorkspaceEntriesForDirectory(nextEntries) : nextEntries;
+      return options.sortEntries
+        ? sortWorkspaceEntriesForDirectory(nextEntries, workspaceSortModeRef.current)
+        : nextEntries;
     });
     setWorkspaceTitle(fileNameFromPath(rootPath) || rootPath || "Scholium");
     setWorkspaceRootPath(rootPath);
@@ -11906,7 +11847,10 @@ function App() {
     discardTransientEmptySelectionNote();
     discardTransientEmptyGlossary();
 
-    const nextEntries = workspaceEntriesFromOpenedDropboxDirectory(openedDirectory, 1);
+    const nextEntries = sortWorkspaceEntriesForDirectory(
+      workspaceEntriesFromOpenedDropboxDirectory(openedDirectory, 1),
+      workspaceSortModeRef.current,
+    );
     const tagIndexRequestId = ++dropboxTagIndexRequestRef.current;
 
     setDocuments([]);
@@ -11992,6 +11936,7 @@ function App() {
 
       return sortWorkspaceEntriesForDirectory(
         insertOrUpdateWorkspaceFileEntry(currentEntries, fileEntry, workspaceRootPath),
+        workspaceSortModeRef.current,
       );
     });
     setNotes((currentNotes) => [
@@ -12209,7 +12154,10 @@ function App() {
     const loadedGlossaryTerms = loadedFiles.flatMap(
       (loadedFile) => loadedFile.glossaryTerms ?? [],
     );
-    const nextEntries = workspaceEntriesFromOpenedDirectory(openedDirectory, 1);
+    const nextEntries = sortWorkspaceEntriesForDirectory(
+      workspaceEntriesFromOpenedDirectory(openedDirectory, 1),
+      workspaceSortModeRef.current,
+    );
     const firstDocument = loadedDocuments[0];
     const selectedDocument = selectedPath
       ? loadedDocuments.find((document) => document.id === selectedPath)
@@ -12400,7 +12348,9 @@ function App() {
     }
 
     mergeLoadedFilesIntoDocumentState(loadedDescendantFiles);
-    setWorkspaceEntries(nextEntries);
+    setWorkspaceEntries(
+      sortWorkspaceEntriesForDirectory(nextEntries, workspaceSortModeRef.current),
+    );
     setExpandedDirectoryKeys(nextExpandedDirectoryKeys);
     setActiveDocumentId(selectedFile.path);
     resetDocumentTabs(selectedFile.path);
@@ -13466,7 +13416,10 @@ function App() {
       }
 
       setWorkspaceEntries((currentEntries) =>
-        insertWorkspaceDirectoryChildren(currentEntries, entry, childEntries),
+        sortWorkspaceEntriesForDirectory(
+          insertWorkspaceDirectoryChildren(currentEntries, entry, childEntries),
+          workspaceSortModeRef.current,
+        ),
       );
       setExpandedDirectoryKeys((currentKeys) => new Set(currentKeys).add(entryKey));
       setStorageError("");
@@ -13910,6 +13863,7 @@ function App() {
         workspaceEntryFromDocument(loadedDocument),
         workspaceRootPath,
       ),
+      workspaceSortModeRef.current,
     );
 
     documentsRef.current = nextDocuments;
@@ -14180,15 +14134,18 @@ function App() {
       };
 
       setWorkspaceEntries((currentEntries) =>
-        sortWorkspaceEntriesForDirectory([
-          ...currentEntries.filter(
-            (entry) =>
-              entry.kind === "parent-directory" ||
-              entry.source !== source ||
-              entry.path !== created.path,
-          ),
-          createdEntry,
-        ]),
+        sortWorkspaceEntriesForDirectory(
+          [
+            ...currentEntries.filter(
+              (entry) =>
+                entry.kind === "parent-directory" ||
+                entry.source !== source ||
+                entry.path !== created.path,
+            ),
+            createdEntry,
+          ],
+          workspaceSortModeRef.current,
+        ),
       );
       setStorageError("");
       return true;
@@ -14415,6 +14372,7 @@ function App() {
               }
             : entry,
         ),
+        workspaceSortModeRef.current,
       ),
     );
     markDocumentSnapshotSaved(documentToSave.id, bodyToSave, savedSidecarFingerprint);
@@ -14471,6 +14429,7 @@ function App() {
               }
             : entry,
         ),
+        workspaceSortModeRef.current,
       ),
     );
     markDocumentSnapshotSaved(documentToSave.id, bodyToSave, savedSidecarFingerprint);
@@ -14812,7 +14771,12 @@ function App() {
     setGlossaryTerms(glossaryTermsSeed);
     setGlossaryBindings(glossaryBindingsSeed);
     setWorkspaceTitle("Scholium");
-    setWorkspaceEntries(documentsSeed.map(workspaceEntryFromDocument));
+    setWorkspaceEntries(
+      sortWorkspaceEntriesForDirectory(
+        documentsSeed.map(workspaceEntryFromDocument),
+        workspaceSortModeRef.current,
+      ),
+    );
     setWorkspaceRootPath(null);
     setWorkspaceSource(null);
     resetFileSearch();
@@ -15467,6 +15431,7 @@ function App() {
             title: nextPath === newPath ? renamed.title : entry.title,
           };
         }),
+        workspaceSortModeRef.current,
       );
       workspaceEntriesRef.current = nextEntries;
       return nextEntries;
@@ -18333,6 +18298,24 @@ function App() {
                   ×
                 </button>
               ) : null}
+            </label>
+            <label className="workspace-sort-control">
+              <span>{t("documentSort.label")}</span>
+              <select
+                aria-label={t("documentSort.label")}
+                value={workspaceSortMode}
+                onChange={(event) => {
+                  const nextMode = event.currentTarget.value as WorkspaceSortMode;
+                  workspaceSortModeRef.current = nextMode;
+                  setWorkspaceSortMode(nextMode);
+                  setWorkspaceEntries((entries) =>
+                    sortWorkspaceEntriesForDirectory(entries, nextMode),
+                  );
+                }}
+              >
+                <option value="name">{t("documentSort.name")}</option>
+                <option value="modified">{t("documentSort.modified")}</option>
+              </select>
             </label>
           </div>
 
