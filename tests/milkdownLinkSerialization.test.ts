@@ -1,28 +1,50 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import {
+  encodeEmptyParagraphsForMilkdown,
+  normalizeMarkdownForScholium,
+  normalizeSelectedText,
+} from "../src/milkdownSerialization.ts";
 
-const editor = readFileSync(new URL("../src/MilkdownMarkdownEditor.tsx", import.meta.url), "utf8");
+assert.equal(normalizeSelectedText("  one\u00a0 two\nthree  "), "one two three");
 
-assert.match(
-  editor,
-  /function restoreSerializedInlineLinks\(markdown: string\) \{/,
+assert.equal(
+  normalizeMarkdownForScholium("before \\[label]\\(https://example.com) after"),
+  "before [label](https://example.com) after",
 );
-assert.ok(editor.includes("line.replace(/\\\\\\[([^\\]\\n]*)\\]\\\\\\(([^)\\n]*)\\)/g"));
-assert.ok(editor.includes('line[offset - 1] === "!" ? match : `[${label}](${href})`'));
-assert.match(
-  editor,
-  /if \(inFencedCodeBlock\) \{[\s\S]*?normalizedLines\.push\(line\);[\s\S]*?continue;/,
+assert.equal(
+  normalizeMarkdownForScholium("!\\[alt]\\(image.png)"),
+  "!\\[alt]\\(image.png)",
 );
-assert.match(
-  editor,
-  /return restoreListLeadingAsterisksFromPreview\(\s*normalizeAdjacentSerializedListItems\(\s*normalizeListItemStrongTrailingWhitespace\(\s*normalizeSerializedBulletMarkers\(\s*restoreSerializedInlineLinks\(\s*normalizeSerializedHardBreaks\(normalizeSerializedEmptyParagraphBreaks\(markdown\)\),\s*\),\s*\)/,
+
+const fencedMarkdown = [
+  "```md",
+  "\\[literal]\\(target)",
+  "line\\",
+  "<br />",
+  "```",
+].join("\n");
+assert.equal(normalizeMarkdownForScholium(fencedMarkdown), fencedMarkdown);
+
+assert.equal(normalizeMarkdownForScholium("- <br />\n1. <br>"), "-\n1.");
+assert.equal(normalizeMarkdownForScholium("first\\\nsecond"), "first\nsecond");
+
+assert.equal(
+  normalizeMarkdownForScholium("* **label **value\n\n* \\* literal"),
+  "- **label** value\n- * literal",
 );
-assert.ok(
-  editor.includes("/^(\\s*(?:[-+*]|\\d+[.)]))\\s+<br\\s*\\/?>\\s*$/i"),
+
+const consecutiveEmptyParagraphs = "first\n\n\nlast";
+const encodedEmptyParagraphs = "first\n\n<br />\n\nlast";
+assert.equal(
+  encodeEmptyParagraphsForMilkdown(consecutiveEmptyParagraphs),
+  encodedEmptyParagraphs,
 );
-assert.match(
-  editor,
-  /normalizedLines\.push\(emptyListItemBreak\[1\] \?\? line\);/,
+assert.equal(
+  normalizeMarkdownForScholium(encodedEmptyParagraphs),
+  consecutiveEmptyParagraphs,
 );
+
+const fencedEmptyParagraphs = "```text\nfirst\n\n\nlast\n```";
+assert.equal(encodeEmptyParagraphsForMilkdown(fencedEmptyParagraphs), fencedEmptyParagraphs);
 
 console.log("milkdown link serialization regression: PASS");

@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
-import { resolveMarkdownLinkTarget } from "../src/markdownLinkTarget.ts";
+import {
+  localMarkdownImageNeedsHydration,
+  resolveMarkdownLinkTarget,
+} from "../src/markdownLinkTarget.ts";
 
 assert.deepEqual(
   resolveMarkdownLinkTarget("search.md", "/notes/AGENTS.md", "local"),
@@ -37,5 +40,12 @@ assert.deepEqual(
   resolveMarkdownLinkTarget("javascript:alert(1)", "/notes/AGENTS.md", "local"),
   { kind: "unsupported" },
 );
+
+assert.equal(localMarkdownImageNeedsHydration("images/photo.png"), true);
+assert.equal(localMarkdownImageNeedsHydration(" ../photo.png "), true);
+assert.equal(localMarkdownImageNeedsHydration("https://example.com/photo.png"), false);
+assert.equal(localMarkdownImageNeedsHydration("data:image/png;base64,AAAA"), false);
+assert.equal(localMarkdownImageNeedsHydration("//cdn.example.com/photo.png"), false);
+assert.equal(localMarkdownImageNeedsHydration("   "), false);
 
 console.log("markdown link target regression: PASS");

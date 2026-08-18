@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "markdownPath": "/fixtures/article.md",
+  "notes": [
+    {
+      "id": "fixture-note-1",
+      "documentId": "/fixtures/article.md",
+      "status": "active",
+      "selectedText": "Unicode 段落",
+      "anchor": {
+        "from": 6,
+        "to": 16,
+        "selectedText": "Unicode 段落",
+        "prefix": "Before ",
+        "suffix": " after"
+      },
+      "tone": 0,
+      "body": "fixture note body",
+      "createdAt": "2026-08-17T00:00:00.000Z",
+      "updatedAt": "2026-08-17T00:00:00.000Z",
+      "deletedAt": null
+    }
+  ],
+  "glossaryTerms": [
+    {
+      "id": "fixture-term-1",
+      "term": "Scholium",
+      "normalizedTerm": "scholium",
+      "definition": "A fixture definition.",
+      "createdAt": "2026-08-17T00:00:00.000Z",
+      "updatedAt": "2026-08-17T00:00:00.000Z"
+    }
+  ],
+  "glossaryBindings": [
+    {
+      "id": "fixture-binding-1",
+      "documentId": "/fixtures/article.md",
+      "termId": "fixture-term-1",
+      "term": "Scholium",
+      "normalizedTerm": "scholium",
+      "status": "active",
+      "anchor": {
+        "from": 0,
+        "to": 8,
+        "selectedText": "Scholium",
+        "prefix": "",
+        "suffix": " fixture"
+      },
+      "createdAt": "2026-08-17T00:00:00.000Z",
+      "updatedAt": "2026-08-17T00:00:00.000Z",
+      "deletedAt": null
+    }
+  ]
+}

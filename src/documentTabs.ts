@@ -1,8 +1,98 @@
-export function documentTabIdsAfterClosingOthers(
-  openDocumentTabIds: string[],
-  documentId: string,
+export function availableDocumentTabIds(
+  documentTabIds: string[],
+  availableDocumentIds: string[],
 ) {
-  return openDocumentTabIds.includes(documentId) ? [documentId] : openDocumentTabIds;
+  const availableIds = new Set(availableDocumentIds);
+  const nextIds: string[] = [];
+  const seenIds = new Set<string>();
+
+  documentTabIds.forEach((documentId) => {
+    if (!availableIds.has(documentId) || seenIds.has(documentId)) return;
+
+    nextIds.push(documentId);
+    seenIds.add(documentId);
+  });
+
+  return nextIds;
+}
+
+export function documentTabIdsAfterOpening(
+  openDocumentTabIds: string[],
+  activeDocumentId: string,
+  documentId: string,
+  mode: "add" | "replace",
+  availableDocumentIds: string[],
+) {
+  if (mode === "replace" && openDocumentTabIds.includes(documentId)) {
+    return openDocumentTabIds;
+  }
+
+  if (mode === "add") {
+    return availableDocumentTabIds(
+      [...openDocumentTabIds, documentId],
+      availableDocumentIds,
+    );
+  }
+
+  const activeIndex = openDocumentTabIds.indexOf(activeDocumentId);
+  if (activeIndex < 0) {
+    return availableDocumentTabIds(
+      openDocumentTabIds.length > 0
+        ? [documentId, ...openDocumentTabIds]
+        : [documentId],
+      availableDocumentIds,
+    );
+  }
+
+  const nextIds = [...openDocumentTabIds];
+  nextIds[activeIndex] = documentId;
+  return availableDocumentTabIds(nextIds, availableDocumentIds);
+}
+
+export type DocumentTabTransition = {
+  openDocumentTabIds: string[];
+  nextActiveDocumentId?: string | null;
+};
+
+export function documentTabsAfterClosing(
+  openDocumentTabIds: string[],
+  activeDocumentId: string,
+  documentId: string,
+): DocumentTabTransition {
+  const closedIndex = openDocumentTabIds.indexOf(documentId);
+  if (closedIndex < 0) {
+    return { openDocumentTabIds };
+  }
+
+  const nextIds = openDocumentTabIds.filter((currentId) => currentId !== documentId);
+  if (documentId !== activeDocumentId) {
+    return { openDocumentTabIds: nextIds };
+  }
+
+  return {
+    openDocumentTabIds: nextIds,
+    nextActiveDocumentId:
+      nextIds.length === 0
+        ? null
+        : nextIds[Math.min(closedIndex, nextIds.length - 1)],
+  };
+}
+
+export function documentTabsAfterClosingOthers(
+  openDocumentTabIds: string[],
+  activeDocumentId: string,
+  documentId: string,
+): DocumentTabTransition {
+  if (!openDocumentTabIds.includes(documentId)) {
+    return { openDocumentTabIds };
+  }
+
+  return {
+    openDocumentTabIds: [documentId],
+    ...(activeDocumentId === documentId
+      ? {}
+      : { nextActiveDocumentId: documentId }),
+  };
 }
 
 export type DocumentTabHitTarget = {
@@ -28,6 +118,18 @@ export function documentTabIdAtPoint(
         clientY < target.bottom,
     )?.documentId ?? fallbackDocumentId
   );
+}
+
+export function documentTabClickSelection(
+  pointerActivatedDocumentId: string,
+  clickedDocumentId: string,
+  pointerTriggeredClick: boolean,
+) {
+  const pointerDocumentId = pointerTriggeredClick ? pointerActivatedDocumentId : "";
+  return {
+    documentId: pointerDocumentId || clickedDocumentId,
+    shouldSelect: !pointerDocumentId,
+  };
 }
 
 export type DocumentTabSessionSource = "local" | "dropbox";

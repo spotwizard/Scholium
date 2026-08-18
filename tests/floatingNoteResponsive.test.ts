@@ -61,7 +61,7 @@ assert.match(
 );
 assert.match(
   css,
-  /\.scholium-shell\.is-mobile-safe-layout\.is-note-panel-modal-active[\s\S]*?\.preview-annotation-layer,[\s\S]*?\.milkdown-annotation-layer,[\s\S]*?\{\s*z-index:\s*66;/,
+  /\.scholium-shell\.is-mobile-safe-layout\.is-note-panel-modal-active[\s\S]*?\.milkdown-annotation-layer,[\s\S]*?\.milkdown-touch-block-selection-overlay\.is-committed \{\s*z-index:\s*66;/,
 );
 assert.match(
   css,
@@ -69,11 +69,11 @@ assert.match(
 );
 assert.match(
   css,
-  /\.scholium-shell\.is-note-panel-modal-active[\s\S]*?li:has\(\.preview-note-annotation\.is-focus-target\),[\s\S]*?li:has\(\.milkdown-note-annotation\.is-focus-target\) \{[\s\S]*?z-index:\s*87;/,
+  /\.scholium-shell\.is-note-panel-modal-active[\s\S]*?\.milkdown-markdown-editor[\s\S]*?li:has\(\.milkdown-note-annotation\.is-focus-target\) \{[\s\S]*?z-index:\s*87;/,
 );
 assert.match(
   css,
-  /\.scholium-shell\.is-mobile-safe-layout\.is-note-panel-modal-active[\s\S]*?li:has\(\.preview-note-annotation\.is-focus-target\),[\s\S]*?li:has\(\.milkdown-note-annotation\.is-focus-target\) \{\s*z-index:\s*67;/,
+  /\.scholium-shell\.is-mobile-safe-layout\.is-note-panel-modal-active[\s\S]*?\.milkdown-markdown-editor[\s\S]*?li:has\(\.milkdown-note-annotation\.is-focus-target\) \{\s*z-index:\s*67;/,
 );
 assert.match(
   css,

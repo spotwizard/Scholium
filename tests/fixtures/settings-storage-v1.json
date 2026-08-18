@@ -1,0 +1,10 @@
+{
+  "scholium:settings:app.language": "zh-Hant",
+  "scholium:settings:app.interfaceFontSize": "20",
+  "scholium:settings:app.theme": "dark",
+  "scholium:settings:app.restoreLastOpenedFile": "false",
+  "scholium:settings:app.directoryPaneOpen": "true",
+  "scholium:settings:app.noteModeEnabledByDefault": "true",
+  "scholium:settings:editor.fontSize": "22",
+  "scholium:settings:editor.lineHeight": "1.8"
+}

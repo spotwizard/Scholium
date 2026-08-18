@@ -1,5 +1,12 @@
 export type MarkdownLinkSource = "local" | "dropbox";
 
+export function localMarkdownImageNeedsHydration(src: string) {
+  const trimmedSrc = src.trim();
+  if (!trimmedSrc) return false;
+
+  return !/^(https?:|data:|blob:|asset:|tauri:|ipc:|\/\/)/i.test(trimmedSrc);
+}
+
 export type MarkdownLinkTarget =
   | { kind: "document"; path: string }
   | { kind: "external"; href: string }

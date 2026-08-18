@@ -54,11 +54,28 @@ export function mergeMarkdownFrontmatter(sourceMarkdown: string, bodyMarkdown: s
 }
 
 export function fullSourceOffsetFromFrontmatterBodyOffset(markdown: string, bodyOffset: number) {
-  return (splitMarkdownFrontmatter(markdown)?.bodyStart ?? 0) + bodyOffset;
+  const normalizedOffset = (splitMarkdownFrontmatter(markdown)?.bodyStart ?? 0) + bodyOffset;
+  let sourceOffset = 0;
+  let currentNormalizedOffset = 0;
+
+  while (sourceOffset < markdown.length && currentNormalizedOffset < normalizedOffset) {
+    if (markdown[sourceOffset] === "\r" && markdown[sourceOffset + 1] === "\n") {
+      sourceOffset += 2;
+    } else {
+      sourceOffset += 1;
+    }
+    currentNormalizedOffset += 1;
+  }
+
+  return sourceOffset;
 }
 
-function normalizedTagName(tag: string) {
+export function normalizeMarkdownTag(tag: string) {
   return tag.replace(/\s+/g, " ").trim();
+}
+
+export function markdownTagDedupeKey(tag: string) {
+  return normalizeMarkdownTag(tag).toLocaleLowerCase();
 }
 
 function uniqueMarkdownTags(tags: string[]) {
@@ -66,10 +83,10 @@ function uniqueMarkdownTags(tags: string[]) {
   const normalizedTags: string[] = [];
 
   tags.forEach((tag) => {
-    const normalizedTag = normalizedTagName(tag);
+    const normalizedTag = normalizeMarkdownTag(tag);
     if (!normalizedTag) return;
 
-    const dedupeKey = normalizedTag.toLocaleLowerCase();
+    const dedupeKey = markdownTagDedupeKey(normalizedTag);
     if (seenTags.has(dedupeKey)) return;
 
     seenTags.add(dedupeKey);
@@ -185,6 +202,11 @@ function parseTagsFromFrontmatterLines(lines: string[]) {
     while (itemIndex < lines.length) {
       const line = lines[itemIndex] ?? "";
       if (!line.trim()) {
+        itemIndex += 1;
+        continue;
+      }
+
+      if (line.trimStart().startsWith("#")) {
         itemIndex += 1;
         continue;
       }

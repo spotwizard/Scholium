@@ -1,18 +1,198 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
+  availableDocumentTabIds,
   availableDocumentTabSession,
   createDocumentTabSession,
-  documentTabIdsAfterClosingOthers,
+  documentTabClickSelection,
+  documentTabIdsAfterOpening,
   documentTabIdAtPoint,
+  documentTabsAfterClosing,
+  documentTabsAfterClosingOthers,
   parseDocumentTabSession,
 } from "../src/documentTabs.ts";
 
+const availableTabIds = ["first", "second", "third", "fourth"];
+const unchangedAvailableIds = ["first", "second"];
+const filteredAvailableIds = availableDocumentTabIds(
+  unchangedAvailableIds,
+  availableTabIds,
+);
+assert.deepEqual(filteredAvailableIds, unchangedAvailableIds);
+assert.notEqual(
+  filteredAvailableIds,
+  unchangedAvailableIds,
+  "availability filtering must preserve its existing fresh-array behavior",
+);
 assert.deepEqual(
-  documentTabIdsAfterClosingOthers(["first", "second", "third"], "second"),
+  availableDocumentTabIds(
+    ["first", "missing", "first", "second"],
+    availableTabIds,
+  ),
+  ["first", "second"],
+);
+
+const addExistingTabIds = ["first", "second"];
+const addExistingResult = documentTabIdsAfterOpening(
+  addExistingTabIds,
+  "first",
+  "second",
+  "add",
+  availableTabIds,
+);
+assert.deepEqual(addExistingResult, addExistingTabIds);
+assert.notEqual(
+  addExistingResult,
+  addExistingTabIds,
+  "add mode must preserve its existing fresh-array behavior",
+);
+assert.deepEqual(
+  documentTabIdsAfterOpening(
+    ["first", "second"],
+    "first",
+    "third",
+    "add",
+    availableTabIds,
+  ),
+  ["first", "second", "third"],
+);
+assert.deepEqual(
+  documentTabIdsAfterOpening(
+    ["first", "missing"],
+    "first",
+    "unavailable",
+    "add",
+    availableTabIds,
+  ),
+  ["first"],
+);
+
+const replaceExistingTabIds = ["first", "second"];
+assert.equal(
+  documentTabIdsAfterOpening(
+    replaceExistingTabIds,
+    "first",
+    "second",
+    "replace",
+    availableTabIds,
+  ),
+  replaceExistingTabIds,
+  "replace mode must retain the current array when the target is already open",
+);
+assert.deepEqual(
+  documentTabIdsAfterOpening(
+    ["first", "second", "third"],
+    "second",
+    "fourth",
+    "replace",
+    availableTabIds,
+  ),
+  ["first", "fourth", "third"],
+);
+assert.deepEqual(
+  documentTabIdsAfterOpening(
+    ["first", "second"],
+    "missing",
+    "third",
+    "replace",
+    availableTabIds,
+  ),
+  ["third", "first", "second"],
+);
+assert.deepEqual(
+  documentTabIdsAfterOpening([], "missing", "third", "replace", availableTabIds),
+  ["third"],
+);
+assert.deepEqual(
+  documentTabIdsAfterOpening(
+    ["first", "second"],
+    "first",
+    "unavailable",
+    "replace",
+    availableTabIds,
+  ),
   ["second"],
 );
-assert.deepEqual(documentTabIdsAfterClosingOthers(["first"], "missing"), ["first"]);
+
+const missingCloseTabIds = ["first", "second"];
+const missingCloseResult = documentTabsAfterClosing(
+  missingCloseTabIds,
+  "first",
+  "missing",
+);
+assert.equal(missingCloseResult.openDocumentTabIds, missingCloseTabIds);
+assert.deepEqual(missingCloseResult, { openDocumentTabIds: missingCloseTabIds });
+assert.deepEqual(
+  documentTabsAfterClosing(["first", "second", "third"], "first", "third"),
+  { openDocumentTabIds: ["first", "second"] },
+);
+assert.deepEqual(
+  documentTabsAfterClosing(["first", "second", "third"], "second", "second"),
+  {
+    openDocumentTabIds: ["first", "third"],
+    nextActiveDocumentId: "third",
+  },
+);
+assert.deepEqual(
+  documentTabsAfterClosing(["first", "second", "third"], "first", "first"),
+  {
+    openDocumentTabIds: ["second", "third"],
+    nextActiveDocumentId: "second",
+  },
+);
+assert.deepEqual(
+  documentTabsAfterClosing(["first", "second", "third"], "third", "third"),
+  {
+    openDocumentTabIds: ["first", "second"],
+    nextActiveDocumentId: "second",
+  },
+);
+assert.deepEqual(documentTabsAfterClosing(["first"], "first", "first"), {
+  openDocumentTabIds: [],
+  nextActiveDocumentId: null,
+});
+
+const missingCloseOthersTabIds = ["first", "second"];
+const missingCloseOthersResult = documentTabsAfterClosingOthers(
+  missingCloseOthersTabIds,
+  "first",
+  "missing",
+);
+assert.equal(missingCloseOthersResult.openDocumentTabIds, missingCloseOthersTabIds);
+assert.deepEqual(missingCloseOthersResult, {
+  openDocumentTabIds: missingCloseOthersTabIds,
+});
+assert.deepEqual(
+  documentTabsAfterClosingOthers(
+    ["first", "second", "third"],
+    "first",
+    "second",
+  ),
+  {
+    openDocumentTabIds: ["second"],
+    nextActiveDocumentId: "second",
+  },
+);
+assert.deepEqual(
+  documentTabsAfterClosingOthers(
+    ["first", "second", "third"],
+    "second",
+    "second",
+  ),
+  { openDocumentTabIds: ["second"] },
+);
+const singleCloseOthersTabIds = ["second"];
+const singleCloseOthersResult = documentTabsAfterClosingOthers(
+  singleCloseOthersTabIds,
+  "second",
+  "second",
+);
+assert.deepEqual(singleCloseOthersResult, { openDocumentTabIds: ["second"] });
+assert.notEqual(
+  singleCloseOthersResult.openDocumentTabIds,
+  singleCloseOthersTabIds,
+  "an existing close-others target must preserve its existing fresh-array behavior",
+);
 
 const tabHitTargets = [
   { documentId: "first", left: 0, right: 100, top: 0, bottom: 30 },
@@ -21,6 +201,23 @@ const tabHitTargets = [
 ];
 assert.equal(documentTabIdAtPoint(tabHitTargets, 150, 15, "first"), "second");
 assert.equal(documentTabIdAtPoint(tabHitTargets, 204, 15, "first"), "first");
+
+assert.deepEqual(documentTabClickSelection("second", "first", true), {
+  documentId: "second",
+  shouldSelect: false,
+});
+assert.deepEqual(documentTabClickSelection("second", "first", false), {
+  documentId: "first",
+  shouldSelect: true,
+});
+assert.deepEqual(documentTabClickSelection("", "first", true), {
+  documentId: "first",
+  shouldSelect: true,
+});
+assert.deepEqual(documentTabClickSelection("", "first", false), {
+  documentId: "first",
+  shouldSelect: true,
+});
 
 const savedSession = createDocumentTabSession(
   "local",
@@ -36,6 +233,24 @@ assert.deepEqual(savedSession, {
   activeDocumentPath: "/workspace/second.md",
 });
 assert.deepEqual(parseDocumentTabSession(JSON.stringify(savedSession)), savedSession);
+const tabSessionFixture = readFileSync(
+  new URL("./fixtures/document-tab-session-v1.json", import.meta.url),
+  "utf8",
+);
+assert.deepEqual(parseDocumentTabSession(tabSessionFixture), {
+  version: 1,
+  source: "local",
+  workspacePath: "/fixtures/workspace",
+  openDocumentPaths: [
+    "/fixtures/workspace/first.md",
+    "/fixtures/workspace/second.md",
+  ],
+  activeDocumentPath: "/fixtures/workspace/second.md",
+});
+assert.equal(
+  JSON.stringify(parseDocumentTabSession(tabSessionFixture)),
+  JSON.stringify(JSON.parse(tabSessionFixture)),
+);
 assert.equal(parseDocumentTabSession("{invalid"), null);
 assert.equal(parseDocumentTabSession(JSON.stringify({ version: 1, source: "local" })), null);
 
@@ -75,16 +290,10 @@ assert.deepEqual(
 );
 
 const appSource = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
-const workspaceStorageHelper = appSource.match(
-  /function currentWindowWorkspaceStorage\(\) \{[\s\S]*?\n\}/,
-)?.[0];
-assert.ok(workspaceStorageHelper, "window workspace storage helper should exist");
-assert.match(workspaceStorageHelper, /new URLSearchParams\(window\.location\.search\)/);
-assert.match(workspaceStorageHelper, /if \(!isSecondaryWindow\) return window\.localStorage/);
-assert.match(workspaceStorageHelper, /workspaceStorageKeys\.forEach/);
-assert.match(workspaceStorageHelper, /window\.localStorage\.getItem\(key\)/);
-assert.match(workspaceStorageHelper, /window\.sessionStorage\.setItem\(key, value\)/);
-assert.match(workspaceStorageHelper, /return window\.sessionStorage/);
+const gatewaySource = readFileSync(
+  new URL("../src/tauriGateway.ts", import.meta.url),
+  "utf8",
+);
 assert.match(
   appSource,
   /const appWindow = getCurrentWindow\(\);[\s\S]*?appWindow\.listen<OpenLocationEventPayload>\("scholium-open-location"/,
@@ -143,8 +352,14 @@ assert.match(
   /if \(tabSession\) \{\n      const sessionRestored = await restoreDropboxDocumentTabSession\(tabSession\);[\s\S]*?rememberDocumentTabSession\(null\);/,
 );
 assert.match(
+  gatewaySource,
+  /export type OpenDropboxMarkdownFileArgs = \{ path: string \};[\s\S]*?export function openDropboxMarkdownFile\(args: OpenDropboxMarkdownFileArgs\) \{\n  return invoke<OpenDropboxMarkdownFileResult>\("open_dropbox_markdown_file", args\);\n\}/,
+  "Dropbox file opening must retain its exact Tauri command and path argument contract",
+);
+assert.match(
   appSource,
-  /const loaded = await invoke<OpenDropboxMarkdownFileResult>\("open_dropbox_markdown_file",[\s\S]*?if \(options\.openedDirectory\) \{\n        applyOpenedDropboxDirectory\(options\.openedDirectory\);\n      \}\n      applyLoadedDropboxFile\(loaded, \{\n        replaceDocuments: Boolean\(options\.openedDirectory\),/,
+  /const loaded = await openDropboxMarkdownFile\(\{\n        path,\n      \}\);[\s\S]*?if \(options\.openedDirectory\) \{\n        applyOpenedDropboxDirectory\(options\.openedDirectory\);\n      \}\n      applyLoadedDropboxFile\(loaded, \{\n        replaceDocuments: Boolean\(options\.openedDirectory\),/,
+  "Dropbox file loading must still precede directory and document state application",
 );
 assert.match(
   appSource,
@@ -155,10 +370,4 @@ assert.match(
   /documentTabIdAtPoint\([\s\S]*?getBoundingClientRect\(\)[\s\S]*?event\.clientX[\s\S]*?event\.clientY/,
   "desktop tab activation must resolve the document from the visible tab bounds",
 );
-assert.match(
-  appSource,
-  /const pointerActivatedDocumentId = documentTabPointerActivationRef\.current;[\s\S]*?if \(pointerActivatedDocumentId\) \{[\s\S]*?selectedDocumentIdRef\.current !== pointerActivatedDocumentId[\s\S]*?selectDocument\(pointerActivatedDocumentId/,
-  "the follow-up click must not replace the pointer-resolved document with a stale hit target",
-);
-
 console.log("document tab close-others regression: PASS");

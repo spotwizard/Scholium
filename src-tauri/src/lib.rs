@@ -1,14 +1,12 @@
-use base64::{
-    engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
-    Engine as _,
-};
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 #[cfg(not(mobile))]
-use std::io::{Read, Write};
+use std::io::Read;
+use std::io::Write;
 #[cfg(not(mobile))]
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
@@ -25,31 +23,75 @@ use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_deep_link::DeepLinkExt;
 use url::Url;
 
+mod atomic_file;
+mod dropbox_token_state;
+mod frontmatter_tags;
+mod local_image;
+mod local_save_recovery;
+mod markdown_path;
+mod pdf_export;
+
+use atomic_file::{
+    atomic_replace_private_file, read_private_file_to_string, read_regular_file_to_string,
+};
+use dropbox_token_state::{
+    DropboxConnectionSnapshot, DropboxTokenSnapshot, DropboxTokenState, DropboxTokenStore,
+};
+use frontmatter_tags::{markdown_tags, normalize_tag_search_value};
+use local_image::read_markdown_image_file;
+use local_save_recovery::{
+    create_durable_directory, lock_local_documents, pending_document_paths, recover_local_document,
+    repair_local_sidecar, save_local_document, LocalDocumentGuard, LocalDocumentPaths,
+    LocalDocumentPayload,
+};
+use markdown_path::{
+    dropped_markdown_path, is_markdown_path, validate_existing_markdown_file,
+    validate_markdown_file_name, validate_path_name,
+};
+use pdf_export::{write_pdf_file, write_pdf_file_to_directory};
+
 #[cfg(target_os = "macos")]
 use objc2_foundation::{NSString, NSUserDefaults};
 
 #[cfg(desktop)]
 const MENU_NEW_WINDOW: &str = "file:new-window";
+#[cfg(desktop)]
 const MENU_NEW_FILE: &str = "file:new-file";
+#[cfg(desktop)]
 const MENU_NEW_FOLDER: &str = "file:new-folder";
+#[cfg(desktop)]
 const MENU_OPEN_FILE: &str = "file:open-file";
+#[cfg(desktop)]
 const MENU_OPEN_FOLDER: &str = "file:open-folder";
+#[cfg(desktop)]
 const MENU_CLOUD_DROPBOX: &str = "file:cloud:dropbox";
+#[cfg(desktop)]
 const MENU_OPEN_SETTINGS: &str = "app:open-settings";
+#[cfg(desktop)]
 const MENU_FAVORITE_DIRECTORIES: &str = "file:favorite-directories";
+#[cfg(desktop)]
 const MENU_RECENT_LOCATIONS: &str = "file:recent-locations";
+#[cfg(desktop)]
 const MENU_ADD_CURRENT_DIRECTORY_TO_FAVORITES: &str = "file:add-current-directory-to-favorites";
+#[cfg(desktop)]
 const MENU_CLEAR_FAVORITE_DIRECTORIES: &str = "file:clear-favorite-directories";
+#[cfg(desktop)]
 const MENU_CLEAR_RECENT_LOCATIONS: &str = "file:clear-recent-locations";
+#[cfg(desktop)]
 const MENU_FAVORITE_DIRECTORY_PREFIX: &str = "file:favorite-directory:";
+#[cfg(desktop)]
 const MENU_RECENT_LOCATION_PREFIX: &str = "file:recent-location:";
+#[cfg(desktop)]
 const MENU_SELECT_ALL: &str = "edit:select-all";
 const MAX_RECENT_LOCATIONS: usize = 12;
 const MAX_FILE_SEARCH_RESULTS: usize = 200;
-const MAX_LOCAL_IMAGE_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_LOCAL_SYMLINK_DEPTH: usize = 40;
 const NOTES_STORE_DIRECTORY: &str = "notes";
+const LOCAL_RECOVERY_DIRECTORY: &str = "recovery/local";
 const DEFAULT_APP_LANGUAGE: &str = "zh-Hant";
+#[cfg(not(mobile))]
 const DROPBOX_OAUTH_REDIRECT_PORT: u16 = 53682;
+#[cfg(not(mobile))]
 const DROPBOX_OAUTH_CALLBACK_PATH: &str = "/dropbox/oauth/callback";
 #[cfg(any(mobile, test))]
 const DROPBOX_MOBILE_URL_SCHEME: &str = "db-bdv6guwbi6ol9mg";
@@ -120,23 +162,16 @@ impl Default for LocationMenuState {
 struct DropboxOAuthSession {
     app_key: String,
     code_verifier: String,
+    connection_snapshot: DropboxConnectionSnapshot,
+    owner_window_label: String,
     redirect_uri: String,
     state: String,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct DropboxTokenStore {
-    app_key: String,
-    access_token: String,
-    refresh_token: Option<String>,
-    expires_at: Option<u64>,
-}
-
 #[derive(Default)]
 struct DropboxState {
-    oauth_session: Mutex<Option<DropboxOAuthSession>>,
-    tokens: Mutex<Option<DropboxTokenStore>>,
+    oauth_sessions: Mutex<HashMap<String, DropboxOAuthSession>>,
+    tokens: Mutex<DropboxTokenState>,
 }
 
 #[derive(Default)]
@@ -148,6 +183,7 @@ struct OpenedFileQueue {
 #[derive(Default)]
 struct OpenedFileState(Mutex<OpenedFileQueue>);
 
+#[cfg(desktop)]
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct OpenLocationPayload {
@@ -219,6 +255,13 @@ struct NotesFile {
     #[serde(default)]
     glossary_bindings: Vec<GlossaryBinding>,
 }
+
+type DocumentNotes = (
+    String,
+    Vec<SelectionNote>,
+    Vec<GlossaryTerm>,
+    Vec<GlossaryBinding>,
+);
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -292,20 +335,6 @@ struct RenamedPath {
     notes_path: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct WritePdfFile {
-    path: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct LocalImageFile {
-    path: String,
-    mime_type: String,
-    data_url: String,
-}
-
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DropboxOAuthStatus {
@@ -328,7 +357,7 @@ struct DropboxOAuthCallbackPayload {
     error: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 struct DropboxTokenResponse {
     access_token: String,
     #[serde(default)]
@@ -442,38 +471,6 @@ struct DropboxMarkdownFile {
     server_modified: Option<String>,
 }
 
-fn validate_markdown_file_name(file_name: &str) -> Result<PathBuf, String> {
-    let trimmed_file_name = file_name.trim();
-    if trimmed_file_name.is_empty() {
-        return Err("duplicate file name is empty".to_string());
-    }
-
-    let file_name_path = PathBuf::from(trimmed_file_name);
-    if file_name_path.components().count() != 1 {
-        return Err("duplicate file name must not include folders".to_string());
-    }
-
-    Ok(file_name_path)
-}
-
-fn validate_path_name(
-    name: &str,
-    empty_error: &str,
-    folders_error: &str,
-) -> Result<PathBuf, String> {
-    let trimmed_name = name.trim();
-    if trimmed_name.is_empty() {
-        return Err(empty_error.to_string());
-    }
-
-    let name_path = PathBuf::from(trimmed_name);
-    if name_path.components().count() != 1 {
-        return Err(folders_error.to_string());
-    }
-
-    Ok(name_path)
-}
-
 fn legacy_sidecar_path(markdown_path: &Path) -> Result<PathBuf, String> {
     let file_name = markdown_path
         .file_name()
@@ -499,17 +496,234 @@ fn stable_notes_hash(value: &str) -> u64 {
     hash
 }
 
-fn notes_store_path(app: &AppHandle, markdown_path: &Path) -> Result<PathBuf, String> {
-    let app_data_dir = app
-        .path()
-        .app_data_dir()
+fn notes_store_path_in_app_data(
+    app_data_directory: &Path,
+    markdown_path: &Path,
+) -> Result<PathBuf, String> {
+    fs::create_dir_all(app_data_directory)
+        .map_err(|error| format!("failed to create app data directory: {error}"))?;
+    let app_data_directory = fs::canonicalize(app_data_directory)
         .map_err(|error| format!("failed to resolve app data directory: {error}"))?;
+    let notes_directory = app_data_directory.join(NOTES_STORE_DIRECTORY);
+    create_durable_directory(&notes_directory)
+        .map_err(|error| format!("failed to create notes storage directory: {error}"))?;
     let normalized_path = normalized_markdown_path_string(markdown_path);
     let notes_file_name = format!("{:016x}.notes.json", stable_notes_hash(&normalized_path));
 
-    Ok(app_data_dir
-        .join(NOTES_STORE_DIRECTORY)
-        .join(notes_file_name))
+    Ok(notes_directory.join(notes_file_name))
+}
+
+fn notes_store_path(app: &AppHandle, markdown_path: &Path) -> Result<PathBuf, String> {
+    let app_data_directory = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("failed to resolve app data directory: {error}"))?;
+    notes_store_path_in_app_data(&app_data_directory, markdown_path)
+}
+
+fn local_recovery_directory(app: &AppHandle) -> Result<PathBuf, String> {
+    let app_data_directory = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("failed to resolve app data directory: {error}"))?;
+    fs::create_dir_all(&app_data_directory)
+        .map_err(|error| format!("failed to create app data directory: {error}"))?;
+    let app_data_directory = fs::canonicalize(&app_data_directory)
+        .map_err(|error| format!("failed to resolve app data directory: {error}"))?;
+
+    Ok(app_data_directory.join(LOCAL_RECOVERY_DIRECTORY))
+}
+
+fn lock_local_document_store(app: &AppHandle) -> Result<(PathBuf, LocalDocumentGuard), String> {
+    let recovery_directory = local_recovery_directory(app)?;
+    let guard = lock_local_documents(&recovery_directory)?;
+    Ok((recovery_directory, guard))
+}
+
+fn resolved_local_document_path(markdown_path: &Path) -> Result<PathBuf, String> {
+    resolved_local_document_path_at_depth(markdown_path, 0)
+}
+
+fn resolved_local_document_path_at_depth(
+    markdown_path: &Path,
+    symlink_depth: usize,
+) -> Result<PathBuf, String> {
+    if symlink_depth >= MAX_LOCAL_SYMLINK_DEPTH {
+        return Err("failed to resolve local Markdown path: too many symbolic links".to_string());
+    }
+
+    match fs::symlink_metadata(markdown_path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            let target = fs::read_link(markdown_path)
+                .map_err(|error| format!("failed to resolve local Markdown path: {error}"))?;
+            let target = if target.is_absolute() {
+                target
+            } else {
+                markdown_path
+                    .parent()
+                    .filter(|parent| !parent.as_os_str().is_empty())
+                    .unwrap_or_else(|| Path::new("."))
+                    .join(target)
+            };
+            return resolved_local_document_path_at_depth(&target, symlink_depth + 1);
+        }
+        Ok(_) => {
+            return fs::canonicalize(markdown_path)
+                .map_err(|error| format!("failed to resolve local Markdown path: {error}"));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(format!("failed to inspect local Markdown path: {error}"));
+        }
+    }
+
+    let file_name = markdown_path
+        .file_name()
+        .ok_or_else(|| "invalid Markdown file path".to_string())?;
+    let parent = markdown_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let parent = fs::canonicalize(parent)
+        .map_err(|error| format!("failed to resolve local Markdown directory: {error}"))?;
+    Ok(parent.join(file_name))
+}
+
+fn local_path_entry_exists(path: &Path) -> Result<bool, String> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(format!("failed to inspect local path: {error}")),
+    }
+}
+
+fn local_path_uses_symlink(path: &Path) -> Result<bool, String> {
+    let absolute_path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|error| format!("failed to resolve current directory: {error}"))?
+            .join(path)
+    };
+    let mut current = PathBuf::new();
+    for component in absolute_path.components() {
+        current.push(component.as_os_str());
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() => return Ok(true),
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => {
+                return Err(format!(
+                    "failed to inspect local Markdown path components: {error}"
+                ))
+            }
+        }
+    }
+    Ok(false)
+}
+
+fn local_document_paths(
+    app: &AppHandle,
+    markdown_path: &Path,
+) -> Result<LocalDocumentPaths, String> {
+    let document_path = resolved_local_document_path(markdown_path)?;
+    let notes_path = notes_store_path(app, &document_path)?;
+    let sidecar_path = legacy_sidecar_path(&document_path)?;
+    let mirror_notes_to_sidecar = path_is_local_dropbox_synced_path(&document_path);
+
+    Ok(LocalDocumentPaths::new(
+        document_path,
+        notes_path,
+        sidecar_path,
+        mirror_notes_to_sidecar,
+    ))
+}
+
+fn recover_local_document_path(
+    app: &AppHandle,
+    markdown_path: &Path,
+    guard: &LocalDocumentGuard,
+) -> Result<LocalDocumentPaths, String> {
+    let paths = local_document_paths(app, markdown_path)?;
+    let recovery_directory = local_recovery_directory(app)?;
+    recover_local_document(guard, &recovery_directory, &paths)?;
+    Ok(paths)
+}
+
+fn repair_local_dropbox_sidecar_on_open(
+    app: &AppHandle,
+    markdown_path: &Path,
+    paths: &LocalDocumentPaths,
+    recovery_directory: &Path,
+    guard: &LocalDocumentGuard,
+) -> Result<(), String> {
+    if !paths.mirrors_notes_to_sidecar() {
+        return Ok(());
+    }
+
+    let notes_file = read_notes_file(app, markdown_path)?;
+    let (document_id, desired_sidecar) = if let Some(notes_file) = notes_file
+        .as_ref()
+        .filter(|notes_file| notes_file_is_empty(notes_file))
+    {
+        (notes_file.markdown_path.clone(), None)
+    } else if let Some(serialized) = read_private_file_to_string(paths.notes())
+        .map_err(|error| format!("failed to read stored notes: {error}"))?
+    {
+        let notes_file = notes_file.ok_or_else(|| "failed to read stored notes".to_string())?;
+        (notes_file.markdown_path, Some(serialized))
+    } else {
+        return Ok(());
+    };
+
+    repair_local_sidecar(
+        guard,
+        recovery_directory,
+        paths,
+        document_id,
+        desired_sidecar,
+    )?;
+    Ok(())
+}
+
+fn recover_local_documents_in_directory(
+    app: &AppHandle,
+    directory: &Path,
+    guard: &LocalDocumentGuard,
+) -> Result<(), String> {
+    let recovery_directory = local_recovery_directory(app)?;
+    for document_path in pending_document_paths(guard, &recovery_directory)? {
+        if document_path.starts_with(directory) {
+            let paths = local_document_paths(app, &document_path)?;
+            recover_local_document(guard, &recovery_directory, &paths)?;
+        }
+    }
+    Ok(())
+}
+
+fn resolved_local_directory_mutation_path(path: &Path) -> Result<Option<PathBuf>, String> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => Ok(None),
+        Ok(_) => fs::canonicalize(path)
+            .map(Some)
+            .map_err(|error| format!("failed to resolve selected directory: {error}")),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            resolved_local_document_path(path).map(Some)
+        }
+        Err(error) => Err(format!("failed to inspect selected directory: {error}")),
+    }
+}
+
+fn recover_local_directory_mutation_path(
+    app: &AppHandle,
+    path: &Path,
+    guard: &LocalDocumentGuard,
+) -> Result<Option<PathBuf>, String> {
+    let resolved_path = resolved_local_directory_mutation_path(path)?;
+    if let Some(resolved_path) = resolved_path.as_ref() {
+        recover_local_documents_in_directory(app, resolved_path, guard)?;
+    }
+    Ok(resolved_path)
 }
 
 fn dropbox_notes_markdown_path(dropbox_path: &str) -> PathBuf {
@@ -550,15 +764,23 @@ fn notes_file_for_document(
 ) -> NotesFile {
     NotesFile {
         version: 1,
-        markdown_path: document_path,
+        markdown_path: document_path.clone(),
         notes: notes
             .into_iter()
             .filter(|note| note.status != "deleted")
+            .map(|mut note| {
+                note.document_id = document_path.clone();
+                note
+            })
             .collect(),
         glossary_terms,
         glossary_bindings: glossary_bindings
             .into_iter()
             .filter(|binding| binding.status != "deleted")
+            .map(|mut binding| {
+                binding.document_id = document_path.clone();
+                binding
+            })
             .collect(),
     }
 }
@@ -571,7 +793,70 @@ fn path_is_local_dropbox_synced_path(markdown_path: &Path) -> bool {
         || normalized_path.contains("/library/cloudstorage/dropbox/")
 }
 
-fn mirror_notes_file_to_local_dropbox_sidecar(
+fn write_legacy_sidecar(path: &Path, contents: &str) -> std::io::Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            atomic_replace_private_file(path, contents.as_bytes())
+        }
+        Ok(metadata) if metadata.is_file() => {
+            let mut file = fs::OpenOptions::new().write(true).open(path)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::MetadataExt;
+
+                let opened_metadata = file.metadata()?;
+                if opened_metadata.dev() != metadata.dev()
+                    || opened_metadata.ino() != metadata.ino()
+                {
+                    return Err(std::io::Error::other(
+                        "sidecar path changed before it could be written",
+                    ));
+                }
+            }
+            file.set_len(0)?;
+            file.write_all(contents.as_bytes())?;
+            file.sync_all()?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::MetadataExt;
+
+                let opened_metadata = file.metadata()?;
+                let current_metadata = fs::symlink_metadata(path)?;
+                if current_metadata.file_type().is_symlink()
+                    || opened_metadata.dev() != current_metadata.dev()
+                    || opened_metadata.ino() != current_metadata.ino()
+                {
+                    return Err(std::io::Error::other(
+                        "sidecar path changed while it was being written",
+                    ));
+                }
+            }
+            Ok(())
+        }
+        Ok(_) => Err(std::io::Error::other(
+            "sidecar output path is not a regular file",
+        )),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let mut file = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(path)?;
+            file.write_all(contents.as_bytes())?;
+            file.sync_all()
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn remove_file_if_present(path: &Path) -> std::io::Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+fn mirror_notes_file_to_local_dropbox_sidecar_legacy(
     markdown_path: &Path,
     notes_file: &NotesFile,
 ) -> Result<(), String> {
@@ -581,36 +866,29 @@ fn mirror_notes_file_to_local_dropbox_sidecar(
 
     let sidecar_path = legacy_sidecar_path(markdown_path)?;
     if notes_file_is_empty(notes_file) {
-        if sidecar_path.exists() {
-            fs::remove_file(&sidecar_path)
-                .map_err(|error| format!("failed to remove Dropbox sidecar notes: {error}"))?;
-        }
+        remove_file_if_present(&sidecar_path)
+            .map_err(|error| format!("failed to remove Dropbox sidecar notes: {error}"))?;
         return Ok(());
     }
 
     let serialized = serde_json::to_string_pretty(notes_file)
         .map_err(|error| format!("failed to serialize Dropbox sidecar notes: {error}"))?;
-    fs::write(&sidecar_path, serialized)
+    write_legacy_sidecar(&sidecar_path, &serialized)
         .map_err(|error| format!("failed to write Dropbox sidecar notes: {error}"))
 }
 
 fn read_document_notes(
     app: &AppHandle,
     markdown_path: &Path,
-) -> Result<
-    (
-        String,
-        Vec<SelectionNote>,
-        Vec<GlossaryTerm>,
-        Vec<GlossaryBinding>,
-    ),
-    String,
-> {
+    mirror_legacy_sidecar: bool,
+) -> Result<DocumentNotes, String> {
     let notes_path = notes_store_path(app, markdown_path)?;
     let notes_file = read_notes_file(app, markdown_path)?;
     let (notes, glossary_terms, glossary_bindings) = match notes_file {
         Some(notes_file) => {
-            mirror_notes_file_to_local_dropbox_sidecar(markdown_path, &notes_file)?;
+            if mirror_legacy_sidecar {
+                mirror_notes_file_to_local_dropbox_sidecar_legacy(markdown_path, &notes_file)?;
+            }
             visible_notes_from_file(notes_file)
         }
         None => (Vec::new(), Vec::new(), Vec::new()),
@@ -624,37 +902,35 @@ fn read_document_notes(
     ))
 }
 
-fn write_document_notes(
-    app: &AppHandle,
-    markdown_path: &Path,
-    document_path: String,
-    notes: Vec<SelectionNote>,
-    glossary_terms: Vec<GlossaryTerm>,
-    glossary_bindings: Vec<GlossaryBinding>,
+fn remove_document_notes_at_paths(
+    notes_path: PathBuf,
+    legacy_notes_path: PathBuf,
+    preserve_private_notes: bool,
 ) -> Result<PathBuf, String> {
-    let notes_file =
-        notes_file_for_document(document_path, notes, glossary_terms, glossary_bindings);
-    let notes_path = write_notes_file(app, markdown_path, notes_file.clone())?;
+    if !preserve_private_notes {
+        remove_file_if_present(&notes_path)
+            .map_err(|error| format!("failed to delete notes: {error}"))?;
+    }
 
-    mirror_notes_file_to_local_dropbox_sidecar(markdown_path, &notes_file)?;
+    remove_file_if_present(&legacy_notes_path)
+        .map_err(|error| format!("failed to delete legacy sidecar notes: {error}"))?;
 
     Ok(notes_path)
 }
 
+fn document_notes_paths(
+    app: &AppHandle,
+    markdown_path: &Path,
+) -> Result<(PathBuf, PathBuf), String> {
+    Ok((
+        notes_store_path(app, markdown_path)?,
+        legacy_sidecar_path(markdown_path)?,
+    ))
+}
+
 fn remove_document_notes(app: &AppHandle, markdown_path: &Path) -> Result<PathBuf, String> {
-    let notes_path = notes_store_path(app, markdown_path)?;
-    let legacy_notes_path = legacy_sidecar_path(markdown_path)?;
-
-    if notes_path.exists() {
-        fs::remove_file(&notes_path).map_err(|error| format!("failed to delete notes: {error}"))?;
-    }
-
-    if legacy_notes_path.exists() {
-        fs::remove_file(&legacy_notes_path)
-            .map_err(|error| format!("failed to delete legacy sidecar notes: {error}"))?;
-    }
-
-    Ok(notes_path)
+    let (notes_path, legacy_notes_path) = document_notes_paths(app, markdown_path)?;
+    remove_document_notes_at_paths(notes_path, legacy_notes_path, false)
 }
 
 fn document_title(markdown_path: &Path) -> String {
@@ -744,12 +1020,12 @@ fn dropbox_token_store_path(app_handle: &tauri::AppHandle) -> Result<PathBuf, St
 
 fn read_dropbox_tokens_from_disk(app_handle: &tauri::AppHandle) -> Option<DropboxTokenStore> {
     let store_path = dropbox_token_store_path(app_handle).ok()?;
-    let raw_store = fs::read_to_string(store_path).ok()?;
+    let raw_store = read_private_file_to_string(&store_path).ok()??;
 
     serde_json::from_str(&raw_store).ok()
 }
 
-fn replace_dropbox_tokens(
+fn load_dropbox_tokens(
     app_handle: &tauri::AppHandle,
     tokens: Option<DropboxTokenStore>,
 ) -> Result<(), String> {
@@ -759,7 +1035,7 @@ fn replace_dropbox_tokens(
         .lock()
         .map_err(|_| "failed to lock Dropbox token store".to_string())?;
 
-    *current_tokens = tokens;
+    current_tokens.load(tokens);
     Ok(())
 }
 
@@ -771,20 +1047,23 @@ fn write_dropbox_tokens(
     let serialized = serde_json::to_string_pretty(tokens)
         .map_err(|error| format!("failed to serialize Dropbox tokens: {error}"))?;
 
-    fs::write(store_path, serialized)
+    atomic_replace_private_file(&store_path, serialized.as_bytes())
         .map_err(|error| format!("failed to write Dropbox tokens: {error}"))
 }
 
 fn remove_dropbox_tokens(app_handle: &tauri::AppHandle) -> Result<(), String> {
-    replace_dropbox_tokens(app_handle, None)?;
-
     let store_path = dropbox_token_store_path(app_handle)?;
-    if store_path.exists() {
-        fs::remove_file(store_path)
-            .map_err(|error| format!("failed to remove Dropbox tokens: {error}"))?;
-    }
+    let state = app_handle.state::<DropboxState>();
+    let mut tokens = state
+        .tokens
+        .lock()
+        .map_err(|_| "failed to lock Dropbox token store".to_string())?;
 
-    Ok(())
+    tokens.disconnect(|| match fs::remove_file(&store_path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("failed to remove Dropbox tokens: {error}")),
+    })
 }
 
 fn current_dropbox_tokens(
@@ -794,15 +1073,72 @@ fn current_dropbox_tokens(
         .state::<DropboxState>()
         .tokens
         .lock()
-        .map(|tokens| tokens.clone())
+        .map(|tokens| tokens.current())
         .map_err(|_| "failed to lock Dropbox token store".to_string())
 }
 
-fn dropbox_oauth_callback_payload(error: String) -> DropboxOAuthCallbackPayload {
+fn dropbox_token_snapshot(
+    app_handle: &tauri::AppHandle,
+) -> Result<Option<DropboxTokenSnapshot>, String> {
+    app_handle
+        .state::<DropboxState>()
+        .tokens
+        .lock()
+        .map(|tokens| tokens.token_snapshot())
+        .map_err(|_| "failed to lock Dropbox token store".to_string())
+}
+
+fn dropbox_connection_snapshot(
+    app_handle: &tauri::AppHandle,
+) -> Result<DropboxConnectionSnapshot, String> {
+    app_handle
+        .state::<DropboxState>()
+        .tokens
+        .lock()
+        .map(|tokens| tokens.connection_snapshot())
+        .map_err(|_| "failed to lock Dropbox token store".to_string())
+}
+
+fn commit_dropbox_token_refresh(
+    app_handle: &tauri::AppHandle,
+    snapshot: &DropboxTokenSnapshot,
+    refreshed_tokens: DropboxTokenStore,
+) -> Result<DropboxTokenStore, String> {
+    let state = app_handle.state::<DropboxState>();
+    let mut tokens = state
+        .tokens
+        .lock()
+        .map_err(|_| "failed to lock Dropbox token store".to_string())?;
+
+    tokens.commit_refresh(snapshot, refreshed_tokens, |tokens| {
+        write_dropbox_tokens(app_handle, tokens)
+    })
+}
+
+fn commit_dropbox_connection(
+    app_handle: &tauri::AppHandle,
+    snapshot: DropboxConnectionSnapshot,
+    new_tokens: DropboxTokenStore,
+) -> Result<(), String> {
+    let state = app_handle.state::<DropboxState>();
+    let mut tokens = state
+        .tokens
+        .lock()
+        .map_err(|_| "failed to lock Dropbox token store".to_string())?;
+
+    tokens.commit_connection(snapshot, new_tokens, |tokens| {
+        write_dropbox_tokens(app_handle, tokens)
+    })
+}
+
+fn dropbox_oauth_callback_payload(
+    error: String,
+    state: Option<String>,
+) -> DropboxOAuthCallbackPayload {
     DropboxOAuthCallbackPayload {
         status: "error".to_string(),
         code: None,
-        state: None,
+        state,
         error: Some(error),
     }
 }
@@ -817,12 +1153,13 @@ fn dropbox_oauth_callback_from_url(url: &Url) -> DropboxOAuthCallbackPayload {
         .cloned();
 
     if let Some(error) = error {
-        return dropbox_oauth_callback_payload(error);
+        return dropbox_oauth_callback_payload(error, state);
     }
 
     if code.is_none() {
         return dropbox_oauth_callback_payload(
             "Dropbox callback did not include an authorization code".to_string(),
+            state,
         );
     }
 
@@ -832,6 +1169,53 @@ fn dropbox_oauth_callback_from_url(url: &Url) -> DropboxOAuthCallbackPayload {
         state,
         error: None,
     }
+}
+
+fn dropbox_oauth_callback_matches_session(
+    session: &DropboxOAuthSession,
+    payload: &DropboxOAuthCallbackPayload,
+) -> bool {
+    payload.state.as_deref() == Some(session.state.as_str())
+}
+
+fn dropbox_oauth_callback_ends_session(payload: &DropboxOAuthCallbackPayload) -> bool {
+    payload.status != "success" || payload.code.is_none() || payload.state.is_none()
+}
+
+fn emit_dropbox_oauth_callback_to_owner(
+    app_handle: &tauri::AppHandle,
+    payload: DropboxOAuthCallbackPayload,
+) -> Result<(), String> {
+    let Some(callback_state) = payload.state.as_deref() else {
+        return Ok(());
+    };
+    let owner_window_label = {
+        let dropbox_state = app_handle.state::<DropboxState>();
+        let mut oauth_sessions = dropbox_state
+            .oauth_sessions
+            .lock()
+            .map_err(|_| "failed to lock Dropbox OAuth session".to_string())?;
+        let Some(session) = oauth_sessions.get(callback_state) else {
+            return Ok(());
+        };
+        if !dropbox_oauth_callback_matches_session(session, &payload) {
+            return Ok(());
+        }
+
+        let owner_window_label = session.owner_window_label.clone();
+        if dropbox_oauth_callback_ends_session(&payload) {
+            oauth_sessions.remove(callback_state);
+        }
+        owner_window_label
+    };
+
+    app_handle
+        .emit_to(
+            owner_window_label,
+            "scholium-dropbox-oauth-callback",
+            payload,
+        )
+        .map_err(|error| format!("failed to emit Dropbox OAuth callback: {error}"))
 }
 
 #[cfg(mobile)]
@@ -861,11 +1245,15 @@ fn write_dropbox_oauth_http_response(
 }
 
 #[cfg(not(mobile))]
-fn wait_for_dropbox_oauth_callback(listener: TcpListener) -> DropboxOAuthCallbackPayload {
+fn wait_for_dropbox_oauth_callback(
+    listener: TcpListener,
+    expected_state: String,
+) -> DropboxOAuthCallbackPayload {
     if let Err(error) = listener.set_nonblocking(true) {
-        return dropbox_oauth_callback_payload(format!(
-            "failed to prepare Dropbox callback listener: {error}"
-        ));
+        return dropbox_oauth_callback_payload(
+            format!("failed to prepare Dropbox callback listener: {error}"),
+            Some(expected_state),
+        );
     }
 
     let deadline = Instant::now() + Duration::from_secs(180);
@@ -879,9 +1267,10 @@ fn wait_for_dropbox_oauth_callback(listener: TcpListener) -> DropboxOAuthCallbac
                     Ok(read_bytes) => read_bytes,
                     Err(error) => {
                         let _ = write_dropbox_oauth_http_response(&mut stream, false);
-                        return dropbox_oauth_callback_payload(format!(
-                            "failed to read Dropbox callback: {error}"
-                        ));
+                        return dropbox_oauth_callback_payload(
+                            format!("failed to read Dropbox callback: {error}"),
+                            Some(expected_state),
+                        );
                     }
                 };
                 let request = String::from_utf8_lossy(&buffer[..read_bytes]);
@@ -891,17 +1280,17 @@ fn wait_for_dropbox_oauth_callback(listener: TcpListener) -> DropboxOAuthCallbac
                     .and_then(|line| line.split_whitespace().nth(1));
                 let Some(request_target) = request_target else {
                     let _ = write_dropbox_oauth_http_response(&mut stream, false);
-                    return dropbox_oauth_callback_payload(
-                        "Dropbox callback request was empty".to_string(),
-                    );
+                    continue;
                 };
                 let Ok(url) = Url::parse(&format!("http://127.0.0.1{request_target}")) else {
                     let _ = write_dropbox_oauth_http_response(&mut stream, false);
-                    return dropbox_oauth_callback_payload(
-                        "Dropbox callback URL could not be parsed".to_string(),
-                    );
+                    continue;
                 };
                 let payload = dropbox_oauth_callback_from_url(&url);
+                if payload.state.as_deref() != Some(expected_state.as_str()) {
+                    let _ = write_dropbox_oauth_http_response(&mut stream, false);
+                    continue;
+                }
                 let is_success = payload.status == "success";
                 let _ = write_dropbox_oauth_http_response(&mut stream, is_success);
                 return payload;
@@ -910,15 +1299,17 @@ fn wait_for_dropbox_oauth_callback(listener: TcpListener) -> DropboxOAuthCallbac
                 if Instant::now() >= deadline {
                     return dropbox_oauth_callback_payload(
                         "Dropbox authorization timed out".to_string(),
+                        Some(expected_state),
                     );
                 }
 
                 std::thread::sleep(Duration::from_millis(100));
             }
             Err(error) => {
-                return dropbox_oauth_callback_payload(format!(
-                    "failed to accept Dropbox callback: {error}"
-                ));
+                return dropbox_oauth_callback_payload(
+                    format!("failed to accept Dropbox callback: {error}"),
+                    Some(expected_state),
+                );
             }
         }
     }
@@ -937,7 +1328,7 @@ fn dropbox_error_message(status: reqwest::StatusCode, raw_body: &str, context: &
         );
     }
 
-    if let Ok(parsed) = serde_json::from_str::<DropboxErrorResponse>(&raw_body) {
+    if let Ok(parsed) = serde_json::from_str::<DropboxErrorResponse>(raw_body) {
         if let Some(description) = parsed.error_description {
             return format!("{context}: {description}");
         }
@@ -1004,9 +1395,10 @@ fn dropbox_token_refresh_retry_delay(failed_attempt: usize) -> Option<Duration> 
 
 async fn refresh_dropbox_access_token(
     app_handle: &tauri::AppHandle,
-    tokens: DropboxTokenStore,
+    snapshot: DropboxTokenSnapshot,
 ) -> Result<DropboxTokenStore, String> {
-    let refresh_token = tokens
+    let refresh_token = snapshot
+        .tokens
         .refresh_token
         .clone()
         .ok_or_else(|| "Dropbox session expired; reconnect Dropbox.".to_string())?;
@@ -1017,7 +1409,7 @@ async fn refresh_dropbox_access_token(
     let form_body = urlencoded_form_body(&[
         ("grant_type", "refresh_token"),
         ("refresh_token", refresh_token.as_str()),
-        ("client_id", tokens.app_key.as_str()),
+        ("client_id", snapshot.tokens.app_key.as_str()),
     ]);
     let mut failed_attempt = 0;
     let response = loop {
@@ -1051,27 +1443,26 @@ async fn refresh_dropbox_access_token(
     let token_response =
         parse_dropbox_token_response(response, "failed to refresh Dropbox token").await?;
     let refreshed_tokens = DropboxTokenStore {
-        app_key: tokens.app_key,
+        app_key: snapshot.tokens.app_key.clone(),
         access_token: token_response.access_token,
-        refresh_token: token_response.refresh_token.or(tokens.refresh_token),
+        refresh_token: token_response
+            .refresh_token
+            .or_else(|| snapshot.tokens.refresh_token.clone()),
         expires_at: token_response
             .expires_in
             .map(|expires_in| now_unix_seconds() + expires_in),
     };
 
-    replace_dropbox_tokens(app_handle, Some(refreshed_tokens.clone()))?;
-    write_dropbox_tokens(app_handle, &refreshed_tokens)?;
-
-    Ok(refreshed_tokens)
+    commit_dropbox_token_refresh(app_handle, &snapshot, refreshed_tokens)
 }
 
 async fn dropbox_access_token(app_handle: &tauri::AppHandle) -> Result<String, String> {
-    let tokens = current_dropbox_tokens(app_handle)?
+    let snapshot = dropbox_token_snapshot(app_handle)?
         .ok_or_else(|| "Dropbox is not connected.".to_string())?;
-    let tokens = if tokens_expire_soon(&tokens) {
-        refresh_dropbox_access_token(app_handle, tokens).await?
+    let tokens = if tokens_expire_soon(&snapshot.tokens) {
+        refresh_dropbox_access_token(app_handle, snapshot).await?
     } else {
-        tokens
+        snapshot.tokens
     };
 
     Ok(tokens.access_token)
@@ -1139,19 +1530,6 @@ fn dropbox_entry_sort_key(entry: &DropboxDirectoryEntry) -> (u8, String, String)
     )
 }
 
-fn is_markdown_dropbox_path(path: &str) -> bool {
-    Path::new(path)
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .map(|extension| {
-            matches!(
-                extension.to_lowercase().as_str(),
-                "md" | "markdown" | "mdown"
-            )
-        })
-        .unwrap_or(false)
-}
-
 fn normalized_markdown_file_name(file_name: &str) -> Result<String, String> {
     let mut target_file_name = validate_markdown_file_name(file_name)?;
     if !is_markdown_path(&target_file_name) {
@@ -1212,7 +1590,7 @@ fn dropbox_file_with_notes(
 ) -> Result<DropboxMarkdownFile, String> {
     let notes_markdown_path = dropbox_notes_markdown_path(&path);
     let (notes_path, notes, glossary_terms, glossary_bindings) =
-        read_document_notes(app, &notes_markdown_path)?;
+        read_document_notes(app, &notes_markdown_path, false)?;
 
     Ok(DropboxMarkdownFile {
         path,
@@ -1281,15 +1659,7 @@ async fn download_dropbox_notes_file(
 async fn read_dropbox_document_notes(
     app: &tauri::AppHandle,
     dropbox_path: &str,
-) -> Result<
-    (
-        String,
-        Vec<SelectionNote>,
-        Vec<GlossaryTerm>,
-        Vec<GlossaryBinding>,
-    ),
-    String,
-> {
+) -> Result<DocumentNotes, String> {
     if let Some(notes_file) = download_dropbox_notes_file(app, dropbox_path).await? {
         let notes_markdown_path = dropbox_notes_markdown_path(dropbox_path);
         let notes_path = notes_store_path(app, &notes_markdown_path)?;
@@ -1319,7 +1689,7 @@ async fn read_dropbox_document_notes(
         ));
     }
 
-    read_document_notes(app, &notes_markdown_path)
+    read_document_notes(app, &notes_markdown_path, false)
 }
 
 async fn dropbox_file_with_remote_notes(
@@ -1430,7 +1800,7 @@ async fn upload_dropbox_markdown_file(
     mode: serde_json::Value,
 ) -> Result<DropboxMarkdownFile, String> {
     let normalized_path = normalize_dropbox_path(&path);
-    if !is_markdown_dropbox_path(&normalized_path) {
+    if !is_markdown_path(Path::new(&normalized_path)) {
         return Err("selected Dropbox file is not a Markdown file".to_string());
     }
 
@@ -1810,7 +2180,7 @@ fn read_location_store_from_disk(app_handle: &tauri::AppHandle) -> LocationStore
     let Ok(store_path) = location_store_path(app_handle) else {
         return LocationStore::default();
     };
-    let Ok(raw_store) = fs::read_to_string(store_path) else {
+    let Ok(Some(raw_store)) = read_private_file_to_string(&store_path) else {
         return LocationStore::default();
     };
 
@@ -1848,7 +2218,7 @@ fn write_location_store(
     let serialized = serde_json::to_string_pretty(store)
         .map_err(|error| format!("failed to serialize location store: {error}"))?;
 
-    fs::write(store_path, serialized)
+    atomic_replace_private_file(&store_path, serialized.as_bytes())
         .map_err(|error| format!("failed to write location store: {error}"))
 }
 
@@ -1893,6 +2263,7 @@ fn remember_recent_location_entry(
     refresh_app_menu(app_handle)
 }
 
+#[cfg(desktop)]
 fn remember_favorite_directory_entry(
     app_handle: &tauri::AppHandle,
     entry: LocationEntry,
@@ -1909,6 +2280,7 @@ fn remember_favorite_directory_entry(
     refresh_app_menu(app_handle)
 }
 
+#[cfg(desktop)]
 fn clear_recent_locations(app_handle: &tauri::AppHandle) -> Result<(), String> {
     let mut store = current_location_store(app_handle);
 
@@ -1918,6 +2290,7 @@ fn clear_recent_locations(app_handle: &tauri::AppHandle) -> Result<(), String> {
     refresh_app_menu(app_handle)
 }
 
+#[cfg(desktop)]
 fn clear_favorite_directories(app_handle: &tauri::AppHandle) -> Result<(), String> {
     let mut store = current_location_store(app_handle);
 
@@ -1927,6 +2300,7 @@ fn clear_favorite_directories(app_handle: &tauri::AppHandle) -> Result<(), Strin
     refresh_app_menu(app_handle)
 }
 
+#[cfg(desktop)]
 fn location_menu_label(location: &LocationEntry) -> String {
     let path = Path::new(&location.path);
     let parent = path
@@ -1948,6 +2322,7 @@ fn location_menu_label(location: &LocationEntry) -> String {
     }
 }
 
+#[cfg(desktop)]
 fn indexed_location<'a>(
     locations: &'a [LocationEntry],
     event_id: &str,
@@ -1956,124 +2331,6 @@ fn indexed_location<'a>(
     let index = event_id.strip_prefix(prefix)?.parse::<usize>().ok()?;
 
     locations.get(index)
-}
-
-fn is_markdown_path(path: &Path) -> bool {
-    path.extension()
-        .and_then(|extension| extension.to_str())
-        .map(|extension| {
-            matches!(
-                extension.to_lowercase().as_str(),
-                "md" | "markdown" | "mdown"
-            )
-        })
-        .unwrap_or(false)
-}
-
-fn dropped_markdown_path(paths: &[String]) -> Result<&Path, String> {
-    let [path] = paths else {
-        return Err("drop requires exactly one .md file".to_string());
-    };
-    let path = Path::new(path);
-
-    if !path
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
-    {
-        return Err("dropped file must use the .md extension".to_string());
-    }
-
-    Ok(path)
-}
-
-fn hex_digit_value(byte: u8) -> Option<u8> {
-    match byte {
-        b'0'..=b'9' => Some(byte - b'0'),
-        b'a'..=b'f' => Some(byte - b'a' + 10),
-        b'A'..=b'F' => Some(byte - b'A' + 10),
-        _ => None,
-    }
-}
-
-fn decode_url_path(text: &str) -> String {
-    let bytes = text.as_bytes();
-    let mut decoded = Vec::with_capacity(bytes.len());
-    let mut index = 0;
-
-    while index < bytes.len() {
-        if bytes[index] == b'%' && index + 2 < bytes.len() {
-            if let (Some(high), Some(low)) = (
-                hex_digit_value(bytes[index + 1]),
-                hex_digit_value(bytes[index + 2]),
-            ) {
-                decoded.push((high << 4) | low);
-                index += 3;
-                continue;
-            }
-        }
-
-        decoded.push(bytes[index]);
-        index += 1;
-    }
-
-    String::from_utf8_lossy(&decoded).to_string()
-}
-
-fn strip_local_url_suffix(src: &str) -> &str {
-    let query_index = src.find('?').unwrap_or(src.len());
-    let fragment_index = src.find('#').unwrap_or(src.len());
-    let end_index = query_index.min(fragment_index);
-
-    &src[..end_index]
-}
-
-fn local_image_mime_type(path: &Path) -> Option<&'static str> {
-    path.extension()
-        .and_then(|extension| extension.to_str())
-        .and_then(|extension| match extension.to_lowercase().as_str() {
-            "png" => Some("image/png"),
-            "jpg" | "jpeg" => Some("image/jpeg"),
-            "gif" => Some("image/gif"),
-            "webp" => Some("image/webp"),
-            "bmp" => Some("image/bmp"),
-            "avif" => Some("image/avif"),
-            _ => None,
-        })
-}
-
-fn markdown_image_file_path(markdown_path: &Path, image_src: &str) -> Result<PathBuf, String> {
-    let trimmed_src = image_src.trim();
-    if trimmed_src.is_empty() {
-        return Err("image source is empty".to_string());
-    }
-
-    let local_src = strip_local_url_suffix(trimmed_src);
-    if local_src.is_empty() {
-        return Err("image source is empty".to_string());
-    }
-
-    if let Ok(url) = Url::parse(local_src) {
-        if url.scheme() != "file" {
-            return Err("image source is not a local file".to_string());
-        }
-
-        return url
-            .to_file_path()
-            .map_err(|_| "failed to resolve file image source".to_string());
-    }
-
-    let decoded_src = decode_url_path(local_src);
-    let image_path = PathBuf::from(decoded_src);
-    if image_path.is_absolute() {
-        return Ok(image_path);
-    }
-
-    let markdown_directory = markdown_path
-        .parent()
-        .ok_or_else(|| "Markdown file has no parent directory".to_string())?;
-
-    Ok(markdown_directory.join(image_path))
 }
 
 fn is_hidden_path(path: &Path) -> bool {
@@ -2146,139 +2403,12 @@ fn file_search_matches(path: &Path, root: &Path, query: &str) -> bool {
         .all(|term| searchable_text.contains(term))
 }
 
-fn normalize_tag_search_value(value: &str) -> String {
-    value
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .to_lowercase()
-}
-
-fn yaml_scalar_without_comment(value: &str) -> &str {
-    let mut quote = None;
-    let mut previous = None;
-
-    for (index, character) in value.char_indices() {
-        if let Some(active_quote) = quote {
-            if character == active_quote && previous != Some('\\') {
-                quote = None;
-            }
-        } else if character == '"' || character == '\'' {
-            quote = Some(character);
-        } else if character == '#' && previous.map_or(true, char::is_whitespace) {
-            return value[..index].trim();
-        }
-        previous = Some(character);
-    }
-
-    value.trim()
-}
-
-fn parse_yaml_tag_scalar(value: &str) -> String {
-    let value = yaml_scalar_without_comment(value).trim();
-    if value.len() >= 2 && value.starts_with('"') && value.ends_with('"') {
-        return serde_json::from_str(value).unwrap_or_else(|_| value[1..value.len() - 1].into());
-    }
-    if value.len() >= 2 && value.starts_with('\'') && value.ends_with('\'') {
-        return value[1..value.len() - 1].replace("''", "'");
-    }
-    value.to_string()
-}
-
-fn split_yaml_inline_tags(value: &str) -> Vec<String> {
-    let value = value.trim().trim_start_matches('[').trim_end_matches(']');
-    let mut items = Vec::new();
-    let mut current = String::new();
-    let mut quote = None;
-    let mut previous = None;
-
-    for character in value.chars() {
-        if let Some(active_quote) = quote {
-            current.push(character);
-            if character == active_quote && previous != Some('\\') {
-                quote = None;
-            }
-        } else if character == '"' || character == '\'' {
-            quote = Some(character);
-            current.push(character);
-        } else if character == ',' {
-            items.push(parse_yaml_tag_scalar(&current));
-            current.clear();
-        } else {
-            current.push(character);
-        }
-        previous = Some(character);
-    }
-    if !current.trim().is_empty() {
-        items.push(parse_yaml_tag_scalar(&current));
-    }
-
-    items
-}
-
-fn unique_markdown_tags(tags: Vec<String>) -> Vec<String> {
-    let mut keys = std::collections::HashSet::new();
-    tags.into_iter()
-        .filter_map(|tag| {
-            let tag = tag.split_whitespace().collect::<Vec<_>>().join(" ");
-            let key = tag.to_lowercase();
-            (!tag.is_empty() && keys.insert(key)).then_some(tag)
-        })
-        .collect()
-}
-
-fn markdown_tags(markdown: &str) -> Vec<String> {
-    let normalized = markdown.replace("\r\n", "\n");
-    let mut lines = normalized.lines();
-    if lines.next() != Some("---") {
-        return Vec::new();
-    }
-
-    let mut frontmatter = Vec::new();
-    let mut closed = false;
-    for line in lines {
-        if line.trim() == "---" || line.trim() == "..." {
-            closed = true;
-            break;
-        }
-        frontmatter.push(line);
-    }
-    if !closed {
-        return Vec::new();
-    }
-
-    for (index, line) in frontmatter.iter().enumerate() {
-        let Some(inline_value) = line.strip_prefix("tags:") else {
-            continue;
-        };
-        let inline_value = yaml_scalar_without_comment(inline_value).trim();
-        if inline_value.starts_with('[') && inline_value.ends_with(']') {
-            return unique_markdown_tags(split_yaml_inline_tags(inline_value));
-        }
-        if !inline_value.is_empty() {
-            return unique_markdown_tags(vec![parse_yaml_tag_scalar(inline_value)]);
-        }
-
-        let mut tags = Vec::new();
-        for continuation in frontmatter.iter().skip(index + 1) {
-            if continuation.trim().is_empty() {
-                continue;
-            }
-            if !continuation.chars().next().is_some_and(char::is_whitespace) {
-                break;
-            }
-            let Some(item) = continuation.trim_start().strip_prefix('-') else {
-                break;
-            };
-            tags.push(parse_yaml_tag_scalar(item.trim_start()));
-        }
-        return unique_markdown_tags(tags);
-    }
-
-    Vec::new()
-}
-
-fn matching_markdown_tags(path: &Path, query: &str, exact: bool) -> Vec<String> {
+fn matching_markdown_tags(
+    _guard: &LocalDocumentGuard,
+    path: &Path,
+    query: &str,
+    exact: bool,
+) -> Vec<String> {
     let Ok(markdown) = fs::read_to_string(path) else {
         return Vec::new();
     };
@@ -2299,7 +2429,7 @@ fn search_markdown_directory(
     root: &Path,
     directory: &Path,
     query: &str,
-    search_tags: bool,
+    tag_guard: Option<&LocalDocumentGuard>,
     exact_tag: bool,
     results: &mut Vec<SearchMarkdownFile>,
 ) -> Result<(), String> {
@@ -2332,16 +2462,18 @@ fn search_markdown_directory(
             continue;
         }
 
-        let matched_tags = if search_tags {
-            matching_markdown_tags(&path, query, exact_tag)
+        let matched_tags = if let Some(guard) = tag_guard {
+            let matched_tags = matching_markdown_tags(guard, &path, query, exact_tag);
+            if matched_tags.is_empty() {
+                continue;
+            }
+            matched_tags
         } else {
+            if !file_search_matches(&path, root, query) {
+                continue;
+            }
             Vec::new()
         };
-        if (search_tags && matched_tags.is_empty())
-            || (!search_tags && !file_search_matches(&path, root, query))
-        {
-            continue;
-        }
 
         results.push(SearchMarkdownFile {
             path: path.to_string_lossy().to_string(),
@@ -2365,7 +2497,7 @@ fn search_markdown_directory(
     child_paths.sort_by_key(|path| path.to_string_lossy().to_lowercase());
 
     for child_path in child_paths {
-        search_markdown_directory(root, &child_path, query, search_tags, exact_tag, results)?;
+        search_markdown_directory(root, &child_path, query, tag_guard, exact_tag, results)?;
         if results.len() >= MAX_FILE_SEARCH_RESULTS {
             return Ok(());
         }
@@ -2422,11 +2554,29 @@ fn read_markdown_directory(
     })
 }
 
-fn parse_notes_file(notes_path: &Path) -> Result<NotesFile, String> {
-    let raw_notes =
-        fs::read_to_string(notes_path).map_err(|error| format!("failed to read notes: {error}"))?;
+fn parse_optional_notes_file(
+    notes_path: &Path,
+    private: bool,
+) -> Result<Option<NotesFile>, String> {
+    let raw_notes = if private {
+        read_private_file_to_string(notes_path)
+    } else {
+        read_regular_file_to_string(notes_path)
+    }
+    .map_err(|error| format!("failed to read notes: {error}"))?;
+    let Some(raw_notes) = raw_notes else {
+        return Ok(None);
+    };
 
-    serde_json::from_str(&raw_notes).map_err(|error| format!("failed to parse notes: {error}"))
+    serde_json::from_str(&raw_notes)
+        .map(Some)
+        .map_err(|error| format!("failed to parse notes: {error}"))
+}
+
+#[cfg(test)]
+fn parse_notes_file(notes_path: &Path) -> Result<NotesFile, String> {
+    parse_optional_notes_file(notes_path, false)?
+        .ok_or_else(|| "failed to read notes: path is not a regular file".to_string())
 }
 
 fn notes_file_is_empty(notes_file: &NotesFile) -> bool {
@@ -2513,47 +2663,66 @@ fn move_notes_file_for_document(mut notes_file: NotesFile, target_document_id: &
     notes_file
 }
 
-fn move_notes_for_renamed_markdown_path(
-    app: &AppHandle,
-    source_path: &Path,
-    target_path: &Path,
-) -> Result<(), String> {
-    if let Some(notes_file) = read_notes_file(app, source_path)? {
-        let target_path_string = target_path.to_string_lossy().to_string();
-        let notes_file = move_notes_file_for_document(notes_file, &target_path_string);
-        write_notes_file(app, target_path, notes_file)?;
-        remove_document_notes(app, source_path)?;
-    }
-
-    Ok(())
+struct CapturedDocumentNotes {
+    notes_path: PathBuf,
+    legacy_notes_path: PathBuf,
+    notes_file: NotesFile,
 }
 
-fn move_notes_for_renamed_directory(
+fn capture_document_notes(
     app: &AppHandle,
-    source_directory: &Path,
-    target_directory: &Path,
+    source_path: &Path,
+) -> Result<Option<CapturedDocumentNotes>, String> {
+    let (notes_path, legacy_notes_path) = document_notes_paths(app, source_path)?;
+    let notes_file = if let Some(notes_file) = parse_optional_notes_file(&notes_path, true)? {
+        Some(notes_file)
+    } else {
+        parse_optional_notes_file(&legacy_notes_path, false)?
+    };
+    Ok(notes_file.map(|notes_file| CapturedDocumentNotes {
+        notes_path,
+        legacy_notes_path,
+        notes_file,
+    }))
+}
+
+fn move_captured_document_notes(
+    app: &AppHandle,
+    captured: CapturedDocumentNotes,
+    target_path: &Path,
 ) -> Result<(), String> {
-    if !target_directory.is_dir() {
-        return Ok(());
+    let target_notes_path = notes_store_path(app, target_path)?;
+    let target_legacy_notes_path = legacy_sidecar_path(target_path)?;
+    move_captured_document_notes_at_paths(
+        captured,
+        target_path,
+        target_notes_path,
+        target_legacy_notes_path,
+    )
+}
+
+fn move_captured_document_notes_at_paths(
+    captured: CapturedDocumentNotes,
+    target_path: &Path,
+    target_notes_path: PathBuf,
+    target_legacy_notes_path: PathBuf,
+) -> Result<(), String> {
+    let target_document_id = target_path.to_string_lossy().to_string();
+    let notes_file = move_notes_file_for_document(captured.notes_file, &target_document_id);
+    write_notes_file_at_paths(
+        target_path,
+        target_notes_path.clone(),
+        target_legacy_notes_path.clone(),
+        notes_file,
+    )?;
+
+    if captured.notes_path != target_notes_path {
+        remove_file_if_present(&captured.notes_path)
+            .map_err(|error| format!("failed to delete notes: {error}"))?;
     }
-
-    for entry in fs::read_dir(target_directory)
-        .map_err(|error| format!("failed to read renamed directory: {error}"))?
-    {
-        let entry =
-            entry.map_err(|error| format!("failed to read renamed directory item: {error}"))?;
-        let target_path = entry.path();
-        let relative_path = match target_path.strip_prefix(target_directory) {
-            Ok(relative_path) => relative_path,
-            Err(_) => continue,
-        };
-        let source_path = source_directory.join(relative_path);
-
-        if target_path.is_dir() {
-            move_notes_for_renamed_directory(app, &source_path, &target_path)?;
-        } else if is_markdown_path(&target_path) {
-            move_notes_for_renamed_markdown_path(app, &source_path, &target_path)?;
-        }
+    if captured.legacy_notes_path != target_legacy_notes_path {
+        remove_file_if_present(&captured.legacy_notes_path)
+            .map_err(|error| format!("failed to delete legacy sidecar notes: {error}"))?;
     }
 
     Ok(())
@@ -2561,16 +2730,12 @@ fn move_notes_for_renamed_directory(
 
 fn read_notes_file(app: &AppHandle, markdown_path: &Path) -> Result<Option<NotesFile>, String> {
     let notes_path = notes_store_path(app, markdown_path)?;
-    if notes_path.exists() {
-        return parse_notes_file(&notes_path).map(Some);
+    if let Some(notes_file) = parse_optional_notes_file(&notes_path, true)? {
+        return Ok(Some(notes_file));
     }
 
     let legacy_notes_path = legacy_sidecar_path(markdown_path)?;
-    if legacy_notes_path.exists() {
-        return parse_notes_file(&legacy_notes_path).map(Some);
-    }
-
-    Ok(None)
+    parse_optional_notes_file(&legacy_notes_path, false)
 }
 
 fn write_notes_file(
@@ -2580,14 +2745,47 @@ fn write_notes_file(
 ) -> Result<PathBuf, String> {
     let notes_path = notes_store_path(app, markdown_path)?;
     let legacy_notes_path = legacy_sidecar_path(markdown_path)?;
+    write_notes_file_at_paths(markdown_path, notes_path, legacy_notes_path, notes_file)
+}
 
+fn write_notes_file_at_paths(
+    markdown_path: &Path,
+    notes_path: PathBuf,
+    legacy_notes_path: PathBuf,
+    mut notes_file: NotesFile,
+) -> Result<PathBuf, String> {
     if notes_file_is_empty(&notes_file) {
-        if notes_path.exists() {
-            fs::remove_file(&notes_path)
+        let canonical_document_path = if local_path_uses_symlink(markdown_path)? {
+            Some(resolved_local_document_path(markdown_path)?)
+        } else {
+            None
+        };
+        let canonical_legacy_notes_path = canonical_document_path
+            .as_deref()
+            .map(legacy_sidecar_path)
+            .transpose()?
+            .filter(|path| path != &legacy_notes_path);
+        if path_is_local_dropbox_synced_path(markdown_path) {
+            if let Some(canonical_document_path) = canonical_document_path {
+                notes_file.markdown_path = canonical_document_path.to_string_lossy().to_string();
+            }
+            if let Some(parent) = notes_path.parent() {
+                fs::create_dir_all(parent).map_err(|error| {
+                    format!("failed to create notes storage directory: {error}")
+                })?;
+            }
+            let serialized = serde_json::to_string_pretty(&notes_file)
+                .map_err(|error| format!("failed to serialize notes: {error}"))?;
+            atomic_replace_private_file(&notes_path, serialized.as_bytes())
+                .map_err(|error| format!("failed to write notes: {error}"))?;
+        } else {
+            remove_file_if_present(&notes_path)
                 .map_err(|error| format!("failed to remove empty notes file: {error}"))?;
         }
-        if legacy_notes_path.exists() {
-            fs::remove_file(&legacy_notes_path)
+        for sidecar_path in
+            std::iter::once(&legacy_notes_path).chain(canonical_legacy_notes_path.as_ref())
+        {
+            remove_file_if_present(sidecar_path)
                 .map_err(|error| format!("failed to remove legacy sidecar notes: {error}"))?;
         }
         return Ok(notes_path);
@@ -2600,22 +2798,29 @@ fn write_notes_file(
 
     let serialized = serde_json::to_string_pretty(&notes_file)
         .map_err(|error| format!("failed to serialize notes: {error}"))?;
-    fs::write(&notes_path, serialized)
+    atomic_replace_private_file(&notes_path, serialized.as_bytes())
         .map_err(|error| format!("failed to write notes: {error}"))?;
 
-    if legacy_notes_path.exists() {
-        fs::remove_file(&legacy_notes_path)
+    if path_is_local_dropbox_synced_path(markdown_path) {
+        write_legacy_sidecar(&legacy_notes_path, &serialized)
+            .map_err(|error| format!("failed to write Dropbox sidecar notes: {error}"))?;
+    } else {
+        remove_file_if_present(&legacy_notes_path)
             .map_err(|error| format!("failed to remove legacy sidecar notes: {error}"))?;
     }
 
     Ok(notes_path)
 }
 
-fn read_markdown_file(app: &AppHandle, markdown_path: PathBuf) -> Result<OpenMarkdownFile, String> {
+fn read_markdown_file_contents(
+    app: &AppHandle,
+    markdown_path: PathBuf,
+    mirror_legacy_sidecar: bool,
+) -> Result<OpenMarkdownFile, String> {
     let body = fs::read_to_string(&markdown_path)
         .map_err(|error| format!("failed to read Markdown file: {error}"))?;
     let (notes_path, notes, glossary_terms, glossary_bindings) =
-        read_document_notes(app, &markdown_path)?;
+        read_document_notes(app, &markdown_path, mirror_legacy_sidecar)?;
 
     Ok(OpenMarkdownFile {
         path: markdown_path.to_string_lossy().to_string(),
@@ -2627,6 +2832,27 @@ fn read_markdown_file(app: &AppHandle, markdown_path: PathBuf) -> Result<OpenMar
         glossary_terms,
         glossary_bindings,
     })
+}
+
+fn read_markdown_file_locked(
+    app: &AppHandle,
+    markdown_path: PathBuf,
+    guard: &LocalDocumentGuard,
+) -> Result<OpenMarkdownFile, String> {
+    let paths = recover_local_document_path(app, &markdown_path, guard)?;
+    let recovery_directory = local_recovery_directory(app)?;
+    repair_local_dropbox_sidecar_on_open(app, &markdown_path, &paths, &recovery_directory, guard)?;
+    read_markdown_file_contents(app, markdown_path, false)
+}
+
+fn read_markdown_file(app: &AppHandle, markdown_path: PathBuf) -> Result<OpenMarkdownFile, String> {
+    let (_, guard) = lock_local_document_store(app)?;
+    let uses_legacy_symlink_path = local_path_uses_symlink(&markdown_path)?;
+    if uses_legacy_symlink_path {
+        recover_local_document_path(app, &markdown_path, &guard)?;
+        return read_markdown_file_contents(app, markdown_path, true);
+    }
+    read_markdown_file_locked(app, markdown_path, &guard)
 }
 
 #[tauri::command]
@@ -2654,43 +2880,6 @@ fn open_markdown_file_context(
 }
 
 #[tauri::command]
-fn read_markdown_image_file(
-    markdown_path: String,
-    image_src: String,
-) -> Result<LocalImageFile, String> {
-    let markdown_path = PathBuf::from(markdown_path);
-    if !markdown_path.is_file() {
-        return Err("selected Markdown path is not a file".to_string());
-    }
-    if !is_markdown_path(&markdown_path) {
-        return Err("selected file is not a Markdown file".to_string());
-    }
-
-    let image_path = markdown_image_file_path(&markdown_path, &image_src)?;
-    let mime_type = local_image_mime_type(&image_path)
-        .ok_or_else(|| "embedded file is not a supported image".to_string())?;
-    let metadata = fs::metadata(&image_path)
-        .map_err(|error| format!("failed to read embedded image metadata: {error}"))?;
-    if !metadata.is_file() {
-        return Err("embedded image path is not a file".to_string());
-    }
-    if metadata.len() > MAX_LOCAL_IMAGE_BYTES {
-        return Err("embedded image is too large".to_string());
-    }
-
-    let bytes =
-        fs::read(&image_path).map_err(|error| format!("failed to read embedded image: {error}"))?;
-    let resolved_path = fs::canonicalize(&image_path).unwrap_or(image_path);
-    let encoded = STANDARD.encode(bytes);
-
-    Ok(LocalImageFile {
-        path: resolved_path.to_string_lossy().to_string(),
-        mime_type: mime_type.to_string(),
-        data_url: format!("data:{mime_type};base64,{encoded}"),
-    })
-}
-
-#[tauri::command]
 fn open_markdown_directory(app: AppHandle, path: String) -> Result<OpenMarkdownDirectory, String> {
     let directory = PathBuf::from(path);
     if !directory.is_dir() {
@@ -2702,6 +2891,7 @@ fn open_markdown_directory(app: AppHandle, path: String) -> Result<OpenMarkdownD
 
 #[tauri::command]
 fn search_markdown_files(
+    app: AppHandle,
     root_path: String,
     query: String,
     search_tags: Option<bool>,
@@ -2722,12 +2912,18 @@ fn search_markdown_files(
         return Ok(Vec::new());
     }
 
+    // ponytail: store-wide guard; use per-document locks only if measured scans delay saves.
+    let tag_guard = if search_tags {
+        Some(lock_local_document_store(&app)?.1)
+    } else {
+        None
+    };
     let mut results = Vec::new();
     search_markdown_directory(
         &root,
         &root,
         &normalized_query,
-        search_tags,
+        tag_guard.as_ref(),
         exact_tag.unwrap_or(false),
         &mut results,
     )?;
@@ -2747,17 +2943,42 @@ fn save_markdown_file(
     glossary_bindings: Vec<GlossaryBinding>,
 ) -> Result<SaveMarkdownFile, String> {
     let markdown_path = PathBuf::from(path);
-
-    fs::write(&markdown_path, body)
-        .map_err(|error| format!("failed to write Markdown file: {error}"))?;
-
-    let notes_path = write_document_notes(
-        &app,
-        &markdown_path,
-        markdown_path.to_string_lossy().to_string(),
+    let document_id = markdown_path.to_string_lossy().to_string();
+    let notes_file = notes_file_for_document(
+        document_id.clone(),
         notes,
         glossary_terms,
         glossary_bindings,
+    );
+    let serialized_notes =
+        if notes_file_is_empty(&notes_file) && !path_is_local_dropbox_synced_path(&markdown_path) {
+            None
+        } else {
+            Some(
+                serde_json::to_string_pretty(&notes_file)
+                    .map_err(|error| format!("failed to serialize notes: {error}"))?,
+            )
+        };
+    let (recovery_directory, guard) = lock_local_document_store(&app)?;
+    let uses_legacy_symlink_path = local_path_uses_symlink(&markdown_path)?;
+    if uses_legacy_symlink_path {
+        recover_local_document_path(&app, &markdown_path, &guard)?;
+        fs::write(&markdown_path, body)
+            .map_err(|error| format!("failed to write Markdown file: {error}"))?;
+        let notes_path = write_notes_file(&app, &markdown_path, notes_file)?;
+        return Ok(SaveMarkdownFile {
+            path: markdown_path.to_string_lossy().to_string(),
+            notes_path: notes_path.to_string_lossy().to_string(),
+            modified_at: modified_time_millis(&markdown_path),
+        });
+    }
+    let paths = local_document_paths(&app, &markdown_path)?;
+    let notes_path = paths.notes().to_path_buf();
+    save_local_document(
+        &guard,
+        &recovery_directory,
+        paths,
+        LocalDocumentPayload::new(document_id, body, serialized_notes),
     )?;
 
     Ok(SaveMarkdownFile {
@@ -2774,19 +2995,20 @@ fn duplicate_markdown_file(
     file_name: String,
 ) -> Result<OpenMarkdownFile, String> {
     let source_path = PathBuf::from(path);
-    if !source_path.is_file() {
-        return Err("selected path is not a file".to_string());
-    }
-    if !is_markdown_path(&source_path) {
-        return Err("selected file is not a Markdown file".to_string());
-    }
+    let (_, guard) = lock_local_document_store(&app)?;
+    recover_local_document_path(&app, &source_path, &guard)?;
+    validate_existing_markdown_file(&source_path, "selected path is not a file")?;
 
     let target_file_name = validate_markdown_file_name(&file_name)?;
     let mut target_path = source_path.with_file_name(target_file_name);
     if !is_markdown_path(&target_path) {
         target_path.set_extension("md");
     }
-    if target_path.exists() {
+    if local_path_entry_exists(&target_path)? {
+        return Err("duplicate file already exists".to_string());
+    }
+    recover_local_document_path(&app, &target_path, &guard)?;
+    if local_path_entry_exists(&target_path)? {
         return Err("duplicate file already exists".to_string());
     }
 
@@ -2800,23 +3022,30 @@ fn duplicate_markdown_file(
         write_notes_file(&app, &target_path, parsed)?;
     }
 
-    read_markdown_file(&app, target_path)
+    if local_path_uses_symlink(&target_path)? {
+        read_markdown_file_contents(&app, target_path, true)
+    } else {
+        read_markdown_file_locked(&app, target_path, &guard)
+    }
 }
 
 #[tauri::command]
 fn delete_markdown_file(app: AppHandle, path: String) -> Result<DeleteMarkdownFile, String> {
     let markdown_path = PathBuf::from(path);
-    if !markdown_path.is_file() {
-        return Err("selected path is not a file".to_string());
-    }
-    if !is_markdown_path(&markdown_path) {
-        return Err("selected file is not a Markdown file".to_string());
-    }
+    let (_, guard) = lock_local_document_store(&app)?;
+    recover_local_document_path(&app, &markdown_path, &guard)?;
+    validate_existing_markdown_file(&markdown_path, "selected path is not a file")?;
+    let deletes_file_link = fs::symlink_metadata(&markdown_path)
+        .map_err(|error| format!("failed to inspect selected Markdown file: {error}"))?
+        .file_type()
+        .is_symlink();
+    let (notes_path, legacy_notes_path) = document_notes_paths(&app, &markdown_path)?;
 
     fs::remove_file(&markdown_path)
         .map_err(|error| format!("failed to delete Markdown file: {error}"))?;
 
-    let notes_path = remove_document_notes(&app, &markdown_path)?;
+    let notes_path =
+        remove_document_notes_at_paths(notes_path, legacy_notes_path, deletes_file_link)?;
 
     Ok(DeleteMarkdownFile {
         path: markdown_path.to_string_lossy().to_string(),
@@ -2848,22 +3077,39 @@ fn markdown_paths_in_directory(directory: &Path) -> Result<Vec<PathBuf>, String>
     Ok(markdown_paths)
 }
 
+fn capture_renamed_directory_notes(
+    app: &AppHandle,
+    source_directory: &Path,
+    target_directory: &Path,
+) -> Result<Vec<(CapturedDocumentNotes, PathBuf)>, String> {
+    let mut captured_notes = Vec::new();
+    for source_path in markdown_paths_in_directory(source_directory)? {
+        let relative_path = source_path
+            .strip_prefix(source_directory)
+            .map_err(|_| "failed to resolve renamed Markdown path".to_string())?;
+        if let Some(captured) = capture_document_notes(app, &source_path)? {
+            captured_notes.push((captured, target_directory.join(relative_path)));
+        }
+    }
+    Ok(captured_notes)
+}
+
 fn validate_directory_delete_target(path: &Path, root_path: &Path) -> Result<PathBuf, String> {
     let root_path = root_path
         .canonicalize()
         .map_err(|error| format!("failed to resolve workspace root: {error}"))?;
-    let target_path = path
+    let resolved_target_path = path
         .canonicalize()
         .map_err(|error| format!("failed to resolve selected directory: {error}"))?;
 
-    if !target_path.is_dir() {
+    if !resolved_target_path.is_dir() {
         return Err("selected path is not a directory".to_string());
     }
-    if target_path == root_path || !target_path.starts_with(&root_path) {
+    if resolved_target_path == root_path || !resolved_target_path.starts_with(&root_path) {
         return Err("selected directory must be inside the workspace root".to_string());
     }
 
-    Ok(target_path)
+    Ok(path.to_path_buf())
 }
 
 #[tauri::command]
@@ -2872,13 +3118,22 @@ fn delete_markdown_directory(
     path: String,
     root_path: String,
 ) -> Result<(), String> {
+    let (_, guard) = lock_local_document_store(&app)?;
     let directory_path = validate_directory_delete_target(Path::new(&path), Path::new(&root_path))?;
+    if recover_local_directory_mutation_path(&app, &directory_path, &guard)?.is_none() {
+        return fs::remove_file(&directory_path)
+            .map_err(|error| format!("failed to delete directory link: {error}"));
+    }
     let markdown_paths = markdown_paths_in_directory(&directory_path)?;
+    let notes_paths = markdown_paths
+        .iter()
+        .map(|markdown_path| document_notes_paths(&app, markdown_path))
+        .collect::<Result<Vec<_>, _>>()?;
 
     fs::remove_dir_all(&directory_path)
         .map_err(|error| format!("failed to delete directory: {error}"))?;
-    for markdown_path in markdown_paths {
-        remove_document_notes(&app, &markdown_path)?;
+    for (notes_path, legacy_notes_path) in notes_paths {
+        remove_document_notes_at_paths(notes_path, legacy_notes_path, false)?;
     }
 
     Ok(())
@@ -2891,32 +3146,42 @@ fn rename_markdown_file(
     name: String,
 ) -> Result<OpenMarkdownFile, String> {
     let source_path = PathBuf::from(path);
-    if !source_path.is_file() {
-        return Err("selected path is not a file".to_string());
-    }
-    if !is_markdown_path(&source_path) {
-        return Err("selected file is not a Markdown file".to_string());
-    }
+    let (_, guard) = lock_local_document_store(&app)?;
+    let uses_legacy_symlink_path = local_path_uses_symlink(&source_path)?;
+    recover_local_document_path(&app, &source_path, &guard)?;
+    validate_existing_markdown_file(&source_path, "selected path is not a file")?;
 
     let target_file_name = normalized_markdown_file_name(&name)?;
     let target_path = source_path.with_file_name(target_file_name);
     if source_path == target_path {
-        return read_markdown_file(&app, target_path);
+        return if uses_legacy_symlink_path {
+            read_markdown_file_contents(&app, target_path, true)
+        } else {
+            read_markdown_file_locked(&app, target_path, &guard)
+        };
     }
-    if target_path.exists() {
+    if local_path_entry_exists(&target_path)? {
+        return Err("rename target already exists".to_string());
+    }
+    recover_local_document_path(&app, &target_path, &guard)?;
+    if local_path_entry_exists(&target_path)? {
         return Err("rename target already exists".to_string());
     }
 
-    let notes_file = read_notes_file(&app, &source_path)?;
+    let captured_notes = capture_document_notes(&app, &source_path)?;
 
     fs::rename(&source_path, &target_path)
         .map_err(|error| format!("failed to rename Markdown file: {error}"))?;
 
-    if notes_file.is_some() {
-        move_notes_for_renamed_markdown_path(&app, &source_path, &target_path)?;
+    if let Some(captured_notes) = captured_notes {
+        move_captured_document_notes(&app, captured_notes, &target_path)?;
     }
 
-    read_markdown_file(&app, target_path)
+    if local_path_uses_symlink(&target_path)? {
+        read_markdown_file_contents(&app, target_path, true)
+    } else {
+        read_markdown_file_locked(&app, target_path, &guard)
+    }
 }
 
 #[tauri::command]
@@ -2926,9 +3191,11 @@ fn rename_markdown_directory(
     name: String,
 ) -> Result<RenamedPath, String> {
     let source_path = PathBuf::from(path);
+    let (_, guard) = lock_local_document_store(&app)?;
     if !source_path.is_dir() {
         return Err("selected path is not a directory".to_string());
     }
+    let resolved_source_path = recover_local_directory_mutation_path(&app, &source_path, &guard)?;
 
     let target_name = validate_path_name(
         &name,
@@ -2943,13 +3210,26 @@ fn rename_markdown_directory(
             notes_path: None,
         });
     }
-    if target_path.exists() {
+    if local_path_entry_exists(&target_path)? {
         return Err("rename target already exists".to_string());
     }
+    if resolved_source_path.is_some() {
+        recover_local_directory_mutation_path(&app, &target_path, &guard)?;
+    }
+    if local_path_entry_exists(&target_path)? {
+        return Err("rename target already exists".to_string());
+    }
+    let captured_notes = if resolved_source_path.is_some() {
+        capture_renamed_directory_notes(&app, &source_path, &target_path)?
+    } else {
+        Vec::new()
+    };
 
     fs::rename(&source_path, &target_path)
         .map_err(|error| format!("failed to rename directory: {error}"))?;
-    move_notes_for_renamed_directory(&app, &source_path, &target_path)?;
+    for (captured_notes, target_document_path) in captured_notes {
+        move_captured_document_notes(&app, captured_notes, &target_document_path)?;
+    }
 
     Ok(RenamedPath {
         title: directory_title(&target_path),
@@ -2959,7 +3239,12 @@ fn rename_markdown_directory(
 }
 
 #[tauri::command]
-fn create_markdown_directory(parent_path: String, name: String) -> Result<RenamedPath, String> {
+fn create_markdown_directory(
+    app: AppHandle,
+    parent_path: String,
+    name: String,
+) -> Result<RenamedPath, String> {
+    let (_, guard) = lock_local_document_store(&app)?;
     let parent_path = PathBuf::from(parent_path);
     if !parent_path.is_dir() {
         return Err("parent path is not a directory".to_string());
@@ -2971,7 +3256,8 @@ fn create_markdown_directory(parent_path: String, name: String) -> Result<Rename
         "folder name must not include folders",
     )?;
     let target_path = parent_path.join(directory_name);
-    if target_path.exists() {
+    recover_local_directory_mutation_path(&app, &target_path, &guard)?;
+    if local_path_entry_exists(&target_path)? {
         return Err("folder already exists".to_string());
     }
 
@@ -2982,124 +3268,6 @@ fn create_markdown_directory(parent_path: String, name: String) -> Result<Rename
         path: target_path.to_string_lossy().to_string(),
         notes_path: None,
     })
-}
-
-fn ensure_pdf_extension(mut path: PathBuf) -> PathBuf {
-    if !path
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .map(|extension| extension.eq_ignore_ascii_case("pdf"))
-        .unwrap_or(false)
-    {
-        path.set_extension("pdf");
-    }
-
-    path
-}
-
-fn write_pdf_bytes(path: PathBuf, data_base64: String) -> Result<WritePdfFile, String> {
-    let path = ensure_pdf_extension(path);
-    let parent = path
-        .parent()
-        .ok_or_else(|| "PDF output path has no parent directory".to_string())?;
-    if !parent.is_dir() {
-        return Err("PDF output directory does not exist".to_string());
-    }
-
-    let bytes = STANDARD
-        .decode(data_base64.trim())
-        .map_err(|error| format!("failed to decode PDF data: {error}"))?;
-    if bytes.is_empty() {
-        return Err("PDF data is empty".to_string());
-    }
-
-    fs::write(&path, bytes).map_err(|error| format!("failed to write PDF file: {error}"))?;
-
-    Ok(WritePdfFile {
-        path: path.to_string_lossy().to_string(),
-    })
-}
-
-fn sanitize_pdf_file_name(file_name: &str) -> String {
-    let fallback = "Scholium.pdf";
-    let mut sanitized = file_name
-        .trim()
-        .chars()
-        .map(|character| {
-            if character.is_control()
-                || matches!(
-                    character,
-                    '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|'
-                )
-            {
-                '_'
-            } else {
-                character
-            }
-        })
-        .collect::<String>();
-
-    while sanitized.ends_with('.') || sanitized.ends_with(' ') {
-        sanitized.pop();
-    }
-
-    if sanitized.is_empty() {
-        sanitized = fallback.to_string();
-    }
-    if !sanitized.to_lowercase().ends_with(".pdf") {
-        sanitized.push_str(".pdf");
-    }
-
-    sanitized
-}
-
-fn now_timestamp_millis() -> u128 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis())
-        .unwrap_or(0)
-}
-
-fn unique_pdf_path(directory: &Path, file_name: &str) -> PathBuf {
-    let sanitized_file_name = sanitize_pdf_file_name(file_name);
-    let requested_path = ensure_pdf_extension(directory.join(&sanitized_file_name));
-    if !requested_path.exists() {
-        return requested_path;
-    }
-
-    let requested_stem = requested_path
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .filter(|stem| !stem.trim().is_empty())
-        .unwrap_or("Scholium");
-
-    for index in 2..10_000 {
-        let candidate = directory.join(format!("{requested_stem} {index}.pdf"));
-        if !candidate.exists() {
-            return candidate;
-        }
-    }
-
-    directory.join(format!("{requested_stem} {}.pdf", now_timestamp_millis()))
-}
-
-#[tauri::command]
-fn write_pdf_file(path: String, data_base64: String) -> Result<WritePdfFile, String> {
-    write_pdf_bytes(PathBuf::from(path), data_base64)
-}
-
-#[tauri::command]
-fn write_pdf_file_to_directory(
-    directory: String,
-    file_name: String,
-    data_base64: String,
-) -> Result<WritePdfFile, String> {
-    let directory_path = PathBuf::from(directory);
-    if !directory_path.is_dir() {
-        return Err("PDF output directory does not exist".to_string());
-    }
-
-    write_pdf_bytes(unique_pdf_path(&directory_path, &file_name), data_base64)
 }
 
 #[tauri::command]
@@ -3183,12 +3351,14 @@ fn dropbox_oauth_status(app: tauri::AppHandle) -> Result<DropboxOAuthStatus, Str
 #[tauri::command]
 fn start_dropbox_oauth(
     app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
     app_key: String,
 ) -> Result<DropboxOAuthStart, String> {
     let app_key = app_key.trim().to_string();
     if app_key.is_empty() {
         return Err("Dropbox app key is required.".to_string());
     }
+    let owner_window_label = window.label().to_string();
 
     #[cfg(not(mobile))]
     let listener = TcpListener::bind(("127.0.0.1", DROPBOX_OAUTH_REDIRECT_PORT))
@@ -3197,20 +3367,26 @@ fn start_dropbox_oauth(
     let state = random_url_token(32)?;
     let code_verifier = random_url_token(64)?;
     let code_challenge = pkce_code_challenge(&code_verifier);
+    let connection_snapshot = dropbox_connection_snapshot(&app)?;
 
     {
         let dropbox_state = app.state::<DropboxState>();
-        let mut oauth_session = dropbox_state
-            .oauth_session
+        let mut oauth_sessions = dropbox_state
+            .oauth_sessions
             .lock()
             .map_err(|_| "failed to lock Dropbox OAuth session".to_string())?;
-
-        *oauth_session = Some(DropboxOAuthSession {
-            app_key: app_key.clone(),
-            code_verifier,
-            redirect_uri: redirect_uri.clone(),
-            state: state.clone(),
-        });
+        oauth_sessions.retain(|_, session| session.owner_window_label != owner_window_label);
+        oauth_sessions.insert(
+            state.clone(),
+            DropboxOAuthSession {
+                app_key: app_key.clone(),
+                code_verifier,
+                connection_snapshot,
+                owner_window_label,
+                redirect_uri: redirect_uri.clone(),
+                state: state.clone(),
+            },
+        );
     }
 
     let mut authorize_url = Url::parse(DROPBOX_OAUTH_AUTHORIZE_URL)
@@ -3229,9 +3405,12 @@ fn start_dropbox_oauth(
     #[cfg(not(mobile))]
     {
         let app_for_callback = app.clone();
+        let callback_state = state.clone();
         std::thread::spawn(move || {
-            let payload = wait_for_dropbox_oauth_callback(listener);
-            let _ = app_for_callback.emit("scholium-dropbox-oauth-callback", payload);
+            let payload = wait_for_dropbox_oauth_callback(listener, callback_state);
+            if let Err(error) = emit_dropbox_oauth_callback_to_owner(&app_for_callback, payload) {
+                eprintln!("{error}");
+            }
         });
     }
 
@@ -3244,6 +3423,7 @@ fn start_dropbox_oauth(
 #[tauri::command]
 async fn complete_dropbox_oauth(
     app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
     code: String,
     state: String,
 ) -> Result<DropboxOAuthStatus, String> {
@@ -3255,18 +3435,24 @@ async fn complete_dropbox_oauth(
 
     let session = {
         let dropbox_state = app.state::<DropboxState>();
-        let mut oauth_session = dropbox_state
-            .oauth_session
+        let mut oauth_sessions = dropbox_state
+            .oauth_sessions
             .lock()
             .map_err(|_| "failed to lock Dropbox OAuth session".to_string())?;
-        let Some(session) = oauth_session.as_ref() else {
-            return Err("Dropbox OAuth session was not started.".to_string());
+        let Some(session) = oauth_sessions.get(&state) else {
+            return Err(if oauth_sessions.is_empty() {
+                "Dropbox OAuth session was not started.".to_string()
+            } else {
+                "Dropbox OAuth state did not match.".to_string()
+            });
         };
-        if session.state != state {
-            return Err("Dropbox OAuth state did not match.".to_string());
+        if session.owner_window_label != window.label() {
+            return Err("Dropbox OAuth session belongs to another window.".to_string());
         }
 
-        oauth_session.take().expect("Dropbox OAuth session exists")
+        oauth_sessions
+            .remove(&state)
+            .expect("Dropbox OAuth session exists")
     };
 
     let client = reqwest::Client::builder()
@@ -3302,13 +3488,9 @@ async fn complete_dropbox_oauth(
             .map(|expires_in| now_unix_seconds() + expires_in),
     };
 
-    replace_dropbox_tokens(&app, Some(tokens.clone()))?;
-    write_dropbox_tokens(&app, &tokens)?;
+    commit_dropbox_connection(&app, session.connection_snapshot, tokens)?;
 
-    let status = DropboxOAuthStatus { connected: true };
-    let _ = app.emit("scholium-dropbox-oauth-connected", status.clone());
-
-    Ok(status)
+    Ok(DropboxOAuthStatus { connected: true })
 }
 
 #[tauri::command]
@@ -3402,7 +3584,7 @@ async fn list_dropbox_markdown_directory(
                     }
 
                     let path = dropbox_metadata_path(path_display, path_lower, &name);
-                    if is_downloadable == Some(false) || !is_markdown_dropbox_path(&path) {
+                    if is_downloadable == Some(false) || !is_markdown_path(Path::new(&path)) {
                         continue;
                     }
 
@@ -3441,7 +3623,7 @@ async fn open_dropbox_markdown_file(
     path: String,
 ) -> Result<DropboxMarkdownFile, String> {
     let normalized_path = normalize_dropbox_path(&path);
-    if !is_markdown_dropbox_path(&normalized_path) {
+    if !is_markdown_path(Path::new(&normalized_path)) {
         return Err("selected Dropbox file is not a Markdown file".to_string());
     }
 
@@ -3506,7 +3688,7 @@ async fn open_dropbox_markdown_file(
 #[tauri::command]
 async fn read_dropbox_markdown_body(app: tauri::AppHandle, path: String) -> Result<String, String> {
     let normalized_path = normalize_dropbox_path(&path);
-    if !is_markdown_dropbox_path(&normalized_path) {
+    if !is_markdown_path(Path::new(&normalized_path)) {
         return Err("selected Dropbox file is not a Markdown file".to_string());
     }
 
@@ -3642,7 +3824,7 @@ async fn duplicate_dropbox_markdown_file(
     file_name: String,
 ) -> Result<DropboxMarkdownFile, String> {
     let source_path = normalize_dropbox_path(&path);
-    if !is_markdown_dropbox_path(&source_path) {
+    if !is_markdown_path(Path::new(&source_path)) {
         return Err("selected Dropbox file is not a Markdown file".to_string());
     }
 
@@ -3697,7 +3879,7 @@ async fn delete_dropbox_markdown_file(
     path: String,
 ) -> Result<DropboxMarkdownFile, String> {
     let normalized_path = normalize_dropbox_path(&path);
-    if !is_markdown_dropbox_path(&normalized_path) {
+    if !is_markdown_path(Path::new(&normalized_path)) {
         return Err("selected Dropbox file is not a Markdown file".to_string());
     }
 
@@ -3754,7 +3936,7 @@ async fn dropbox_markdown_paths_in_directory(
                 ..
             } => {
                 let path = dropbox_metadata_path(path_display, path_lower, &name);
-                is_markdown_dropbox_path(&path).then_some(path)
+                is_markdown_path(Path::new(&path)).then_some(path)
             }
             _ => None,
         }));
@@ -3842,7 +4024,7 @@ async fn rename_dropbox_markdown_file(
     name: String,
 ) -> Result<DropboxMarkdownFile, String> {
     let source_path = normalize_dropbox_path(&path);
-    if !is_markdown_dropbox_path(&source_path) {
+    if !is_markdown_path(Path::new(&source_path)) {
         return Err("selected Dropbox file is not a Markdown file".to_string());
     }
 
@@ -4021,67 +4203,22 @@ fn build_recent_locations_submenu(
 fn build_app_menu(app_handle: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let language = current_app_language(app_handle);
     let location_store = current_location_store(app_handle);
+    let menu_item = |id: &str, key: &str, accelerator: Option<&str>| {
+        MenuItem::with_id(app_handle, id, menu_text(&language, key), true, accelerator)
+    };
     let about_metadata = AboutMetadata {
         name: Some("Scholium".to_string()),
         version: Some(app_handle.package_info().version.to_string()),
         ..Default::default()
     };
-    let new_window = MenuItem::with_id(
-        app_handle,
-        MENU_NEW_WINDOW,
-        menu_text(&language, "newWindow"),
-        true,
-        Some("CmdOrCtrl+Shift+N"),
-    )?;
-    let new_file = MenuItem::with_id(
-        app_handle,
-        MENU_NEW_FILE,
-        menu_text(&language, "newFile"),
-        true,
-        Some("CmdOrCtrl+N"),
-    )?;
-    let new_folder = MenuItem::with_id(
-        app_handle,
-        MENU_NEW_FOLDER,
-        menu_text(&language, "newFolder"),
-        true,
-        None::<&str>,
-    )?;
-    let open_file = MenuItem::with_id(
-        app_handle,
-        MENU_OPEN_FILE,
-        menu_text(&language, "openFile"),
-        true,
-        Some("CmdOrCtrl+O"),
-    )?;
-    let open_folder = MenuItem::with_id(
-        app_handle,
-        MENU_OPEN_FOLDER,
-        menu_text(&language, "openFolder"),
-        true,
-        Some("CmdOrCtrl+Shift+O"),
-    )?;
-    let open_settings = MenuItem::with_id(
-        app_handle,
-        MENU_OPEN_SETTINGS,
-        menu_text(&language, "settings"),
-        true,
-        Some("CmdOrCtrl+,"),
-    )?;
-    let select_all = MenuItem::with_id(
-        app_handle,
-        MENU_SELECT_ALL,
-        menu_text(&language, "selectAll"),
-        true,
-        None::<&str>,
-    )?;
-    let cloud_dropbox = MenuItem::with_id(
-        app_handle,
-        MENU_CLOUD_DROPBOX,
-        menu_text(&language, "dropbox"),
-        true,
-        None::<&str>,
-    )?;
+    let new_window = menu_item(MENU_NEW_WINDOW, "newWindow", Some("CmdOrCtrl+Shift+N"))?;
+    let new_file = menu_item(MENU_NEW_FILE, "newFile", Some("CmdOrCtrl+N"))?;
+    let new_folder = menu_item(MENU_NEW_FOLDER, "newFolder", None)?;
+    let open_file = menu_item(MENU_OPEN_FILE, "openFile", Some("CmdOrCtrl+O"))?;
+    let open_folder = menu_item(MENU_OPEN_FOLDER, "openFolder", Some("CmdOrCtrl+Shift+O"))?;
+    let open_settings = menu_item(MENU_OPEN_SETTINGS, "settings", Some("CmdOrCtrl+,"))?;
+    let select_all = menu_item(MENU_SELECT_ALL, "selectAll", None)?;
+    let cloud_dropbox = menu_item(MENU_CLOUD_DROPBOX, "dropbox", None)?;
     let cloud = Submenu::with_items(
         app_handle,
         menu_text(&language, "cloud"),
@@ -4232,11 +4369,6 @@ fn take_new_window_document_target(
 }
 
 #[tauri::command]
-fn greet(name: &str) -> String {
-    format!("Hello, {}! You've been greeted from Rust!", name)
-}
-
-#[tauri::command]
 fn validate_dropped_markdown_file(paths: Vec<String>) -> Result<String, String> {
     let path = dropped_markdown_path(&paths)?;
 
@@ -4345,7 +4477,11 @@ pub fn run() {
                     for url in event.urls() {
                         if is_dropbox_mobile_callback(&url) {
                             let payload = dropbox_oauth_callback_from_url(&url);
-                            let _ = app_handle.emit("scholium-dropbox-oauth-callback", payload);
+                            if let Err(error) =
+                                emit_dropbox_oauth_callback_to_owner(&app_handle, payload)
+                            {
+                                eprintln!("{error}");
+                            }
                         }
                     }
                 });
@@ -4366,7 +4502,7 @@ pub fn run() {
             }
 
             let dropbox_tokens = read_dropbox_tokens_from_disk(app.handle());
-            if let Err(error) = replace_dropbox_tokens(app.handle(), dropbox_tokens) {
+            if let Err(error) = load_dropbox_tokens(app.handle(), dropbox_tokens) {
                 eprintln!("{error}");
             }
 
@@ -4387,24 +4523,18 @@ pub fn run() {
                 }
             });
         } else if event_id == MENU_NEW_FILE {
-            let _ = emit_to_target_webview_window(app, "menu:new-file", ());
             let _ = emit_to_target_webview_window(app, "scholium-new-file", ());
         } else if event_id == MENU_NEW_FOLDER {
-            let _ = emit_to_target_webview_window(app, "menu:new-folder", ());
             let _ = emit_to_target_webview_window(app, "scholium-new-folder", ());
         } else if event_id == MENU_OPEN_SETTINGS {
-            let _ = emit_to_target_webview_window(app, "menu:open-settings", ());
             let _ = emit_to_target_webview_window(app, "scholium-open-settings", ());
         } else if event_id == MENU_SELECT_ALL {
             let _ = emit_to_target_webview_window(app, "scholium-select-all", ());
         } else if event_id == MENU_OPEN_FILE {
-            let _ = emit_to_target_webview_window(app, "menu:open-file", ());
             let _ = emit_to_target_webview_window(app, "scholium-open-file", ());
         } else if event_id == MENU_OPEN_FOLDER {
-            let _ = emit_to_target_webview_window(app, "menu:open-folder", ());
             let _ = emit_to_target_webview_window(app, "scholium-open-folder", ());
         } else if event_id == MENU_CLOUD_DROPBOX {
-            let _ = emit_to_target_webview_window(app, "menu:open-dropbox", ());
             let _ = emit_to_target_webview_window(app, "scholium-open-dropbox", ());
         } else if event_id == MENU_ADD_CURRENT_DIRECTORY_TO_FAVORITES {
             if let Some(directory) = current_directory_for_target_window(app) {
@@ -4432,7 +4562,6 @@ pub fn run() {
                     source: location.source.clone(),
                     title: location.title.clone(),
                 };
-                let _ = emit_to_target_webview_window(app, "menu:open-location", &payload);
                 let _ = emit_to_target_webview_window(app, "scholium-open-location", payload);
             }
         }
@@ -4444,7 +4573,6 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             create_new_window,
             take_new_window_document_target,
-            greet,
             validate_dropped_markdown_file,
             take_opened_file_paths,
             set_native_folder_picker_list_view,
@@ -4495,6 +4623,18 @@ pub fn run() {
 }
 
 #[cfg(test)]
+fn test_directory(name: &str) -> PathBuf {
+    std::env::temp_dir().join(format!(
+        "scholium-{name}-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ))
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -4512,16 +4652,12 @@ mod tests {
     }
 
     #[test]
-    fn dropped_file_must_be_one_md_path() {
-        let markdown = vec!["draft.MD".to_string()];
+    fn markdown_file_names_keep_automatic_extension() {
+        assert_eq!(normalized_markdown_file_name("draft").unwrap(), "draft.md");
         assert_eq!(
-            dropped_markdown_path(&markdown).unwrap(),
-            Path::new("draft.MD")
+            normalized_markdown_file_name("draft.MARKDOWN").unwrap(),
+            "draft.MARKDOWN"
         );
-
-        assert!(dropped_markdown_path(&["draft.txt".to_string()]).is_err());
-        assert!(dropped_markdown_path(&[]).is_err());
-        assert!(dropped_markdown_path(&["one.md".to_string(), "two.md".to_string()]).is_err());
     }
 
     #[test]
@@ -4538,11 +4674,7 @@ mod tests {
         assert!(!dropbox_path_is_strict_descendant("/Notes-Old", "/Notes"));
         assert!(!dropbox_path_is_strict_descendant("/Other", "/Notes"));
 
-        let test_root = std::env::temp_dir().join(format!(
-            "scholium-directory-delete-{}-{}",
-            std::process::id(),
-            now_timestamp_millis()
-        ));
+        let test_root = test_directory("directory-delete");
         let target = test_root.join("Archive");
         let nested = target.join("2026");
         fs::create_dir_all(&nested).unwrap();
@@ -4562,6 +4694,67 @@ mod tests {
         assert!(test_root.exists());
 
         fs::remove_dir_all(test_root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn final_directory_symlink_delete_preserves_target_documents_and_notes() {
+        use std::os::unix::fs::symlink;
+
+        let unresolved_root = test_directory("directory-link-delete");
+        let target = unresolved_root.join("Target");
+        let nested = target.join("Nested");
+        fs::create_dir_all(&nested).unwrap();
+        let body_path = nested.join("article.md");
+        let sidecar_path = nested.join("article.md.notes.json");
+        let private_notes_path = unresolved_root.join("app-data/article.notes.json");
+        fs::create_dir_all(private_notes_path.parent().unwrap()).unwrap();
+        fs::write(&body_path, "body").unwrap();
+        fs::write(&sidecar_path, "sidecar").unwrap();
+        fs::write(&private_notes_path, "private notes").unwrap();
+        let alias = unresolved_root.join("Alias");
+        symlink(&target, &alias).unwrap();
+
+        let validated = validate_directory_delete_target(&alias, &unresolved_root).unwrap();
+        assert_eq!(validated, alias);
+        assert_eq!(
+            resolved_local_directory_mutation_path(&validated).unwrap(),
+            None
+        );
+        assert!(fs::symlink_metadata(&validated)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        fs::remove_file(&validated).unwrap();
+
+        assert!(!alias.exists());
+        assert!(target.is_dir());
+        assert_eq!(fs::read_to_string(&body_path).unwrap(), "body");
+        assert_eq!(fs::read_to_string(&sidecar_path).unwrap(), "sidecar");
+        assert_eq!(
+            fs::read_to_string(&private_notes_path).unwrap(),
+            "private notes"
+        );
+
+        let parent_alias = unresolved_root.join("ParentAlias");
+        symlink(&target, &parent_alias).unwrap();
+        let through_parent_link = parent_alias.join("Nested");
+        let validated_parent_path =
+            validate_directory_delete_target(&through_parent_link, &unresolved_root).unwrap();
+        assert_eq!(validated_parent_path, through_parent_link);
+        assert_eq!(
+            resolved_local_directory_mutation_path(&validated_parent_path)
+                .unwrap()
+                .unwrap(),
+            fs::canonicalize(&nested).unwrap()
+        );
+        assert!(!fs::symlink_metadata(&validated_parent_path)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert!(local_path_uses_symlink(&validated_parent_path).unwrap());
+
+        fs::remove_dir_all(unresolved_root).unwrap();
     }
 
     #[test]
@@ -4589,6 +4782,926 @@ mod tests {
     }
 
     #[test]
+    fn tag_search_requires_a_guard_while_filename_search_does_not() {
+        let unresolved_root = test_directory("guarded-tag-search");
+        let workspace = unresolved_root.join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::write(
+            workspace.join("travel.md"),
+            "---\ntags: [旅行, '日本 行程']\n---\n內容",
+        )
+        .unwrap();
+        fs::write(workspace.join("meeting.md"), "# Meeting").unwrap();
+        let root = fs::canonicalize(&workspace).unwrap();
+        let recovery_directory = fs::canonicalize(&unresolved_root)
+            .unwrap()
+            .join("app-data/recovery/local");
+        let guard = lock_local_documents(&recovery_directory).unwrap();
+
+        let mut tag_results = Vec::new();
+        search_markdown_directory(
+            &root,
+            &root,
+            &normalize_tag_search_value("日本 行程"),
+            Some(&guard),
+            true,
+            &mut tag_results,
+        )
+        .unwrap();
+
+        assert_eq!(tag_results.len(), 1);
+        assert_eq!(tag_results[0].relative_path, "travel.md");
+        assert_eq!(tag_results[0].matched_tags, vec!["日本 行程"]);
+
+        let mut filename_results = Vec::new();
+        search_markdown_directory(&root, &root, "meeting", None, false, &mut filename_results)
+            .unwrap();
+
+        assert_eq!(filename_results.len(), 1);
+        assert_eq!(filename_results[0].relative_path, "meeting.md");
+        assert!(filename_results[0].matched_tags.is_empty());
+
+        drop(guard);
+        fs::remove_dir_all(unresolved_root).unwrap();
+    }
+
+    #[test]
+    fn notes_v1_fixture_round_trips_without_schema_drift() {
+        let raw_fixture = include_str!("../../tests/fixtures/notes-v1.json");
+        let parsed: NotesFile = serde_json::from_str(raw_fixture).unwrap();
+
+        assert_eq!(parsed.version, 1);
+        assert_eq!(parsed.markdown_path, "/fixtures/article.md");
+        assert_eq!(parsed.notes.len(), 1);
+        assert_eq!(parsed.glossary_terms.len(), 1);
+        assert_eq!(parsed.glossary_bindings.len(), 1);
+        assert_eq!(
+            parsed.glossary_bindings[0].term_id,
+            parsed.glossary_terms[0].id
+        );
+
+        let fixture_value: serde_json::Value = serde_json::from_str(raw_fixture).unwrap();
+        assert_eq!(serde_json::to_value(parsed).unwrap(), fixture_value);
+    }
+
+    #[test]
+    fn legacy_notes_v1_fixture_migrates_missing_glossary_fields() {
+        let parsed: NotesFile =
+            serde_json::from_str(include_str!("../../tests/fixtures/notes-v1-legacy.json"))
+                .unwrap();
+
+        assert_eq!(parsed.version, 1);
+        assert_eq!(parsed.markdown_path, "/fixtures/legacy-article.md");
+        assert_eq!(parsed.notes.len(), 1);
+        assert!(parsed.glossary_terms.is_empty());
+        assert!(parsed.glossary_bindings.is_empty());
+
+        let migrated = serde_json::to_value(parsed).unwrap();
+        assert_eq!(migrated["glossaryTerms"], serde_json::json!([]));
+        assert_eq!(migrated["glossaryBindings"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn saved_notes_and_bindings_use_the_manifest_document_id() {
+        let parsed: NotesFile =
+            serde_json::from_str(include_str!("../../tests/fixtures/notes-v1.json")).unwrap();
+        let document_id = "/fixtures/renamed-article.md".to_string();
+
+        let normalized = notes_file_for_document(
+            document_id.clone(),
+            parsed.notes,
+            parsed.glossary_terms,
+            parsed.glossary_bindings,
+        );
+
+        assert_eq!(normalized.markdown_path, document_id);
+        assert!(normalized
+            .notes
+            .iter()
+            .all(|note| note.document_id == normalized.markdown_path));
+        assert!(normalized
+            .glossary_bindings
+            .iter()
+            .all(|binding| binding.document_id == normalized.markdown_path));
+    }
+
+    #[test]
+    fn equivalent_relative_and_dot_dot_paths_share_notes_identity() {
+        let canonical_path =
+            fs::canonicalize(Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml")).unwrap();
+        let current_directory = fs::canonicalize(std::env::current_dir().unwrap()).unwrap();
+        let canonical_components = canonical_path.components().collect::<Vec<_>>();
+        let current_components = current_directory.components().collect::<Vec<_>>();
+        let common_length = canonical_components
+            .iter()
+            .zip(&current_components)
+            .take_while(|(left, right)| left == right)
+            .count();
+        let mut relative_path = PathBuf::new();
+        for _ in common_length..current_components.len() {
+            relative_path.push("..");
+        }
+        for component in &canonical_components[common_length..] {
+            relative_path.push(component.as_os_str());
+        }
+        let dot_dot_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src")
+            .join("..")
+            .join("Cargo.toml");
+
+        assert!(!relative_path.is_absolute());
+        assert_eq!(
+            normalized_markdown_path_string(&relative_path),
+            canonical_path.to_string_lossy()
+        );
+        assert_eq!(
+            stable_notes_hash(&normalized_markdown_path_string(&relative_path)),
+            stable_notes_hash(&normalized_markdown_path_string(&dot_dot_path))
+        );
+    }
+
+    #[test]
+    fn dot_dot_notes_keep_their_identity_across_rename_and_delete() {
+        let unresolved_root = test_directory("dot-dot-notes");
+        let workspace = unresolved_root.join("Dropbox/workspace");
+        let app_data = unresolved_root.join("app-data");
+        fs::create_dir_all(workspace.join("nested")).unwrap();
+        let source_path = workspace.join("nested/../article.md");
+        let target_path = workspace.join("nested/../renamed.md");
+        fs::write(&source_path, "body").unwrap();
+
+        let source_notes_path = app_data.join(NOTES_STORE_DIRECTORY).join(format!(
+            "{:016x}.notes.json",
+            stable_notes_hash(&normalized_markdown_path_string(&source_path))
+        ));
+        let source_legacy_notes_path = legacy_sidecar_path(&source_path).unwrap();
+        let parsed: NotesFile =
+            serde_json::from_str(include_str!("../../tests/fixtures/notes-v1.json")).unwrap();
+        let source_document_id = source_path.to_string_lossy().to_string();
+        write_notes_file_at_paths(
+            &source_path,
+            source_notes_path.clone(),
+            source_legacy_notes_path.clone(),
+            notes_file_for_document(
+                source_document_id,
+                parsed.notes,
+                parsed.glossary_terms,
+                parsed.glossary_bindings,
+            ),
+        )
+        .unwrap();
+        let captured = CapturedDocumentNotes {
+            notes_file: parse_notes_file(&source_notes_path).unwrap(),
+            notes_path: source_notes_path.clone(),
+            legacy_notes_path: source_legacy_notes_path.clone(),
+        };
+
+        fs::rename(&source_path, &target_path).unwrap();
+        let missing_source_notes_path = app_data.join(NOTES_STORE_DIRECTORY).join(format!(
+            "{:016x}.notes.json",
+            stable_notes_hash(&normalized_markdown_path_string(&source_path))
+        ));
+        assert_ne!(missing_source_notes_path, source_notes_path);
+
+        let target_notes_path = app_data.join(NOTES_STORE_DIRECTORY).join(format!(
+            "{:016x}.notes.json",
+            stable_notes_hash(&normalized_markdown_path_string(&target_path))
+        ));
+        let target_legacy_notes_path = legacy_sidecar_path(&target_path).unwrap();
+        move_captured_document_notes_at_paths(
+            captured,
+            &target_path,
+            target_notes_path.clone(),
+            target_legacy_notes_path.clone(),
+        )
+        .unwrap();
+
+        assert!(!source_notes_path.exists());
+        assert!(!source_legacy_notes_path.exists());
+        let moved = parse_notes_file(&target_notes_path).unwrap();
+        let target_document_id = target_path.to_string_lossy().to_string();
+        assert_eq!(moved.markdown_path, target_document_id);
+        assert!(moved
+            .notes
+            .iter()
+            .all(|note| note.document_id == moved.markdown_path));
+        assert!(moved
+            .glossary_bindings
+            .iter()
+            .all(|binding| binding.document_id == moved.markdown_path));
+        assert!(target_legacy_notes_path.is_file());
+
+        let deleted_notes_path = target_notes_path.clone();
+        let deleted_legacy_notes_path = target_legacy_notes_path.clone();
+        fs::remove_file(&target_path).unwrap();
+        remove_document_notes_at_paths(target_notes_path, target_legacy_notes_path, false).unwrap();
+        assert!(!deleted_notes_path.exists());
+        assert!(!deleted_legacy_notes_path.exists());
+
+        fs::remove_dir_all(unresolved_root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_paths_use_the_legacy_storage_mode() {
+        use std::os::unix::fs::symlink;
+
+        let unresolved_root = test_directory("symlink-policy");
+        fs::create_dir_all(unresolved_root.join("Dropbox")).unwrap();
+        let root = fs::canonicalize(&unresolved_root).unwrap();
+        let dropbox_directory = root.join("Dropbox");
+        let target_path = dropbox_directory.join("article.md");
+        fs::write(&target_path, "body").unwrap();
+        let file_alias = dropbox_directory.join("alias.md");
+        symlink(&target_path, &file_alias).unwrap();
+        let parent_alias = root.join("DropboxAlias");
+        symlink(&dropbox_directory, &parent_alias).unwrap();
+
+        assert!(!local_path_uses_symlink(&target_path).unwrap());
+        assert!(local_path_uses_symlink(&file_alias).unwrap());
+        assert!(local_path_uses_symlink(&parent_alias.join("article.md")).unwrap());
+        assert!(local_path_uses_symlink(&parent_alias.join("new.md")).unwrap());
+        assert_eq!(
+            resolved_local_document_path(&parent_alias.join("new.md")).unwrap(),
+            dropbox_directory.join("new.md")
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dangling_final_symlink_uses_referent_identity_and_blocks_target_collision() {
+        use std::os::unix::fs::symlink;
+
+        let unresolved_root = test_directory("dangling-symlink");
+        fs::create_dir_all(&unresolved_root).unwrap();
+        let root = fs::canonicalize(&unresolved_root).unwrap();
+        let target_path = root.join("missing.md");
+        let alias_path = root.join("alias.md");
+        symlink(Path::new("missing.md"), &alias_path).unwrap();
+
+        assert!(!alias_path.exists());
+        assert!(fs::symlink_metadata(&alias_path)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert!(local_path_uses_symlink(&alias_path).unwrap());
+        assert_eq!(
+            resolved_local_document_path(&alias_path).unwrap(),
+            target_path
+        );
+        assert!(local_path_entry_exists(&alias_path).unwrap());
+        assert!(!local_path_entry_exists(&target_path).unwrap());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_document_symlink_cycle_returns_a_stable_error() {
+        use std::os::unix::fs::symlink;
+
+        let unresolved_root = test_directory("symlink-cycle");
+        fs::create_dir_all(&unresolved_root).unwrap();
+        let root = fs::canonicalize(&unresolved_root).unwrap();
+        let first_path = root.join("first.md");
+        let second_path = root.join("second.md");
+        symlink(Path::new("second.md"), &first_path).unwrap();
+        symlink(Path::new("first.md"), &second_path).unwrap();
+
+        assert_eq!(
+            resolved_local_document_path(&first_path).unwrap_err(),
+            "failed to resolve local Markdown path: too many symbolic links"
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn notes_store_directory_symlink_never_accesses_external_files() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+
+        let unresolved_root = test_directory("notes-directory-symlink");
+        let app_data_directory = unresolved_root.join("app-data");
+        let external_directory = unresolved_root.join("external");
+        fs::create_dir_all(&app_data_directory).unwrap();
+        fs::create_dir_all(&external_directory).unwrap();
+        let root = fs::canonicalize(&unresolved_root).unwrap();
+        let app_data_directory = root.join("app-data");
+        let external_directory = root.join("external");
+        let markdown_path = root.join("article.md");
+        fs::write(&markdown_path, "body").unwrap();
+
+        let notes_file_name = format!(
+            "{:016x}.notes.json",
+            stable_notes_hash(&normalized_markdown_path_string(&markdown_path))
+        );
+        let external_notes_path = external_directory.join(&notes_file_name);
+        let serialized = serde_json::to_string_pretty(&notes_file_for_document(
+            markdown_path.to_string_lossy().to_string(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        ))
+        .unwrap();
+        fs::write(&external_notes_path, &serialized).unwrap();
+        fs::set_permissions(&external_directory, fs::Permissions::from_mode(0o750)).unwrap();
+        fs::set_permissions(&external_notes_path, fs::Permissions::from_mode(0o644)).unwrap();
+        let original_directory_mode = fs::metadata(&external_directory)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        let original_file_mode = fs::metadata(&external_notes_path)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        symlink(
+            &external_directory,
+            app_data_directory.join(NOTES_STORE_DIRECTORY),
+        )
+        .unwrap();
+
+        let read_result = notes_store_path_in_app_data(&app_data_directory, &markdown_path)
+            .and_then(|path| parse_optional_notes_file(&path, true));
+        assert!(read_result.is_err());
+        assert_eq!(
+            fs::read_to_string(&external_notes_path).unwrap(),
+            serialized
+        );
+        assert_eq!(
+            fs::metadata(&external_directory)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            original_directory_mode
+        );
+        assert_eq!(
+            fs::metadata(&external_notes_path)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            original_file_mode
+        );
+
+        let populated_notes = || {
+            let parsed: NotesFile =
+                serde_json::from_str(include_str!("../../tests/fixtures/notes-v1.json")).unwrap();
+            notes_file_for_document(
+                markdown_path.to_string_lossy().to_string(),
+                parsed.notes,
+                parsed.glossary_terms,
+                parsed.glossary_bindings,
+            )
+        };
+        let legacy_notes_path = legacy_sidecar_path(&markdown_path).unwrap();
+        let write_result = notes_store_path_in_app_data(&app_data_directory, &markdown_path)
+            .and_then(|notes_path| {
+                write_notes_file_at_paths(
+                    &markdown_path,
+                    notes_path,
+                    legacy_notes_path.clone(),
+                    populated_notes(),
+                )
+            });
+        assert!(write_result.is_err());
+        assert_eq!(
+            fs::read_to_string(&external_notes_path).unwrap(),
+            serialized
+        );
+
+        let remove_result = notes_store_path_in_app_data(&app_data_directory, &markdown_path)
+            .and_then(|notes_path| {
+                write_notes_file_at_paths(
+                    &markdown_path,
+                    notes_path,
+                    legacy_notes_path,
+                    notes_file_for_document(
+                        markdown_path.to_string_lossy().to_string(),
+                        Vec::new(),
+                        Vec::new(),
+                        Vec::new(),
+                    ),
+                )
+            });
+        assert!(remove_result.is_err());
+        assert_eq!(
+            fs::read_to_string(&external_notes_path).unwrap(),
+            serialized
+        );
+
+        let new_markdown_path = root.join("new.md");
+        fs::write(&new_markdown_path, "new body").unwrap();
+        let new_external_notes_path = external_directory.join(format!(
+            "{:016x}.notes.json",
+            stable_notes_hash(&normalized_markdown_path_string(&new_markdown_path))
+        ));
+        let create_result = notes_store_path_in_app_data(&app_data_directory, &new_markdown_path)
+            .and_then(|notes_path| {
+                write_notes_file_at_paths(
+                    &new_markdown_path,
+                    notes_path,
+                    legacy_sidecar_path(&new_markdown_path)?,
+                    populated_notes(),
+                )
+            });
+        assert!(create_result.is_err());
+        assert!(!new_external_notes_path.exists());
+        assert_eq!(
+            fs::read_to_string(&external_notes_path).unwrap(),
+            serialized
+        );
+        assert_eq!(
+            fs::metadata(&external_directory)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            original_directory_mode
+        );
+        assert_eq!(
+            fs::metadata(&external_notes_path)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            original_file_mode
+        );
+        assert!(
+            fs::symlink_metadata(app_data_directory.join(NOTES_STORE_DIRECTORY))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn existing_notes_store_files_remain_readable_and_writable() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let unresolved_root = test_directory("existing-notes-store");
+        let app_data_directory = unresolved_root.join("app-data");
+        let notes_directory = app_data_directory.join(NOTES_STORE_DIRECTORY);
+        fs::create_dir_all(&notes_directory).unwrap();
+        let root = fs::canonicalize(&unresolved_root).unwrap();
+        let app_data_directory = root.join("app-data");
+        let notes_directory = app_data_directory.join(NOTES_STORE_DIRECTORY);
+        let markdown_path = root.join("article.md");
+        fs::write(&markdown_path, "body").unwrap();
+        fs::set_permissions(&notes_directory, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let expected_notes_path = notes_directory.join(format!(
+            "{:016x}.notes.json",
+            stable_notes_hash(&normalized_markdown_path_string(&markdown_path))
+        ));
+        let existing = notes_file_for_document(
+            markdown_path.to_string_lossy().to_string(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+        fs::write(
+            &expected_notes_path,
+            serde_json::to_string_pretty(&existing).unwrap(),
+        )
+        .unwrap();
+
+        let notes_path = notes_store_path_in_app_data(&app_data_directory, &markdown_path).unwrap();
+        assert_eq!(notes_path, expected_notes_path);
+        assert_eq!(
+            fs::metadata(&notes_directory).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        assert_eq!(
+            parse_optional_notes_file(&notes_path, true)
+                .unwrap()
+                .unwrap()
+                .markdown_path,
+            markdown_path.to_string_lossy()
+        );
+
+        let parsed: NotesFile =
+            serde_json::from_str(include_str!("../../tests/fixtures/notes-v1.json")).unwrap();
+        write_notes_file_at_paths(
+            &markdown_path,
+            notes_path.clone(),
+            legacy_sidecar_path(&markdown_path).unwrap(),
+            notes_file_for_document(
+                markdown_path.to_string_lossy().to_string(),
+                parsed.notes,
+                parsed.glossary_terms,
+                parsed.glossary_bindings,
+            ),
+        )
+        .unwrap();
+        assert!(!parse_notes_file(&notes_path).unwrap().notes.is_empty());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn notes_reader_never_follows_final_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let root = test_directory("notes-read-symlink");
+        fs::create_dir_all(&root).unwrap();
+        let referent = root.join("referent.json");
+        let notes_path = root.join("article.md.notes.json");
+        let dangling_referent = root.join("missing.json");
+        let serialized = serde_json::to_string_pretty(&notes_file_for_document(
+            "article.md".to_string(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        ))
+        .unwrap();
+        fs::write(&referent, &serialized).unwrap();
+        symlink(&referent, &notes_path).unwrap();
+
+        assert!(parse_optional_notes_file(&notes_path, false)
+            .unwrap()
+            .is_none());
+        assert_eq!(fs::read_to_string(&referent).unwrap(), serialized);
+
+        fs::remove_file(&notes_path).unwrap();
+        symlink(&dangling_referent, &notes_path).unwrap();
+        assert!(parse_optional_notes_file(&notes_path, false)
+            .unwrap()
+            .is_none());
+
+        fs::remove_file(&notes_path).unwrap();
+        fs::write(&notes_path, &serialized).unwrap();
+        assert_eq!(
+            parse_optional_notes_file(&notes_path, false)
+                .unwrap()
+                .unwrap()
+                .markdown_path,
+            "article.md"
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn legacy_sidecar_writes_and_removals_never_follow_symlinks() {
+        use std::os::unix::fs::{symlink, MetadataExt};
+
+        let unresolved_root = test_directory("sidecar-symlink");
+        fs::create_dir_all(&unresolved_root).unwrap();
+        let root = fs::canonicalize(&unresolved_root).unwrap();
+        let target_path = root.join("target.json");
+        let sidecar_path = root.join("article.md.notes.json");
+        fs::write(&target_path, "target contents").unwrap();
+        symlink(&target_path, &sidecar_path).unwrap();
+
+        write_legacy_sidecar(&sidecar_path, "sidecar contents").unwrap();
+        assert_eq!(fs::read_to_string(&target_path).unwrap(), "target contents");
+        assert_eq!(
+            fs::read_to_string(&sidecar_path).unwrap(),
+            "sidecar contents"
+        );
+        assert!(!fs::symlink_metadata(&sidecar_path)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+
+        let sidecar_inode = fs::metadata(&sidecar_path).unwrap().ino();
+        write_legacy_sidecar(&sidecar_path, "updated sidecar").unwrap();
+        assert_eq!(fs::metadata(&sidecar_path).unwrap().ino(), sidecar_inode);
+
+        remove_file_if_present(&sidecar_path).unwrap();
+        let dangling_target = root.join("missing.json");
+        symlink(&dangling_target, &sidecar_path).unwrap();
+        remove_file_if_present(&sidecar_path).unwrap();
+        assert!(fs::symlink_metadata(&sidecar_path).is_err());
+        assert!(!dangling_target.exists());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn duplicate_target_policy_is_not_inherited_from_source_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let unresolved_root = test_directory("symlink-duplicate-policy");
+        fs::create_dir_all(&unresolved_root).unwrap();
+        let root = fs::canonicalize(&unresolved_root).unwrap();
+        let canonical_source = root.join("article.md");
+        fs::write(&canonical_source, "body").unwrap();
+        let source_alias = root.join("alias.md");
+        symlink(&canonical_source, &source_alias).unwrap();
+        let duplicate_target = source_alias.with_file_name("copy.md");
+
+        assert!(local_path_uses_symlink(&source_alias).unwrap());
+        assert!(!local_path_uses_symlink(&duplicate_target).unwrap());
+        fs::copy(&source_alias, &duplicate_target).unwrap();
+        assert!(!local_path_uses_symlink(&duplicate_target).unwrap());
+        assert_eq!(fs::read_to_string(&duplicate_target).unwrap(), "body");
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn final_file_symlink_delete_preserves_target_private_notes() {
+        use std::os::unix::fs::symlink;
+
+        let unresolved_root = test_directory("symlink-file-delete");
+        fs::create_dir_all(unresolved_root.join("Dropbox")).unwrap();
+        let root = fs::canonicalize(&unresolved_root).unwrap();
+        let target_path = root.join("Dropbox/article.md");
+        fs::write(&target_path, "body").unwrap();
+        let alias_path = root.join("Dropbox/alias.md");
+        symlink(&target_path, &alias_path).unwrap();
+        let notes_path = root.join("app-data/article.notes.json");
+        let alias_sidecar_path = legacy_sidecar_path(&alias_path).unwrap();
+        let parsed: NotesFile =
+            serde_json::from_str(include_str!("../../tests/fixtures/notes-v1.json")).unwrap();
+        write_notes_file_at_paths(
+            &alias_path,
+            notes_path.clone(),
+            alias_sidecar_path.clone(),
+            notes_file_for_document(
+                alias_path.to_string_lossy().to_string(),
+                parsed.notes,
+                parsed.glossary_terms,
+                parsed.glossary_bindings,
+            ),
+        )
+        .unwrap();
+        assert!(notes_path.is_file());
+        assert!(alias_sidecar_path.is_file());
+
+        let deletes_file_link = fs::symlink_metadata(&alias_path)
+            .unwrap()
+            .file_type()
+            .is_symlink();
+        fs::remove_file(&alias_path).unwrap();
+        remove_document_notes_at_paths(
+            notes_path.clone(),
+            alias_sidecar_path.clone(),
+            deletes_file_link,
+        )
+        .unwrap();
+
+        assert!(target_path.is_file());
+        assert!(notes_path.is_file());
+        assert!(!alias_sidecar_path.exists());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_legacy_empty_save_keeps_private_tombstone_and_removes_sidecar() {
+        use std::os::unix::fs::symlink;
+
+        let unresolved_root = test_directory("symlink-empty-notes");
+        fs::create_dir_all(unresolved_root.join("Dropbox")).unwrap();
+        let root = fs::canonicalize(&unresolved_root).unwrap();
+        let target_path = root.join("Dropbox/article.md");
+        fs::write(&target_path, "body").unwrap();
+        let alias_path = root.join("Dropbox/alias.md");
+        symlink(&target_path, &alias_path).unwrap();
+        let notes_path = root.join("app-data/article.notes.json");
+        let sidecar_path = legacy_sidecar_path(&alias_path).unwrap();
+        let parsed: NotesFile =
+            serde_json::from_str(include_str!("../../tests/fixtures/notes-v1.json")).unwrap();
+        let document_id = alias_path.to_string_lossy().to_string();
+        let nonempty = notes_file_for_document(
+            document_id.clone(),
+            parsed.notes,
+            parsed.glossary_terms,
+            parsed.glossary_bindings,
+        );
+
+        write_notes_file_at_paths(
+            &alias_path,
+            notes_path.clone(),
+            sidecar_path.clone(),
+            nonempty,
+        )
+        .unwrap();
+        assert!(notes_path.is_file());
+        assert!(sidecar_path.is_file());
+
+        write_notes_file_at_paths(
+            &alias_path,
+            notes_path.clone(),
+            sidecar_path.clone(),
+            notes_file_for_document(document_id, Vec::new(), Vec::new(), Vec::new()),
+        )
+        .unwrap();
+        let tombstone = parse_notes_file(&notes_path).unwrap();
+        assert!(notes_file_is_empty(&tombstone));
+        assert_eq!(
+            tombstone.markdown_path,
+            target_path.to_string_lossy().to_string()
+        );
+        assert!(!sidecar_path.exists());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_and_canonical_empty_saves_do_not_revive_each_others_sidecars() {
+        use std::os::unix::fs::symlink;
+
+        let unresolved_root = test_directory("symlink-canonical-notes");
+        fs::create_dir_all(unresolved_root.join("Dropbox")).unwrap();
+        let root = fs::canonicalize(&unresolved_root).unwrap();
+        let target_path = root.join("Dropbox/article.md");
+        fs::write(&target_path, "body").unwrap();
+        let alias_path = root.join("Dropbox/alias.md");
+        symlink(&target_path, &alias_path).unwrap();
+        let notes_path = root.join("app-data/notes/article.notes.json");
+        let alias_sidecar_path = legacy_sidecar_path(&alias_path).unwrap();
+        let canonical_sidecar_path = legacy_sidecar_path(&target_path).unwrap();
+        let recovery_directory = root.join("app-data/recovery/local");
+        let parsed: NotesFile =
+            serde_json::from_str(include_str!("../../tests/fixtures/notes-v1.json")).unwrap();
+        let alias_document_id = alias_path.to_string_lossy().to_string();
+        let nonempty = notes_file_for_document(
+            alias_document_id.clone(),
+            parsed.notes,
+            parsed.glossary_terms,
+            parsed.glossary_bindings,
+        );
+
+        write_notes_file_at_paths(
+            &alias_path,
+            notes_path.clone(),
+            alias_sidecar_path.clone(),
+            nonempty,
+        )
+        .unwrap();
+        let guard = lock_local_documents(&recovery_directory).unwrap();
+        let canonical_paths = LocalDocumentPaths::new(
+            target_path.clone(),
+            notes_path.clone(),
+            canonical_sidecar_path.clone(),
+            true,
+        );
+        repair_local_sidecar(
+            &guard,
+            &recovery_directory,
+            &canonical_paths,
+            alias_document_id.clone(),
+            Some(fs::read_to_string(&notes_path).unwrap()),
+        )
+        .unwrap();
+        assert!(canonical_sidecar_path.is_file());
+
+        write_notes_file_at_paths(
+            &alias_path,
+            notes_path.clone(),
+            alias_sidecar_path.clone(),
+            notes_file_for_document(
+                alias_document_id.clone(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            ),
+        )
+        .unwrap();
+
+        let alias_empty_tombstone = parse_notes_file(&notes_path).unwrap();
+        assert!(notes_file_is_empty(&alias_empty_tombstone));
+        assert_eq!(
+            alias_empty_tombstone.markdown_path,
+            target_path.to_string_lossy().to_string()
+        );
+        assert!(!alias_sidecar_path.exists());
+        assert!(!canonical_sidecar_path.exists());
+
+        write_notes_file_at_paths(
+            &alias_path,
+            notes_path.clone(),
+            alias_sidecar_path.clone(),
+            notes_file_for_document(
+                alias_document_id.clone(),
+                serde_json::from_str::<NotesFile>(include_str!(
+                    "../../tests/fixtures/notes-v1.json"
+                ))
+                .unwrap()
+                .notes,
+                Vec::new(),
+                Vec::new(),
+            ),
+        )
+        .unwrap();
+        repair_local_sidecar(
+            &guard,
+            &recovery_directory,
+            &canonical_paths,
+            alias_document_id,
+            Some(fs::read_to_string(&notes_path).unwrap()),
+        )
+        .unwrap();
+        assert!(alias_sidecar_path.is_file());
+        assert!(canonical_sidecar_path.is_file());
+
+        let canonical_document_id = target_path.to_string_lossy().to_string();
+        let empty_notes = notes_file_for_document(
+            canonical_document_id.clone(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+        save_local_document(
+            &guard,
+            &recovery_directory,
+            canonical_paths,
+            LocalDocumentPayload::new(
+                canonical_document_id,
+                "body".to_string(),
+                Some(serde_json::to_string_pretty(&empty_notes).unwrap()),
+            ),
+        )
+        .unwrap();
+        assert!(notes_file_is_empty(&parse_notes_file(&notes_path).unwrap()));
+        assert!(!canonical_sidecar_path.exists());
+        assert!(alias_sidecar_path.exists());
+
+        let reopened_through_alias = parse_notes_file(&notes_path).unwrap();
+        mirror_notes_file_to_local_dropbox_sidecar_legacy(&alias_path, &reopened_through_alias)
+            .unwrap();
+        assert!(notes_file_is_empty(&reopened_through_alias));
+        assert!(!alias_sidecar_path.exists());
+
+        drop(guard);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn regular_non_dropbox_empty_save_still_removes_private_notes() {
+        let unresolved_root = test_directory("regular-empty-notes");
+        fs::create_dir_all(&unresolved_root).unwrap();
+        let root = fs::canonicalize(&unresolved_root).unwrap();
+        let markdown_path = root.join("article.md");
+        fs::write(&markdown_path, "body").unwrap();
+        let notes_path = root.join("app-data/article.notes.json");
+        let sidecar_path = legacy_sidecar_path(&markdown_path).unwrap();
+        fs::create_dir_all(notes_path.parent().unwrap()).unwrap();
+        fs::write(&notes_path, "old notes").unwrap();
+        fs::write(&sidecar_path, "old sidecar").unwrap();
+
+        write_notes_file_at_paths(
+            &markdown_path,
+            notes_path.clone(),
+            sidecar_path.clone(),
+            notes_file_for_document(
+                markdown_path.to_string_lossy().to_string(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            ),
+        )
+        .unwrap();
+
+        assert!(!notes_path.exists());
+        assert!(!sidecar_path.exists());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn dropbox_list_folder_fixture_matches_the_api_schema() {
+        let raw_fixture = include_str!("../../tests/fixtures/dropbox-list-folder.json");
+        let parsed: DropboxListFolderResponse = serde_json::from_str(raw_fixture).unwrap();
+
+        assert_eq!(parsed.cursor, "fixture-cursor");
+        assert!(!parsed.has_more);
+        assert_eq!(parsed.entries.len(), 2);
+        assert!(matches!(
+            &parsed.entries[0],
+            DropboxMetadata::Folder { name, path_display, .. }
+                if name == "Notes" && path_display.as_deref() == Some("/Notes")
+        ));
+        assert!(matches!(
+            &parsed.entries[1],
+            DropboxMetadata::File {
+                name,
+                size: Some(128),
+                is_downloadable: Some(true),
+                ..
+            } if name == "article.md"
+        ));
+    }
+
+    #[test]
     fn parses_dropbox_mobile_callback() {
         let callback =
             Url::parse("db-bdv6guwbi6ol9mg://2/token?code=authorization-code&state=csrf-state")
@@ -4600,5 +5713,44 @@ mod tests {
         assert_eq!(payload.code.as_deref(), Some("authorization-code"));
         assert_eq!(payload.state.as_deref(), Some("csrf-state"));
         assert!(payload.error.is_none());
+
+        let session = DropboxOAuthSession {
+            app_key: "app-key".to_string(),
+            code_verifier: "verifier".to_string(),
+            connection_snapshot: DropboxTokenState::default().connection_snapshot(),
+            owner_window_label: "main".to_string(),
+            redirect_uri: "db-bdv6guwbi6ol9mg://2/token".to_string(),
+            state: "csrf-state".to_string(),
+        };
+        assert!(dropbox_oauth_callback_matches_session(&session, &payload));
+        assert!(!dropbox_oauth_callback_ends_session(&payload));
+
+        let denied_callback =
+            Url::parse("db-bdv6guwbi6ol9mg://2/token?error=access_denied&state=csrf-state")
+                .unwrap();
+        let denied_payload = dropbox_oauth_callback_from_url(&denied_callback);
+        assert_eq!(denied_payload.status, "error");
+        assert_eq!(denied_payload.state.as_deref(), Some("csrf-state"));
+        assert!(dropbox_oauth_callback_matches_session(
+            &session,
+            &denied_payload
+        ));
+        assert!(dropbox_oauth_callback_ends_session(&denied_payload));
+
+        let wrong_state = dropbox_oauth_callback_from_url(
+            &Url::parse("db-bdv6guwbi6ol9mg://2/token?code=code&state=wrong-state").unwrap(),
+        );
+        assert!(!dropbox_oauth_callback_matches_session(
+            &session,
+            &wrong_state
+        ));
+
+        let missing_state = dropbox_oauth_callback_from_url(
+            &Url::parse("db-bdv6guwbi6ol9mg://2/token?code=code").unwrap(),
+        );
+        assert!(!dropbox_oauth_callback_matches_session(
+            &session,
+            &missing_state
+        ));
     }
 }

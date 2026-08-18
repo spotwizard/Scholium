@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { closeHistory, history, redo, undo } from "@milkdown/prose/history";
-import { Schema } from "@milkdown/prose/model";
+import { closeHistory, history, undo } from "@milkdown/prose/history";
+import { Schema, type Node as ProseMirrorNode } from "@milkdown/prose/model";
 import { bulletList, listItem, orderedList } from "@milkdown/prose/schema-list";
 import { EditorState, NodeSelection, TextSelection } from "@milkdown/prose/state";
 import {
@@ -29,7 +29,7 @@ const schema = new Schema({
 
 const paragraph = (text: string) =>
   schema.nodes.paragraph.create(null, text ? schema.text(text) : null);
-const item = (text: string, children: ReturnType<typeof item>[] = []) =>
+const item = (text: string, children: ProseMirrorNode[] = []): ProseMirrorNode =>
   schema.nodes.list_item.create(
     null,
     children.length > 0
@@ -38,8 +38,8 @@ const item = (text: string, children: ReturnType<typeof item>[] = []) =>
   );
 const orderedItem = (
   text: string,
-  children: ReturnType<typeof orderedItem>[] = [],
-) =>
+  children: ProseMirrorNode[] = [],
+): ProseMirrorNode =>
   schema.nodes.list_item.create(
     null,
     children.length > 0
@@ -649,19 +649,19 @@ assert.equal(deletionState.doc.textContent, deletionDocument.textContent);
 assert.equal(deletionState.selection.$from.parent.textContent, "分析");
 assert.equal(deletionState.selection.$from.parentOffset, 0);
 const remainingListItemLabels: string[] = [];
-let filterOutItem = null;
+const filterOutItem: { current: ProseMirrorNode | null } = { current: null };
 deletionState.doc.descendants((node) => {
   if (node.type !== schema.nodes.list_item) return;
 
   const label = node.firstChild?.textContent ?? "";
   remainingListItemLabels.push(label);
-  if (label === "篩除") filterOutItem = node;
+  if (label === "篩除") filterOutItem.current = node;
 });
 assert.equal(remainingListItemLabels.includes("分析"), false);
 assert.equal(remainingListItemLabels.includes("找出能代表該地點的亮點特色"), true);
 assert.equal(remainingListItemLabels.includes("篩除"), true);
 assert.equal(
-  filterOutItem?.lastChild?.textContent,
+  filterOutItem.current?.lastChild?.textContent,
   "刪除重複的資料刪除",
 );
 assert.equal(

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { Schema } from "@milkdown/prose/model";
+import { Schema, type Node as ProseMirrorNode } from "@milkdown/prose/model";
 import { bulletList, listItem } from "@milkdown/prose/schema-list";
 import { EditorState, TextSelection } from "@milkdown/prose/state";
 import type { EditorView } from "@milkdown/prose/view";
@@ -25,8 +25,8 @@ const paragraph = (...content: ReturnType<typeof schema.text>[]) =>
   schema.nodes.paragraph.create(null, content);
 const item = (
   content: ReturnType<typeof schema.text>[],
-  children: ReturnType<typeof item>[] = [],
-) =>
+  children: ProseMirrorNode[] = [],
+): ProseMirrorNode =>
   schema.nodes.list_item.create(
     null,
     children.length > 0

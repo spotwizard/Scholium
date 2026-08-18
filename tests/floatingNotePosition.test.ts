@@ -226,7 +226,15 @@ assert.match(
 );
 assert.match(
   appSource,
-  /const cardSize = \{[\s\S]*?height: card\.offsetHeight \|\| cardRect\.height,[\s\S]*?width: card\.offsetWidth \|\| cardRect\.width,[\s\S]*?\};/,
+  /const cardRect = card\?\.getBoundingClientRect\(\);\s*const cardSize = \{\s*height: card\?\.offsetHeight \|\| cardRect\?\.height \|\| 0,\s*width: card\?\.offsetWidth \|\| cardRect\?\.width \|\| 0,\s*\};/,
+);
+assert.doesNotMatch(
+  appSource,
+  /if \(!card\) \{\s*setFloatingNotePanelPosition\(null\);\s*return;\s*\}/,
+);
+assert.match(
+  appSource,
+  /function updateFloatingNotePanelPosition\(\) \{\s*window\.cancelAnimationFrame\(floatingNotePanelPositionFrameRef\.current\);\s*floatingNotePanelPositionFrameRef\.current = window\.requestAnimationFrame\(\s*measureFloatingNotePanelPosition,\s*\);\s*\}\s*measureFloatingNotePanelPosition\(\);\s*window\.addEventListener\("resize", updateFloatingNotePanelPosition\);/,
 );
 assert.match(
   appSource,
