@@ -144,6 +144,22 @@ const searchField = StateField.define<DecorationSet>({
   provide: (field) => EditorView.decorations.from(field),
 });
 
+function applySearchState(view: EditorView, search: DocumentSearchState, shouldScroll: boolean) {
+  view.dispatch({
+    effects: setSearchEffect.of(search),
+  });
+
+  if (!shouldScroll) return;
+
+  const matches = findDocumentSearchMatches(view.state.doc.toString(), search.query);
+  const activeMatch = matches[search.activeIndex];
+  if (!activeMatch) return;
+
+  view.dispatch({
+    effects: EditorView.scrollIntoView(activeMatch.from, { y: "center" }),
+  });
+}
+
 export function MarkdownEditor({
   value,
   search = { activeIndex: 0, query: "" },
@@ -268,17 +284,7 @@ export function MarkdownEditor({
     const view = viewRef.current;
     if (!view) return;
 
-    view.dispatch({
-      effects: setSearchEffect.of(search),
-    });
-
-    const matches = findDocumentSearchMatches(view.state.doc.toString(), search.query);
-    const activeMatch = matches[search.activeIndex];
-    if (!activeMatch) return;
-
-    view.dispatch({
-      effects: EditorView.scrollIntoView(activeMatch.from, { y: "center" }),
-    });
+    applySearchState(view, search, true);
   }, [searchSignature, search]);
 
   return <div className="markdown-editor-host" ref={containerRef} />;
