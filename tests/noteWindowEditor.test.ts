@@ -10,6 +10,12 @@ const milkdownSource = readFileSync(
 const componentStart = appSource.indexOf("function NoteMarkdownEditor(");
 const componentEnd = appSource.indexOf("\nfunction App()", componentStart);
 const noteEditorSource = appSource.slice(componentStart, componentEnd);
+const markdownPreviewStart = appSource.indexOf("function MarkdownPreview(");
+const markdownPreviewEnd = appSource.indexOf(
+  "\nfunction MarkdownPreviewContentBlock(",
+  markdownPreviewStart,
+);
+const markdownPreviewSource = appSource.slice(markdownPreviewStart, markdownPreviewEnd);
 const selectionEnterStart = appSource.indexOf("function handleSelectionEnter(");
 const selectionEnterEnd = appSource.indexOf("\n  function showNoteViewer(", selectionEnterStart);
 const selectionEnterSource = appSource.slice(selectionEnterStart, selectionEnterEnd);
@@ -22,10 +28,32 @@ const glossaryEditorEnd = appSource.indexOf(
 const glossaryEditorSource = appSource.slice(glossaryEditorStart, glossaryEditorEnd);
 
 assert.ok(componentStart >= 0 && componentEnd > componentStart);
+assert.ok(markdownPreviewStart >= 0 && markdownPreviewEnd > markdownPreviewStart);
 assert.ok(selectionEnterStart >= 0 && selectionEnterEnd > selectionEnterStart);
 assert.ok(glossaryEditorStart >= 0 && glossaryEditorEnd > glossaryEditorStart);
-assert.match(noteEditorSource, /<MarkdownPreview[\s\S]*?commitOnInput/);
+assert.equal(appSource.match(/<MarkdownPreview\b/g)?.length, 1);
+assert.match(
+  noteEditorSource,
+  /<MarkdownPreview[\s\S]*?readOnly=\{!isEditable\}[\s\S]*?value=\{value\}[\s\S]*?onChange=\{\(nextValue\) => onChange\(nextValue\)\}[\s\S]*?\/>/,
+);
 assert.match(noteEditorSource, /readOnly=\{!isEditable\}/);
+assert.doesNotMatch(
+  markdownPreviewSource,
+  /\b(?:annotations|allowSelectedTextEnterEdit|commitOnInput|enableTabIndent|onAnnotationClick|onSelectionChange|onSelectionEnter)\b/,
+);
+assert.doesNotMatch(
+  appSource,
+  /preview-(?:note-annotation|annotation-frame|annotation-layer)/,
+);
+assert.doesNotMatch(
+  appCss,
+  /preview-(?:note-annotation|annotation-frame|annotation-layer)/,
+);
+assert.match(appSource, /<MilkdownMarkdownEditor[\s\S]*?annotations=\{annotations\}/);
+assert.match(
+  milkdownSource,
+  /className=\{`milkdown-annotation-frame[\s\S]*?className="milkdown-annotation-layer/,
+);
 assert.match(noteEditorSource, /editingSurface === "source" && isEditable[\s\S]*?<textarea/);
 assert.doesNotMatch(
   appSource,
@@ -39,6 +67,18 @@ assert.doesNotMatch(selectionEnterSource, /setActiveDocumentModeState/);
 assert.match(
   appSource,
   /function handlePreviewInput[\s\S]*?const previewElement = event\.currentTarget[\s\S]*?commitPendingPreviewInput\(previewElement\)/,
+);
+assert.match(
+  markdownPreviewSource,
+  /function handlePreviewTabIndent[\s\S]*?event\.key !== "Tab"[\s\S]*?event\.shiftKey[\s\S]*?commitPreviewListOutdent\(blockElement\) \|\| commitPreviewLineOutdent\(blockElement\)[\s\S]*?commitPreviewListIndent\(blockElement\)[\s\S]*?insertPlainPreviewText\("  "\)/,
+);
+assert.match(
+  markdownPreviewSource,
+  /function handlePreviewBeforeInput[\s\S]*?nativeEvent\.inputType === "insertLineBreak" && !nativeEvent\.isComposing[\s\S]*?commitPreviewSoftBreak\(\)/,
+);
+assert.match(
+  markdownPreviewSource,
+  /if \(readOnly\) \{\s*if \(\s*event\.key === "Tab" &&[\s\S]*?\) \{\s*return;\s*\}\s*event\.preventDefault\(\);\s*event\.stopPropagation\(\);/,
 );
 assert.match(
   appSource,
@@ -158,7 +198,11 @@ assert.match(
 );
 assert.match(
   appSource,
-  /const isSoftEnter =[\s\S]*?event\.shiftKey;[\s\S]*?isSoftEnter && commitOnInput && !event\.nativeEvent\.isComposing[\s\S]*?if \(!commitPreviewSoftBreak\(\)\)[\s\S]*?transientElement\.dataset\.previewSoftBreaks = "true";[\s\S]*?return;[\s\S]*?event\.preventDefault\(\)/,
+  /const isSoftEnter =[\s\S]*?event\.shiftKey;[\s\S]*?isSoftEnter && !event\.nativeEvent\.isComposing[\s\S]*?if \(!commitPreviewSoftBreak\(\)\)[\s\S]*?transientElement\.dataset\.previewSoftBreaks = "true";[\s\S]*?return;[\s\S]*?event\.preventDefault\(\)/,
+);
+assert.match(
+  markdownPreviewSource,
+  /if \(!selection \|\| selection\.isCollapsed \|\| !selectedText\.trim\(\)\) \{[\s\S]*?\n    \}\n\n    event\.preventDefault\(\);\n    event\.stopPropagation\(\);\n  \}/,
 );
 assert.match(
   appSource,
@@ -204,7 +248,7 @@ assert.match(
 );
 assert.match(
   appCss,
-  /\.floating-note-card__editor--glossary[\s\S]*?\[data-preview-block-key\]:has\(\+ \.preview-annotation-layer\)[\s\S]*?margin-bottom: 0;/,
+  /\.floating-note-card__editor--glossary \.markdown-preview > :last-child\s*\{\s*margin-bottom: 0;/,
 );
 assert.match(
   appCss,

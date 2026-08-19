@@ -18,17 +18,11 @@ const mermaidConfig = {
   },
 } as const;
 
-let mermaidInitialized = false;
 let mermaidModulePromise: Promise<(typeof import("mermaid"))["default"]> | null = null;
 
-export async function loadScholiumMermaid() {
-  mermaidModulePromise ??= import("mermaid").then((module) => module.default);
-  const mermaid = await mermaidModulePromise;
-
-  if (!mermaidInitialized) {
-    mermaid.initialize(mermaidConfig);
-    mermaidInitialized = true;
-  }
-
-  return mermaid;
+export function loadScholiumMermaid() {
+  return (mermaidModulePromise ??= import("mermaid").then((module) => {
+    module.default.initialize(mermaidConfig);
+    return module.default;
+  }));
 }

@@ -20,48 +20,7 @@ import {
   findDocumentSearchMatches,
   type DocumentSearchState,
 } from "./documentSearch";
-
-export type TextSelectionAnchor = {
-  from: number;
-  to: number;
-  selectedText: string;
-  prefix: string;
-  suffix: string;
-};
-
-export type TextSelectionViewportRect = {
-  bottom: number;
-  height: number;
-  left: number;
-  right: number;
-  targetBottom: number;
-  targetTop: number;
-  targetX: number;
-  targetY: number;
-  top: number;
-  width: number;
-};
-
-export type TextSelectionEnterContext = {
-  anchorRect?: TextSelectionViewportRect | null;
-  source?: "keyboard" | "touch-block";
-};
-
-export type AnnotationTone = 0 | 1;
-
-export type TextAnnotation = {
-  id: string;
-  isFocusTarget?: boolean;
-  kind?: "note" | "glossary";
-  from: number;
-  prefix?: string;
-  selectedText?: string;
-  suffix?: string;
-  tone?: AnnotationTone;
-  to: number;
-};
-
-export type EditorChangeSource = "user" | "undo";
+import type { EditorChangeSource } from "./editorTypes";
 
 type MarkdownEditorProps = {
   value: string;
@@ -184,6 +143,22 @@ const searchField = StateField.define<DecorationSet>({
   },
   provide: (field) => EditorView.decorations.from(field),
 });
+
+function applySearchState(view: EditorView, search: DocumentSearchState, shouldScroll: boolean) {
+  view.dispatch({
+    effects: setSearchEffect.of(search),
+  });
+
+  if (!shouldScroll) return;
+
+  const matches = findDocumentSearchMatches(view.state.doc.toString(), search.query);
+  const activeMatch = matches[search.activeIndex];
+  if (!activeMatch) return;
+
+  view.dispatch({
+    effects: EditorView.scrollIntoView(activeMatch.from, { y: "center" }),
+  });
+}
 
 export function MarkdownEditor({
   value,
@@ -309,17 +284,7 @@ export function MarkdownEditor({
     const view = viewRef.current;
     if (!view) return;
 
-    view.dispatch({
-      effects: setSearchEffect.of(search),
-    });
-
-    const matches = findDocumentSearchMatches(view.state.doc.toString(), search.query);
-    const activeMatch = matches[search.activeIndex];
-    if (!activeMatch) return;
-
-    view.dispatch({
-      effects: EditorView.scrollIntoView(activeMatch.from, { y: "center" }),
-    });
+    applySearchState(view, search, true);
   }, [searchSignature, search]);
 
   return <div className="markdown-editor-host" ref={containerRef} />;

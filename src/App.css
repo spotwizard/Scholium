@@ -507,15 +507,6 @@ button:disabled {
   background: var(--color-surface);
 }
 
-.eyebrow {
-  margin: 0 0 4px;
-  color: var(--color-muted);
-  font-size: 0.72rem;
-  font-weight: 700;
-  letter-spacing: 0;
-  text-transform: uppercase;
-}
-
 .note-actions button {
   min-height: 36px;
   border: 1px solid var(--color-border);
@@ -714,6 +705,19 @@ button:disabled {
 
 .document-icon svg [stroke] {
   stroke: currentColor !important;
+}
+
+.document-icon__flaticon-book {
+  display: block;
+  width: 20px;
+  height: 20px;
+  background: currentColor;
+  mask-position: center;
+  mask-repeat: no-repeat;
+  mask-size: contain;
+  -webkit-mask-position: center;
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-size: contain;
 }
 
 .document-icon.is-selected {
@@ -1399,738 +1403,6 @@ button:disabled {
 
 .dropbox-directory-dialog__actions {
   margin-top: 2px;
-}
-
-.settings-view-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 160;
-  display: grid;
-  place-items: center;
-  min-width: 0;
-  min-height: 0;
-  padding: 24px;
-  background: rgba(17, 19, 24, 0.42);
-  backdrop-filter: blur(2px);
-}
-
-.settings-view {
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
-  width: min(1120px, calc(100vw - 48px));
-  height: min(720px, calc(100vh - 48px));
-  min-width: 0;
-  min-height: 0;
-  overflow: hidden;
-  border: 1px solid rgba(31, 41, 55, 0.16);
-  border-radius: 8px;
-  color: var(--color-text);
-  background: var(--color-surface-raised);
-  box-shadow: 0 22px 58px rgba(15, 23, 42, 0.24);
-}
-
-.settings-view__header {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  border-bottom: 1px solid var(--color-border-soft);
-  padding: 18px 24px;
-  background: var(--color-surface-raised);
-}
-
-.settings-view__header h2 {
-  margin: 0;
-  color: var(--color-heading);
-  font-size: 1.04rem;
-  font-weight: 780;
-  line-height: 1.25;
-}
-
-.settings-view__actions {
-  display: flex;
-  flex: 0 0 auto;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
-}
-
-.settings-view__footer {
-  display: flex;
-  justify-content: flex-start;
-  border-top: 1px solid var(--color-border-soft);
-  padding-top: 12px;
-}
-
-.settings-view__reset-all {
-  min-height: 28px;
-  flex: 0 0 auto;
-  border: 0;
-  border-radius: 6px;
-  padding: 0 2px;
-  color: var(--color-muted);
-  background: transparent;
-  font-size: 0.8rem;
-  font-weight: 680;
-}
-
-.settings-view__reset-all:hover {
-  color: var(--color-danger-text);
-  background: transparent;
-  text-decoration: underline;
-  text-underline-offset: 3px;
-}
-
-.settings-view__close {
-  display: inline-flex;
-  width: 32px;
-  height: 32px;
-  flex: 0 0 auto;
-  align-items: center;
-  justify-content: center;
-  border: 0;
-  border-radius: 6px;
-  color: var(--color-muted);
-  background: transparent;
-  font-size: 1.2rem;
-  font-weight: 520;
-  line-height: 1;
-}
-
-.settings-view__close:hover {
-  color: var(--color-heading);
-  background: var(--color-surface-soft);
-}
-
-.settings-view__body {
-  display: grid;
-  grid-template-columns: 188px minmax(0, 1fr);
-  min-width: 0;
-  min-height: 0;
-  background: var(--color-surface);
-}
-
-.settings-view__sidebar {
-  display: grid;
-  align-content: start;
-  gap: 2px;
-  min-width: 0;
-  border-right: 1px solid var(--color-border-soft);
-  padding: 18px 12px;
-  background: color-mix(in srgb, var(--color-surface-raised) 82%, var(--color-surface-soft));
-}
-
-.settings-view__sidebar button {
-  display: flex;
-  min-height: 36px;
-  min-width: 0;
-  align-items: center;
-  border: 0;
-  border-radius: 7px;
-  padding: 0 11px;
-  color: var(--color-muted);
-  background: transparent;
-  font-size: 0.86rem;
-  font-weight: 690;
-  line-height: 1.25;
-  text-align: left;
-}
-
-.settings-view__sidebar button:hover,
-.settings-view__sidebar button:focus-visible,
-.settings-view__sidebar button.is-active {
-  color: var(--color-heading);
-  background: var(--color-surface-soft);
-}
-
-.settings-view__sidebar span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.settings-view__content {
-  display: grid;
-  align-content: start;
-  gap: 30px;
-  min-width: 0;
-  min-height: 0;
-  padding: 30px clamp(28px, 4vw, 52px) 40px;
-  overflow: auto;
-  background: var(--color-surface);
-}
-
-.settings-view__section {
-  display: grid;
-  gap: 12px;
-  min-width: 0;
-  scroll-margin-top: 18px;
-}
-
-.settings-view__section h3 {
-  margin: 0;
-  color: var(--color-heading);
-  font-size: 1.02rem;
-  font-weight: 780;
-  letter-spacing: 0;
-  line-height: 1.25;
-}
-
-.settings-view__setting-list {
-  display: grid;
-  min-width: 0;
-  border-top: 1px solid var(--color-border-soft);
-}
-
-.settings-view__custom-list {
-  display: grid;
-  min-width: 0;
-  border-top: 1px solid var(--color-border-soft);
-}
-
-.settings-view__cloud-card {
-  display: grid;
-  grid-template-columns: minmax(320px, 1fr) minmax(160px, auto);
-  gap: 12px 20px;
-  align-items: center;
-  min-width: 0;
-  border-bottom: 1px solid var(--color-border-soft);
-  padding: 16px 0;
-}
-
-.settings-view__cloud-copy {
-  display: grid;
-  gap: 2px;
-  min-width: 0;
-}
-
-.settings-view__cloud-status-row {
-  display: flex;
-  min-width: 0;
-  justify-content: flex-end;
-}
-
-.settings-view__cloud-status {
-  display: inline-flex;
-  min-height: 28px;
-  align-items: center;
-  border: 1px solid var(--color-border);
-  border-radius: 999px;
-  padding: 0 10px;
-  color: var(--color-muted);
-  background: var(--color-surface-soft);
-  font-size: 0.78rem;
-  font-weight: 720;
-  line-height: 1.2;
-  white-space: nowrap;
-}
-
-.settings-view__cloud-status.is-connected {
-  border-color: color-mix(in srgb, var(--color-success, #1f8f4d) 42%, var(--color-border));
-  color: var(--color-success, #1f7a45);
-  background: color-mix(in srgb, var(--color-success, #1f8f4d) 10%, var(--color-surface-raised));
-}
-
-.settings-view__cloud-status.is-not-configured {
-  border-color: color-mix(in srgb, var(--color-danger-text) 34%, var(--color-border));
-  color: var(--color-danger-text);
-  background: color-mix(in srgb, var(--color-danger-text) 8%, var(--color-surface-raised));
-}
-
-.settings-view__cloud-actions {
-  display: flex;
-  flex-wrap: wrap;
-  grid-column: 1 / -1;
-  gap: 8px;
-}
-
-.settings-view__cloud-actions button {
-  min-height: 34px;
-  border: 1px solid var(--color-border);
-  border-radius: 8px;
-  padding: 0 12px;
-  color: var(--color-heading);
-  background: var(--color-surface-raised);
-  font-size: 0.82rem;
-  font-weight: 720;
-}
-
-.settings-view__cloud-actions button.is-primary {
-  border-color: var(--color-accent);
-  color: var(--color-accent-ink);
-  background: color-mix(in srgb, var(--color-accent) 12%, var(--color-surface-raised));
-}
-
-.settings-view__cloud-actions button.is-danger {
-  border-color: color-mix(in srgb, var(--color-danger-text) 35%, var(--color-border));
-  color: var(--color-danger-text);
-}
-
-.settings-view__cloud-actions button:disabled {
-  cursor: not-allowed;
-  opacity: 0.55;
-}
-
-.settings-view__cloud-note {
-  grid-column: 1 / -1;
-  margin: 0;
-  color: var(--color-muted);
-  font-size: 0.78rem;
-  font-weight: 580;
-  line-height: 1.4;
-}
-
-.settings-view__setting-row {
-  display: grid;
-  grid-template-columns: minmax(320px, 1fr) minmax(360px, 420px) 84px;
-  column-gap: 20px;
-  align-items: center;
-  min-height: 72px;
-  min-width: 0;
-  border-bottom: 1px solid var(--color-border-soft);
-  padding: 12px 0;
-  background: transparent;
-}
-
-.settings-view__setting-copy {
-  display: grid;
-  gap: 2px;
-  min-width: 0;
-  align-content: center;
-}
-
-.settings-view__setting-label {
-  color: var(--color-heading);
-  font-size: 0.9rem;
-  font-weight: 720;
-  line-height: 1.3;
-}
-
-.settings-view__setting-description {
-  display: -webkit-box;
-  min-height: calc(0.78rem * 1.35 * 2);
-  overflow: hidden;
-  color: var(--color-muted);
-  font-size: 0.78rem;
-  font-weight: 580;
-  line-height: 1.35;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-}
-
-.settings-view__setting-control {
-  display: flex;
-  min-width: 0;
-  justify-content: flex-end;
-}
-
-.settings-view__number-control {
-  display: flex;
-  width: 100%;
-  min-width: 0;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 10px;
-}
-
-.settings-view__range {
-  width: min(180px, 100%);
-  flex: 1 1 auto;
-  accent-color: var(--color-accent);
-}
-
-.settings-view__number-field {
-  display: inline-flex;
-  min-width: 82px;
-  align-items: center;
-  gap: 4px;
-  border: 1px solid var(--color-border);
-  border-radius: 8px;
-  padding: 0 8px;
-  color: var(--color-muted);
-  background: var(--color-surface-raised);
-  font-size: 0.82rem;
-  font-weight: 720;
-}
-
-.settings-view__number-field input {
-  width: 48px;
-  min-height: 30px;
-  border: 0;
-  padding: 0;
-  color: var(--color-heading);
-  background: transparent;
-  font: inherit;
-}
-
-.settings-view__number-field input:focus {
-  outline: none;
-}
-
-.settings-view__switch {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-}
-
-.settings-view__switch input {
-  position: absolute;
-  opacity: 0;
-  pointer-events: none;
-}
-
-.settings-view__toggle {
-  position: relative;
-  display: inline-flex;
-  width: 44px;
-  height: 26px;
-  align-items: center;
-  border: 1px solid var(--color-border);
-  border-radius: 999px;
-  background: var(--color-surface-soft);
-  transition:
-    border-color 160ms ease,
-    background 160ms ease;
-}
-
-.settings-view__toggle::after {
-  content: "";
-  position: absolute;
-  left: 3px;
-  width: 20px;
-  height: 20px;
-  border-radius: 999px;
-  background: var(--color-surface-raised);
-  box-shadow: var(--shadow-low);
-  transition: transform 160ms ease;
-}
-
-.settings-view__switch input:checked + .settings-view__toggle {
-  border-color: var(--color-accent);
-  background: var(--color-accent);
-}
-
-.settings-view__switch input:checked + .settings-view__toggle::after {
-  transform: translateX(18px);
-}
-
-.settings-view__switch input:focus-visible + .settings-view__toggle {
-  outline: 2px solid rgba(32, 35, 41, 0.18);
-  outline-offset: 2px;
-}
-
-.settings-view__segmented {
-  display: grid;
-  width: 100%;
-  grid-auto-columns: minmax(0, 1fr);
-  grid-auto-flow: column;
-  border: 1px solid var(--color-border);
-  border-radius: 8px;
-  padding: 2px;
-  background: var(--color-surface-soft);
-}
-
-.settings-view__segmented button {
-  min-width: 0;
-  min-height: 28px;
-  border: 1px solid transparent;
-  border-radius: 6px;
-  padding: 0 8px;
-  overflow: hidden;
-  color: var(--color-muted);
-  background: transparent;
-  font-size: 0.8rem;
-  font-weight: 690;
-  line-height: 1.1;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.settings-view__segmented button.is-selected {
-  border-color: var(--color-border);
-  color: var(--color-heading);
-  background: var(--color-surface-raised);
-  box-shadow: var(--shadow-low);
-}
-
-.settings-view__setting-actions {
-  display: flex;
-  width: 84px;
-  min-width: 84px;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
-}
-
-.settings-view__restart-badge {
-  color: var(--color-muted);
-  font-size: 0.8rem;
-  font-weight: 720;
-}
-
-.settings-view__restart-badge {
-  border: 1px solid var(--color-border);
-  border-radius: 999px;
-  padding: 3px 8px;
-  background: var(--color-surface-soft);
-}
-
-.settings-view__reset {
-  width: 100%;
-  min-height: 28px;
-  border: 1px solid transparent;
-  border-radius: 8px;
-  padding: 0 6px;
-  color: var(--color-muted);
-  background: transparent;
-  font-size: 0.78rem;
-  font-weight: 680;
-  text-align: right;
-  white-space: nowrap;
-}
-
-.settings-view__reset:hover {
-  color: var(--color-heading);
-  background: var(--color-surface-soft);
-}
-
-@media (max-width: 820px) {
-  .settings-view-backdrop {
-    padding: 12px;
-  }
-
-  .settings-view {
-    width: calc(100vw - 24px);
-    height: calc(100vh - 24px);
-  }
-
-  .settings-view__body {
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: auto minmax(0, 1fr);
-  }
-
-  .settings-view__sidebar {
-    display: flex;
-    gap: 4px;
-    overflow-x: auto;
-    border-right: 0;
-    border-bottom: 1px solid var(--color-border-soft);
-    padding: 10px 12px;
-  }
-
-  .settings-view__sidebar button {
-    flex: 0 0 auto;
-  }
-
-  .settings-view__content {
-    padding: 22px 18px 32px;
-  }
-
-  .settings-view__setting-row {
-    grid-template-columns: minmax(0, 1fr);
-    row-gap: 10px;
-  }
-
-  .settings-view__setting-control,
-  .settings-view__setting-actions {
-    justify-content: flex-start;
-  }
-
-  .settings-view__setting-actions {
-    width: auto;
-    min-width: 0;
-  }
-
-  .settings-view__reset {
-    width: auto;
-    text-align: left;
-  }
-
-  .settings-view__segmented {
-    max-width: 100%;
-  }
-
-  .settings-view__number-control {
-    width: 100%;
-    min-width: 0;
-    justify-content: flex-start;
-  }
-
-  .settings-view__range {
-    flex: 1 1 auto;
-    min-width: 120px;
-  }
-}
-
-@media (max-width: 640px) {
-  .settings-view-backdrop {
-    place-items: start center;
-    padding: 8px 10px;
-    overflow: auto;
-    background: rgba(17, 19, 24, 0.36);
-  }
-
-  .settings-view {
-    width: 100%;
-    height: auto;
-    max-height: calc(100svh - 16px);
-    grid-template-rows: auto minmax(0, auto);
-    border-radius: 8px;
-  }
-
-  .settings-view__header {
-    min-height: 46px;
-    gap: 10px;
-    padding: 10px 14px;
-  }
-
-  .settings-view__header h2 {
-    font-size: 0.96rem;
-    line-height: 1.18;
-  }
-
-  .settings-view__close {
-    width: 32px;
-    height: 32px;
-    border-radius: 7px;
-    font-size: 1.02rem;
-  }
-
-  .settings-view__body {
-    max-height: calc(100svh - 62px);
-  }
-
-  .settings-view__sidebar {
-    gap: 4px;
-    padding: 6px 10px;
-  }
-
-  .settings-view__sidebar button {
-    min-height: 32px;
-    border-radius: 7px;
-    padding: 0 10px;
-    font-size: 0.8rem;
-    font-weight: 700;
-  }
-
-  .settings-view__content {
-    gap: 18px;
-    max-height: calc(100svh - 106px);
-    padding: 14px 16px 18px;
-  }
-
-  .settings-view__section {
-    gap: 8px;
-  }
-
-  .settings-view__section h3 {
-    font-size: 0.96rem;
-    line-height: 1.18;
-  }
-
-  .settings-view__cloud-card {
-    grid-template-columns: minmax(0, 1fr);
-    gap: 8px;
-    padding: 11px 0 13px;
-  }
-
-  .settings-view__cloud-copy {
-    gap: 1px;
-  }
-
-  .settings-view__cloud-status-row {
-    justify-content: flex-start;
-  }
-
-  .settings-view__cloud-status {
-    min-height: 24px;
-    padding: 0 8px;
-    font-size: 0.7rem;
-  }
-
-  .settings-view__cloud-actions {
-    gap: 6px;
-  }
-
-  .settings-view__cloud-actions button {
-    min-height: 32px;
-    border-radius: 7px;
-    padding: 0 10px;
-    font-size: 0.78rem;
-  }
-
-  .settings-view__cloud-note {
-    font-size: 0.74rem;
-    line-height: 1.34;
-  }
-
-  .settings-view__setting-row {
-    min-height: 0;
-    row-gap: 8px;
-    padding: 10px 0;
-  }
-
-  .settings-view__setting-label {
-    font-size: 0.84rem;
-    line-height: 1.24;
-  }
-
-  .settings-view__setting-description {
-    min-height: 0;
-    font-size: 0.72rem;
-    line-height: 1.3;
-  }
-
-  .settings-view__segmented button {
-    min-height: 27px;
-    padding: 0 7px;
-    font-size: 0.74rem;
-  }
-
-  .settings-view__number-field {
-    min-width: 76px;
-    padding: 0 7px;
-    font-size: 0.76rem;
-  }
-
-  .settings-view__number-field input {
-    width: 44px;
-    min-height: 28px;
-  }
-
-  .settings-view__toggle {
-    width: 40px;
-    height: 24px;
-  }
-
-  .settings-view__toggle::after {
-    width: 18px;
-    height: 18px;
-  }
-
-  .settings-view__switch input:checked + .settings-view__toggle::after {
-    transform: translateX(16px);
-  }
-
-  .settings-view__setting-actions {
-    gap: 6px;
-  }
-
-  .settings-view__restart-badge,
-  .settings-view__reset {
-    font-size: 0.72rem;
-  }
-
-  .settings-view__footer {
-    padding-top: 6px;
-  }
-
-  .settings-view__reset-all {
-    min-height: 24px;
-    font-size: 0.74rem;
-  }
 }
 
 .editor-pane {
@@ -3383,47 +2655,9 @@ button.document-tag-chip__label:focus-visible {
   background: transparent;
 }
 
-.markdown-preview > :not(.preview-annotation-layer) {
+.markdown-preview > * {
   position: relative;
   z-index: 1;
-}
-
-.preview-note-annotation {
-  border-radius: 2px;
-  cursor: pointer;
-  -webkit-user-select: text;
-  user-select: text;
-}
-
-.preview-annotation-layer {
-  position: absolute;
-  inset: 0;
-  z-index: 0;
-  overflow: visible;
-  pointer-events: none;
-}
-
-.preview-annotation-frame {
-  position: absolute;
-  box-sizing: border-box;
-  border-radius: 0;
-  background: var(--color-annotation-surface);
-}
-
-.preview-annotation-frame[data-note-tone="1"] {
-  background: var(--color-annotation-surface-alt);
-}
-
-.preview-note-annotation[data-annotation-kind="glossary"] {
-  text-decoration: underline;
-  text-decoration-color: var(--color-glossary-border);
-  text-decoration-thickness: 2px;
-  text-underline-offset: 0.18em;
-  text-decoration-skip-ink: none;
-}
-
-.preview-annotation-frame[data-annotation-kind="glossary"] {
-  background: var(--color-glossary-surface);
 }
 
 .milkdown-markdown-editor-shell {
@@ -4134,29 +3368,25 @@ button.document-tag-chip__label:focus-visible {
   text-decoration-skip-ink: none;
 }
 
-.scholium-shell.is-note-library-focus-active .preview-note-annotation,
 .scholium-shell.is-note-library-focus-active .milkdown-note-annotation {
   opacity: 1;
   filter: none;
 }
 
-.scholium-shell.is-note-library-focus-active .markdown-preview > :not(.preview-annotation-layer),
+.scholium-shell.is-note-library-focus-active .markdown-preview > *,
 .scholium-shell.is-note-library-focus-active .milkdown-markdown-editor {
   z-index: auto;
 }
 
-.scholium-shell.is-note-library-focus-active .preview-annotation-layer:has(.is-focus-target),
 .scholium-shell.is-note-library-focus-active .milkdown-annotation-layer:has(.is-focus-target) {
   z-index: 64;
 }
 
-.scholium-shell.is-note-library-focus-active .preview-annotation-frame,
 .scholium-shell.is-note-library-focus-active .milkdown-annotation-frame {
   opacity: 0;
   filter: none;
 }
 
-.scholium-shell.is-note-library-focus-active .preview-note-annotation.is-focus-target,
 .scholium-shell.is-note-library-focus-active .milkdown-note-annotation.is-focus-target {
   position: relative;
   z-index: 65;
@@ -4166,9 +3396,6 @@ button.document-tag-chip__label:focus-visible {
 }
 
 .scholium-shell.is-note-library-focus-active
-  .markdown-preview
-  li:has(.preview-note-annotation.is-focus-target),
-.scholium-shell.is-note-library-focus-active
   .milkdown-markdown-editor
   .milkdown
   .ProseMirror
@@ -4177,7 +3404,6 @@ button.document-tag-chip__label:focus-visible {
   z-index: 65;
 }
 
-.scholium-shell.is-note-library-focus-active .preview-annotation-frame.is-focus-target,
 .scholium-shell.is-note-library-focus-active .milkdown-annotation-frame.is-focus-target {
   z-index: 64;
   opacity: 1;
@@ -4185,11 +3411,6 @@ button.document-tag-chip__label:focus-visible {
   box-shadow: none;
 }
 
-.scholium-shell.is-note-library-focus-active
-  .preview-note-annotation.is-focus-target
-  .preview-note-annotation[data-annotation-kind="glossary"],
-.scholium-shell.is-note-library-focus-active
-  .preview-note-annotation.is-focus-target[data-annotation-kind="glossary"],
 .scholium-shell.is-note-library-focus-active
   .milkdown-note-annotation.is-focus-target
   .milkdown-glossary-annotation,
@@ -4204,26 +3425,21 @@ button.document-tag-chip__label:focus-visible {
   filter: none;
 }
 
-.scholium-shell.is-note-panel-modal-active .preview-annotation-layer,
 .scholium-shell.is-note-panel-modal-active .milkdown-annotation-layer {
   z-index: 86;
 }
 
-.scholium-shell.is-note-panel-modal-active .markdown-preview > :not(.preview-annotation-layer),
+.scholium-shell.is-note-panel-modal-active .markdown-preview > *,
 .scholium-shell.is-note-panel-modal-active .milkdown-markdown-editor {
   z-index: auto;
 }
 
-.scholium-shell.is-note-panel-modal-active
-  .preview-annotation-frame:not([data-focus-target="true"]),
 .scholium-shell.is-note-panel-modal-active
   .milkdown-annotation-frame:not([data-focus-target="true"]) {
   opacity: 0;
   filter: none;
 }
 
-.scholium-shell.is-note-panel-modal-active .preview-annotation-frame.is-focus-target,
-.scholium-shell.is-note-panel-modal-active .preview-annotation-frame[data-focus-target="true"],
 .scholium-shell.is-note-panel-modal-active .milkdown-annotation-frame.is-focus-target,
 .scholium-shell.is-note-panel-modal-active .milkdown-annotation-frame[data-focus-target="true"] {
   z-index: 86;
@@ -4231,7 +3447,6 @@ button.document-tag-chip__label:focus-visible {
   filter: none;
 }
 
-.scholium-shell.is-note-panel-modal-active .preview-note-annotation.is-focus-target,
 .scholium-shell.is-note-panel-modal-active .milkdown-note-annotation.is-focus-target {
   position: relative;
   z-index: 87;
@@ -4243,9 +3458,6 @@ button.document-tag-chip__label:focus-visible {
 }
 
 .scholium-shell.is-note-panel-modal-active
-  .markdown-preview
-  li:has(.preview-note-annotation.is-focus-target),
-.scholium-shell.is-note-panel-modal-active
   .milkdown-markdown-editor
   .milkdown
   .ProseMirror
@@ -4255,14 +3467,10 @@ button.document-tag-chip__label:focus-visible {
 }
 
 .scholium-shell.is-note-panel-modal-active
-  .preview-note-annotation.is-focus-target[data-note-tone="1"],
-.scholium-shell.is-note-panel-modal-active
   .milkdown-note-annotation.is-focus-target[data-note-tone="1"] {
   background: transparent;
 }
 
-.scholium-shell.is-note-panel-modal-active
-  .preview-note-annotation.is-focus-target[data-annotation-kind="glossary"],
 .scholium-shell.is-note-panel-modal-active
   .milkdown-note-annotation.is-focus-target[data-annotation-kind="glossary"] {
   background: transparent;
@@ -4645,68 +3853,6 @@ button.document-tag-chip__label:focus-visible {
   padding: 0;
 }
 
-.note-library-card__body-shell {
-  --note-library-card-body-preview-height: calc(2 * 1.5em);
-  --note-library-card-body-focused-height: calc(10 * 1.5em);
-  position: relative;
-  max-height: var(--note-library-card-body-preview-height);
-  overflow: hidden;
-  transition: max-height 450ms cubic-bezier(0.2, 0.8, 0.2, 1);
-  will-change: max-height;
-}
-
-.note-library-card__body-shell[data-has-overflow="true"]:not(.is-expanded)::after {
-  content: "";
-  position: absolute;
-  right: 0;
-  bottom: 0;
-  left: 0;
-  z-index: 1;
-  height: 1.35em;
-  background: linear-gradient(
-    180deg,
-    color-mix(in srgb, var(--note-library-card-background) 0%, transparent) 0%,
-    color-mix(in srgb, var(--note-library-card-background) 18%, transparent) 24%,
-    color-mix(in srgb, var(--note-library-card-background) 70%, transparent) 72%,
-    var(--note-library-card-background) 100%
-  );
-  pointer-events: none;
-}
-
-.note-library-card__body-shell.is-expanded {
-  max-height: max(
-    var(--note-library-card-body-preview-height),
-    var(
-      --note-library-card-body-expanded-height,
-      var(--note-library-card-body-preview-height)
-    )
-  );
-}
-
-.note-library-card__body-shell.is-expanded::after {
-  content: none;
-}
-
-.note-library-card.is-focused .note-library-card__body-shell:not(.is-expanded),
-.note-library-card:focus-within .note-library-card__body-shell:not(.is-expanded) {
-  max-height: var(--note-library-card-body-focused-height);
-  overflow-y: auto;
-  overscroll-behavior: contain;
-}
-
-.note-library-card.is-focused .note-library-card__body-shell:not(.is-expanded)::after,
-.note-library-card:focus-within .note-library-card__body-shell:not(.is-expanded)::after {
-  content: none;
-}
-
-.note-library-card__body-measure {
-  min-height: 0;
-}
-
-.note-library-card__body {
-  overflow: visible;
-}
-
 .note-library-expanded-panel {
   position: fixed;
   top: 0;
@@ -4831,7 +3977,6 @@ button.document-tag-chip__label:focus-visible {
   --note-content-font-size: 0.94rem;
   --note-content-line-height: 1.5;
   --note-markdown-editor-chrome-height: 0px;
-  --note-edit-border-color: var(--note-editor-border-color, var(--color-note-border));
   --note-edit-focus-ring-inline-padding: 14px;
   position: relative;
   width: 100%;
@@ -4915,7 +4060,7 @@ button.document-tag-chip__label:focus-visible {
   background: rgba(138, 36, 56, 0.24);
 }
 
-.note-markdown-editor :is(.markdown-preview, .note-markdown-editor__preview) {
+.note-markdown-editor .markdown-preview {
   min-height: var(--note-markdown-editor-min-height);
   max-height: var(--note-markdown-editor-max-height, none);
   overflow-y: auto;
@@ -4937,37 +4082,32 @@ button.document-tag-chip__label:focus-visible {
   pointer-events: none;
 }
 
-.scholium-shell.is-mobile-safe-layout .note-markdown-editor :is(.markdown-preview, .note-markdown-editor__preview) {
+.scholium-shell.is-mobile-safe-layout .note-markdown-editor .markdown-preview {
   min-height: var(--note-markdown-editor-min-height);
 }
 
-.note-markdown-editor.is-previewing :is(.markdown-preview, .note-markdown-editor__preview) {
+.note-markdown-editor.is-previewing .markdown-preview {
   cursor: default;
 }
 
-.note-markdown-editor.is-editing :is(.markdown-preview, .note-markdown-editor__preview) {
+.note-markdown-editor.is-editing .markdown-preview {
   cursor: text;
 }
 
-.note-markdown-editor__plain-preview {
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-
-.note-markdown-editor :is(.markdown-preview, .note-markdown-editor__preview) > :first-child {
+.note-markdown-editor .markdown-preview > :first-child {
   margin-top: 0;
 }
 
-.note-markdown-editor :is(.markdown-preview, .note-markdown-editor__preview) > :last-child {
+.floating-note-card__editor--glossary .markdown-preview > :last-child {
   margin-bottom: 0;
 }
 
-.note-markdown-editor :is(.markdown-preview, .note-markdown-editor__preview) h1,
-.note-markdown-editor :is(.markdown-preview, .note-markdown-editor__preview) h2,
-.note-markdown-editor :is(.markdown-preview, .note-markdown-editor__preview) h3,
-.note-markdown-editor :is(.markdown-preview, .note-markdown-editor__preview) h4,
-.note-markdown-editor :is(.markdown-preview, .note-markdown-editor__preview) h5,
-.note-markdown-editor :is(.markdown-preview, .note-markdown-editor__preview) h6 {
+.note-markdown-editor .markdown-preview h1,
+.note-markdown-editor .markdown-preview h2,
+.note-markdown-editor .markdown-preview h3,
+.note-markdown-editor .markdown-preview h4,
+.note-markdown-editor .markdown-preview h5,
+.note-markdown-editor .markdown-preview h6 {
   margin: 0.85em 0 0.32em;
   color: var(--color-heading);
   font-size: 1rem;
@@ -4976,25 +4116,25 @@ button.document-tag-chip__label:focus-visible {
   line-height: 1.25;
 }
 
-.note-markdown-editor :is(.markdown-preview, .note-markdown-editor__preview) h1 {
+.note-markdown-editor .markdown-preview h1 {
   font-size: 1.08rem;
 }
 
-.note-markdown-editor :is(.markdown-preview, .note-markdown-editor__preview) h2 {
+.note-markdown-editor .markdown-preview h2 {
   padding-bottom: 0.18em;
   border-bottom: 1px solid rgba(32, 35, 41, 0.14);
 }
 
-.note-markdown-editor :is(.markdown-preview, .note-markdown-editor__preview) p,
-.note-markdown-editor :is(.markdown-preview, .note-markdown-editor__preview) ul,
-.note-markdown-editor :is(.markdown-preview, .note-markdown-editor__preview) ol,
-.note-markdown-editor :is(.markdown-preview, .note-markdown-editor__preview) blockquote,
-.note-markdown-editor :is(.markdown-preview, .note-markdown-editor__preview) pre {
+.note-markdown-editor .markdown-preview p,
+.note-markdown-editor .markdown-preview ul,
+.note-markdown-editor .markdown-preview ol,
+.note-markdown-editor .markdown-preview blockquote,
+.note-markdown-editor .markdown-preview pre {
   margin: 0 0 0.72em;
 }
 
-.note-markdown-editor :is(.markdown-preview, .note-markdown-editor__preview) ul,
-.note-markdown-editor :is(.markdown-preview, .note-markdown-editor__preview) ol {
+.note-markdown-editor .markdown-preview ul,
+.note-markdown-editor .markdown-preview ol {
   --note-list-unified-marker-gap: 0.64em;
   --note-list-marker-gap: var(--note-list-unified-marker-gap);
   --note-list-marker-width: 0.42em;
@@ -5003,18 +4143,18 @@ button.document-tag-chip__label:focus-visible {
   padding-left: 0;
 }
 
-.note-markdown-editor :is(.markdown-preview, .note-markdown-editor__preview) ol {
+.note-markdown-editor .markdown-preview ol {
   --note-list-marker-width: 0.78em;
   counter-reset: scholium-note-list;
 }
 
-.note-markdown-editor :is(.markdown-preview, .note-markdown-editor__preview) li {
+.note-markdown-editor .markdown-preview li {
   position: relative;
   padding-left: calc(var(--note-list-marker-width) + var(--note-list-marker-gap));
 }
 
-.note-markdown-editor :is(.markdown-preview, .note-markdown-editor__preview) ul > li::before,
-.note-markdown-editor :is(.markdown-preview, .note-markdown-editor__preview) ol > li::before {
+.note-markdown-editor .markdown-preview ul > li::before,
+.note-markdown-editor .markdown-preview ol > li::before {
   position: absolute;
   top: 0;
   left: 0;
@@ -5024,7 +4164,7 @@ button.document-tag-chip__label:focus-visible {
   text-align: right;
 }
 
-.note-markdown-editor :is(.markdown-preview, .note-markdown-editor__preview) ul > li::before {
+.note-markdown-editor .markdown-preview ul > li::before {
   content: "";
   top: 0.75em;
   left: calc(var(--note-list-marker-width) - var(--note-list-bullet-size));
@@ -5035,43 +4175,43 @@ button.document-tag-chip__label:focus-visible {
   transform: translateY(-50%);
 }
 
-.note-markdown-editor :is(.markdown-preview, .note-markdown-editor__preview) ol > li {
+.note-markdown-editor .markdown-preview ol > li {
   counter-increment: scholium-note-list;
 }
 
-.note-markdown-editor :is(.markdown-preview, .note-markdown-editor__preview) ol > li::before {
+.note-markdown-editor .markdown-preview ol > li::before {
   content: counter(scholium-note-list) ".";
 }
 
-.note-markdown-editor :is(.markdown-preview, .note-markdown-editor__preview) li + li {
+.note-markdown-editor .markdown-preview li + li {
   margin-top: 0.18em;
 }
 
-.note-markdown-editor :is(.markdown-preview, .note-markdown-editor__preview) li > ul,
-.note-markdown-editor :is(.markdown-preview, .note-markdown-editor__preview) li > ol {
+.note-markdown-editor .markdown-preview li > ul,
+.note-markdown-editor .markdown-preview li > ol {
   --note-list-marker-gap: 0.52em;
   margin: 0.18em 0 0.28em;
   padding-left: 1.15em;
 }
 
-.note-markdown-editor :is(.markdown-preview, .note-markdown-editor__preview) li > ul {
+.note-markdown-editor .markdown-preview li > ul {
   --note-list-marker-width: 0.38em;
   --note-list-bullet-size: 0.28em;
 }
 
-.note-markdown-editor :is(.markdown-preview, .note-markdown-editor__preview) li > ol {
+.note-markdown-editor .markdown-preview li > ol {
   --note-list-marker-width: 0.72em;
   counter-reset: scholium-note-list;
 }
 
-.note-markdown-editor :is(.markdown-preview, .note-markdown-editor__preview) blockquote {
+.note-markdown-editor .markdown-preview blockquote {
   padding: 0.1em 0 0.1em 0.72em;
   border-left: 3px solid var(--color-note-border);
   color: var(--color-muted);
   background: transparent;
 }
 
-.note-markdown-editor :is(.markdown-preview, .note-markdown-editor__preview) code {
+.note-markdown-editor .markdown-preview code {
   border-radius: 4px;
   padding: 0.08em 0.28em;
   color: var(--color-accent-ink);
@@ -5079,7 +4219,7 @@ button.document-tag-chip__label:focus-visible {
   font-size: 0.88em;
 }
 
-.note-markdown-editor :is(.markdown-preview, .note-markdown-editor__preview) pre {
+.note-markdown-editor .markdown-preview pre {
   overflow: auto;
   border: 1px solid rgba(32, 35, 41, 0.14);
   border-radius: 6px;
@@ -5311,10 +4451,7 @@ button.document-tag-chip__label:focus-visible {
   overflow: visible;
 }
 
-.note-library-expanded-panel__editor.is-previewing
-  .note-markdown-editor__shared-height-container,
-.note-library-expanded-panel__editor.is-previewing
-  :is(.markdown-preview, .note-markdown-editor__preview) {
+.note-library-expanded-panel__editor.is-previewing .markdown-preview {
   height: auto;
   min-height: 0;
   max-height: none;
@@ -5322,8 +4459,6 @@ button.document-tag-chip__label:focus-visible {
 }
 
 .note-library-expanded-panel__editor.is-editing,
-.note-library-expanded-panel__editor.is-editing
-  .note-markdown-editor__shared-height-container,
 .note-library-expanded-panel__editor.is-editing .note-markdown-editor__textarea {
   height: 100%;
   min-height: 100%;
@@ -5349,23 +4484,13 @@ button.document-tag-chip__label:focus-visible {
   --note-edit-focus-ring-inline-padding: 0px;
 }
 
-.floating-note-card__editor--glossary
-  .markdown-preview
-  > [data-preview-block-key]:has(+ .preview-annotation-layer) {
-  margin-bottom: 0;
-}
-
 .scholium-shell .note-library-card__editor .markdown-preview,
-.scholium-shell .note-library-card__editor .note-markdown-editor__preview,
 .scholium-shell .note-library-card__editor .note-markdown-editor__textarea,
 .scholium-shell .floating-note-card__editor .markdown-preview,
-.scholium-shell .floating-note-card__editor .note-markdown-editor__preview,
 .scholium-shell .floating-note-card__editor .note-markdown-editor__textarea,
 .scholium-shell.is-mobile-safe-layout .note-library-card__editor .markdown-preview,
-.scholium-shell.is-mobile-safe-layout .note-library-card__editor .note-markdown-editor__preview,
 .scholium-shell.is-mobile-safe-layout .note-library-card__editor .note-markdown-editor__textarea,
 .scholium-shell.is-mobile-safe-layout .floating-note-card__editor .markdown-preview,
-.scholium-shell.is-mobile-safe-layout .floating-note-card__editor .note-markdown-editor__preview,
 .scholium-shell.is-mobile-safe-layout .floating-note-card__editor .note-markdown-editor__textarea {
   height: auto;
   min-height: 0;
@@ -5733,7 +4858,6 @@ button.document-tag-chip__label:focus-visible {
   align-self: stretch;
 }
 
-.floating-note-panel.is-expanded-sidebar .note-returning-status,
 .floating-note-panel.is-expanded-sidebar .bottom-note-actions {
   grid-row: 4;
 }
@@ -5772,10 +4896,7 @@ button.document-tag-chip__label:focus-visible {
 .floating-note-panel.is-expanded-sidebar .floating-note-card__editor.is-previewing,
 .floating-note-panel.is-expanded-sidebar
   .floating-note-card__editor.is-previewing
-  .note-markdown-editor__shared-height-container,
-.floating-note-panel.is-expanded-sidebar
-  .floating-note-card__editor.is-previewing
-  :is(.markdown-preview, .note-markdown-editor__preview),
+  .markdown-preview,
 .floating-note-panel.is-expanded-sidebar
   .floating-note-card__editor.is-previewing
   .milkdown-markdown-editor-shell,
@@ -5798,9 +4919,6 @@ button.document-tag-chip__label:focus-visible {
 }
 
 .floating-note-panel.is-expanded-sidebar .floating-note-card__editor.is-editing,
-.floating-note-panel.is-expanded-sidebar
-  .floating-note-card__editor.is-editing
-  .note-markdown-editor__shared-height-container,
 .floating-note-panel.is-expanded-sidebar
   .floating-note-card__editor.is-editing
   .note-markdown-editor__textarea,
@@ -6169,31 +5287,6 @@ button.document-tag-chip__label:focus-visible {
 
 .note-markdown-table-scroll :is(th, td):last-child {
   border-right: 0;
-}
-
-.note-returning-status {
-  display: inline-flex;
-  min-height: 28px;
-  align-items: center;
-  gap: 8px;
-  color: var(--color-muted);
-  font-size: 0.82rem;
-  font-weight: 700;
-}
-
-.note-returning-spinner {
-  width: 14px;
-  height: 14px;
-  border: 2px solid rgba(107, 114, 128, 0.22);
-  border-top-color: var(--color-muted);
-  border-radius: 999px;
-  animation: note-returning-spin 520ms linear infinite;
-}
-
-@keyframes note-returning-spin {
-  to {
-    transform: rotate(360deg);
-  }
 }
 
 .note-actions {
@@ -7479,16 +6572,14 @@ button.document-tag-chip__label:focus-visible {
     white-space: nowrap;
   }
 
-  .mobile-tag-picker-result__icon,
-  .mobile-tag-picker-create__icon {
+  .mobile-tag-picker-result__icon {
     display: inline-flex;
     width: 12px;
     height: 12px;
     flex: 0 0 auto;
   }
 
-  .mobile-tag-picker-result__icon svg,
-  .mobile-tag-picker-create__icon svg {
+  .mobile-tag-picker-result__icon svg {
     width: 100%;
     height: 100%;
     fill: currentColor;
@@ -8019,8 +7110,6 @@ button.document-tag-chip__label:focus-visible {
   }
 
   .scholium-shell.is-mobile-safe-layout.is-note-panel-modal-active
-    .preview-annotation-layer,
-  .scholium-shell.is-mobile-safe-layout.is-note-panel-modal-active
     .milkdown-annotation-layer,
   .scholium-shell.is-mobile-safe-layout
     .milkdown-touch-block-selection-overlay.is-committed {
@@ -8028,15 +7117,10 @@ button.document-tag-chip__label:focus-visible {
   }
 
   .scholium-shell.is-mobile-safe-layout.is-note-panel-modal-active
-    .preview-note-annotation.is-focus-target,
-  .scholium-shell.is-mobile-safe-layout.is-note-panel-modal-active
     .milkdown-note-annotation.is-focus-target {
     z-index: 67;
   }
 
-  .scholium-shell.is-mobile-safe-layout.is-note-panel-modal-active
-    .markdown-preview
-    li:has(.preview-note-annotation.is-focus-target),
   .scholium-shell.is-mobile-safe-layout.is-note-panel-modal-active
     .milkdown-markdown-editor
     .milkdown
@@ -8358,17 +7442,9 @@ button.document-tag-chip__label:focus-visible {
   }
 }
 
-.note-markdown-editor__shared-height-container {
-  display: grid;
-  grid-template-columns: 1fr;
-}
-.note-markdown-editor__shared-height-container > * {
-  grid-area: 1 / 1;
-}
-
 :is(
     .bottom-note-body,
-    .note-markdown-editor :is(.markdown-preview, .note-markdown-editor__preview)
+    .note-markdown-editor .markdown-preview
   )
   ol {
   list-style: decimal;
@@ -8378,7 +7454,7 @@ button.document-tag-chip__label:focus-visible {
 
 :is(
     .bottom-note-body,
-    .note-markdown-editor :is(.markdown-preview, .note-markdown-editor__preview)
+    .note-markdown-editor .markdown-preview
   )
   ol
   > li {
@@ -8388,7 +7464,7 @@ button.document-tag-chip__label:focus-visible {
 
 :is(
     .bottom-note-body,
-    .note-markdown-editor :is(.markdown-preview, .note-markdown-editor__preview)
+    .note-markdown-editor .markdown-preview
   )
   ol
   > li::before {
@@ -8397,7 +7473,7 @@ button.document-tag-chip__label:focus-visible {
 
 :is(
     .bottom-note-body,
-    .note-markdown-editor :is(.markdown-preview, .note-markdown-editor__preview)
+    .note-markdown-editor .markdown-preview
   )
   ol
   > li::marker {
@@ -8406,7 +7482,7 @@ button.document-tag-chip__label:focus-visible {
 
 :is(
     .bottom-note-body,
-    .note-markdown-editor :is(.markdown-preview, .note-markdown-editor__preview)
+    .note-markdown-editor .markdown-preview
   )
   li
   > ol {

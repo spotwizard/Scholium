@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "markdownPath": "/fixtures/legacy-article.md",
+  "notes": [
+    {
+      "id": "legacy-note-1",
+      "documentId": "/fixtures/legacy-article.md",
+      "status": "active",
+      "selectedText": "Legacy 段落",
+      "anchor": {
+        "from": 0,
+        "to": 9,
+        "selectedText": "Legacy 段落",
+        "prefix": "",
+        "suffix": " after"
+      },
+      "tone": 0,
+      "body": "legacy note body",
+      "createdAt": "2026-08-17T00:00:00.000Z",
+      "updatedAt": "2026-08-17T00:00:00.000Z",
+      "deletedAt": null
+    }
+  ]
+}

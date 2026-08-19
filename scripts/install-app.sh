@@ -68,11 +68,16 @@ unregister_noninstalled_scholium_apps
 
 rm -rf "${INSTALLED_APP}"
 ditto "${BUILT_APP}" "${INSTALLED_APP}"
-codesign --force --deep --sign - "${INSTALLED_APP}"
+if ! codesign --verify --deep --strict "${INSTALLED_APP}" >/dev/null 2>&1; then
+  codesign --force --deep --sign - "${INSTALLED_APP}"
+fi
 unregister_noninstalled_scholium_apps
 "${LSREGISTER}" -f "${INSTALLED_APP}"
 touch "${INSTALLED_APP}"
 open -g "${INSTALLED_APP}"
 sleep 1
 
-pgrep -fl "${INSTALLED_BINARY}" || pgrep -fl scholium || true
+if ! pgrep -fl "${INSTALLED_BINARY}"; then
+  echo "Installed Scholium did not start from the expected path: ${INSTALLED_BINARY}" >&2
+  exit 1
+fi

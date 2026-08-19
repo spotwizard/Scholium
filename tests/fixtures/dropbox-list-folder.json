@@ -1,0 +1,21 @@
+{
+  "entries": [
+    {
+      ".tag": "folder",
+      "name": "Notes",
+      "path_display": "/Notes",
+      "path_lower": "/notes"
+    },
+    {
+      ".tag": "file",
+      "name": "article.md",
+      "path_display": "/Notes/article.md",
+      "path_lower": "/notes/article.md",
+      "server_modified": "2026-08-17T00:00:00Z",
+      "size": 128,
+      "is_downloadable": true
+    }
+  ],
+  "cursor": "fixture-cursor",
+  "has_more": false
+}

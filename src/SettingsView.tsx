@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState, type ReactNode, type RefObject } from "react";
+import { useEffect, useState, type ReactNode, type RefObject } from "react";
+import "./SettingsView.css";
 import type { TranslationKey } from "./i18n";
 import {
   settingCategoryLabelKeys,
@@ -13,11 +14,11 @@ import {
 
 type SettingsViewProps = {
   closeButtonRef: RefObject<HTMLButtonElement | null>;
-  customSections?: Array<{
+  customSections: Array<{
     category: SettingCategory;
     content: ReactNode;
   }>;
-  initialCategory?: SettingCategory;
+  initialCategory: SettingCategory;
   t: (key: TranslationKey, replacements?: Record<string, string | number>) => string;
   values: SettingsSnapshot;
   onChange: (key: SettingKey, value: SettingValue) => void;
@@ -28,8 +29,8 @@ type SettingsViewProps = {
 
 export function SettingsView({
   closeButtonRef,
-  customSections = [],
-  initialCategory = "app",
+  customSections,
+  initialCategory,
   t,
   values,
   onChange,
@@ -37,26 +38,18 @@ export function SettingsView({
   onResetAllSettings,
   onResetSetting,
 }: SettingsViewProps) {
-  const customSectionsByCategory = useMemo(
-    () =>
-      new Map<SettingCategory, ReactNode>(
-        customSections.map((section) => [section.category, section.content]),
-      ),
-    [customSections],
+  const customSectionsByCategory = new Map<SettingCategory, ReactNode>(
+    customSections.map((section) => [section.category, section.content]),
   );
-  const activeCategories = useMemo(
-    () =>
-      settingCategoryOrder
-        .map((category) => ({
-          category,
-          definitions: settingsDefinitions.filter((definition) => definition.category === category),
-        }))
-        .filter(
-          (section) =>
-            section.definitions.length > 0 || customSectionsByCategory.has(section.category),
-        ),
-    [customSectionsByCategory],
-  );
+  const activeCategories = settingCategoryOrder
+    .map((category) => ({
+      category,
+      definitions: settingsDefinitions.filter((definition) => definition.category === category),
+    }))
+    .filter(
+      (section) =>
+        section.definitions.length > 0 || customSectionsByCategory.has(section.category),
+    );
   const [selectedCategory, setSelectedCategory] = useState<SettingCategory>(
     initialCategory,
   );
@@ -205,21 +198,14 @@ export function SettingsView({
                             <span className="settings-view__setting-label">
                               {t(definition.labelKey)}
                             </span>
-                            {definition.descriptionKey ? (
-                              <span className="settings-view__setting-description">
-                                {t(definition.descriptionKey)}
-                              </span>
-                            ) : null}
+                            <span className="settings-view__setting-description">
+                              {t(definition.descriptionKey)}
+                            </span>
                           </div>
                           <div className="settings-view__setting-control">
                             {renderSettingControl(definition)}
                           </div>
                           <div className="settings-view__setting-actions">
-                            {definition.requiresRestart ? (
-                              <span className="settings-view__restart-badge">
-                                {t("settings.restartRequired")}
-                              </span>
-                            ) : null}
                             {settingIsModified(definition) ? (
                               <button
                                 className="settings-view__reset"

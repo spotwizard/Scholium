@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "source": "local",
+  "workspacePath": "/fixtures/workspace",
+  "openDocumentPaths": [
+    "/fixtures/workspace/first.md",
+    "/fixtures/workspace/second.md"
+  ],
+  "activeDocumentPath": "/fixtures/workspace/second.md"
+}

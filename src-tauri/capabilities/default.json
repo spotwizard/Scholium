@@ -4,8 +4,13 @@
   "description": "Capability for the main window",
   "windows": ["main", "scholium-window-*"],
   "permissions": [
-    "core:default",
-    "dialog:default",
-    "opener:default"
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "core:window:allow-is-fullscreen",
+    "core:window:allow-scene-identifier",
+    "dialog:allow-open",
+    "dialog:allow-save",
+    "opener:allow-open-url",
+    "opener:allow-default-urls"
   ]
 }

@@ -1,4 +1,3 @@
-import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open as openDialog, save } from "@tauri-apps/plugin-dialog";
@@ -27,24 +26,60 @@ import {
 } from "react";
 import "./App.css";
 import { MilkdownMarkdownEditor } from "./MilkdownMarkdownEditor";
+import { MarkdownEditor } from "./MarkdownEditor";
+import type {
+  AnnotationTone,
+  EditorChangeSource,
+  TextAnnotation,
+  TextSelectionAnchor,
+  TextSelectionEnterContext,
+} from "./editorTypes";
 import {
-  MarkdownEditor,
-  type AnnotationTone,
-  type EditorChangeSource,
-  type TextAnnotation,
-  type TextSelectionAnchor,
-  type TextSelectionEnterContext,
-} from "./MarkdownEditor";
+  anchorMatchesBodyText,
+  hasRenderableAnchor,
+  makeAnchorFromRange,
+  normalizeSelectionTextForComparison,
+  refreshAnchor,
+  textEditFromBodyChange,
+  textSelectionAnchorsMatch,
+  transformAnchorRangeWithTextEdits,
+  type MarkdownTextEdit,
+} from "./annotationAnchor";
+import {
+  createAutosaveCoordinator,
+  hasDirtyState,
+  patchDirtyDocumentStates,
+  reconcileDirtyAfterSavedSnapshot,
+  sidecarFingerprint,
+  type DirtyDocumentState,
+  type DirtyDocumentStates,
+} from "./autosave";
+import type {
+  GlossaryBinding,
+  GlossaryTerm,
+  NoteStatus,
+  SelectionNote,
+} from "./documentTypes";
 import {
   documentSearchMoveDeltaForKeyDown,
   isDocumentSearchSelectAllShortcut,
   type DocumentSearchState,
 } from "./documentSearch";
 import {
+  draftDocumentHasContent,
+  draftDocumentId,
+  draftDocumentSource,
+  isDraftDocumentId,
+} from "./draftDocuments";
+import {
+  availableDocumentTabIds,
   availableDocumentTabSession,
   createDocumentTabSession,
-  documentTabIdsAfterClosingOthers,
+  documentTabClickSelection,
+  documentTabIdsAfterOpening,
   documentTabIdAtPoint,
+  documentTabsAfterClosing,
+  documentTabsAfterClosingOthers,
   parseDocumentTabSession,
   type DocumentTabSessionState,
 } from "./documentTabs";
@@ -52,8 +87,8 @@ import { shouldHandlePreviewSelectAllShortcut } from "./editorKeyboardShortcuts"
 import { anchoredFloatingNoteGeometry } from "./floatingNotePosition";
 import { SettingsView } from "./SettingsView";
 import appIconUrl from "../src-tauri/icons/128x128@2x.png";
-import fileSelectedGlyphSvg from "./assets/file-selected-glyph.svg?raw";
-import fileGlyphSvg from "./assets/file-glyph.svg?raw";
+import fileSelectedGlyphUrl from "./assets/file-selected-glyph.png";
+import fileGlyphUrl from "./assets/file-glyph.png";
 import folderGlyphSvg from "./assets/folder-glyph.svg?raw";
 import folderSelectedGlyphSvg from "./assets/folder-selected-glyph.svg?raw";
 import collapseIconSvg from "./assets/collapse.svg?raw";
@@ -61,20 +96,84 @@ import expandIconSvg from "./assets/expand.svg?raw";
 import plusSignIconSvg from "./assets/plus-sign.svg?raw";
 import priceTagIconSvg from "./assets/price-tag.svg?raw";
 import { appLanguageHtmlLang, createTranslator, type TranslationKey } from "./i18n";
+import { localRecoveryErrorTranslationKey } from "./localRecoveryError";
+import {
+  loadedGlossaryBindingForDocument,
+  loadedNoteForDocument,
+  projectLoadedLocalFiles,
+} from "./loadedFileProjection";
 import { loadScholiumMermaid } from "./mermaid";
 import {
+  markdownTagDedupeKey as tagDedupeKey,
   markdownHasMalformedFrontmatter,
-  markdownFrontmatterBodyStartLine,
+  normalizeMarkdownTag as normalizeTagInput,
   readMarkdownTags,
   stripMarkdownFrontmatter,
   writeMarkdownTags,
 } from "./markdownFrontmatter";
 import { resolveMarkdownLinkTarget } from "./markdownLinkTarget";
-import { parseMarkdownTableAt, type MarkdownTable } from "./markdownTable";
+import {
+  closestTextIndex,
+  findNonOverlappingTextIndices,
+  markdownLineStartOffsets as getLineStartOffsets,
+} from "./markdownInlineTextMap";
+import {
+  parseMarkdownListLine,
+  parseMarkdownPreviewBlocks,
+  parseNoteMarkdownPreviewBlocks,
+  type MarkdownPreviewBlock,
+  type MarkdownPreviewList,
+  type MarkdownPreviewListKind,
+  type NoteMarkdownPreviewBlock,
+  type ParsedMarkdownListLine,
+} from "./markdownPreview";
 import {
   sortWorkspaceEntriesForDirectory,
   type WorkspaceSortMode,
 } from "./workspaceSort";
+import {
+  currentWindowWorkspaceStorage,
+  workspaceStorageKeys,
+} from "./workspaceStorage";
+import {
+  ancestorDirectoryPathsForFile,
+  dropboxDocumentId,
+  dropboxDocumentIdPrefix,
+  dropboxParentDirectoryPath,
+  ensureMarkdownExtension,
+  fileNameFromPath,
+  filePathInDirectory,
+  isDropboxDocumentId,
+  localPathIsInsideDirectory,
+  localPathsMatch,
+  normalizeLocalPathForCompare,
+  parentDirectoryPath,
+  stripMarkdownExtension,
+  workspacePathIsInsideDirectory,
+} from "./workspacePaths";
+import {
+  collapseWorkspaceDirectory,
+  collectVisibleDescendantDirectoryKeys,
+  directoryTreeKey,
+  documentFromLoadedFileResult,
+  documentIsFromDropbox,
+  dropboxPickerNodesFromOpenedDirectory,
+  filterWorkspaceEntriesForSearch,
+  firstDropboxMarkdownFileEntry,
+  flattenDropboxDirectoryPickerNodes,
+  insertOrUpdateWorkspaceFileEntry,
+  insertWorkspaceDirectoryChildren,
+  updateDropboxDirectoryPickerNode,
+  workspaceEntriesFromOpenedDirectory,
+  workspaceEntriesFromOpenedDropboxDirectory,
+  workspaceEntryFromDocument,
+  workspaceEntrySelectionKey,
+  type DropboxDirectoryPickerState,
+  type DropboxPickerMode,
+  type MarkdownDocument,
+  type WorkspaceEntry,
+  type WorkspaceFileEntry,
+} from "./workspaceEntries";
 import {
   readSettingsSnapshot,
   resetSetting,
@@ -85,9 +184,61 @@ import {
   type SettingValue,
   type SettingsSnapshot,
 } from "./settings";
+import {
+  checkDropboxConnection,
+  completeDropboxOAuth as requestDropboxOAuthCompletion,
+  createDropboxMarkdownDirectory,
+  createDropboxMarkdownFile as createDropboxMarkdownFileRequest,
+  createMarkdownDirectory,
+  createNewWindow,
+  deleteDropboxMarkdownDirectory,
+  deleteDropboxMarkdownFile,
+  deleteMarkdownDirectory,
+  deleteMarkdownFile,
+  disconnectDropbox,
+  dropboxOAuthStatus,
+  duplicateDropboxMarkdownFile,
+  duplicateMarkdownFile,
+  listDropboxMarkdownDirectory,
+  openDropboxMarkdownFile,
+  openMarkdownDirectory,
+  openMarkdownFile,
+  openMarkdownFileContext,
+  readDropboxMarkdownBody,
+  rememberRecentLocation,
+  renameDropboxMarkdownDirectory,
+  renameDropboxMarkdownFile,
+  renameMarkdownDirectory,
+  renameMarkdownFile,
+  saveDropboxMarkdownFile,
+  saveMarkdownFile,
+  savedLocations as loadSavedLocations,
+  searchMarkdownFiles,
+  setAppLanguage,
+  setCurrentDirectoryLocation,
+  setNativeFolderPickerListView,
+  startDropboxOAuth,
+  takeNewWindowDocumentTarget,
+  takeOpenedFilePaths,
+  validateDroppedMarkdownFile,
+  writePdfFile,
+  writePdfFileToDirectory,
+  type DropboxOAuthStatusResult,
+  type NativeLocation,
+  type OpenLocationEventPayload,
+  type OpenDropboxMarkdownDirectoryResult,
+  type OpenDropboxMarkdownFileResult,
+  type OpenMarkdownDirectoryResult,
+  type OpenMarkdownFileContextResult,
+  type OpenMarkdownFileResult,
+  type RenamePathResult,
+  type SavedLocationsResult,
+  type SearchMarkdownFileResult as SearchMarkdownFileTransportResult,
+  type WorkspaceSource,
+  type WritePdfFileResult,
+} from "./tauriGateway";
+import { clearTouchButtonFocus } from "./touchPointer";
 
-const markdownUnorderedListLinePattern = /^(\s*)[-*+]\s+(.*)$/;
-const markdownOrderedListLinePattern = /^(\s*)\d+[.)]\s+(.*)$/;
 const inlineBreakPattern = /<br\s*\/?>/gi;
 const annotationClickDelayMs = 500;
 const libraryAnnotationClickSuppressionMs = annotationClickDelayMs + 350;
@@ -95,78 +246,15 @@ const mobileContextMenuLongPressMs = 500;
 const mobileContextMenuLongPressMoveTolerancePx = 10;
 const pendingAnchorAnnotationId = "__scholium_pending_anchor__";
 
-function shouldClearTouchButtonFocus() {
-  return Boolean(
-    typeof window !== "undefined" &&
-      window.matchMedia?.("(hover: none), (pointer: coarse)").matches,
-  );
-}
-
-function clearTouchButtonFocus(button: HTMLButtonElement) {
-  if (shouldClearTouchButtonFocus()) {
-    button.blur();
-  }
-}
-
-type NoteStatus = "active" | "orphaned" | "deleted";
 type AnnotationKind = "note" | "glossary";
 
-type MarkdownDocument = {
-  id: string;
-  title: string;
-  path: string;
-  filePath: string | null;
-  notesPath: string | null;
-  updatedAt: string;
-  modifiedAt?: number | null;
-  body: string;
-  dropboxRev?: string | null;
-};
-
-type SelectionNote = {
-  id: string;
-  documentId: string;
-  status: NoteStatus;
-  selectedText: string;
+type TextRangeAnnotation = {
   anchor: TextSelectionAnchor;
+  id: string;
+  isFocusTarget?: boolean;
+  kind: AnnotationKind;
+  status: NoteStatus;
   tone?: AnnotationTone;
-  body: string;
-  createdAt: string;
-  updatedAt: string;
-  deletedAt: string | null;
-};
-
-type GlossaryTerm = {
-  id: string;
-  term: string;
-  normalizedTerm: string;
-  definition: string;
-  createdAt: string;
-  updatedAt: string;
-};
-
-type GlossaryBinding = {
-  id: string;
-  documentId: string;
-  termId: string;
-  term: string;
-  normalizedTerm: string;
-  status: NoteStatus;
-  anchor: TextSelectionAnchor;
-  createdAt: string;
-  updatedAt: string;
-  deletedAt: string | null;
-};
-
-type OpenMarkdownFileResult = {
-  path: string;
-  notesPath: string;
-  title: string;
-  modifiedAt?: number | null;
-  body: string;
-  notes: SelectionNote[];
-  glossaryTerms?: GlossaryTerm[];
-  glossaryBindings?: GlossaryBinding[];
 };
 
 type LibraryAnnotationPointerEvent = {
@@ -178,105 +266,11 @@ type LibraryAnnotationPointerEvent = {
   target: EventTarget | null;
 };
 
-type OpenDirectoryEntryResult =
-  | {
-      kind: "directory";
-      path: string;
-      title: string;
-      modifiedAt?: number | null;
-      file: null;
-    }
-  | {
-      kind: "file";
-      path: string;
-      title: string;
-      modifiedAt?: number | null;
-      file: OpenMarkdownFileResult;
-    };
-
-type OpenMarkdownDirectoryResult = {
-  path: string;
-  parentPath: string | null;
-  title: string;
-  entries: OpenDirectoryEntryResult[];
-};
-
-type SearchMarkdownFileResult = {
+type SearchMarkdownFileResult = SearchMarkdownFileTransportResult & {
   entry?: WorkspaceFileEntry;
-  path: string;
-  parentPath: string | null;
-  title: string;
-  relativePath: string;
-  matchedTags: string[];
 };
 
-type OpenMarkdownFileContextResult = {
-  selectedFile: OpenMarkdownFileResult;
-  directory: OpenMarkdownDirectoryResult;
-};
-
-type SaveMarkdownFileResult = {
-  path: string;
-  notesPath: string;
-  modifiedAt?: number | null;
-};
-
-type DeleteMarkdownFileResult = {
-  path: string;
-  notesPath: string;
-};
-
-type RenamePathResult = {
-  path: string;
-  title: string;
-  notesPath?: string | null;
-};
-
-type MarkdownImageFileResult = {
-  path: string;
-  mimeType: string;
-  dataUrl: string;
-};
-
-type WritePdfFileResult = {
-  path: string;
-};
-
-type WorkspaceEntry =
-  | {
-      kind: "parent-directory";
-      id: string;
-      title: string;
-      path: string;
-      modifiedAt?: number | null;
-      depth?: number;
-      source?: "local" | "dropbox";
-    }
-  | {
-      kind: "directory";
-      id: string;
-      title: string;
-      path: string;
-      modifiedAt?: number | null;
-      depth?: number;
-      source?: "local" | "dropbox";
-    }
-  | {
-      kind: "file";
-      id: string;
-      title: string;
-      path: string;
-      documentId: string;
-      modifiedAt?: number | null;
-      depth?: number;
-      source?: "local" | "dropbox";
-    };
-
-type NativeLocationKind = "directory" | "file";
-type CloudWorkspaceSource = "dropbox";
-type WorkspaceSource = "local" | CloudWorkspaceSource;
 type FileSearchMode = "files" | "tags";
-type WorkspaceFileEntry = Extract<WorkspaceEntry, { kind: "file" }>;
 
 type DocumentTagGroup = {
   key: string;
@@ -295,18 +289,6 @@ type DropboxIndexedDocumentTags = {
   tags: string[];
 };
 
-type NativeLocation = {
-  kind: NativeLocationKind;
-  path: string;
-  title: string;
-  source: WorkspaceSource;
-};
-
-type SavedLocationsResult = {
-  recent: NativeLocation[];
-  favoriteDirectories: NativeLocation[];
-};
-
 type LastOpenedDropboxWorkspaceState = {
   workspacePath: string;
   filePath: string;
@@ -315,25 +297,9 @@ type LastOpenedDropboxWorkspaceState = {
 
 type MobileStartupPhase = "hidden" | "restoring" | "welcome";
 
-type OpenLocationEventPayload = {
-  kind: NativeLocationKind;
-  path: string;
-  source: WorkspaceSource;
-  title: string;
-};
-
 const emptySavedLocations: SavedLocationsResult = {
   recent: [],
   favoriteDirectories: [],
-};
-
-type DropboxOAuthStatusResult = {
-  connected: boolean;
-};
-
-type StartDropboxOAuthResult = {
-  authUrl: string;
-  redirectUri: string;
 };
 
 type DropboxOAuthCallbackPayload = {
@@ -342,64 +308,6 @@ type DropboxOAuthCallbackPayload = {
   state?: string | null;
   error?: string | null;
 };
-
-type DropboxDirectoryEntryResult = {
-  kind: "directory" | "file";
-  path: string;
-  title: string;
-  size?: number | null;
-  serverModified?: string | null;
-};
-
-type OpenDropboxMarkdownDirectoryResult = {
-  path: string;
-  parentPath: string | null;
-  title: string;
-  entries: DropboxDirectoryEntryResult[];
-};
-
-type OpenDropboxMarkdownFileResult = {
-  path: string;
-  notesPath: string;
-  title: string;
-  body: string;
-  notes: SelectionNote[];
-  glossaryTerms?: GlossaryTerm[];
-  glossaryBindings?: GlossaryBinding[];
-  rev?: string | null;
-  serverModified?: string | null;
-};
-
-type DropboxPickerMode = "directory" | "file";
-
-type DropboxDirectoryPickerNode = DropboxDirectoryEntryResult & {
-  children: DropboxDirectoryPickerNode[];
-  isExpanded: boolean;
-  isLoaded: boolean;
-  isLoading: boolean;
-  error: string;
-};
-
-type FlattenedDropboxDirectoryPickerNode = {
-  node: DropboxDirectoryPickerNode;
-  depth: number;
-};
-
-type DropboxDirectoryPickerState = {
-  mode: DropboxPickerMode;
-  directories: DropboxDirectoryPickerNode[];
-  selectedPath: string;
-  isLoadingRoot: boolean;
-  isOpening: boolean;
-  error: string;
-};
-
-type DirtyDocumentState = {
-  body: boolean;
-  notes: boolean;
-};
-
-type DirtyDocumentStates = Record<string, DirtyDocumentState>;
 
 const emptyDocument: MarkdownDocument = {
   id: "__empty__",
@@ -419,28 +327,6 @@ type DocumentModeState = {
   editorMode: EditorMode;
   noteModeEnabled: boolean;
   glossaryModeEnabled: boolean;
-};
-
-type PreviewAnnotationFrame = {
-  borderRadius: string;
-  frameKey: string;
-  isFocusTarget?: boolean;
-  kind: AnnotationKind;
-  noteId: string;
-  tone: AnnotationTone;
-  left: number;
-  top: number;
-  width: number;
-  height: number;
-};
-
-type PreviewAnnotationRect = {
-  bottom: number;
-  canExtendRight: boolean;
-  left: number;
-  lineRight: number;
-  right: number;
-  top: number;
 };
 
 type TextRangeRect = {
@@ -520,14 +406,24 @@ type CreateEntryDialogState = {
 };
 
 function DocumentGlyphIcon({ kind, selected = false }: { kind: "file" | "folder"; selected?: boolean }) {
+  if (kind === "file") {
+    const maskImage = `url("${selected ? fileSelectedGlyphUrl : fileGlyphUrl}")`;
+
+    return (
+      <span
+        aria-hidden="true"
+        className={`document-icon ${selected ? "is-selected" : ""}`}
+      >
+        <span
+          className="document-icon__flaticon-book"
+          style={{ maskImage, WebkitMaskImage: maskImage }}
+        />
+      </span>
+    );
+  }
+
   const glyphSvg =
-    kind === "folder"
-      ? selected
-        ? folderSelectedGlyphSvg
-        : folderGlyphSvg
-      : selected
-        ? fileSelectedGlyphSvg
-        : fileGlyphSvg;
+    selected ? folderSelectedGlyphSvg : folderGlyphSvg;
 
   return (
     <span
@@ -567,10 +463,6 @@ function DuplicateIcon() {
       <path d="M5 17H4V4h10v1" />
     </svg>
   );
-}
-
-function CopyIcon() {
-  return <NoteCopyIcon />;
 }
 
 function NoteCopyIcon() {
@@ -876,95 +768,10 @@ type PreviewTextMap = {
   sourceEndOffset?: number | null;
 };
 
-type PreviewAnnotationTextRange = {
-  annotation: TextRangeAnnotation;
-  start: number;
-  end: number;
-};
-
-type TextRangeAnnotation = {
-  id: string;
-  isFocusTarget?: boolean;
-  kind: AnnotationKind;
-  status: NoteStatus;
-  anchor: TextSelectionAnchor;
-  tone?: AnnotationTone;
-};
-
 type BodyAnchorTransform = (
   anchor: TextSelectionAnchor,
   nextBody: string,
 ) => TextSelectionAnchor;
-
-type MarkdownPreviewListKind = "unordered-list" | "ordered-list";
-
-type MarkdownPreviewListItem = {
-  children: MarkdownPreviewList[];
-  flatIndex: number;
-  key: string;
-  text: string;
-};
-
-type MarkdownPreviewList = {
-  kind: MarkdownPreviewListKind;
-  items: MarkdownPreviewListItem[];
-};
-
-type MarkdownPreviewBlock =
-  | {
-      kind: "heading";
-      key: string;
-      startLine: number;
-      endLine: number;
-      level: number;
-      text: string;
-    }
-  | {
-      kind: "paragraph";
-      key: string;
-      startLine: number;
-      endLine: number;
-      text: string;
-    }
-  | {
-      kind: "quote";
-      key: string;
-      startLine: number;
-      endLine: number;
-      text: string;
-    }
-  | {
-      kind: "code";
-      key: string;
-      startLine: number;
-      endLine: number;
-      info: string;
-      language: string;
-      text: string;
-    }
-  | {
-      kind: MarkdownPreviewListKind;
-      key: string;
-      startLine: number;
-      endLine: number;
-      items: string[];
-      list: MarkdownPreviewList;
-      rawLines: string[];
-    }
-  | {
-      kind: "rule";
-      key: string;
-      startLine: number;
-      endLine: number;
-    };
-
-type NoteMarkdownPreviewBlock =
-  | MarkdownPreviewBlock
-  | {
-      kind: "table";
-      key: string;
-      table: MarkdownTable;
-    };
 
 const markdownFilters = [
   {
@@ -973,12 +780,6 @@ const markdownFilters = [
   },
 ];
 
-const previewAnnotationFramePadding = 4;
-const previewAnnotationFrameHorizontalPadding = 12;
-const previewAnnotationLineJoinMaxGap = 20;
-const previewAnnotationLineEndTolerance = 2;
-const previewAnnotationFrameCornerRadius = "4px";
-const annotationLayoutSettleDelaysMs = [80, 180, 360, 720];
 const noteLibraryFocusAlignmentRatio = 0.35;
 const notePanelAnimationMs = 180;
 const selectionWarningAutoDismissMs = 2600;
@@ -987,37 +788,16 @@ const autosaveDelayMs = 500;
 const externalFileRefreshIntervalMs = 1500;
 const dropboxExternalFileRefreshIntervalMs = 30_000;
 const dropboxOAuthCompletionTimeoutMs = 50_000;
-const pdfCssPageWidth = 794;
-const pdfCssPageHeight = 1123;
-const pdfPageWidthPoints = 595.28;
-const pdfPageHeightPoints = 841.89;
-const pdfRenderScale = 2;
-const lastOpenedMarkdownPathStorageKey = "scholium:last-opened-markdown-path";
-const lastOpenedMarkdownRootDirectoryStorageKey =
-  "scholium:last-opened-markdown-root-directory";
-const lastOpenedDropboxWorkspaceStorageKey = "scholium:last-opened-dropbox-workspace";
-const documentTabSessionStorageKey = "scholium:document-tab-session";
-const secondaryWorkspaceStorageSeededKey = "scholium:secondary-workspace-seeded";
-const workspaceStorageKeys = [
-  lastOpenedMarkdownPathStorageKey,
-  lastOpenedMarkdownRootDirectoryStorageKey,
-  lastOpenedDropboxWorkspaceStorageKey,
-  documentTabSessionStorageKey,
-];
+const {
+  lastOpenedMarkdownPath: lastOpenedMarkdownPathStorageKey,
+  lastOpenedMarkdownRootDirectory: lastOpenedMarkdownRootDirectoryStorageKey,
+  lastOpenedDropboxWorkspace: lastOpenedDropboxWorkspaceStorageKey,
+  documentTabSession: documentTabSessionStorageKey,
+} = workspaceStorageKeys;
 const mobileViewportQuery = "(max-width: 640px)";
 const mobileSafeLayoutViewportQuery =
   "((max-width: 640px) and (any-pointer: coarse)), ((max-width: 980px) and (max-height: 520px) and (any-pointer: coarse))";
-const dropboxDocumentIdPrefix = "dropbox:";
-const draftDocumentIdPrefix = "draft:";
 const configuredDropboxAppKey = import.meta.env.VITE_DROPBOX_APP_KEY?.trim() ?? "";
-
-function previewAnnotationFramePaddingForKind(kind: AnnotationKind) {
-  return kind === "glossary" ? 0 : previewAnnotationFramePadding;
-}
-
-function previewAnnotationFrameHorizontalPaddingForKind(kind: AnnotationKind) {
-  return kind === "glossary" ? 0 : previewAnnotationFrameHorizontalPadding;
-}
 
 const documentsSeed: MarkdownDocument[] = [
   {
@@ -1082,13 +862,7 @@ function makeAnchor(body: string, selectedText: string): TextSelectionAnchor {
   const safeFrom = from >= 0 ? from : 0;
   const safeTo = from >= 0 ? from + selectedText.length : selectedText.length;
 
-  return {
-    from: safeFrom,
-    to: safeTo,
-    selectedText,
-    prefix: body.slice(Math.max(0, safeFrom - 48), safeFrom),
-    suffix: body.slice(safeTo, Math.min(body.length, safeTo + 48)),
-  };
+  return makeAnchorFromRange(body, safeFrom, safeTo, selectedText);
 }
 
 const notesSeed: SelectionNote[] = [
@@ -1147,27 +921,6 @@ function nowLabel() {
     hour: "2-digit",
     minute: "2-digit",
   });
-}
-
-function refreshAnchor(body: string, anchor: TextSelectionAnchor): TextSelectionAnchor {
-  return {
-    ...anchor,
-    prefix: body.slice(Math.max(0, anchor.from - 48), anchor.from),
-    suffix: body.slice(anchor.to, Math.min(body.length, anchor.to + 48)),
-  };
-}
-
-function hasRenderableAnchor(anchor: TextSelectionAnchor) {
-  return anchor.to > anchor.from;
-}
-
-function anchorMatchesBodyText(body: string, anchor: TextSelectionAnchor) {
-  if (!hasRenderableAnchor(anchor)) return false;
-
-  const anchorText = normalizeSelectionTextForComparison(anchor.selectedText);
-  if (!anchorText) return true;
-
-  return normalizeSelectionTextForComparison(body.slice(anchor.from, anchor.to)) === anchorText;
 }
 
 function compareNotesByDocumentPosition(left: SelectionNote, right: SelectionNote) {
@@ -1347,329 +1100,8 @@ function selectionOverlapsGlossaryBinding(anchor: TextSelectionAnchor, binding: 
   return anchor.to > binding.anchor.from && anchor.from < binding.anchor.to;
 }
 
-function textSelectionAnchorsMatch(left: TextSelectionAnchor, right: TextSelectionAnchor) {
-  return (
-    left.from === right.from &&
-    left.to === right.to &&
-    left.selectedText.replace(/\s+/g, " ").trim() ===
-      right.selectedText.replace(/\s+/g, " ").trim()
-  );
-}
-
 function hasNativeStorageAccess() {
   return "__TAURI_INTERNALS__" in window;
-}
-
-function ensureMarkdownExtension(path: string) {
-  return /\.(md|markdown|mdown)$/i.test(path) ? path : `${path}.md`;
-}
-
-function filePathInDirectory(directoryPath: string | null | undefined, fileName: string) {
-  const trimmedDirectoryPath = directoryPath?.trim() ?? "";
-  const trimmedFileName = fileName.trim();
-  if (!trimmedDirectoryPath || !trimmedFileName) return trimmedFileName;
-
-  const separator =
-    trimmedDirectoryPath.includes("\\") && !trimmedDirectoryPath.includes("/") ? "\\" : "/";
-  const directoryWithoutTrailingSeparators = trimmedDirectoryPath.replace(/[\\/]+$/, "");
-  if (!directoryWithoutTrailingSeparators) return `${separator}${trimmedFileName}`;
-
-  return `${directoryWithoutTrailingSeparators}${separator}${trimmedFileName}`;
-}
-
-function dropboxDocumentId(path: string) {
-  return `${dropboxDocumentIdPrefix}${path || "/"}`;
-}
-
-function draftDocumentId(source: WorkspaceSource | null) {
-  return `${draftDocumentIdPrefix}${source ?? "local"}:${Date.now()}:${Math.random()
-    .toString(36)
-    .slice(2)}`;
-}
-
-function isDropboxDocumentId(documentId: string) {
-  return documentId.startsWith(dropboxDocumentIdPrefix);
-}
-
-function isDraftDocumentId(documentId: string) {
-  return documentId.startsWith(draftDocumentIdPrefix);
-}
-
-function draftDocumentSource(document: MarkdownDocument): WorkspaceSource {
-  return document.id.startsWith(`${draftDocumentIdPrefix}dropbox:`) ? "dropbox" : "local";
-}
-
-function documentIsFromDropbox(document: MarkdownDocument) {
-  return isDropboxDocumentId(document.id);
-}
-
-function workspaceEntryFromDocument(
-  document: MarkdownDocument,
-  depth = 1,
-): Extract<WorkspaceEntry, { kind: "file" }> {
-  return {
-    kind: "file",
-    id: `file:${document.id}`,
-    title: document.title,
-    path: document.path,
-    documentId: document.id,
-    modifiedAt: document.modifiedAt ?? null,
-    depth,
-    source: documentIsFromDropbox(document) ? "dropbox" : "local",
-  };
-}
-
-function directoryTreeKey(entry: Pick<WorkspaceEntry, "path" | "source">) {
-  return `${entry.source ?? "local"}:${entry.path}`;
-}
-
-function workspaceEntrySelectionKey(entry: WorkspaceEntry) {
-  return `${entry.kind}:${entry.source ?? "local"}:${entry.path}`;
-}
-
-function workspaceEntriesFromOpenedDirectory(
-  openedDirectory: OpenMarkdownDirectoryResult,
-  depth: number,
-): WorkspaceEntry[] {
-  return openedDirectory.entries.map((entry): WorkspaceEntry => {
-    if (entry.kind === "directory") {
-      return {
-        kind: "directory",
-        id: `directory:${entry.path}`,
-        title: entry.title,
-        path: entry.path,
-        modifiedAt: entry.modifiedAt ?? null,
-        depth,
-        source: "local",
-      };
-    }
-
-    return workspaceEntryFromDocument(documentFromLoadedFileResult(entry.file), depth);
-  });
-}
-
-function workspaceEntriesFromOpenedDropboxDirectory(
-  openedDirectory: OpenDropboxMarkdownDirectoryResult,
-  depth: number,
-): WorkspaceEntry[] {
-  return openedDirectory.entries.map((entry): WorkspaceEntry => {
-    if (entry.kind === "directory") {
-      return {
-        kind: "directory",
-        id: `dropbox-directory:${entry.path || "/"}`,
-        title: entry.title,
-        path: entry.path,
-        modifiedAt: entry.serverModified ? Date.parse(entry.serverModified) : null,
-        depth,
-        source: "dropbox",
-      };
-    }
-
-    return {
-      kind: "file",
-      id: `dropbox-file:${entry.path}`,
-      title: entry.title,
-      path: entry.path,
-      documentId: dropboxDocumentId(entry.path),
-      modifiedAt: entry.serverModified ? Date.parse(entry.serverModified) : null,
-      depth,
-      source: "dropbox",
-    };
-  });
-}
-
-function dropboxPickerDirectories(openedDirectory: OpenDropboxMarkdownDirectoryResult) {
-  return openedDirectory.entries.filter(
-    (entry): entry is DropboxDirectoryEntryResult & { kind: "directory" } =>
-      entry.kind === "directory",
-  );
-}
-
-function dropboxPickerNodeFromEntry(
-  entry: DropboxDirectoryEntryResult,
-): DropboxDirectoryPickerNode {
-  return {
-    ...entry,
-    children: [],
-    isExpanded: false,
-    isLoaded: false,
-    isLoading: false,
-    error: "",
-  };
-}
-
-function dropboxPickerNodesFromOpenedDirectory(
-  openedDirectory: OpenDropboxMarkdownDirectoryResult,
-  mode: DropboxPickerMode,
-) {
-  const entries =
-    mode === "file" ? openedDirectory.entries : dropboxPickerDirectories(openedDirectory);
-
-  return entries.map(dropboxPickerNodeFromEntry);
-}
-
-function flattenDropboxDirectoryPickerNodes(
-  nodes: DropboxDirectoryPickerNode[],
-  depth = 0,
-): FlattenedDropboxDirectoryPickerNode[] {
-  return nodes.flatMap((node) => {
-    const flattenedNode = { node, depth };
-    if (!node.isExpanded) return [flattenedNode];
-
-    return [
-      flattenedNode,
-      ...flattenDropboxDirectoryPickerNodes(node.children, depth + 1),
-    ];
-  });
-}
-
-function updateDropboxDirectoryPickerNode(
-  nodes: DropboxDirectoryPickerNode[],
-  path: string,
-  updater: (node: DropboxDirectoryPickerNode) => DropboxDirectoryPickerNode,
-): DropboxDirectoryPickerNode[] {
-  return nodes.map((node) => {
-    if (node.path === path) return updater(node);
-
-    if (node.children.length === 0) return node;
-
-    return {
-      ...node,
-      children: updateDropboxDirectoryPickerNode(node.children, path, updater),
-    };
-  });
-}
-
-function firstDropboxMarkdownFileEntry(openedDirectory: OpenDropboxMarkdownDirectoryResult) {
-  return openedDirectory.entries.find(
-    (entry): entry is DropboxDirectoryEntryResult & { kind: "file" } =>
-      entry.kind === "file",
-  );
-}
-
-function documentFromLoadedFileResult(loaded: OpenMarkdownFileResult): MarkdownDocument {
-  return {
-    id: loaded.path,
-    title: loaded.title,
-    path: loaded.path,
-    filePath: loaded.path,
-    notesPath: loaded.notesPath,
-    updatedAt: "",
-    modifiedAt: loaded.modifiedAt ?? null,
-    body: loaded.body,
-  };
-}
-
-function collectVisibleDescendantDirectoryKeys(entries: WorkspaceEntry[], directory: WorkspaceEntry) {
-  const directoryIndex = entries.findIndex(
-    (entry) => entry.kind === "directory" && directoryTreeKey(entry) === directoryTreeKey(directory),
-  );
-  if (directoryIndex < 0) return [];
-
-  const baseDepth = directory.depth ?? 1;
-  const keys: string[] = [];
-  for (const entry of entries.slice(directoryIndex + 1)) {
-    const entryDepth = entry.depth ?? 1;
-    if (entryDepth <= baseDepth) break;
-    if (entry.kind === "directory") keys.push(directoryTreeKey(entry));
-  }
-  return keys;
-}
-
-function collapseWorkspaceDirectory(entries: WorkspaceEntry[], directory: WorkspaceEntry) {
-  const directoryIndex = entries.findIndex(
-    (entry) => entry.kind === "directory" && directoryTreeKey(entry) === directoryTreeKey(directory),
-  );
-  if (directoryIndex < 0) return entries;
-
-  const baseDepth = directory.depth ?? 1;
-  const nextEntries = [...entries.slice(0, directoryIndex + 1)];
-  const remainingEntries = entries.slice(directoryIndex + 1);
-  const firstSiblingIndex = remainingEntries.findIndex((entry) => (entry.depth ?? 1) <= baseDepth);
-  if (firstSiblingIndex >= 0) {
-    nextEntries.push(...remainingEntries.slice(firstSiblingIndex));
-  }
-  return nextEntries;
-}
-
-function insertWorkspaceDirectoryChildren(
-  entries: WorkspaceEntry[],
-  directory: WorkspaceEntry,
-  childEntries: WorkspaceEntry[],
-) {
-  const collapsedEntries = collapseWorkspaceDirectory(entries, directory);
-  const directoryIndex = collapsedEntries.findIndex(
-    (entry) => entry.kind === "directory" && directoryTreeKey(entry) === directoryTreeKey(directory),
-  );
-  if (directoryIndex < 0) return entries;
-
-  return [
-    ...collapsedEntries.slice(0, directoryIndex + 1),
-    ...childEntries,
-    ...collapsedEntries.slice(directoryIndex + 1),
-  ];
-}
-
-function insertOrUpdateWorkspaceFileEntry(
-  entries: WorkspaceEntry[],
-  fileEntry: Extract<WorkspaceEntry, { kind: "file" }>,
-  workspaceRootPath: string | null,
-) {
-  const existingEntryIndex = entries.findIndex(
-    (entry) =>
-      entry.kind === "file" &&
-      (entry.documentId === fileEntry.documentId ||
-        (entry.source === fileEntry.source && localPathsMatch(entry.path, fileEntry.path))),
-  );
-
-  if (existingEntryIndex >= 0) {
-    return entries.map((entry, index) =>
-      index === existingEntryIndex
-        ? {
-            ...entry,
-            title: fileEntry.title,
-            path: fileEntry.path,
-            id: fileEntry.id,
-            documentId: fileEntry.documentId,
-            modifiedAt: fileEntry.modifiedAt ?? null,
-          }
-        : entry,
-    );
-  }
-
-  const fileParentPath = normalizeLocalPathForCompare(parentDirectoryPath(fileEntry.path));
-  const rootPath = normalizeLocalPathForCompare(workspaceRootPath);
-
-  if (!rootPath || fileParentPath === rootPath) {
-    return [...entries, { ...fileEntry, depth: 1 }];
-  }
-
-  const parentDirectoryIndex = entries.findIndex(
-    (entry) =>
-      entry.kind === "directory" &&
-      entry.source === fileEntry.source &&
-      localPathsMatch(entry.path, fileParentPath),
-  );
-  if (parentDirectoryIndex < 0) {
-    return [...entries, { ...fileEntry, depth: 1 }];
-  }
-
-  const parentDirectory = entries[parentDirectoryIndex];
-  const fileDepth = (parentDirectory.depth ?? 1) + 1;
-  const followingEntries = entries.slice(parentDirectoryIndex + 1);
-  const nextSiblingOffset = followingEntries.findIndex(
-    (entry) => (entry.depth ?? 1) <= (parentDirectory.depth ?? 1),
-  );
-  const insertionIndex =
-    nextSiblingOffset >= 0
-      ? parentDirectoryIndex + 1 + nextSiblingOffset
-      : entries.length;
-
-  return [
-    ...entries.slice(0, insertionIndex),
-    { ...fileEntry, depth: fileDepth },
-    ...entries.slice(insertionIndex),
-  ];
 }
 
 function estimateDirectoryTextWidth(text: string) {
@@ -1693,58 +1125,6 @@ function estimateDocumentPaneWidth(workspaceTitle: string, entries: WorkspaceEnt
   return Math.max(272, Math.min(520, Math.ceil(entryWidth)));
 }
 
-function normalizedFileSearchTerms(query: string) {
-  return query
-    .trim()
-    .toLowerCase()
-    .split(/\s+/)
-    .filter(Boolean);
-}
-
-function workspaceEntryMatchesSearch(entry: WorkspaceEntry, terms: string[]) {
-  if (terms.length === 0) return true;
-
-  const searchableText = `${entry.title} ${entry.path}`.toLowerCase();
-  return terms.every((term) => searchableText.includes(term));
-}
-
-function filterWorkspaceEntriesForSearch(entries: WorkspaceEntry[], query: string) {
-  const terms = normalizedFileSearchTerms(query);
-  if (terms.length === 0) return entries;
-
-  const includedEntryIndexes = new Set<number>();
-  const ancestorIndexesByDepth = new Map<number, number>();
-
-  entries.forEach((entry, index) => {
-    const depth = entry.depth ?? 1;
-
-    Array.from(ancestorIndexesByDepth.keys()).forEach((ancestorDepth) => {
-      if (ancestorDepth >= depth) ancestorIndexesByDepth.delete(ancestorDepth);
-    });
-
-    if (entry.kind !== "file") {
-      ancestorIndexesByDepth.set(depth, index);
-    }
-
-    if (!workspaceEntryMatchesSearch(entry, terms)) return;
-
-    includedEntryIndexes.add(index);
-    ancestorIndexesByDepth.forEach((ancestorIndex) => {
-      includedEntryIndexes.add(ancestorIndex);
-    });
-
-    if (entry.kind === "file") return;
-
-    for (let descendantIndex = index + 1; descendantIndex < entries.length; descendantIndex += 1) {
-      const descendantEntry = entries[descendantIndex];
-      if ((descendantEntry.depth ?? 1) <= depth) break;
-      includedEntryIndexes.add(descendantIndex);
-    }
-  });
-
-  return entries.filter((_, index) => includedEntryIndexes.has(index));
-}
-
 function savedBodiesFromDocuments(documents: MarkdownDocument[]) {
   return Object.fromEntries(documents.map((document) => [document.id, document.body]));
 }
@@ -1764,26 +1144,6 @@ function selectionNoteHasContent(note: SelectionNote | null | undefined) {
 
 function glossaryTermHasContent(term: GlossaryTerm | null | undefined): term is GlossaryTerm {
   return Boolean(term?.definition.trim());
-}
-
-function currentWindowWorkspaceStorage() {
-  const isSecondaryWindow =
-    new URLSearchParams(window.location.search).get("scholium-window") === "secondary";
-  if (!isSecondaryWindow) return window.localStorage;
-
-  if (window.sessionStorage.getItem(secondaryWorkspaceStorageSeededKey) !== "true") {
-    workspaceStorageKeys.forEach((key) => {
-      const value = window.localStorage.getItem(key);
-      if (value === null) {
-        window.sessionStorage.removeItem(key);
-      } else {
-        window.sessionStorage.setItem(key, value);
-      }
-    });
-    window.sessionStorage.setItem(secondaryWorkspaceStorageSeededKey, "true");
-  }
-
-  return window.sessionStorage;
 }
 
 function readLastOpenedMarkdownPath() {
@@ -1933,96 +1293,8 @@ function browserAppearsOffline() {
   return typeof navigator !== "undefined" && "onLine" in navigator && navigator.onLine === false;
 }
 
-function dropboxParentDirectoryPath(path: string | null | undefined) {
-  const normalizedPath = path?.trim() ?? "";
-  if (!normalizedPath) return "";
-
-  const trimmedPath = normalizedPath.replace(/^\/+|\/+$/g, "");
-  if (!trimmedPath.includes("/")) return "";
-
-  const parentPath = trimmedPath.split("/").slice(0, -1).join("/");
-  return parentPath ? `/${parentPath}` : "";
-}
-
-function parentDirectoryPath(path: string | null | undefined) {
-  const normalizedPath = path?.trim();
-  if (!normalizedPath) return "";
-
-  const separatorIndex = Math.max(
-    normalizedPath.lastIndexOf("/"),
-    normalizedPath.lastIndexOf("\\"),
-  );
-  if (separatorIndex <= 0) return "";
-
-  return normalizedPath.slice(0, separatorIndex);
-}
-
-function normalizeLocalPathForCompare(path: string | null | undefined) {
-  let normalizedPath = path?.trim().replace(/\\/g, "/") ?? "";
-  while (normalizedPath.length > 1 && normalizedPath.endsWith("/")) {
-    normalizedPath = normalizedPath.slice(0, -1);
-  }
-
-  return normalizedPath;
-}
-
-function localPathsMatch(left: string | null | undefined, right: string | null | undefined) {
-  return normalizeLocalPathForCompare(left) === normalizeLocalPathForCompare(right);
-}
-
 function nativeLocationKey(location: Pick<NativeLocation, "source" | "kind" | "path">) {
   return `${location.source}:${location.kind}:${location.path}`;
-}
-
-function localPathIsInsideDirectory(path: string, directoryPath: string) {
-  const normalizedPath = normalizeLocalPathForCompare(path);
-  const normalizedDirectoryPath = normalizeLocalPathForCompare(directoryPath);
-  if (!normalizedPath || !normalizedDirectoryPath) return false;
-  if (normalizedPath === normalizedDirectoryPath) return true;
-  if (normalizedDirectoryPath === "/") return normalizedPath.startsWith("/");
-
-  return normalizedPath.startsWith(`${normalizedDirectoryPath}/`);
-}
-
-function workspacePathIsInsideDirectory(
-  path: string,
-  directoryPath: string,
-  source: WorkspaceSource,
-) {
-  if (source === "local") return localPathIsInsideDirectory(path, directoryPath);
-
-  const normalizedPath = path.trim().replace(/^\/+|\/+$/g, "").toLowerCase();
-  const normalizedDirectoryPath = directoryPath
-    .trim()
-    .replace(/^\/+|\/+$/g, "")
-    .toLowerCase();
-  if (!normalizedPath || !normalizedDirectoryPath) return false;
-
-  return (
-    normalizedPath === normalizedDirectoryPath ||
-    normalizedPath.startsWith(`${normalizedDirectoryPath}/`)
-  );
-}
-
-function ancestorDirectoryPathsForFile(rootDirectoryPath: string, filePath: string) {
-  const rootPath = normalizeLocalPathForCompare(rootDirectoryPath);
-  const selectedDirectoryPath = normalizeLocalPathForCompare(parentDirectoryPath(filePath));
-  if (!rootPath || !selectedDirectoryPath) return [];
-  if (selectedDirectoryPath === rootPath) return [];
-  if (!localPathIsInsideDirectory(selectedDirectoryPath, rootPath)) return [];
-
-  const ancestorPaths: string[] = [];
-  let currentPath = selectedDirectoryPath;
-
-  while (currentPath && currentPath !== rootPath) {
-    ancestorPaths.unshift(currentPath);
-
-    const parentPath = normalizeLocalPathForCompare(parentDirectoryPath(currentPath));
-    if (!parentPath || parentPath === currentPath) return [];
-    currentPath = parentPath;
-  }
-
-  return currentPath === rootPath ? ancestorPaths : [];
 }
 
 function forgetLastOpenedMarkdownPath() {
@@ -2031,10 +1303,6 @@ function forgetLastOpenedMarkdownPath() {
   } catch {
     // Remembering the last file is best-effort only.
   }
-}
-
-function hasDirtyState(state: DirtyDocumentState | undefined) {
-  return Boolean(state?.body || state?.notes);
 }
 
 function isSafeLink(href: string) {
@@ -2091,1027 +1359,6 @@ function renderInlineMarkdown(text: string, keyPrefix: string): ReactNode[] {
   }
 
   return nodes;
-}
-
-type PdfExportDocument = Pick<MarkdownDocument, "body" | "filePath" | "path" | "title">;
-
-type PdfJpegPage = {
-  bytes: Uint8Array;
-  width: number;
-  height: number;
-};
-
-type PdfSvgTextElement = {
-  kind: "text";
-  fill: string;
-  fontFamily: string;
-  fontSize: number;
-  fontWeight: number;
-  text: string;
-  x: number;
-  y: number;
-};
-
-type PdfSvgRectElement = {
-  kind: "rect";
-  fill: string;
-  height: number;
-  rx?: number;
-  stroke?: string;
-  strokeDasharray?: string;
-  width: number;
-  x: number;
-  y: number;
-};
-
-type PdfSvgLineElement = {
-  kind: "line";
-  stroke: string;
-  strokeWidth: number;
-  x1: number;
-  x2: number;
-  y1: number;
-  y2: number;
-};
-
-type PdfSvgImageElement = {
-  kind: "image";
-  alt: string;
-  height: number;
-  src: string;
-  width: number;
-  x: number;
-  y: number;
-};
-
-type PdfSvgElement =
-  | PdfSvgTextElement
-  | PdfSvgRectElement
-  | PdfSvgLineElement
-  | PdfSvgImageElement;
-
-type PdfSvgPage = {
-  elements: PdfSvgElement[];
-};
-
-type PdfInlinePart =
-  | {
-      kind: "text";
-      text: string;
-    }
-  | {
-      alt: string;
-      kind: "image";
-      src: string;
-    };
-
-type PdfTextStyle = {
-  fill: string;
-  fontFamily: string;
-  fontSize: number;
-  fontWeight: number;
-  lineHeight: number;
-};
-
-type PdfImageLayout = {
-  alt: string;
-  dataUrl: string;
-  height: number;
-  width: number;
-};
-
-const pdfPagePaddingX = 72;
-const pdfPagePaddingY = 64;
-const pdfContentWidth = pdfCssPageWidth - pdfPagePaddingX * 2;
-const pdfContentBottom = pdfCssPageHeight - pdfPagePaddingY;
-const pdfMaxImageHeight = 720;
-const pdfBodyFontFamily =
-  '-apple-system, BlinkMacSystemFont, "PingFang TC", "Noto Sans TC", "Helvetica Neue", Arial, sans-serif';
-const pdfMonoFontFamily = '"SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace';
-const pdfBodyTextStyle: PdfTextStyle = {
-  fill: "#161616",
-  fontFamily: pdfBodyFontFamily,
-  fontSize: 16,
-  fontWeight: 400,
-  lineHeight: 26,
-};
-const pdfQuoteTextStyle: PdfTextStyle = {
-  ...pdfBodyTextStyle,
-  fill: "#4b5563",
-};
-const pdfCodeTextStyle: PdfTextStyle = {
-  fill: "#24292f",
-  fontFamily: pdfMonoFontFamily,
-  fontSize: 13,
-  fontWeight: 400,
-  lineHeight: 19,
-};
-const pdfImageFallbackStyle: PdfTextStyle = {
-  fill: "#6b7280",
-  fontFamily: pdfBodyFontFamily,
-  fontSize: 13,
-  fontWeight: 400,
-  lineHeight: 19,
-};
-
-function localMarkdownImageNeedsHydration(src: string) {
-  const trimmedSrc = src.trim();
-  if (!trimmedSrc) return false;
-
-  return !/^(https?:|data:|blob:|asset:|tauri:|ipc:|\/\/)/i.test(trimmedSrc);
-}
-
-function fileNameFromPath(path: string | null | undefined) {
-  const normalizedPath = path?.trim().replace(/\\/g, "/") ?? "";
-  if (!normalizedPath) return "";
-
-  return normalizedPath.split("/").filter(Boolean).pop() ?? "";
-}
-
-function stripMarkdownExtension(fileName: string) {
-  return fileName.replace(/\.(md|markdown|mdown)$/i, "");
-}
-
-function sanitizedPdfFileName(value: string) {
-  const sanitized = value
-    .trim()
-    .replace(/\.(pdf)$/i, "")
-    .replace(/\.(md|markdown|mdown)$/i, "")
-    .replace(/[\\/:*?"<>|\u0000-\u001f]/g, "_")
-    .replace(/[. ]+$/g, "");
-
-  return `${sanitized || "Scholium"}.pdf`;
-}
-
-function pdfFileNameForDocument(exportDocument: PdfExportDocument) {
-  const sourceFileName = fileNameFromPath(exportDocument.path);
-  return sanitizedPdfFileName(stripMarkdownExtension(sourceFileName) || exportDocument.title);
-}
-
-function isDataImageSource(src: string) {
-  return /^data:image\//i.test(src.trim());
-}
-
-async function resolvePdfImageSource(markdownPath: string | null, imageSrc: string) {
-  if (isDataImageSource(imageSrc)) return imageSrc;
-  if (!markdownPath || !localMarkdownImageNeedsHydration(imageSrc)) return "";
-
-  const result = await invoke<MarkdownImageFileResult>("read_markdown_image_file", {
-    markdownPath,
-    imageSrc,
-  });
-
-  return result.dataUrl;
-}
-
-function markdownInlineToPlainText(text: string) {
-  return text
-    .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/!\[([^\]]*)\]\(([^)]+)\)/g, "$1")
-    .replace(/`([^`]+)`/g, "$1")
-    .replace(/\*\*([^*]+)\*\*/g, "$1")
-    .replace(/\*([^*]+)\*/g, "$1")
-    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1");
-}
-
-function parsePdfInlineParts(text: string) {
-  const parts: PdfInlinePart[] = [];
-  const imageTokenPattern = /!\[([^\]]*)\]\(([^)]+)\)/g;
-  let lastIndex = 0;
-
-  for (const match of text.matchAll(imageTokenPattern)) {
-    const index = match.index ?? 0;
-    if (index > lastIndex) {
-      const textPart = markdownInlineToPlainText(text.slice(lastIndex, index));
-      if (textPart) {
-        parts.push({ kind: "text", text: textPart });
-      }
-    }
-
-    parts.push({
-      alt: match[1] ?? "",
-      kind: "image",
-      src: match[2] ?? "",
-    });
-    lastIndex = index + match[0].length;
-  }
-
-  if (lastIndex < text.length) {
-    const textPart = markdownInlineToPlainText(text.slice(lastIndex));
-    if (textPart) {
-      parts.push({ kind: "text", text: textPart });
-    }
-  }
-
-  return parts;
-}
-
-function loadPdfImage(src: string) {
-  return new Promise<HTMLImageElement>((resolve, reject) => {
-    const image = new Image();
-    image.onload = () => resolve(image);
-    image.onerror = () => reject(new Error("failed to render PDF page image"));
-    image.src = src;
-  });
-}
-
-async function resolvePdfImageLayout(
-  markdownPath: string | null,
-  imageSrc: string,
-  alt: string,
-): Promise<PdfImageLayout | null> {
-  const dataUrl = await resolvePdfImageSource(markdownPath, imageSrc);
-  if (!dataUrl) return null;
-
-  const image = await loadPdfImage(dataUrl);
-  if (image.naturalWidth <= 0 || image.naturalHeight <= 0) return null;
-
-  return {
-    alt,
-    dataUrl,
-    height: image.naturalHeight,
-    width: image.naturalWidth,
-  };
-}
-
-function pdfHeadingTextStyle(level: number): PdfTextStyle {
-  if (level <= 1) {
-    return {
-      fill: "#111827",
-      fontFamily: pdfBodyFontFamily,
-      fontSize: 34,
-      fontWeight: 700,
-      lineHeight: 42,
-    };
-  }
-  if (level === 2) {
-    return {
-      fill: "#111827",
-      fontFamily: pdfBodyFontFamily,
-      fontSize: 26,
-      fontWeight: 700,
-      lineHeight: 33,
-    };
-  }
-  if (level === 3) {
-    return {
-      fill: "#111827",
-      fontFamily: pdfBodyFontFamily,
-      fontSize: 21,
-      fontWeight: 700,
-      lineHeight: 28,
-    };
-  }
-
-  return {
-    fill: "#111827",
-    fontFamily: pdfBodyFontFamily,
-    fontSize: 17,
-    fontWeight: 700,
-    lineHeight: 24,
-  };
-}
-
-function createPdfTextMeasureContext() {
-  const canvas = document.createElement("canvas");
-  const context = canvas.getContext("2d");
-  if (!context) throw new Error("failed to create PDF text measurement context");
-
-  return context;
-}
-
-function pdfCanvasFont(style: PdfTextStyle) {
-  return `${style.fontWeight} ${style.fontSize}px ${style.fontFamily}`;
-}
-
-function measurePdfText(
-  context: CanvasRenderingContext2D,
-  text: string,
-  style: PdfTextStyle,
-) {
-  context.font = pdfCanvasFont(style);
-  return context.measureText(text).width;
-}
-
-function isPdfCjkWrapCharacter(character: string) {
-  return /[\u1100-\u11ff\u2e80-\u9fff\uf900-\ufaff\uff00-\uffef]/u.test(character);
-}
-
-function splitPdfWrapUnits(text: string) {
-  const units: string[] = [];
-  let word = "";
-
-  const flushWord = () => {
-    if (!word) return;
-    units.push(word);
-    word = "";
-  };
-
-  for (const character of Array.from(text)) {
-    if (character === "\n") {
-      flushWord();
-      units.push("\n");
-    } else if (/\s/.test(character)) {
-      flushWord();
-      units.push(" ");
-    } else if (isPdfCjkWrapCharacter(character)) {
-      flushWord();
-      units.push(character);
-    } else {
-      word += character;
-    }
-  }
-
-  flushWord();
-  return units;
-}
-
-function wrapOversizedPdfUnit(
-  context: CanvasRenderingContext2D,
-  unit: string,
-  maxWidth: number,
-  style: PdfTextStyle,
-) {
-  const lines: string[] = [];
-  let current = "";
-
-  for (const character of Array.from(unit)) {
-    const candidate = `${current}${character}`;
-    if (current && measurePdfText(context, candidate, style) > maxWidth) {
-      lines.push(current);
-      current = character;
-    } else {
-      current = candidate;
-    }
-  }
-
-  if (current) lines.push(current);
-  return lines;
-}
-
-function wrapPdfText(
-  context: CanvasRenderingContext2D,
-  text: string,
-  maxWidth: number,
-  style: PdfTextStyle,
-) {
-  const lines: string[] = [];
-  let current = "";
-
-  for (const unit of splitPdfWrapUnits(text)) {
-    if (unit === "\n") {
-      lines.push(current.trimEnd());
-      current = "";
-      continue;
-    }
-    if (unit === " " && !current) continue;
-
-    const nextUnit = current ? unit : unit.trimStart();
-    const candidate = `${current}${nextUnit}`;
-    if (!current || measurePdfText(context, candidate, style) <= maxWidth) {
-      current = candidate;
-      continue;
-    }
-
-    lines.push(current.trimEnd());
-    if (measurePdfText(context, nextUnit, style) > maxWidth) {
-      const oversizedLines = wrapOversizedPdfUnit(context, nextUnit, maxWidth, style);
-      current = oversizedLines.pop() ?? "";
-      lines.push(...oversizedLines);
-    } else {
-      current = nextUnit.trimStart();
-    }
-  }
-
-  if (current.trimEnd()) {
-    lines.push(current.trimEnd());
-  }
-
-  return lines;
-}
-
-function wrapPdfCodeLine(
-  context: CanvasRenderingContext2D,
-  text: string,
-  maxWidth: number,
-  style: PdfTextStyle,
-) {
-  if (!text) return [""];
-
-  const lines: string[] = [];
-  let current = "";
-
-  for (const character of Array.from(text)) {
-    const printableCharacter = character === " " ? "\u00a0" : character;
-    const candidate = `${current}${printableCharacter}`;
-    if (current && measurePdfText(context, candidate, style) > maxWidth) {
-      lines.push(current);
-      current = printableCharacter;
-    } else {
-      current = candidate;
-    }
-  }
-
-  lines.push(current);
-  return lines;
-}
-
-class PdfSvgLayout {
-  private currentPage: PdfSvgPage;
-  private readonly pages: PdfSvgPage[];
-  private y: number;
-
-  constructor(private readonly textContext: CanvasRenderingContext2D) {
-    this.currentPage = { elements: [] };
-    this.pages = [this.currentPage];
-    this.y = pdfPagePaddingY;
-  }
-
-  getPages() {
-    return this.pages;
-  }
-
-  getCursorY() {
-    return this.y;
-  }
-
-  private isAtPageTop() {
-    return this.y <= pdfPagePaddingY + 0.1 && this.currentPage.elements.length === 0;
-  }
-
-  private startNewPage() {
-    this.currentPage = { elements: [] };
-    this.pages.push(this.currentPage);
-    this.y = pdfPagePaddingY;
-  }
-
-  addGap(height: number) {
-    if (height <= 0 || this.isAtPageTop()) return;
-    this.y = Math.min(pdfContentBottom, this.y + height);
-  }
-
-  ensureSpace(height: number) {
-    if (this.y + height <= pdfContentBottom || this.isAtPageTop()) return;
-    this.startNewPage();
-  }
-
-  addLine(element: Omit<PdfSvgLineElement, "kind">) {
-    this.currentPage.elements.push({ kind: "line", ...element });
-  }
-
-  addRect(element: Omit<PdfSvgRectElement, "kind">) {
-    this.currentPage.elements.push({ kind: "rect", ...element });
-  }
-
-  addTextLine(text: string, x: number, style: PdfTextStyle) {
-    this.ensureSpace(style.lineHeight);
-    this.currentPage.elements.push({
-      fill: style.fill,
-      fontFamily: style.fontFamily,
-      fontSize: style.fontSize,
-      fontWeight: style.fontWeight,
-      kind: "text",
-      text,
-      x,
-      y: this.y + style.fontSize,
-    });
-    this.y += style.lineHeight;
-  }
-
-  addWrappedText(
-    text: string,
-    x: number,
-    maxWidth: number,
-    style: PdfTextStyle,
-    options: { marginBottom?: number; marginTop?: number } = {},
-  ) {
-    const lines = wrapPdfText(this.textContext, text, maxWidth, style);
-    if (lines.length === 0) return;
-
-    this.addGap(options.marginTop ?? 0);
-    for (const line of lines) {
-      this.addTextLine(line, x, style);
-    }
-    this.addGap(options.marginBottom ?? 0);
-  }
-
-  addListItem(marker: string, text: string, style: PdfTextStyle) {
-    const markerX = pdfPagePaddingX;
-    const textX = pdfPagePaddingX + 28;
-    const lines = wrapPdfText(this.textContext, text, pdfContentWidth - 28, style);
-    if (lines.length === 0) return;
-
-    this.addGap(2);
-    lines.forEach((line, index) => {
-      this.ensureSpace(style.lineHeight);
-      if (index === 0) {
-        this.currentPage.elements.push({
-          fill: style.fill,
-          fontFamily: style.fontFamily,
-          fontSize: style.fontSize,
-          fontWeight: style.fontWeight,
-          kind: "text",
-          text: marker,
-          x: markerX,
-          y: this.y + style.fontSize,
-        });
-      }
-      this.currentPage.elements.push({
-        fill: style.fill,
-        fontFamily: style.fontFamily,
-        fontSize: style.fontSize,
-        fontWeight: style.fontWeight,
-        kind: "text",
-        text: line,
-        x: textX,
-        y: this.y + style.fontSize,
-      });
-      this.y += style.lineHeight;
-    });
-  }
-
-  addCodeBlock(text: string) {
-    const codePaddingX = 16;
-    const codePaddingY = 14;
-    const lines = text
-      .split("\n")
-      .flatMap((line) =>
-        wrapPdfCodeLine(
-          this.textContext,
-          line,
-          pdfContentWidth - codePaddingX * 2,
-          pdfCodeTextStyle,
-        ),
-      );
-    const remainingLines = lines.length > 0 ? lines : [""];
-
-    this.addGap(16);
-    while (remainingLines.length > 0) {
-      const availableHeight = Math.max(
-        pdfCodeTextStyle.lineHeight + codePaddingY * 2,
-        pdfContentBottom - this.y,
-      );
-      const maxLinesOnPage = Math.max(
-        1,
-        Math.floor((availableHeight - codePaddingY * 2) / pdfCodeTextStyle.lineHeight),
-      );
-      const pageLines = remainingLines.splice(0, maxLinesOnPage);
-      const blockHeight = pageLines.length * pdfCodeTextStyle.lineHeight + codePaddingY * 2;
-
-      this.ensureSpace(blockHeight);
-      this.addRect({
-        fill: "#f6f8fa",
-        height: blockHeight,
-        rx: 6,
-        stroke: "#d8dee4",
-        width: pdfContentWidth,
-        x: pdfPagePaddingX,
-        y: this.y,
-      });
-      let lineY = this.y + codePaddingY;
-      for (const line of pageLines) {
-        this.currentPage.elements.push({
-          fill: pdfCodeTextStyle.fill,
-          fontFamily: pdfCodeTextStyle.fontFamily,
-          fontSize: pdfCodeTextStyle.fontSize,
-          fontWeight: pdfCodeTextStyle.fontWeight,
-          kind: "text",
-          text: line,
-          x: pdfPagePaddingX + codePaddingX,
-          y: lineY + pdfCodeTextStyle.fontSize,
-        });
-        lineY += pdfCodeTextStyle.lineHeight;
-      }
-      this.y += blockHeight;
-      if (remainingLines.length > 0) this.startNewPage();
-    }
-    this.addGap(12);
-  }
-
-  addImage(image: PdfImageLayout) {
-    const maxHeight = Math.min(pdfMaxImageHeight, pdfContentBottom - pdfPagePaddingY);
-    const scale = Math.min(1, pdfContentWidth / image.width, maxHeight / image.height);
-    const width = image.width * scale;
-    const height = image.height * scale;
-
-    this.addGap(16);
-    this.ensureSpace(height);
-    this.currentPage.elements.push({
-      alt: image.alt,
-      height,
-      kind: "image",
-      src: image.dataUrl,
-      width,
-      x: pdfPagePaddingX + (pdfContentWidth - width) / 2,
-      y: this.y,
-    });
-    this.y += height;
-    this.addGap(16);
-  }
-
-  addImageFallback(label: string) {
-    const height = 42;
-    this.addGap(14);
-    this.ensureSpace(height);
-    this.addRect({
-      fill: "#f6f8fa",
-      height,
-      rx: 6,
-      stroke: "#aeb6c2",
-      strokeDasharray: "6 4",
-      width: pdfContentWidth,
-      x: pdfPagePaddingX,
-      y: this.y,
-    });
-    this.currentPage.elements.push({
-      fill: pdfImageFallbackStyle.fill,
-      fontFamily: pdfImageFallbackStyle.fontFamily,
-      fontSize: pdfImageFallbackStyle.fontSize,
-      fontWeight: pdfImageFallbackStyle.fontWeight,
-      kind: "text",
-      text: label,
-      x: pdfPagePaddingX + 12,
-      y: this.y + 26,
-    });
-    this.y += height;
-    this.addGap(12);
-  }
-
-  addRule(gapBefore = 20, gapAfter = 20) {
-    this.addGap(gapBefore);
-    this.ensureSpace(1);
-    this.addLine({
-      stroke: "#d8dee4",
-      strokeWidth: 1,
-      x1: pdfPagePaddingX,
-      x2: pdfPagePaddingX + pdfContentWidth,
-      y1: this.y,
-      y2: this.y,
-    });
-    this.addGap(gapAfter);
-  }
-}
-
-async function addPdfInlineParts(
-  layout: PdfSvgLayout,
-  markdownPath: string | null,
-  parts: PdfInlinePart[],
-  style: PdfTextStyle,
-  imageUnavailableLabel: string,
-  options: { indent?: number; marginBottom?: number; marginTop?: number } = {},
-) {
-  const indent = options.indent ?? 0;
-  let hasAddedContent = false;
-
-  for (const part of parts) {
-    if (part.kind === "text") {
-      layout.addWrappedText(part.text, pdfPagePaddingX + indent, pdfContentWidth - indent, style, {
-        marginTop: hasAddedContent ? 4 : options.marginTop,
-      });
-      hasAddedContent = true;
-    } else {
-      try {
-        const image = await resolvePdfImageLayout(markdownPath, part.src, part.alt);
-        if (image) {
-          layout.addImage(image);
-        } else {
-          layout.addImageFallback(part.alt || part.src || imageUnavailableLabel);
-        }
-      } catch {
-        layout.addImageFallback(part.alt || part.src || imageUnavailableLabel);
-      }
-      hasAddedContent = true;
-    }
-  }
-
-  if (hasAddedContent) {
-    layout.addGap(options.marginBottom ?? 0);
-  }
-}
-
-async function layoutMarkdownDocumentForPdf(
-  exportDocument: PdfExportDocument,
-  imageUnavailableLabel: string,
-) {
-  const blocks = parseMarkdownPreviewBlocks(exportDocument.body);
-  const layout = new PdfSvgLayout(createPdfTextMeasureContext());
-  const markdownPath = exportDocument.filePath;
-
-  if (blocks.length === 0) {
-    return layout.getPages();
-  }
-
-  for (const block of blocks) {
-    if (block.kind === "heading") {
-      const style = pdfHeadingTextStyle(block.level);
-      layout.addWrappedText(
-        markdownInlineToPlainText(block.text),
-        pdfPagePaddingX,
-        pdfContentWidth,
-        style,
-        {
-          marginBottom: block.level === 2 ? 6 : 8,
-          marginTop: block.level <= 2 ? 24 : 18,
-        },
-      );
-      if (block.level === 2) {
-        layout.addRule(0, 18);
-      }
-    } else if (block.kind === "paragraph") {
-      await addPdfInlineParts(
-        layout,
-        markdownPath,
-        parsePdfInlineParts(block.text),
-        pdfBodyTextStyle,
-        imageUnavailableLabel,
-        {
-          marginBottom: 10,
-          marginTop: 4,
-        },
-      );
-    } else if (block.kind === "quote") {
-      layout.addGap(14);
-      const quoteStartY = layout.getCursorY();
-      await addPdfInlineParts(
-        layout,
-        markdownPath,
-        parsePdfInlineParts(block.text),
-        pdfQuoteTextStyle,
-        imageUnavailableLabel,
-        {
-          indent: 16,
-          marginBottom: 10,
-        },
-      );
-      const quoteEndY = layout.getCursorY();
-      if (quoteEndY > quoteStartY) {
-        layout.addLine({
-          stroke: "#8a2438",
-          strokeWidth: 4,
-          x1: pdfPagePaddingX,
-          x2: pdfPagePaddingX,
-          y1: quoteStartY,
-          y2: quoteEndY - 10,
-        });
-      }
-    } else if (block.kind === "unordered-list" || block.kind === "ordered-list") {
-      layout.addGap(8);
-      for (const [index, item] of block.items.entries()) {
-        const plainText = markdownInlineToPlainText(item);
-        const marker = block.kind === "ordered-list" ? `${index + 1}.` : "•";
-        layout.addListItem(marker, plainText, pdfBodyTextStyle);
-      }
-      layout.addGap(10);
-    } else if (block.kind === "code") {
-      layout.addCodeBlock(block.text);
-    } else if (block.kind === "rule") {
-      layout.addRule();
-    }
-  }
-
-  return layout.getPages();
-}
-
-function drawPdfRect(context: CanvasRenderingContext2D, element: PdfSvgRectElement) {
-  context.save();
-  context.fillStyle = element.fill;
-  context.fillRect(element.x, element.y, element.width, element.height);
-
-  if (element.stroke) {
-    context.strokeStyle = element.stroke;
-    context.lineWidth = 1;
-    if (element.strokeDasharray) {
-      context.setLineDash(
-        element.strokeDasharray
-          .split(/\s+/)
-          .map(Number)
-          .filter((value) => Number.isFinite(value) && value > 0),
-      );
-    }
-    context.strokeRect(element.x, element.y, element.width, element.height);
-  }
-
-  context.restore();
-}
-
-async function drawPdfPageElement(
-  context: CanvasRenderingContext2D,
-  element: PdfSvgElement,
-) {
-  if (element.kind === "text") {
-    context.save();
-    context.fillStyle = element.fill;
-    context.font = `${element.fontWeight} ${element.fontSize}px ${element.fontFamily}`;
-    context.textBaseline = "alphabetic";
-    context.fillText(element.text, element.x, element.y);
-    context.restore();
-    return;
-  }
-
-  if (element.kind === "rect") {
-    drawPdfRect(context, element);
-    return;
-  }
-
-  if (element.kind === "line") {
-    context.save();
-    context.strokeStyle = element.stroke;
-    context.lineWidth = element.strokeWidth;
-    context.beginPath();
-    context.moveTo(element.x1, element.y1);
-    context.lineTo(element.x2, element.y2);
-    context.stroke();
-    context.restore();
-    return;
-  }
-
-  const image = await loadPdfImage(element.src);
-  context.drawImage(image, element.x, element.y, element.width, element.height);
-}
-
-async function renderPdfPageToJpeg(page: PdfSvgPage) {
-  const canvas = document.createElement("canvas");
-  const width = pdfCssPageWidth * pdfRenderScale;
-  const height = pdfCssPageHeight * pdfRenderScale;
-  canvas.width = width;
-  canvas.height = height;
-
-  const context = canvas.getContext("2d");
-  if (!context) throw new Error("failed to create PDF render canvas");
-
-  context.scale(pdfRenderScale, pdfRenderScale);
-  context.fillStyle = "#ffffff";
-  context.fillRect(0, 0, pdfCssPageWidth, pdfCssPageHeight);
-  context.imageSmoothingEnabled = true;
-  context.imageSmoothingQuality = "high";
-
-  for (const element of page.elements) {
-    await drawPdfPageElement(context, element);
-  }
-
-  const dataUrl = canvas.toDataURL("image/jpeg", 0.92);
-  return {
-    bytes: base64ToUint8Array(dataUrl.split(",", 2)[1] ?? ""),
-    width,
-    height,
-  };
-}
-
-async function renderMarkdownDocumentToPdfBase64(
-  exportDocument: PdfExportDocument,
-  imageUnavailableLabel: string,
-) {
-  const pages = await layoutMarkdownDocumentForPdf(exportDocument, imageUnavailableLabel);
-  const jpegPages: PdfJpegPage[] = [];
-
-  for (const page of pages) {
-    jpegPages.push(await renderPdfPageToJpeg(page));
-  }
-
-  return uint8ArrayToBase64(buildPdfFromJpegPages(jpegPages));
-}
-
-function base64ToUint8Array(base64: string) {
-  const binary = window.atob(base64);
-  const bytes = new Uint8Array(binary.length);
-
-  for (let index = 0; index < binary.length; index += 1) {
-    bytes[index] = binary.charCodeAt(index);
-  }
-
-  return bytes;
-}
-
-function uint8ArrayToBase64(bytes: Uint8Array) {
-  const chunkSize = 0x8000;
-  let binary = "";
-
-  for (let index = 0; index < bytes.length; index += chunkSize) {
-    binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
-  }
-
-  return window.btoa(binary);
-}
-
-function asciiBytes(text: string) {
-  return new TextEncoder().encode(text);
-}
-
-function concatBytes(parts: Uint8Array[]) {
-  const totalLength = parts.reduce((sum, part) => sum + part.length, 0);
-  const merged = new Uint8Array(totalLength);
-  let offset = 0;
-
-  for (const part of parts) {
-    merged.set(part, offset);
-    offset += part.length;
-  }
-
-  return merged;
-}
-
-function pdfObject(id: number, body: string) {
-  return asciiBytes(`${id} 0 obj\n${body}\nendobj\n`);
-}
-
-function pdfStreamObject(id: number, dictionary: string, stream: Uint8Array) {
-  return concatBytes([
-    asciiBytes(`${id} 0 obj\n<< ${dictionary} /Length ${stream.length} >>\nstream\n`),
-    stream,
-    asciiBytes("\nendstream\nendobj\n"),
-  ]);
-}
-
-function buildPdfFromJpegPages(pages: PdfJpegPage[]) {
-  const objects: { id: number; bytes: Uint8Array }[] = [];
-  const pageIds = pages.map((_, pageIndex) => 3 + pageIndex * 3);
-
-  objects.push({
-    id: 1,
-    bytes: pdfObject(1, "<< /Type /Catalog /Pages 2 0 R >>"),
-  });
-  objects.push({
-    id: 2,
-    bytes: pdfObject(
-      2,
-      `<< /Type /Pages /Kids [${pageIds.map((id) => `${id} 0 R`).join(" ")}] /Count ${
-        pages.length
-      } >>`,
-    ),
-  });
-
-  pages.forEach((page, pageIndex) => {
-    const pageObjectId = 3 + pageIndex * 3;
-    const contentObjectId = pageObjectId + 1;
-    const imageObjectId = pageObjectId + 2;
-    const imageName = `Im${pageIndex + 1}`;
-    const contentStream = asciiBytes(
-      `q\n${pdfPageWidthPoints} 0 0 ${pdfPageHeightPoints} 0 0 cm\n/${imageName} Do\nQ\n`,
-    );
-
-    objects.push({
-      id: pageObjectId,
-      bytes: pdfObject(
-        pageObjectId,
-        `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pdfPageWidthPoints} ${pdfPageHeightPoints}] /Resources << /XObject << /${imageName} ${imageObjectId} 0 R >> >> /Contents ${contentObjectId} 0 R >>`,
-      ),
-    });
-    objects.push({
-      id: contentObjectId,
-      bytes: pdfStreamObject(contentObjectId, "", contentStream),
-    });
-    objects.push({
-      id: imageObjectId,
-      bytes: pdfStreamObject(
-        imageObjectId,
-        `/Type /XObject /Subtype /Image /Width ${page.width} /Height ${page.height} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode`,
-        page.bytes,
-      ),
-    });
-  });
-
-  objects.sort((left, right) => left.id - right.id);
-
-  const header = asciiBytes("%PDF-1.4\n");
-  const parts: Uint8Array[] = [header];
-  const offsets = [0];
-  let offset = header.length;
-
-  for (const object of objects) {
-    offsets[object.id] = offset;
-    parts.push(object.bytes);
-    offset += object.bytes.length;
-  }
-
-  const xrefOffset = offset;
-  const objectCount = objects.length + 1;
-  const xrefLines = [
-    "xref",
-    `0 ${objectCount}`,
-    "0000000000 65535 f ",
-    ...objects.map((object) => `${String(offsets[object.id]).padStart(10, "0")} 00000 n `),
-    "trailer",
-    `<< /Size ${objectCount} /Root 1 0 R >>`,
-    "startxref",
-    String(xrefOffset),
-    "%%EOF",
-    "",
-  ];
-  parts.push(asciiBytes(xrefLines.join("\n")));
-
-  return concatBytes(parts);
-}
-
-function getLineStartOffsets(markdown: string) {
-  const offsets = [0];
-
-  for (let index = 0; index < markdown.length; index += 1) {
-    if (markdown[index] === "\n") {
-      offsets.push(index + 1);
-    }
-  }
-
-  return offsets;
 }
 
 function getLineIndexAtSourcePosition(markdown: string, position: number) {
@@ -3434,10 +1681,6 @@ function getPreviewBlockTextMap(markdown: string, block: MarkdownPreviewBlock): 
   return { text: "", sourceOffsets: [] };
 }
 
-function normalizeSelectionTextForComparison(text: string) {
-  return text.replace(/\s+/g, " ").trim();
-}
-
 function selectionCoversListItems(
   markdown: string,
   anchor: TextSelectionAnchor,
@@ -3531,21 +1774,6 @@ function isSelectionCompleteMarkdownBlock(markdown: string, anchor: TextSelectio
   });
 }
 
-function makeAnchorFromRange(
-  body: string,
-  from: number,
-  to: number,
-  selectedText: string,
-): TextSelectionAnchor {
-  return {
-    from,
-    to,
-    selectedText,
-    prefix: body.slice(Math.max(0, from - 48), from),
-    suffix: body.slice(to, Math.min(body.length, to + 48)),
-  };
-}
-
 function normalizeTextMapForMatch(textMap: PreviewTextMap): PreviewTextMap {
   const normalized: PreviewTextMap = { text: "", sourceOffsets: [] };
   let pendingWhitespaceOffset: number | null = null;
@@ -3611,29 +1839,6 @@ function closestPreviewBlockElement(node: Node | null) {
   return element?.closest<HTMLElement>("[data-preview-block-key]") ?? null;
 }
 
-function findTextIndices(text: string, query: string) {
-  const indices: number[] = [];
-  if (!query) return indices;
-
-  let index = text.indexOf(query);
-  while (index >= 0) {
-    indices.push(index);
-    index = text.indexOf(query, index + query.length);
-  }
-
-  return indices;
-}
-
-function closestTextIndex(indices: number[], approximateStart: number) {
-  if (indices.length === 0) return -1;
-
-  return indices.reduce((closestIndex, index) =>
-    Math.abs(index - approximateStart) < Math.abs(closestIndex - approximateStart)
-      ? index
-      : closestIndex,
-  );
-}
-
 function makePreviewAnchorFromTextMap(
   body: string,
   textMap: PreviewTextMap,
@@ -3644,7 +1849,10 @@ function makePreviewAnchorFromTextMap(
   const normalizedSelection = selectedText.replace(/\s+/g, " ").trim();
   if (!normalizedSelection) return null;
 
-  const exactIndex = closestTextIndex(findTextIndices(textMap.text, exactSelection), approximateStart);
+  const exactIndex = closestTextIndex(
+    findNonOverlappingTextIndices(textMap.text, exactSelection),
+    approximateStart,
+  );
   if (exactIndex >= 0) {
     const sourceRange = sourceRangeFromTextMapMatch(
       textMap,
@@ -3664,7 +1872,7 @@ function makePreviewAnchorFromTextMap(
 
   const normalizedTextMap = normalizeTextMapForMatch(textMap);
   const normalizedIndex = closestTextIndex(
-    findTextIndices(normalizedTextMap.text, normalizedSelection),
+    findNonOverlappingTextIndices(normalizedTextMap.text, normalizedSelection),
     approximateStart,
   );
   if (normalizedIndex < 0) return null;
@@ -3771,206 +1979,6 @@ function recoverRenderableAnchor(body: string, anchor: TextSelectionAnchor): Tex
   return refreshAnchor(body, anchor);
 }
 
-function getAnnotationsForPreviewBlock(
-  markdown: string,
-  block: MarkdownPreviewBlock,
-  annotations: TextRangeAnnotation[],
-) {
-  const blockRange = getBlockRange(markdown, block);
-
-  return annotations.filter(
-    (annotation) =>
-      annotation.status === "active" &&
-      annotation.anchor.to > blockRange.start &&
-      annotation.anchor.from < blockRange.end,
-  );
-}
-
-function getAnnotationRangesForTextMap(
-  textMap: PreviewTextMap,
-  annotations: TextRangeAnnotation[],
-) {
-  const ranges: PreviewAnnotationTextRange[] = [];
-
-  annotations.forEach((annotation) => {
-    let rangeStart: number | null = null;
-
-    textMap.sourceOffsets.forEach((sourceOffset, index) => {
-      const isMarked =
-        sourceOffset !== null &&
-        sourceOffset >= annotation.anchor.from &&
-        sourceOffset < annotation.anchor.to;
-
-      if (isMarked && rangeStart === null) {
-        rangeStart = index;
-      }
-
-      if (!isMarked && rangeStart !== null) {
-        ranges.push({ annotation, start: rangeStart, end: index });
-        rangeStart = null;
-      }
-    });
-
-    if (rangeStart !== null) {
-      ranges.push({ annotation, start: rangeStart, end: textMap.text.length });
-    }
-  });
-
-  return ranges
-    .filter((range) => range.end > range.start)
-    .sort((left, right) => left.start - right.start || left.end - right.end);
-}
-
-function annotationKindLayer(kind: AnnotationKind | undefined) {
-  return kind === "glossary" ? 1 : 0;
-}
-
-function sortAnnotationRangesForNesting(
-  left: PreviewAnnotationTextRange,
-  right: PreviewAnnotationTextRange,
-) {
-  return (
-    left.start - right.start ||
-    right.end - left.end ||
-    annotationKindLayer(left.annotation.kind) - annotationKindLayer(right.annotation.kind) ||
-    left.annotation.id.localeCompare(right.annotation.id)
-  );
-}
-
-function renderAnnotationSpan(
-  range: PreviewAnnotationTextRange,
-  key: string,
-  children: ReactNode,
-  onAnnotationClick: (annotationId: string) => void,
-  onAnnotationDoubleClick: (annotationId: string) => void,
-) {
-  return (
-    <span
-      className={`preview-note-annotation ${
-        range.annotation.isFocusTarget ? "is-focus-target" : ""
-      }`}
-      data-annotation-kind={range.annotation.kind}
-      data-focus-target={range.annotation.isFocusTarget ? "true" : "false"}
-      data-note-id={range.annotation.id}
-      data-note-tone={range.annotation.tone ?? 0}
-      key={key}
-      onClick={(event) => {
-        if (window.getSelection()?.toString().trim()) return;
-        if (event.detail >= 2) return;
-
-        event.stopPropagation();
-        onAnnotationClick(range.annotation.id);
-      }}
-      onDoubleClick={(event) => {
-        event.stopPropagation();
-        onAnnotationDoubleClick(range.annotation.id);
-      }}
-    >
-      {children}
-    </span>
-  );
-}
-
-function renderAnnotatedTextFragments(
-  textMap: PreviewTextMap,
-  keyPrefix: string,
-  annotations: TextRangeAnnotation[],
-  onAnnotationClick: (annotationId: string) => void,
-  onAnnotationDoubleClick: (annotationId: string) => void,
-  renderTextFragment: (text: string, keyPrefix: string) => ReactNode[],
-) {
-  const ranges = getAnnotationRangesForTextMap(textMap, annotations);
-  const nodes: ReactNode[] = [];
-
-  if (ranges.length === 0) {
-    return renderTextFragment(textMap.text, keyPrefix);
-  }
-
-  const boundaries = Array.from(
-    new Set(
-      [0, textMap.text.length].concat(
-        ranges.flatMap((range) => [
-          clampNumber(range.start, 0, textMap.text.length),
-          clampNumber(range.end, 0, textMap.text.length),
-        ]),
-      ),
-    ),
-  ).sort((left, right) => left - right);
-
-  boundaries.slice(0, -1).forEach((start, segmentIndex) => {
-    const end = boundaries[segmentIndex + 1];
-    if (end <= start) return;
-
-    const segmentText = textMap.text.slice(start, end);
-    const segmentContent = renderTextFragment(
-      segmentText,
-      `${keyPrefix}-segment-${segmentIndex}`,
-    );
-    const coveringRanges = ranges
-      .filter((range) => range.start <= start && range.end >= end)
-      .sort(sortAnnotationRangesForNesting);
-
-    if (coveringRanges.length === 0) {
-      nodes.push(...segmentContent);
-      return;
-    }
-
-    const annotatedSegment = coveringRanges.reduceRight<ReactNode>(
-      (children, range, depthIndex) =>
-        renderAnnotationSpan(
-          range,
-          `${keyPrefix}-annotation-${segmentIndex}-${depthIndex}-${range.annotation.id}`,
-          children,
-          onAnnotationClick,
-          onAnnotationDoubleClick,
-        ),
-      segmentContent,
-    );
-
-    nodes.push(annotatedSegment);
-  });
-
-  return nodes;
-}
-
-function renderAnnotatedPlainText(
-  textMap: PreviewTextMap,
-  keyPrefix: string,
-  annotations: TextRangeAnnotation[],
-  onAnnotationClick: (annotationId: string) => void,
-  onAnnotationDoubleClick: (annotationId: string) => void,
-) {
-  return renderAnnotatedTextFragments(
-    textMap,
-    keyPrefix,
-    annotations,
-    onAnnotationClick,
-    onAnnotationDoubleClick,
-    (text) => [text],
-  );
-}
-
-function renderPreviewInline(
-  textMap: PreviewTextMap,
-  keyPrefix: string,
-  annotations: TextRangeAnnotation[],
-  onAnnotationClick: (annotationId: string) => void,
-  onAnnotationDoubleClick: (annotationId: string) => void,
-) {
-  if (annotations.length === 0) {
-    return renderInlineMarkdown(textMap.text, keyPrefix);
-  }
-
-  return renderAnnotatedTextFragments(
-    textMap,
-    keyPrefix,
-    annotations,
-    onAnnotationClick,
-    onAnnotationDoubleClick,
-    renderInlineMarkdown,
-  );
-}
-
 function isMermaidLanguage(language: string) {
   return language.toLowerCase() === "mermaid";
 }
@@ -4052,562 +2060,8 @@ function MermaidDiagram({
   );
 }
 
-function roundPreviewFrameValue(value: number) {
-  return Math.round(value * 100) / 100;
-}
-
 function clampNumber(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max);
-}
-
-function measurePreviewAnnotationFrames(container: HTMLDivElement): PreviewAnnotationFrame[] {
-  const containerRect = container.getBoundingClientRect();
-  const frames: PreviewAnnotationFrame[] = [];
-
-  function annotationLineScope(annotation: HTMLElement) {
-    return (
-      annotation.closest<HTMLElement>(
-        "p, li, h1, h2, h3, h4, h5, h6, blockquote, td, th",
-      ) ?? annotation.parentElement
-    );
-  }
-
-  function annotationLineMetrics(annotation: HTMLElement, rect: DOMRect) {
-    const scope = annotationLineScope(annotation);
-    if (!scope) {
-      return {
-        canExtendRight: true,
-        lineRight: rect.right,
-      };
-    }
-
-    const range = document.createRange();
-    range.selectNodeContents(scope);
-    const rectMidY = (rect.top + rect.bottom) / 2;
-    const lineRects = Array.from(range.getClientRects()).filter(
-      (lineRect) =>
-        lineRect.width > 0 &&
-        lineRect.height > 0 &&
-        rectMidY >= lineRect.top - 1 &&
-        rectMidY <= lineRect.bottom + 1,
-    );
-
-    if (lineRects.length === 0) {
-      return {
-        canExtendRight: true,
-        lineRight: Math.min(rect.right, containerRect.right),
-      };
-    }
-
-    const lineRight = Math.max(...lineRects.map((lineRect) => lineRect.right));
-
-    return {
-      canExtendRight: rect.right >= lineRight - previewAnnotationLineEndTolerance,
-      lineRight,
-    };
-  }
-
-  function annotationRectBounds(annotation: HTMLElement, rect: DOMRect): PreviewAnnotationRect {
-    const lineMetrics = annotationLineMetrics(annotation, rect);
-
-    return {
-      bottom: rect.bottom,
-      canExtendRight: lineMetrics.canExtendRight,
-      left: rect.left,
-      lineRight: lineMetrics.lineRight,
-      right: rect.right,
-      top: rect.top,
-    };
-  }
-
-  function annotationListAdjustedRect(
-    annotation: HTMLElement,
-    rect: DOMRect,
-    kind: AnnotationKind,
-  ) {
-    const baseRect = annotationRectBounds(annotation, rect);
-    if (kind === "glossary") {
-      return baseRect;
-    }
-
-    const listItem = annotation.closest<HTMLLIElement>("li");
-    const list = listItem?.closest<HTMLOListElement | HTMLUListElement>("ol, ul") ?? null;
-    if (!listItem || !list || !container.contains(list)) {
-      return baseRect;
-    }
-
-    const listRect = list.getBoundingClientRect();
-    const listItemRect = listItem.getBoundingClientRect();
-    const left = Math.max(
-      containerRect.left,
-      Math.min(listRect.left, listItemRect.left, rect.left),
-    );
-
-    return {
-      ...baseRect,
-      left,
-    };
-  }
-
-  function frameFromBounds(
-    noteId: string,
-    frameKey: string,
-    isFocusTarget: boolean,
-    kind: AnnotationKind,
-    tone: AnnotationTone,
-    borderRadius: string,
-    left: number,
-    top: number,
-    right: number,
-    bottom: number,
-  ): PreviewAnnotationFrame {
-    return {
-      borderRadius,
-      frameKey,
-      isFocusTarget,
-      kind,
-      noteId,
-      tone,
-      left: roundPreviewFrameValue(
-        left - containerRect.left + container.scrollLeft,
-      ),
-      top: roundPreviewFrameValue(
-        Math.max(
-          0,
-          top - containerRect.top + container.scrollTop,
-        ),
-      ),
-      width: roundPreviewFrameValue(right - left),
-      height: roundPreviewFrameValue(bottom - top),
-    };
-  }
-
-  container
-    .querySelectorAll<HTMLElement>(".preview-note-annotation[data-note-id]")
-    .forEach((annotation, annotationIndex) => {
-      const noteId = annotation.dataset.noteId;
-      if (!noteId) return;
-      const isFocusTarget = annotation.dataset.focusTarget === "true";
-      const tone: AnnotationTone = annotation.dataset.noteTone === "1" ? 1 : 0;
-      const kind: AnnotationKind =
-        annotation.dataset.annotationKind === "glossary" ? "glossary" : "note";
-
-      const annotationRects = Array.from(annotation.getClientRects())
-        .filter((rect) => rect.width > 0 && rect.height > 0)
-        .map((rect) => annotationListAdjustedRect(annotation, rect, kind));
-      if (annotationRects.length === 0) return;
-
-      const sortedRects = annotationRects.sort(
-        (left, right) => left.top - right.top || left.left - right.left,
-      );
-      const extensionRightByRect = new Map<PreviewAnnotationRect, number>();
-      const borderRadiusByRect = new Map<PreviewAnnotationRect, string>();
-      let rectGroup: PreviewAnnotationRect[] = [];
-
-      function flushRectGroup() {
-        if (rectGroup.length === 0) return;
-
-        const extendableLineRights = rectGroup
-          .filter((rect) => rect.canExtendRight)
-          .map((rect) => Math.max(rect.right, rect.lineRight));
-        if (extendableLineRights.length > 0) {
-          const targetRight = Math.max(...extendableLineRights);
-          rectGroup.forEach((rect) => {
-            extensionRightByRect.set(
-              rect,
-              rect.canExtendRight ? Math.max(rect.right, targetRight) : rect.right,
-            );
-          });
-        }
-
-        rectGroup.forEach((rect, groupIndex) => {
-          const isFirstRect = groupIndex === 0;
-          const isLastRect = groupIndex === rectGroup.length - 1;
-          borderRadiusByRect.set(
-            rect,
-            [
-              isFirstRect ? previewAnnotationFrameCornerRadius : "0",
-              isFirstRect ? previewAnnotationFrameCornerRadius : "0",
-              isLastRect ? previewAnnotationFrameCornerRadius : "0",
-              isLastRect ? previewAnnotationFrameCornerRadius : "0",
-            ].join(" "),
-          );
-        });
-        rectGroup = [];
-      }
-
-      if (kind !== "glossary") {
-        sortedRects.forEach((rect) => {
-          const previousRect = rectGroup[rectGroup.length - 1];
-          const lineGap = previousRect ? rect.top - previousRect.bottom : 0;
-          if (
-            previousRect &&
-            (lineGap < 0 || lineGap > previewAnnotationLineJoinMaxGap)
-          ) {
-            flushRectGroup();
-          }
-
-          rectGroup.push(rect);
-        });
-        flushRectGroup();
-      }
-
-      sortedRects.forEach((rect, rectIndex) => {
-        const framePadding = previewAnnotationFramePaddingForKind(kind);
-        const frameHorizontalPadding = previewAnnotationFrameHorizontalPaddingForKind(kind);
-        const shouldJoinFrameLines = kind !== "glossary";
-        let top = rect.top - framePadding;
-        let bottom = rect.bottom + framePadding;
-        const previousRect = sortedRects[rectIndex - 1];
-        const nextRect = sortedRects[rectIndex + 1];
-
-        if (shouldJoinFrameLines && previousRect) {
-          const previousGap = rect.top - previousRect.bottom;
-          if (previousGap >= 0 && previousGap <= previewAnnotationLineJoinMaxGap) {
-            top = Math.min(top, previousRect.bottom + previousGap / 2 - 1);
-          }
-        }
-
-        if (shouldJoinFrameLines && nextRect) {
-          const nextGap = nextRect.top - rect.bottom;
-          if (nextGap >= 0 && nextGap <= previewAnnotationLineJoinMaxGap) {
-            bottom = Math.max(bottom, rect.bottom + nextGap / 2 + 1);
-          }
-        }
-
-        frames.push(
-          frameFromBounds(
-            noteId,
-            `${noteId}:inline:${annotationIndex}:${rectIndex}`,
-            isFocusTarget,
-            kind,
-            tone,
-            borderRadiusByRect.get(rect) ?? previewAnnotationFrameCornerRadius,
-            rect.left - frameHorizontalPadding,
-            top,
-            (extensionRightByRect.get(rect) ?? rect.right) + frameHorizontalPadding,
-            bottom,
-          ),
-        );
-      });
-    });
-
-  return frames.sort(
-    (left, right) =>
-      left.top - right.top ||
-      left.left - right.left ||
-      annotationKindLayer(left.kind) - annotationKindLayer(right.kind) ||
-      right.width - left.width ||
-      left.frameKey.localeCompare(right.frameKey),
-  );
-}
-
-function arePreviewAnnotationFramesEqual(
-  leftFrames: PreviewAnnotationFrame[],
-  rightFrames: PreviewAnnotationFrame[],
-) {
-  if (leftFrames.length !== rightFrames.length) return false;
-
-  return leftFrames.every((leftFrame, index) => {
-    const rightFrame = rightFrames[index];
-
-    return (
-      leftFrame.frameKey === rightFrame.frameKey &&
-      leftFrame.isFocusTarget === rightFrame.isFocusTarget &&
-      leftFrame.borderRadius === rightFrame.borderRadius &&
-      leftFrame.kind === rightFrame.kind &&
-      leftFrame.noteId === rightFrame.noteId &&
-      leftFrame.tone === rightFrame.tone &&
-      leftFrame.left === rightFrame.left &&
-      leftFrame.top === rightFrame.top &&
-      leftFrame.width === rightFrame.width &&
-      leftFrame.height === rightFrame.height
-    );
-  });
-}
-
-type ParsedMarkdownListLine = {
-  indent: number;
-  kind: MarkdownPreviewListKind;
-  markerLength: number;
-  text: string;
-};
-
-function normalizedMarkdownIndent(rawIndent: string) {
-  return rawIndent.replace(/\t/g, "    ").length;
-}
-
-function parseMarkdownListLine(line: string): ParsedMarkdownListLine | null {
-  const unorderedMatch = line.match(markdownUnorderedListLinePattern);
-  if (unorderedMatch) {
-    return {
-      indent: normalizedMarkdownIndent(unorderedMatch[1]),
-      kind: "unordered-list",
-      markerLength: unorderedMatch[0].length - unorderedMatch[2].length,
-      text: unorderedMatch[2],
-    };
-  }
-
-  const orderedMatch = line.match(markdownOrderedListLinePattern);
-  if (orderedMatch) {
-    return {
-      indent: normalizedMarkdownIndent(orderedMatch[1]),
-      kind: "ordered-list",
-      markerLength: orderedMatch[0].length - orderedMatch[2].length,
-      text: orderedMatch[2],
-    };
-  }
-
-  return null;
-}
-
-function isMarkdownListLine(line: string) {
-  return parseMarkdownListLine(line) !== null;
-}
-
-function buildMarkdownPreviewList(rawLines: string[], blockKey: string): MarkdownPreviewList {
-  const parsedLines = rawLines
-    .map((line, flatIndex) => {
-      const parsedLine = parseMarkdownListLine(line);
-      return parsedLine ? { ...parsedLine, flatIndex } : null;
-    })
-    .filter((line): line is ParsedMarkdownListLine & { flatIndex: number } => Boolean(line));
-  const rootList: MarkdownPreviewList = {
-    kind: parsedLines[0]?.kind ?? "unordered-list",
-    items: [],
-  };
-  const rootIndent = parsedLines[0]?.indent ?? 0;
-  const stack: Array<{
-    indent: number;
-    lastItem: MarkdownPreviewListItem | null;
-    list: MarkdownPreviewList;
-  }> = [{ indent: rootIndent, lastItem: null, list: rootList }];
-
-  parsedLines.forEach((line) => {
-    while (stack.length > 1 && line.indent < stack[stack.length - 1].indent) {
-      stack.pop();
-    }
-
-    let current = stack[stack.length - 1];
-    if (line.indent > current.indent && current.lastItem) {
-      const childList: MarkdownPreviewList = { kind: line.kind, items: [] };
-      current.lastItem.children.push(childList);
-      current = { indent: line.indent, lastItem: null, list: childList };
-      stack.push(current);
-    } else if (line.indent === current.indent && line.kind !== current.list.kind) {
-      const parent = stack.length > 1 ? stack[stack.length - 2] : null;
-      if (parent?.lastItem) {
-        const siblingList: MarkdownPreviewList = { kind: line.kind, items: [] };
-        parent.lastItem.children.push(siblingList);
-        current = { indent: line.indent, lastItem: null, list: siblingList };
-        stack[stack.length - 1] = current;
-      }
-    }
-
-    const item: MarkdownPreviewListItem = {
-      children: [],
-      flatIndex: line.flatIndex,
-      key: `${blockKey}-item-${line.flatIndex}`,
-      text: line.text,
-    };
-    current.list.items.push(item);
-    current.lastItem = item;
-    stack[stack.length - 1] = current;
-  });
-
-  return rootList;
-}
-
-function isMarkdownBlockStart(line: string) {
-  return (
-    /^#{1,6}\s+/.test(line) ||
-    /^>\s?/.test(line) ||
-    isMarkdownListLine(line) ||
-    /^```/.test(line) ||
-    /^(-{3,}|\*{3,}|_{3,})$/.test(line.trim())
-  );
-}
-
-function parseCodeFenceInfo(line: string) {
-  const info = line.trim().slice(3).trim();
-  const language = info.split(/\s+/, 1)[0]?.toLowerCase() ?? "";
-
-  return { info, language };
-}
-
-function parseMarkdownPreviewBlocks(markdown: string): MarkdownPreviewBlock[] {
-  const normalizedMarkdown = markdown.replace(/\r\n/g, "\n");
-  const lines = normalizedMarkdown.split("\n");
-  const blocks: MarkdownPreviewBlock[] = [];
-  let index = markdownFrontmatterBodyStartLine(normalizedMarkdown);
-
-  while (index < lines.length) {
-    const line = lines[index];
-    const trimmed = line.trim();
-    const key = `markdown-block-${index}`;
-
-    if (!trimmed) {
-      index += 1;
-      continue;
-    }
-
-    if (trimmed.startsWith("```")) {
-      const codeLines: string[] = [];
-      const { info, language } = parseCodeFenceInfo(trimmed);
-      const startLine = index;
-      index += 1;
-
-      while (index < lines.length && !lines[index].trim().startsWith("```")) {
-        codeLines.push(lines[index]);
-        index += 1;
-      }
-
-      blocks.push({
-        kind: "code",
-        key,
-        startLine,
-        endLine: index,
-        info,
-        language,
-        text: codeLines.join("\n"),
-      });
-      index += 1;
-      continue;
-    }
-
-    const headingMatch = line.match(/^(#{1,6})\s+(.+)$/);
-    if (headingMatch) {
-      blocks.push({
-        kind: "heading",
-        key,
-        startLine: index,
-        endLine: index,
-        level: headingMatch[1].length,
-        text: headingMatch[2],
-      });
-      index += 1;
-      continue;
-    }
-
-    if (/^(-{3,}|\*{3,}|_{3,})$/.test(trimmed)) {
-      blocks.push({
-        kind: "rule",
-        key,
-        startLine: index,
-        endLine: index,
-      });
-      index += 1;
-      continue;
-    }
-
-    if (/^>\s?/.test(line)) {
-      const quoteLines: string[] = [];
-      const startLine = index;
-
-      while (index < lines.length && /^>\s?/.test(lines[index])) {
-        quoteLines.push(lines[index].replace(/^>\s?/, ""));
-        index += 1;
-      }
-
-      blocks.push({
-        kind: "quote",
-        key,
-        startLine,
-        endLine: index - 1,
-        text: quoteLines.join("\n"),
-      });
-      continue;
-    }
-
-    const listLine = parseMarkdownListLine(line);
-    if (listLine) {
-      const rawLines: string[] = [];
-      const startLine = index;
-
-      while (index < lines.length && isMarkdownListLine(lines[index])) {
-        rawLines.push(lines[index]);
-        index += 1;
-      }
-
-      const list = buildMarkdownPreviewList(rawLines, key);
-
-      blocks.push({
-        kind: listLine.kind,
-        key,
-        startLine,
-        endLine: index - 1,
-        items: rawLines
-          .map((rawLine) => parseMarkdownListLine(rawLine)?.text ?? "")
-          .filter((_item, itemIndex) => itemIndex < rawLines.length),
-        list,
-        rawLines,
-      });
-      continue;
-    }
-
-    const paragraphLines: string[] = [];
-    const startLine = index;
-
-    while (index < lines.length && lines[index].trim() && !isMarkdownBlockStart(lines[index])) {
-      paragraphLines.push(lines[index].trim());
-      index += 1;
-    }
-
-    blocks.push({
-      kind: "paragraph",
-      key,
-      startLine,
-      endLine: index - 1,
-      text: paragraphLines.join("\n"),
-    });
-  }
-
-  return blocks;
-}
-
-function parseNoteMarkdownPreviewBlocks(markdown: string): NoteMarkdownPreviewBlock[] {
-  const normalizedMarkdown = markdown.replace(/\r\n/g, "\n");
-  const lines = normalizedMarkdown.split("\n");
-  const blocks: NoteMarkdownPreviewBlock[] = [];
-  let index = markdownFrontmatterBodyStartLine(normalizedMarkdown);
-  let segmentStart = 0;
-  let insideCodeFence = false;
-
-  const appendMarkdownSegment = (startLine: number, endLine: number) => {
-    if (endLine <= startLine) return;
-    parseMarkdownPreviewBlocks(lines.slice(startLine, endLine).join("\n")).forEach((block) => {
-      blocks.push({
-        ...block,
-        key: `note-${startLine}-${block.key}`,
-      });
-    });
-  };
-
-  while (index < lines.length) {
-    if (lines[index].trim().startsWith("```")) {
-      insideCodeFence = !insideCodeFence;
-      index += 1;
-      continue;
-    }
-
-    const tableMatch = insideCodeFence ? null : parseMarkdownTableAt(lines, index);
-    if (!tableMatch) {
-      index += 1;
-      continue;
-    }
-
-    appendMarkdownSegment(segmentStart, tableMatch.startLine);
-    blocks.push({
-      kind: "table",
-      key: `note-table-${tableMatch.startLine}`,
-      table: tableMatch.table,
-    });
-    index = tableMatch.endLine + 1;
-    segmentStart = index;
-  }
-
-  appendMarkdownSegment(segmentStart, lines.length);
-  return blocks;
 }
 
 function markdownFromPreviewBlock(block: MarkdownPreviewBlock, text: string) {
@@ -5141,95 +2595,15 @@ function sourceRangeForPreviewTextOffsets(textMap: PreviewTextMap, from: number,
   };
 }
 
-type MarkdownTextEdit = {
-  from: number;
-  to: number;
-  insert: string;
-};
-
-function transformTextPositionWithEdits(
-  position: number,
-  affinity: "start" | "end",
-  edits: MarkdownTextEdit[],
-) {
-  let delta = 0;
-
-  for (const edit of edits) {
-    const deletedLength = edit.to - edit.from;
-    const insertedLength = edit.insert.length;
-
-    if (deletedLength === 0) {
-      if (position > edit.from || (position === edit.from && affinity === "start")) {
-        delta += insertedLength;
-      }
-      continue;
-    }
-
-    if (position < edit.from) {
-      continue;
-    }
-
-    if (position <= edit.to) {
-      return edit.from + delta;
-    }
-
-    delta += insertedLength - deletedLength;
-  }
-
-  return position + delta;
-}
-
 function transformAnchorWithTextEdits(
   anchor: TextSelectionAnchor,
   nextBody: string,
   edits: MarkdownTextEdit[],
 ) {
-  const nextFrom = clampNumber(
-    transformTextPositionWithEdits(anchor.from, "start", edits),
-    0,
-    nextBody.length,
+  return recoverRenderableAnchor(
+    nextBody,
+    transformAnchorRangeWithTextEdits(anchor, nextBody.length, edits),
   );
-  const nextTo = clampNumber(
-    transformTextPositionWithEdits(anchor.to, "end", edits),
-    nextFrom,
-    nextBody.length,
-  );
-
-  return recoverRenderableAnchor(nextBody, {
-    ...anchor,
-    from: nextFrom,
-    to: nextTo,
-  });
-}
-
-function textEditFromBodyChange(previousBody: string, nextBody: string): MarkdownTextEdit | null {
-  if (previousBody === nextBody) return null;
-
-  const minLength = Math.min(previousBody.length, nextBody.length);
-  let prefixLength = 0;
-  while (
-    prefixLength < minLength &&
-    previousBody[prefixLength] === nextBody[prefixLength]
-  ) {
-    prefixLength += 1;
-  }
-
-  let previousSuffixIndex = previousBody.length;
-  let nextSuffixIndex = nextBody.length;
-  while (
-    previousSuffixIndex > prefixLength &&
-    nextSuffixIndex > prefixLength &&
-    previousBody[previousSuffixIndex - 1] === nextBody[nextSuffixIndex - 1]
-  ) {
-    previousSuffixIndex -= 1;
-    nextSuffixIndex -= 1;
-  }
-
-  return {
-    from: prefixLength,
-    to: previousSuffixIndex,
-    insert: nextBody.slice(prefixLength, nextSuffixIndex),
-  };
 }
 
 function transformAnchorWithBodyChange(
@@ -5331,10 +2705,7 @@ function renderEditablePreviewList(
   list: MarkdownPreviewList,
   block: Extract<MarkdownPreviewBlock, { kind: MarkdownPreviewListKind }>,
   markdown: string,
-  annotations: TextRangeAnnotation[],
   keyPrefix: string,
-  onAnnotationClick: (annotationId: string) => void,
-  onAnnotationDoubleClick: (annotationId: string) => void,
 ): ReactNode {
   const ListTag = list.kind === "unordered-list" ? "ul" : "ol";
 
@@ -5346,12 +2717,9 @@ function renderEditablePreviewList(
         return (
           <li data-preview-list-item-index={item.flatIndex} key={item.key}>
             {item.text
-              ? renderPreviewInline(
-                  itemTextMap,
+              ? renderInlineMarkdown(
+                  itemTextMap.text,
                   `${keyPrefix}-item-${item.flatIndex}`,
-                  annotations,
-                  onAnnotationClick,
-                  onAnnotationDoubleClick,
                 )
               : <br />}
             {item.children.map((childList, childIndex) => (
@@ -5360,10 +2728,7 @@ function renderEditablePreviewList(
                   childList,
                   block,
                   markdown,
-                  annotations,
                   `${keyPrefix}-item-${item.flatIndex}-child-${childIndex}`,
-                  onAnnotationClick,
-                  onAnnotationDoubleClick,
                 )}
               </Fragment>
             ))}
@@ -5402,26 +2767,18 @@ function renderPreviewContentList(
 function MarkdownPreviewBlockView({
   block,
   markdown,
-  annotations,
   editable,
   mermaidEmptyDefinitionLabel,
   mermaidErrorLabel,
   mermaidLoadingLabel,
-  onAnnotationClick,
-  onAnnotationDoubleClick,
 }: {
   block: MarkdownPreviewBlock;
   markdown: string;
-  annotations: TextRangeAnnotation[];
   editable: boolean;
   mermaidEmptyDefinitionLabel: string;
   mermaidErrorLabel: string;
   mermaidLoadingLabel: string;
-  onAnnotationClick: (annotationId: string) => void;
-  onAnnotationDoubleClick: (annotationId: string) => void;
 }) {
-  const blockAnnotations = getAnnotationsForPreviewBlock(markdown, block, annotations);
-
   const blockProps = {
     "data-preview-block-key": block.key,
   };
@@ -5436,13 +2793,7 @@ function MarkdownPreviewBlockView({
         ...blockProps,
         className: "markdown-preview-editable",
       },
-      renderPreviewInline(
-        textMap,
-        `${block.key}-heading`,
-        blockAnnotations,
-        onAnnotationClick,
-        onAnnotationDoubleClick,
-      ),
+      renderInlineMarkdown(textMap.text, `${block.key}-heading`),
     );
   }
 
@@ -5455,12 +2806,9 @@ function MarkdownPreviewBlockView({
       >
         {block.text.split("\n").map((_quoteLine, quoteIndex) => (
           <p key={`${block.key}-quote-${quoteIndex}`}>
-            {renderPreviewInline(
-              getQuoteLineTextMap(markdown, block, quoteIndex),
+            {renderInlineMarkdown(
+              getQuoteLineTextMap(markdown, block, quoteIndex).text,
               `${block.key}-quote-${quoteIndex}`,
-              blockAnnotations,
-              onAnnotationClick,
-              onAnnotationDoubleClick,
             )}
           </p>
         ))}
@@ -5475,10 +2823,7 @@ function MarkdownPreviewBlockView({
           block.list,
           block,
           markdown,
-          annotations,
           block.key,
-          onAnnotationClick,
-          onAnnotationDoubleClick,
         )}
       </div>
     );
@@ -5499,15 +2844,7 @@ function MarkdownPreviewBlockView({
 
     return (
       <pre {...blockProps} className="markdown-preview-editable" key={block.key}>
-        <code>
-          {renderAnnotatedPlainText(
-            getPreviewBlockTextMap(markdown, block),
-            `${block.key}-code`,
-            blockAnnotations,
-            onAnnotationClick,
-            onAnnotationDoubleClick,
-          )}
-        </code>
+        <code>{getPreviewBlockTextMap(markdown, block).text}</code>
       </pre>
     );
   }
@@ -5521,13 +2858,7 @@ function MarkdownPreviewBlockView({
 
     return (
       <p {...blockProps} className="markdown-preview-editable" key={block.key}>
-        {renderPreviewInline(
-          textMap,
-          `${block.key}-paragraph`,
-          blockAnnotations,
-          onAnnotationClick,
-          onAnnotationDoubleClick,
-        )}
+        {renderInlineMarkdown(textMap.text, `${block.key}-paragraph`)}
         {editable && textMap.text.endsWith("\n") ? (
           <span aria-hidden="true" data-preview-trailing-caret="true">
             {"\u200b"}
@@ -5540,27 +2871,16 @@ function MarkdownPreviewBlockView({
   return null;
 }
 
-export function MarkdownPreview({
+function MarkdownPreview({
   value,
-  annotations,
-  allowSelectedTextEnterEdit = false,
-  commitOnInput = false,
-  enableTabIndent = false,
   mermaidEmptyDefinitionLabel,
   mermaidErrorLabel,
   mermaidLoadingLabel,
   placeholder,
   readOnly,
   onChange,
-  onSelectionChange,
-  onSelectionEnter,
-  onAnnotationClick,
 }: {
   value: string;
-  annotations: TextRangeAnnotation[];
-  allowSelectedTextEnterEdit?: boolean;
-  commitOnInput?: boolean;
-  enableTabIndent?: boolean;
   mermaidEmptyDefinitionLabel: string;
   mermaidErrorLabel: string;
   mermaidLoadingLabel: string;
@@ -5571,30 +2891,20 @@ export function MarkdownPreview({
     source: EditorChangeSource,
     anchorTransform?: BodyAnchorTransform,
   ) => void;
-  onSelectionChange: (anchor: TextSelectionAnchor | null) => void;
-  onSelectionEnter: (
-    anchor: TextSelectionAnchor,
-    context?: TextSelectionEnterContext,
-  ) => boolean;
-  onAnnotationClick: (annotationId: string) => void;
 }) {
   const blocks = parseMarkdownPreviewBlocks(value);
   const previewRef = useRef<HTMLDivElement | null>(null);
   const previewValueRef = useRef(value);
-  const annotationClickTimerRef = useRef(0);
   const inputCommitFrameRef = useRef(0);
   const pendingPreviewTextFocusRef = useRef<{
     blockKey: string;
     textOffset: number;
   } | null>(null);
   const previewUndoStackRef = useRef<string[]>([]);
-  const previewRedoStackRef = useRef<string[]>([]);
-  const [annotationFrames, setAnnotationFrames] = useState<PreviewAnnotationFrame[]>([]);
   previewValueRef.current = value;
 
   useEffect(
     () => () => {
-      window.clearTimeout(annotationClickTimerRef.current);
       window.cancelAnimationFrame(inputCommitFrameRef.current);
     },
     [],
@@ -5607,65 +2917,6 @@ export function MarkdownPreview({
     pendingPreviewTextFocusRef.current = null;
     applyPreviewBlockTextOffset(pendingFocus.blockKey, pendingFocus.textOffset);
   }, [value]);
-
-  useLayoutEffect(() => {
-    if (allowSelectedTextEnterEdit) return;
-
-    const previewElement = previewRef.current;
-    if (!previewElement) return;
-
-    let animationFrame = 0;
-    let annotationLayoutSettleTimers: number[] = [];
-    const updateAnnotationFrames = () => {
-      const nextFrames = measurePreviewAnnotationFrames(previewElement);
-
-      setAnnotationFrames((currentFrames) =>
-        arePreviewAnnotationFramesEqual(currentFrames, nextFrames) ? currentFrames : nextFrames,
-      );
-    };
-    const scheduleAnnotationFrameUpdate = () => {
-      window.cancelAnimationFrame(animationFrame);
-      animationFrame = window.requestAnimationFrame(updateAnnotationFrames);
-    };
-    const clearAnnotationLayoutSettleTimers = () => {
-      annotationLayoutSettleTimers.forEach((timer) => window.clearTimeout(timer));
-      annotationLayoutSettleTimers = [];
-    };
-    const scheduleSettledAnnotationFrameUpdate = () => {
-      scheduleAnnotationFrameUpdate();
-      clearAnnotationLayoutSettleTimers();
-      annotationLayoutSettleTimers = annotationLayoutSettleDelaysMs.map((delay) =>
-        window.setTimeout(scheduleAnnotationFrameUpdate, delay),
-      );
-    };
-
-    scheduleSettledAnnotationFrameUpdate();
-
-    const editorContentFrame = previewElement.closest<HTMLElement>(".editor-content-frame");
-    const resizeObserver = new ResizeObserver(scheduleSettledAnnotationFrameUpdate);
-    resizeObserver.observe(previewElement);
-    if (editorContentFrame) {
-      resizeObserver.observe(editorContentFrame);
-      editorContentFrame.addEventListener("transitionend", scheduleSettledAnnotationFrameUpdate);
-      editorContentFrame.addEventListener("transitioncancel", scheduleSettledAnnotationFrameUpdate);
-    }
-    window.addEventListener("resize", scheduleSettledAnnotationFrameUpdate);
-
-    return () => {
-      window.cancelAnimationFrame(animationFrame);
-      clearAnnotationLayoutSettleTimers();
-      resizeObserver.disconnect();
-      editorContentFrame?.removeEventListener(
-        "transitionend",
-        scheduleSettledAnnotationFrameUpdate,
-      );
-      editorContentFrame?.removeEventListener(
-        "transitioncancel",
-        scheduleSettledAnnotationFrameUpdate,
-      );
-      window.removeEventListener("resize", scheduleSettledAnnotationFrameUpdate);
-    };
-  }, [annotations, value]);
 
   useEffect(() => {
     function handleDocumentKeyDown(event: KeyboardEvent) {
@@ -5683,121 +2934,7 @@ export function MarkdownPreview({
     return () => {
       document.removeEventListener("keydown", handleDocumentKeyDown, true);
     };
-  }, [onChange, onSelectionChange, readOnly, value]);
-
-  function handlePreviewSelection() {
-    const selection = window.getSelection();
-    const selectedText = selection?.toString() ?? "";
-
-    if (!selection || selection.isCollapsed || !selectedText.trim()) {
-      onSelectionChange(null);
-      return;
-    }
-
-    const previewElement = previewRef.current;
-    const anchor = previewElement
-      ? makePreviewAnchorFromSelection(value, blocks, previewElement, selection)
-      : makePreviewAnchor(value, selectedText);
-
-    clearQueuedAnnotationClick();
-    onSelectionChange(anchor);
-  }
-
-  function noteIdFromPreviewFrameEvent(event: MouseEvent<HTMLDivElement>) {
-    const previewElement = previewRef.current;
-    if (!previewElement) return null;
-
-    const targetElement =
-      event.target instanceof HTMLElement
-        ? event.target
-        : event.target instanceof Node
-          ? event.target.parentElement
-          : null;
-    if (targetElement?.closest(".preview-note-annotation")) return null;
-
-    for (const frame of previewElement.querySelectorAll<HTMLElement>(
-      ".preview-annotation-frame[data-note-id]",
-    )) {
-      const noteId = frame.dataset.noteId;
-      if (!noteId) continue;
-
-      const rect = frame.getBoundingClientRect();
-      const hitFrame =
-        event.clientX >= rect.left &&
-        event.clientX <= rect.right &&
-        event.clientY >= rect.top &&
-        event.clientY <= rect.bottom;
-
-      if (hitFrame) return noteId;
-    }
-
-    return null;
-  }
-
-  function selectedPreviewText() {
-    const selection = window.getSelection();
-    return selection && !selection.isCollapsed ? selection.toString().trim() : "";
-  }
-
-  function clearQueuedAnnotationClick() {
-    window.clearTimeout(annotationClickTimerRef.current);
-    annotationClickTimerRef.current = 0;
-  }
-
-  function queueAnnotationClick(annotationId: string) {
-    clearQueuedAnnotationClick();
-    annotationClickTimerRef.current = window.setTimeout(() => {
-      annotationClickTimerRef.current = 0;
-      if (selectedPreviewText()) return;
-
-      onAnnotationClick(annotationId);
-    }, annotationClickDelayMs);
-  }
-
-  function handleAnnotationDoubleClick(_annotationId: string) {
-    clearQueuedAnnotationClick();
-  }
-
-  function noteIdFromPreviewFrameClick(event: MouseEvent<HTMLDivElement>) {
-    if (selectedPreviewText()) return null;
-
-    const noteId = noteIdFromPreviewFrameEvent(event);
-    if (!noteId) return null;
-
-    event.preventDefault();
-    event.stopPropagation();
-    onSelectionChange(null);
-    return noteId;
-  }
-
-  function handlePreviewMouseDown(event: MouseEvent<HTMLDivElement>) {
-    if (event.button !== 0) return;
-    if (event.detail >= 2) {
-      clearQueuedAnnotationClick();
-    }
-  }
-
-  function handlePreviewMouseUp(event: MouseEvent<HTMLDivElement>) {
-    if (event.button !== 0) return;
-
-    if (selectedPreviewText()) {
-      clearQueuedAnnotationClick();
-      handlePreviewSelection();
-      return;
-    }
-
-    const noteId = noteIdFromPreviewFrameClick(event);
-    if (noteId) {
-      if (event.detail >= 2) {
-        handleAnnotationDoubleClick(noteId);
-      } else {
-        queueAnnotationClick(noteId);
-      }
-      return;
-    }
-
-    handlePreviewSelection();
-  }
+  }, [onChange, readOnly, value]);
 
   function previewBlockElementFromNode(node: Node | null) {
     const previewElement = previewRef.current;
@@ -5986,10 +3123,6 @@ export function MarkdownPreview({
     window.getSelection()?.removeAllRanges();
   }
 
-  function previewAnnotationLayer(previewElement: HTMLElement) {
-    return previewElement.querySelector<HTMLElement>(".preview-annotation-layer");
-  }
-
   function previewBlockBeforeNode(node: Node | null) {
     let previousNode = node?.previousSibling ?? null;
 
@@ -6046,21 +3179,16 @@ export function MarkdownPreview({
     }
 
     const topLevelNode = topLevelPreviewNode(previewElement, selection.focusNode);
-    const annotationLayer = previewAnnotationLayer(previewElement);
-    if (
-      topLevelNode &&
-      topLevelNode instanceof HTMLElement &&
-      !topLevelNode.classList.contains("preview-annotation-layer")
-    ) {
+    if (topLevelNode instanceof HTMLElement) {
       const previousBlock = topLevelNode.dataset.previewBlockKey
         ? blockForPreviewElement(topLevelNode)
         : previewBlockBeforeNode(topLevelNode);
       lineElement.dataset.previewPreviousBlockKey = previousBlock?.key ?? "";
       topLevelNode.after(lineElement);
     } else {
-      const previousBlock = previewBlockBeforeNode(annotationLayer);
+      const previousBlock = blocks[blocks.length - 1] ?? null;
       lineElement.dataset.previewPreviousBlockKey = previousBlock?.key ?? "";
-      previewElement.insertBefore(lineElement, annotationLayer);
+      previewElement.append(lineElement);
     }
 
     focusEditableNodeStart(lineElement);
@@ -6095,7 +3223,6 @@ export function MarkdownPreview({
 
     const looseNodes = Array.from(previewElement.childNodes).filter((node) => {
       if (!(node instanceof HTMLElement)) return true;
-      if (node.classList.contains("preview-annotation-layer")) return false;
       if (node.dataset.previewBlockKey || node.dataset.previewTransient === "true") {
         return false;
       }
@@ -6302,7 +3429,6 @@ export function MarkdownPreview({
 
   function handlePreviewTabIndent(event: ReactKeyboardEvent<HTMLDivElement>) {
     if (event.key !== "Tab" || event.metaKey || event.ctrlKey || event.altKey) return false;
-    if (!enableTabIndent) return false;
 
     if (event.shiftKey) {
       event.preventDefault();
@@ -6331,11 +3457,7 @@ export function MarkdownPreview({
 
     const nativeEvent = event.nativeEvent as InputEvent;
     if (nativeEvent.defaultPrevented) return;
-    if (
-      commitOnInput &&
-      nativeEvent.inputType === "insertLineBreak" &&
-      !nativeEvent.isComposing
-    ) {
+    if (nativeEvent.inputType === "insertLineBreak" && !nativeEvent.isComposing) {
       if (commitPreviewSoftBreak()) {
         event.preventDefault();
       }
@@ -6387,7 +3509,6 @@ export function MarkdownPreview({
     range.setEnd(lastBlock, lastBlock.childNodes.length);
     selection.removeAllRanges();
     selection.addRange(range);
-    handlePreviewSelection();
     return true;
   }
 
@@ -6416,7 +3537,7 @@ export function MarkdownPreview({
   }
 
   function handlePreviewPaste(event: ReactClipboardEvent<HTMLDivElement>) {
-    if (readOnly || !commitOnInput) return;
+    if (readOnly) return;
 
     const selection = window.getSelection();
     if (!selection || selection.rangeCount === 0) return;
@@ -6474,7 +3595,6 @@ export function MarkdownPreview({
     inputCommitFrameRef.current = 0;
     pendingPreviewTextFocusRef.current = null;
     window.getSelection()?.removeAllRanges();
-    onSelectionChange(null);
 
     const nextValue =
       previewValueRef.current.slice(0, selectedRange.from) +
@@ -6515,7 +3635,6 @@ export function MarkdownPreview({
       markPreviewBlockChanged(blockElement);
     }
 
-    if (!commitOnInput) return;
     if ((event.nativeEvent as InputEvent).isComposing) return;
 
     const pendingFocus = blockElement
@@ -6534,7 +3653,7 @@ export function MarkdownPreview({
   }
 
   function handlePreviewCompositionEnd(event: CompositionEvent<HTMLDivElement>) {
-    if (readOnly || !commitOnInput) return;
+    if (readOnly) return;
 
     const previewElement = event.currentTarget;
     const blockElement =
@@ -6890,7 +4009,6 @@ export function MarkdownPreview({
   function handlePreviewKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
     if (readOnly) {
       if (
-        allowSelectedTextEnterEdit &&
         event.key === "Tab" &&
         !event.metaKey &&
         !event.ctrlKey &&
@@ -6933,7 +4051,7 @@ export function MarkdownPreview({
       !event.ctrlKey &&
       !event.altKey &&
       event.shiftKey;
-    if (isSoftEnter && commitOnInput && !event.nativeEvent.isComposing) {
+    if (isSoftEnter && !event.nativeEvent.isComposing) {
       if (!commitPreviewSoftBreak()) {
         const transientElement = transientPreviewElementFromSelection();
         if (transientElement) {
@@ -6988,19 +4106,8 @@ export function MarkdownPreview({
       return;
     }
 
-    const previewElement = previewRef.current;
-    const anchor = previewElement
-      ? makePreviewAnchorFromSelection(value, blocks, previewElement, selection)
-      : makePreviewAnchor(value, selectedText);
-
     event.preventDefault();
     event.stopPropagation();
-
-    if (anchor) {
-      onSelectionEnter(anchor);
-    } else {
-      onSelectionChange(null);
-    }
   }
 
   function applyPreviewInlineShortcut(
@@ -7012,7 +4119,6 @@ export function MarkdownPreview({
     if (!change || change.value === value) return;
 
     window.getSelection()?.removeAllRanges();
-    onSelectionChange(null);
     commitPreviewChange(change.value, change.transformAnchor);
   }
 
@@ -7045,9 +4151,7 @@ export function MarkdownPreview({
     const previousValue = previewUndoStackRef.current.pop();
     if (previousValue === undefined) return false;
 
-    previewRedoStackRef.current.push(previewValueRef.current);
     previewValueRef.current = previousValue;
-    onSelectionChange(null);
     onChange(previousValue, "undo");
     return true;
   }
@@ -7062,7 +4166,6 @@ export function MarkdownPreview({
         undoStack.shift();
       }
     }
-    previewRedoStackRef.current = [];
     previewValueRef.current = nextValue;
     onChange(nextValue, "user", anchorTransform);
   }
@@ -7086,46 +4189,18 @@ export function MarkdownPreview({
       onInput={handlePreviewInput}
       onKeyDownCapture={handlePreviewKeyDown}
       onPaste={handlePreviewPaste}
-      onKeyUp={handlePreviewSelection}
-      onMouseDownCapture={handlePreviewMouseDown}
-      onMouseUpCapture={handlePreviewMouseUp}
-      onMouseUp={handlePreviewMouseUp}
     >
-        {blocks.map((block) => (
-          <MarkdownPreviewBlockView
-            block={block}
-            key={block.key}
-            markdown={value}
-            annotations={annotations}
-            editable={!readOnly}
-            mermaidEmptyDefinitionLabel={mermaidEmptyDefinitionLabel}
-            mermaidErrorLabel={mermaidErrorLabel}
-            mermaidLoadingLabel={mermaidLoadingLabel}
-            onAnnotationClick={queueAnnotationClick}
-            onAnnotationDoubleClick={handleAnnotationDoubleClick}
-          />
-        ))}
-      <div aria-hidden="true" className="preview-annotation-layer">
-        {annotationFrames.map((frame) => (
-          <span
-            className={`preview-annotation-frame ${
-              frame.isFocusTarget ? "is-focus-target" : ""
-            }`}
-            data-annotation-kind={frame.kind}
-            data-focus-target={frame.isFocusTarget ? "true" : "false"}
-            data-note-id={frame.noteId}
-            data-note-tone={frame.tone}
-            key={frame.frameKey}
-            style={{
-              borderRadius: frame.borderRadius,
-              height: frame.height,
-              left: frame.left,
-              top: frame.top,
-              width: frame.width,
-            }}
-          />
-        ))}
-      </div>
+      {blocks.map((block) => (
+        <MarkdownPreviewBlockView
+          block={block}
+          key={block.key}
+          markdown={value}
+          editable={!readOnly}
+          mermaidEmptyDefinitionLabel={mermaidEmptyDefinitionLabel}
+          mermaidErrorLabel={mermaidErrorLabel}
+          mermaidLoadingLabel={mermaidLoadingLabel}
+        />
+      ))}
     </div>
   );
 }
@@ -7356,10 +4431,7 @@ function ensureEmptyEditablePreviewLine(editableElement: HTMLElement) {
   lineElement.dataset.previewPreviousBlockKey = "";
   lineElement.append(document.createElement("br"));
 
-  const annotationLayer = editableElement.querySelector<HTMLElement>(
-    ".preview-annotation-layer",
-  );
-  editableElement.insertBefore(lineElement, annotationLayer);
+  editableElement.append(lineElement);
 
   return lineElement;
 }
@@ -7493,8 +4565,6 @@ function NoteMarkdownEditor({
   ]
     .filter(Boolean)
     .join(" ");
-  const noopSelectionHandler = () => undefined;
-
   useLayoutEffect(() => {
     if (!isEditable) return;
 
@@ -7619,20 +4689,13 @@ function NoteMarkdownEditor({
         />
       ) : (
         <MarkdownPreview
-          annotations={[]}
-          allowSelectedTextEnterEdit
-          commitOnInput
-          enableTabIndent
           mermaidEmptyDefinitionLabel={mermaidEmptyDefinitionLabel}
           mermaidErrorLabel={mermaidErrorLabel}
           mermaidLoadingLabel={mermaidLoadingLabel}
           placeholder={placeholder}
           readOnly={!isEditable}
           value={value}
-          onAnnotationClick={noopSelectionHandler}
           onChange={(nextValue) => onChange(nextValue)}
-          onSelectionChange={noopSelectionHandler}
-          onSelectionEnter={() => false}
         />
       )}
     </div>
@@ -7862,7 +4925,7 @@ function App() {
   const t = createTranslator(appLanguage);
   const translatedError = (error: unknown, key: TranslationKey = "error.operationFailed") => {
     console.error(error);
-    return t(key);
+    return t(localRecoveryErrorTranslationKey(error) ?? key);
   };
   const mobileAnnotationKeyboardShouldStayClosed =
     isMobileViewport || isMobileSafeLayoutViewport;
@@ -7891,9 +4954,7 @@ function App() {
   const [focusedLibraryNoteId, setFocusedLibraryNoteId] = useState("");
   const [expandedLibraryNoteId, setExpandedLibraryNoteId] = useState("");
   const [copiedNoteActionKey, setCopiedNoteActionKey] = useState("");
-  const [dirtyDocumentStates, setDirtyDocumentStates] = useState<
-    Record<string, DirtyDocumentState>
-  >({});
+  const [dirtyDocumentStates, setDirtyDocumentStates] = useState<DirtyDocumentStates>({});
   const [savedDocumentBodies, setSavedDocumentBodies] = useState<Record<string, string>>(() =>
     savedBodiesFromDocuments(documentsSeed),
   );
@@ -7975,7 +5036,9 @@ function App() {
   const pendingGlossaryPromptLockUntilRef = useRef(0);
   const autosaveTimerRef = useRef(0);
   const autosaveInFlightRef = useRef(false);
-  const autosaveRequestedWhileSavingRef = useRef(false);
+  const saveDocumentHandlerRef = useRef<(document: MarkdownDocument) => Promise<void>>(
+    async () => undefined,
+  );
   const externalFileRefreshInFlightRef = useRef(false);
   const lastDropboxExternalRefreshRef = useRef<{ path: string; timestamp: number } | null>(null);
   const dropboxTagIndexRequestRef = useRef(0);
@@ -7986,6 +5049,34 @@ function App() {
   const glossaryBindingsRef = useRef(glossaryBindings);
   const dirtyDocumentStatesRef = useRef(dirtyDocumentStates);
   const savedDocumentBodiesRef = useRef(savedDocumentBodies);
+  const autosaveCoordinatorRef = useRef<
+    ReturnType<typeof createAutosaveCoordinator<string>> | null
+  >(null);
+  if (!autosaveCoordinatorRef.current) {
+    autosaveCoordinatorRef.current = createAutosaveCoordinator(
+      () =>
+        documentsRef.current
+          .filter((document) => {
+            const hasBackingFile = Boolean(document.filePath) || documentIsFromDropbox(document);
+            return hasBackingFile && hasDirtyState(dirtyDocumentStatesRef.current[document.id]);
+          })
+          .map((document) => document.id),
+      async (documentId) => {
+        const document = documentsRef.current.find((candidate) => candidate.id === documentId);
+        const hasBackingFile =
+          document && (Boolean(document.filePath) || documentIsFromDropbox(document));
+        if (
+          !document ||
+          !hasBackingFile ||
+          !hasDirtyState(dirtyDocumentStatesRef.current[documentId])
+        ) {
+          return;
+        }
+        await saveDocumentHandlerRef.current(document);
+      },
+    );
+  }
+  const autosaveCoordinator = autosaveCoordinatorRef.current;
   const selectedDocumentIdRef = useRef(selectedDocumentId);
   const openDocumentTabIdsRef = useRef(openDocumentTabIds);
   const documentTabsScrollerRef = useRef<HTMLDivElement | null>(null);
@@ -8995,84 +6086,84 @@ function App() {
 
     let anchorMeasureRetryCount = 0;
 
-    function updateFloatingNotePanelPosition() {
-      window.cancelAnimationFrame(floatingNotePanelPositionFrameRef.current);
-      floatingNotePanelPositionFrameRef.current = window.requestAnimationFrame(() => {
-        const card = floatingNoteCardRef.current;
-        const measuredAnchorRect = activeNote
-          ? activeNoteAnchorRect(activeNote.id)
-          : activeNoteId
-            ? activeNoteAnchorRect(activeNoteId)
-            : activeGlossaryBinding
-              ? activeGlossaryAnchorRect(activeGlossaryBinding.id)
-              : activeGlossaryBindingId
-                ? activeGlossaryAnchorRect(activeGlossaryBindingId)
-                : pendingAnchor
-                  ? activeNoteAnchorRect(pendingAnchorAnnotationId) ?? currentSelectionAnchorRect()
-                  : null;
-        const expectsAnchor = Boolean(
-          activeNote ||
-            activeNoteId ||
-            activeGlossaryBinding ||
-            activeGlossaryBindingId ||
-            pendingAnchor,
+    function measureFloatingNotePanelPosition() {
+      const card = floatingNoteCardRef.current;
+      const measuredAnchorRect = activeNote
+        ? activeNoteAnchorRect(activeNote.id)
+        : activeNoteId
+          ? activeNoteAnchorRect(activeNoteId)
+          : activeGlossaryBinding
+            ? activeGlossaryAnchorRect(activeGlossaryBinding.id)
+            : activeGlossaryBindingId
+              ? activeGlossaryAnchorRect(activeGlossaryBindingId)
+              : pendingAnchor
+                ? activeNoteAnchorRect(pendingAnchorAnnotationId) ?? currentSelectionAnchorRect()
+                : null;
+      const expectsAnchor = Boolean(
+        activeNote ||
+          activeNoteId ||
+          activeGlossaryBinding ||
+          activeGlossaryBindingId ||
+          pendingAnchor,
+      );
+
+      const cardRect = card?.getBoundingClientRect();
+      const cardSize = {
+        height: card?.offsetHeight || cardRect?.height || 0,
+        width: card?.offsetWidth || cardRect?.width || 0,
+      };
+
+      function setPositionForAnchor(anchorRect: TextRangeRect | null) {
+        if (!anchorRect) {
+          floatingNoteAnchorLockRef.current = null;
+        }
+        const nextPosition = anchorRect
+          ? calculateFloatingNotePosition(anchorRect, cardSize)
+          : calculateDetachedFloatingNotePosition(cardSize);
+        setFloatingNotePanelPosition((currentPosition) =>
+          floatingNotePositionsAreEqual(currentPosition, nextPosition)
+            ? currentPosition
+            : nextPosition,
         );
+      }
 
-        if (!card) {
-          setFloatingNotePanelPosition(null);
-          return;
-        }
-        const cardRect = card.getBoundingClientRect();
-        const cardSize = {
-          height: card.offsetHeight || cardRect.height,
-          width: card.offsetWidth || cardRect.width,
-        };
-
-        function setPositionForAnchor(anchorRect: TextRangeRect | null) {
-          if (!anchorRect) {
-            floatingNoteAnchorLockRef.current = null;
-          }
-          const nextPosition = anchorRect
-            ? calculateFloatingNotePosition(anchorRect, cardSize)
-            : calculateDetachedFloatingNotePosition(cardSize);
-          setFloatingNotePanelPosition((currentPosition) =>
-            floatingNotePositionsAreEqual(currentPosition, nextPosition)
-              ? currentPosition
-              : nextPosition,
-          );
-        }
-
-        if (measuredAnchorRect) {
-          anchorMeasureRetryCount = 0;
-          floatingNoteAnchorRectRef.current = measuredAnchorRect;
-        } else if (expectsAnchor) {
-          const fallbackAnchorRect = floatingNoteAnchorRectRef.current;
-          if (anchorMeasureRetryCount < 24) {
-            if (fallbackAnchorRect) {
-              setPositionForAnchor(fallbackAnchorRect);
-            } else {
-              setFloatingNotePanelPosition(null);
-            }
-            anchorMeasureRetryCount += 1;
-            updateFloatingNotePanelPosition();
-            return;
-          }
-
+      if (measuredAnchorRect) {
+        anchorMeasureRetryCount = 0;
+        floatingNoteAnchorRectRef.current = measuredAnchorRect;
+      } else if (expectsAnchor) {
+        const fallbackAnchorRect = floatingNoteAnchorRectRef.current;
+        if (anchorMeasureRetryCount < 24) {
           if (fallbackAnchorRect) {
             setPositionForAnchor(fallbackAnchorRect);
-            return;
+          } else {
+            setFloatingNotePanelPosition(null);
           }
-
-          floatingNoteAnchorRectRef.current = null;
-          closeNotePanel();
+          anchorMeasureRetryCount += 1;
+          updateFloatingNotePanelPosition();
           return;
         }
 
-        setPositionForAnchor(measuredAnchorRect);
-      });
+        if (fallbackAnchorRect) {
+          setPositionForAnchor(fallbackAnchorRect);
+          return;
+        }
+
+        floatingNoteAnchorRectRef.current = null;
+        closeNotePanel();
+        return;
+      }
+
+      setPositionForAnchor(measuredAnchorRect);
     }
 
-    updateFloatingNotePanelPosition();
+    function updateFloatingNotePanelPosition() {
+      window.cancelAnimationFrame(floatingNotePanelPositionFrameRef.current);
+      floatingNotePanelPositionFrameRef.current = window.requestAnimationFrame(
+        measureFloatingNotePanelPosition,
+      );
+    }
+
+    measureFloatingNotePanelPosition();
     window.addEventListener("resize", updateFloatingNotePanelPosition);
     window.visualViewport?.addEventListener("resize", updateFloatingNotePanelPosition);
     window.visualViewport?.addEventListener("scroll", updateFloatingNotePanelPosition);
@@ -9297,7 +6388,7 @@ function App() {
   function annotationAnchorRect(annotationId: string) {
     const textElements = Array.from(
       document.querySelectorAll<HTMLElement>(
-        ".preview-note-annotation[data-note-id], .milkdown-note-annotation[data-note-id]",
+        ".milkdown-note-annotation[data-note-id]",
       ),
     ).filter((element) => element.dataset.noteId === annotationId);
     const textRects = textElements.flatMap((element) =>
@@ -9308,7 +6399,7 @@ function App() {
 
     const frameElements = Array.from(
       document.querySelectorAll<HTMLElement>(
-        ".preview-annotation-frame[data-note-id], .milkdown-annotation-frame[data-note-id]",
+        ".milkdown-annotation-frame[data-note-id]",
       ),
     ).filter((element) => element.dataset.noteId === annotationId);
     const frameRects = frameElements.flatMap((element) =>
@@ -9383,7 +6474,7 @@ function App() {
     const safeNoteId = cssAttributeSelectorValue(noteId);
     return Array.from(
       document.querySelectorAll<HTMLElement>(
-        `.preview-annotation-frame[data-note-id="${safeNoteId}"], .milkdown-annotation-frame[data-note-id="${safeNoteId}"], .preview-note-annotation[data-note-id="${safeNoteId}"], .milkdown-note-annotation[data-note-id="${safeNoteId}"]`,
+        `.milkdown-annotation-frame[data-note-id="${safeNoteId}"], .milkdown-note-annotation[data-note-id="${safeNoteId}"]`,
       ),
     )
       .filter((element) => {
@@ -9736,7 +6827,7 @@ function App() {
 
     const targetElement = elementFromEventTarget(target);
     const noteElement = targetElement?.closest<HTMLElement>(
-      ".preview-note-annotation[data-note-id], .preview-annotation-frame[data-note-id], .milkdown-note-annotation[data-note-id], .milkdown-annotation-frame[data-note-id]",
+      ".milkdown-note-annotation[data-note-id], .milkdown-annotation-frame[data-note-id]",
     );
 
     return (
@@ -9748,7 +6839,7 @@ function App() {
   function pointHitsLibraryNoteRange(noteId: string, clientX: number, clientY: number) {
     return Array.from(
       document.querySelectorAll<HTMLElement>(
-        ".preview-note-annotation[data-note-id], .preview-annotation-frame[data-note-id], .milkdown-note-annotation[data-note-id], .milkdown-annotation-frame[data-note-id]",
+        ".milkdown-note-annotation[data-note-id], .milkdown-annotation-frame[data-note-id]",
       ),
     ).some((element) => {
       if (element.dataset.noteId !== noteId) return false;
@@ -9762,7 +6853,7 @@ function App() {
 
     const targetElement = elementFromEventTarget(event.target);
     const noteElement = targetElement?.closest<HTMLElement>(
-      ".preview-note-annotation[data-note-id], .preview-annotation-frame[data-note-id], .milkdown-note-annotation[data-note-id], .milkdown-annotation-frame[data-note-id]",
+      ".milkdown-note-annotation[data-note-id], .milkdown-annotation-frame[data-note-id]",
     );
 
     return (
@@ -9811,7 +6902,7 @@ function App() {
 
     return Array.from(
       document.querySelectorAll<HTMLElement>(
-        ".preview-note-annotation[data-note-id], .preview-annotation-frame[data-note-id], .milkdown-note-annotation[data-note-id], .milkdown-annotation-frame[data-note-id]",
+        ".milkdown-note-annotation[data-note-id], .milkdown-annotation-frame[data-note-id]",
       ),
     ).some((element) => {
       const isActiveNote = element.dataset.noteId === activeNoteId;
@@ -10156,7 +7247,7 @@ function App() {
   useEffect(() => {
     if (!nativeStorageAvailable) return;
 
-    void invoke("set_app_language", { language: appLanguage }).catch((error) => {
+    void setAppLanguage({ language: appLanguage }).catch((error) => {
       console.error(error);
     });
   }, [appLanguage, nativeStorageAvailable]);
@@ -10192,13 +7283,13 @@ function App() {
     setFileSearchError("");
 
     const searchTimer = window.setTimeout(() => {
-      void invoke<SearchMarkdownFileResult[]>("search_markdown_files", {
+      void searchMarkdownFiles({
         exactTag: Boolean(
           fileSearchMode === "tags" &&
             exactTagSearchKey &&
             exactTagSearchKey === tagDedupeKey(query),
         ),
-        rootPath: workspaceRootPath,
+        rootPath: workspaceRootPath!,
         query,
         searchTags: fileSearchMode === "tags",
       })
@@ -10425,7 +7516,7 @@ function App() {
           return;
         }
 
-        void invoke<OpenMarkdownFileContextResult>("open_markdown_file_context", {
+        void openMarkdownFileContext({
           path: lastOpenedPath,
         })
           .then((context) => {
@@ -10481,9 +7572,7 @@ function App() {
       lastOpenedFileRestoreAttemptedRef.current = true;
 
       try {
-        const newWindowTarget = await invoke<OpenLocationEventPayload | null>(
-          "take_new_window_document_target",
-        );
+        const newWindowTarget = await takeNewWindowDocumentTarget();
         if (disposed) return;
         if (newWindowTarget) {
           openNewWindowDocumentTargetHandlerRef.current(newWindowTarget);
@@ -10495,7 +7584,7 @@ function App() {
       }
 
       try {
-        const openedFilePaths = await invoke<string[]>("take_opened_file_paths");
+        const openedFilePaths = await takeOpenedFilePaths();
         if (disposed) return;
         if (openedFilePaths.length > 0) {
           openDroppedMarkdownPathsHandlerRef.current(openedFilePaths);
@@ -11057,24 +8146,6 @@ function App() {
     settingsViewOpen,
   ]);
 
-  function dirtyBackedDocumentExists(states = dirtyDocumentStatesRef.current) {
-    return documentsRef.current.some((document) => {
-      const hasBackingFile = Boolean(document.filePath) || documentIsFromDropbox(document);
-      return hasBackingFile && hasDirtyState(states[document.id]);
-    });
-  }
-
-  function scheduleAutosaveForDirtyDocuments(states = dirtyDocumentStatesRef.current) {
-    window.clearTimeout(autosaveTimerRef.current);
-
-    if (!nativeStorageAvailable) return;
-    if (!dirtyBackedDocumentExists(states)) return;
-
-    autosaveTimerRef.current = window.setTimeout(() => {
-      void saveDirtyDocuments();
-    }, autosaveDelayMs);
-  }
-
   function flushDirtyDocumentsAfterCurrentEvent() {
     if (!nativeStorageAvailable) return;
 
@@ -11092,23 +8163,14 @@ function App() {
   }
 
   function updateDocumentDirtyState(documentId: string, patch: Partial<DirtyDocumentState>) {
-    const currentStates = dirtyDocumentStatesRef.current;
-    const currentState = currentStates[documentId] ?? { body: false, notes: false };
-    const nextState = {
-      ...currentState,
-      ...patch,
-    };
-    const nextStates = { ...currentStates };
-
-    if (hasDirtyState(nextState)) {
-      nextStates[documentId] = nextState;
-    } else {
-      delete nextStates[documentId];
-    }
+    const nextStates = patchDirtyDocumentStates(
+      dirtyDocumentStatesRef.current,
+      documentId,
+      patch,
+    );
 
     dirtyDocumentStatesRef.current = nextStates;
     setDirtyDocumentStates(nextStates);
-    scheduleAutosaveForDirtyDocuments(nextStates);
   }
 
   function markDocumentBodyDirty(documentId: string, isDirty: boolean) {
@@ -11199,7 +8261,7 @@ function App() {
   function rememberNativeRecentLocation(location: NativeLocation) {
     if (!nativeStorageAvailable) return;
 
-    void invoke("remember_recent_location", location)
+    void rememberRecentLocation(location)
       .then(() => {
         void refreshSavedLocations();
       })
@@ -11211,7 +8273,7 @@ function App() {
   function setNativeCurrentDirectory(path: string, title: string, source: WorkspaceSource) {
     if (!nativeStorageAvailable) return;
 
-    void invoke("set_current_directory_location", { path, title, source }).catch((error) => {
+    void setCurrentDirectoryLocation({ path, title, source }).catch((error) => {
       setStorageError(translatedError(error));
     });
   }
@@ -11223,7 +8285,7 @@ function App() {
     }
 
     try {
-      const nextSavedLocations = await invoke<SavedLocationsResult>("saved_locations");
+      const nextSavedLocations = await loadSavedLocations();
       setSavedLocations({
         recent: nextSavedLocations.recent ?? [],
         favoriteDirectories: nextSavedLocations.favoriteDirectories ?? [],
@@ -11382,49 +8444,32 @@ function App() {
     restoreDocumentModeState(documentId);
   }
 
-  function availableDocumentTabIds(
-    documentIds: string[],
-    sourceDocuments = documentsRef.current,
-  ) {
-    const availableDocumentIds = new Set(sourceDocuments.map((document) => document.id));
-    const nextIds: string[] = [];
-    const seenIds = new Set<string>();
-
-    documentIds.forEach((documentId) => {
-      if (!availableDocumentIds.has(documentId) || seenIds.has(documentId)) return;
-
-      nextIds.push(documentId);
-      seenIds.add(documentId);
-    });
-
-    return nextIds;
-  }
-
   function resetDocumentTabs(documentId: string) {
     setOpenDocumentTabIds(documentId ? [documentId] : []);
   }
 
   function addDocumentTab(documentId: string) {
     setOpenDocumentTabIds((currentIds) =>
-      availableDocumentTabIds([...currentIds, documentId]),
+      documentTabIdsAfterOpening(
+        currentIds,
+        selectedDocumentIdRef.current,
+        documentId,
+        "add",
+        documentsRef.current.map((document) => document.id),
+      ),
     );
   }
 
   function replaceActiveDocumentTab(documentId: string) {
-    setOpenDocumentTabIds((currentIds) => {
-      if (currentIds.includes(documentId)) {
-        return currentIds;
-      }
-
-      const activeIndex = currentIds.indexOf(selectedDocumentIdRef.current);
-      if (activeIndex < 0) {
-        return availableDocumentTabIds(currentIds.length > 0 ? [documentId, ...currentIds] : [documentId]);
-      }
-
-      const nextIds = [...currentIds];
-      nextIds[activeIndex] = documentId;
-      return availableDocumentTabIds(nextIds);
-    });
+    setOpenDocumentTabIds((currentIds) =>
+      documentTabIdsAfterOpening(
+        currentIds,
+        selectedDocumentIdRef.current,
+        documentId,
+        "replace",
+        documentsRef.current.map((document) => document.id),
+      ),
+    );
   }
 
   function applyDocumentTabBehavior(documentId: string, behavior: DocumentTabBehavior) {
@@ -11473,22 +8518,23 @@ function App() {
     }
 
     const currentIds = openDocumentTabIdsRef.current;
-    const closedIndex = currentIds.indexOf(documentIdToClose);
-    if (closedIndex < 0) return;
+    const transition = documentTabsAfterClosing(
+      currentIds,
+      selectedDocumentIdRef.current,
+      documentIdToClose,
+    );
+    if (transition.openDocumentTabIds !== currentIds) {
+      openDocumentTabIdsRef.current = transition.openDocumentTabIds;
+      setOpenDocumentTabIds(transition.openDocumentTabIds);
+    }
 
-    const nextIds = currentIds.filter((currentId) => currentId !== documentIdToClose);
-    openDocumentTabIdsRef.current = nextIds;
-    setOpenDocumentTabIds(nextIds);
-
-    if (documentIdToClose !== selectedDocumentIdRef.current) return;
-
-    if (nextIds.length === 0) {
+    if (transition.nextActiveDocumentId === null) {
       clearActiveDocumentSelection();
       return;
     }
-
-    const nextIndex = Math.min(closedIndex, nextIds.length - 1);
-    selectDocument(nextIds[nextIndex], { tabBehavior: "none" });
+    if (transition.nextActiveDocumentId != null) {
+      selectDocument(transition.nextActiveDocumentId, { tabBehavior: "none" });
+    }
   }
 
   async function closeOtherDocumentTabs(documentId: string) {
@@ -11502,13 +8548,17 @@ function App() {
     }
 
     const currentIds = openDocumentTabIdsRef.current;
-    const nextIds = documentTabIdsAfterClosingOthers(currentIds, documentId);
-    if (nextIds === currentIds) return;
-
-    openDocumentTabIdsRef.current = nextIds;
-    setOpenDocumentTabIds(nextIds);
-    if (selectedDocumentIdRef.current !== documentId) {
-      selectDocument(documentId, { tabBehavior: "none" });
+    const transition = documentTabsAfterClosingOthers(
+      currentIds,
+      selectedDocumentIdRef.current,
+      documentId,
+    );
+    if (transition.openDocumentTabIds !== currentIds) {
+      openDocumentTabIdsRef.current = transition.openDocumentTabIds;
+      setOpenDocumentTabIds(transition.openDocumentTabIds);
+    }
+    if (transition.nextActiveDocumentId != null) {
+      selectDocument(transition.nextActiveDocumentId, { tabBehavior: "none" });
     }
   }
 
@@ -11548,7 +8598,7 @@ function App() {
       } catch {
         // Scene identifiers are available on iOS; desktop windows do not need one.
       }
-      await invoke("create_new_window", {
+      await createNewWindow({
         documentTarget: {
           kind: "file",
           path: documentToOpen.filePath ?? documentToOpen.path,
@@ -11563,86 +8613,16 @@ function App() {
     }
   }
 
-  function documentFromLoadedFile(loaded: OpenMarkdownFileResult): MarkdownDocument {
-    return documentFromLoadedFileResult(loaded);
-  }
-
-  function localLoadedNoteFromFile(
-    loadedFile: OpenMarkdownFileResult,
-    note: SelectionNote,
-  ): SelectionNote {
-    const anchorSourceText = note.anchor.selectedText || note.selectedText;
-    const anchor = recoverRenderableAnchor(loadedFile.body, {
-      ...note.anchor,
-      selectedText: anchorSourceText,
-    });
-
-    return {
-      ...note,
-      documentId: loadedFile.path,
-      selectedText: note.selectedText || anchor.selectedText,
-      anchor,
-    };
-  }
-
-  function localLoadedGlossaryBindingFromFile(
-    loadedFile: OpenMarkdownFileResult,
-    binding: GlossaryBinding,
-  ): GlossaryBinding {
-    return {
-      ...binding,
-      documentId: loadedFile.path,
-      anchor: recoverRenderableAnchor(loadedFile.body, binding.anchor),
-    };
-  }
-
-  function dropboxLoadedNoteFromFile(
-    loadedFile: OpenDropboxMarkdownFileResult,
-    note: SelectionNote,
-    documentId: string,
-  ): SelectionNote {
-    const anchorSourceText = note.anchor.selectedText || note.selectedText;
-    const anchor = recoverRenderableAnchor(loadedFile.body, {
-      ...note.anchor,
-      selectedText: anchorSourceText,
-    });
-
-    return {
-      ...note,
-      documentId,
-      selectedText: note.selectedText || anchor.selectedText,
-      anchor,
-    };
-  }
-
-  function dropboxLoadedGlossaryBindingFromFile(
-    loadedFile: OpenDropboxMarkdownFileResult,
-    binding: GlossaryBinding,
-    documentId: string,
-  ): GlossaryBinding {
-    return {
-      ...binding,
-      documentId,
-      anchor: recoverRenderableAnchor(loadedFile.body, binding.anchor),
-    };
-  }
-
   function mergeLoadedFilesIntoDocumentState(loadedFiles: OpenMarkdownFileResult[]) {
     if (loadedFiles.length === 0) return;
 
-    const loadedDocuments = loadedFiles.map(documentFromLoadedFile);
-    const loadedDocumentIds = new Set(loadedDocuments.map((document) => document.id));
-    const loadedNotes = loadedFiles.flatMap((loadedFile) =>
-      loadedFile.notes.map((note) => localLoadedNoteFromFile(loadedFile, note)),
-    );
-    const loadedGlossaryBindings = loadedFiles.flatMap((loadedFile) =>
-      (loadedFile.glossaryBindings ?? []).map((binding) =>
-        localLoadedGlossaryBindingFromFile(loadedFile, binding),
-      ),
-    );
-    const loadedGlossaryTerms = loadedFiles.flatMap(
-      (loadedFile) => loadedFile.glossaryTerms ?? [],
-    );
+    const {
+      loadedDocuments,
+      loadedDocumentIds,
+      loadedNotes,
+      loadedGlossaryBindings,
+      loadedGlossaryTerms,
+    } = projectLoadedLocalFiles(loadedFiles, recoverRenderableAnchor);
     const nextDocuments = [
       ...loadedDocuments,
       ...documentsRef.current.filter((document) => !loadedDocumentIds.has(document.id)),
@@ -11660,12 +8640,6 @@ function App() {
     ]);
     setGlossaryTerms((currentTerms) => mergeGlossaryTerms(loadedGlossaryTerms, currentTerms));
     markLoadedDocumentsClean(loadedDocuments);
-  }
-
-  function mergeLoadedFilesIntoWorkspace(loadedFiles: OpenMarkdownFileResult[]) {
-    if (loadedFiles.length === 0) return;
-
-    mergeLoadedFilesIntoDocumentState(loadedFiles);
   }
 
   function directoryWithSelectedFile(context: OpenMarkdownFileContextResult) {
@@ -11703,19 +8677,13 @@ function App() {
     discardTransientEmptySelectionNote();
     discardTransientEmptyGlossary();
 
-    const loadedDocuments = loadedFiles.map(documentFromLoadedFile);
-    const loadedDocumentIds = new Set(loadedDocuments.map((document) => document.id));
-    const loadedNotes = loadedFiles.flatMap((loadedFile) =>
-      loadedFile.notes.map((note) => localLoadedNoteFromFile(loadedFile, note)),
-    );
-    const loadedGlossaryBindings = loadedFiles.flatMap((loadedFile) =>
-      (loadedFile.glossaryBindings ?? []).map((binding) =>
-        localLoadedGlossaryBindingFromFile(loadedFile, binding),
-      ),
-    );
-    const loadedGlossaryTerms = loadedFiles.flatMap(
-      (loadedFile) => loadedFile.glossaryTerms ?? [],
-    );
+    const {
+      loadedDocuments,
+      loadedDocumentIds,
+      loadedNotes,
+      loadedGlossaryBindings,
+      loadedGlossaryTerms,
+    } = projectLoadedLocalFiles(loadedFiles, recoverRenderableAnchor);
     const firstDocument = loadedDocuments[0];
     const rootPath = parentDirectoryPath(firstDocument.filePath);
     const nextDocuments = [
@@ -11815,7 +8783,7 @@ function App() {
         fileEntries.slice(index, index + 6).map(async (entry) => ({
           documentId: entry.documentId,
           tags: readMarkdownTags(
-            await invoke<string>("read_dropbox_markdown_body", { path: entry.path }),
+            await readDropboxMarkdownBody({ path: entry.path }),
           ),
         })),
       );
@@ -11916,10 +8884,15 @@ function App() {
     const loadedDocument = documentFromDropboxFile(loadedFile);
     const documentId = loadedDocument.id;
     const loadedNotes = loadedFile.notes.map((note) =>
-      dropboxLoadedNoteFromFile(loadedFile, note, documentId),
+      loadedNoteForDocument(loadedFile, note, documentId, recoverRenderableAnchor),
     );
     const loadedGlossaryBindings = (loadedFile.glossaryBindings ?? []).map((binding) =>
-      dropboxLoadedGlossaryBindingFromFile(loadedFile, binding, documentId),
+      loadedGlossaryBindingForDocument(
+        loadedFile,
+        binding,
+        documentId,
+        recoverRenderableAnchor,
+      ),
     );
     const loadedGlossaryTerms = loadedFile.glossaryTerms ?? [];
     const nextDocuments = options.replaceDocuments
@@ -11978,13 +8951,18 @@ function App() {
   }
 
   function applyReloadedFile(loadedFile: OpenMarkdownFileResult) {
-    const loadedDocument = documentFromLoadedFile(loadedFile);
+    const loadedDocument = documentFromLoadedFileResult(loadedFile);
     const documentId = loadedDocument.id;
     const loadedNotes = loadedFile.notes.map((note) =>
-      localLoadedNoteFromFile(loadedFile, note),
+      loadedNoteForDocument(loadedFile, note, loadedFile.path, recoverRenderableAnchor),
     );
     const loadedGlossaryBindings = (loadedFile.glossaryBindings ?? []).map((binding) =>
-      localLoadedGlossaryBindingFromFile(loadedFile, binding),
+      loadedGlossaryBindingForDocument(
+        loadedFile,
+        binding,
+        loadedFile.path,
+        recoverRenderableAnchor,
+      ),
     );
     const loadedGlossaryTerms = loadedFile.glossaryTerms ?? [];
 
@@ -12010,10 +8988,15 @@ function App() {
     documentId: string,
   ) {
     const loadedNotes = loadedFile.notes.map((note) =>
-      dropboxLoadedNoteFromFile(loadedFile, note, documentId),
+      loadedNoteForDocument(loadedFile, note, documentId, recoverRenderableAnchor),
     );
     const loadedGlossaryBindings = (loadedFile.glossaryBindings ?? []).map((binding) =>
-      dropboxLoadedGlossaryBindingFromFile(loadedFile, binding, documentId),
+      loadedGlossaryBindingForDocument(
+        loadedFile,
+        binding,
+        documentId,
+        recoverRenderableAnchor,
+      ),
     );
 
     return sidecarFingerprint(
@@ -12064,7 +9047,7 @@ function App() {
 
     externalFileRefreshInFlightRef.current = true;
     try {
-      const loaded = await invoke<OpenDropboxMarkdownFileResult>("open_dropbox_markdown_file", {
+      const loaded = await openDropboxMarkdownFile({
         path: documentToRefresh.path,
       });
       const currentDocument = documentsRef.current.find((document) => document.id === documentId);
@@ -12098,7 +9081,7 @@ function App() {
 
     externalFileRefreshInFlightRef.current = true;
     try {
-      const loaded = await invoke<OpenMarkdownFileResult>("open_markdown_file", {
+      const loaded = await openMarkdownFile({
         path: documentToRefresh.filePath,
       });
       const currentDocument = documentsRef.current.find((document) => document.id === documentId);
@@ -12142,18 +9125,12 @@ function App() {
     const loadedFiles = openedDirectory.entries.flatMap((entry) =>
       entry.kind === "file" ? [entry.file] : [],
     );
-    const loadedDocuments = loadedFiles.map(documentFromLoadedFile);
-    const loadedNotes = loadedFiles.flatMap((loadedFile) =>
-      loadedFile.notes.map((note) => localLoadedNoteFromFile(loadedFile, note)),
-    );
-    const loadedGlossaryBindings = loadedFiles.flatMap((loadedFile) =>
-      (loadedFile.glossaryBindings ?? []).map((binding) =>
-        localLoadedGlossaryBindingFromFile(loadedFile, binding),
-      ),
-    );
-    const loadedGlossaryTerms = loadedFiles.flatMap(
-      (loadedFile) => loadedFile.glossaryTerms ?? [],
-    );
+    const {
+      loadedDocuments,
+      loadedNotes,
+      loadedGlossaryBindings,
+      loadedGlossaryTerms,
+    } = projectLoadedLocalFiles(loadedFiles, recoverRenderableAnchor);
     const nextEntries = sortWorkspaceEntriesForDirectory(
       workspaceEntriesFromOpenedDirectory(openedDirectory, 1),
       workspaceSortModeRef.current,
@@ -12230,7 +9207,7 @@ function App() {
     );
     const loadedResults = await Promise.allSettled(
       sessionPaths.map((path) =>
-        invoke<OpenMarkdownFileResult>("open_markdown_file", { path }),
+        openMarkdownFile({ path }),
       ),
     );
     const loadedFiles = loadedResults.flatMap((result) =>
@@ -12263,7 +9240,7 @@ function App() {
     selectedPath: string,
     tabSession: DocumentTabSessionState | null = null,
   ) {
-    const openedDirectory = await invoke<OpenMarkdownDirectoryResult>("open_markdown_directory", {
+    const openedDirectory = await openMarkdownDirectory({
       path: rootDirectoryPath,
     });
     const loadedTabSession = tabSession
@@ -12321,10 +9298,9 @@ function App() {
         throw new Error("last opened file ancestor is not visible from the saved root directory");
       }
 
-      const openedAncestorDirectory = await invoke<OpenMarkdownDirectoryResult>(
-        "open_markdown_directory",
-        { path: ancestorEntry.path },
-      );
+      const openedAncestorDirectory = await openMarkdownDirectory({
+        path: ancestorEntry.path,
+      });
       const childDepth = (ancestorEntry.depth ?? 1) + 1;
       const childEntries = workspaceEntriesFromOpenedDirectory(
         openedAncestorDirectory,
@@ -12406,7 +9382,7 @@ function App() {
     }
 
     try {
-      const status = await invoke<DropboxOAuthStatusResult>("check_dropbox_connection");
+      const status = await checkDropboxConnection();
       setDropboxConnected(status.connected);
       if (!status.connected) {
         setStorageError(t("dropbox.error.restoreNeedsAuthorization"));
@@ -12456,10 +9432,7 @@ function App() {
       }
 
       try {
-        const loadedFile = await invoke<OpenDropboxMarkdownFileResult>(
-          "open_dropbox_markdown_file",
-          { path },
-        );
+        const loadedFile = await openDropboxMarkdownFile({ path });
         applyLoadedDropboxFile(loadedFile, {
           rememberRecent: false,
           tabBehavior: "none",
@@ -12502,10 +9475,9 @@ function App() {
     let openedDirectory: OpenDropboxMarkdownDirectoryResult | null = null;
 
     try {
-      openedDirectory = await invoke<OpenDropboxMarkdownDirectoryResult>(
-        "list_dropbox_markdown_directory",
-        { path: restoreState.workspacePath },
-      );
+      openedDirectory = await listDropboxMarkdownDirectory({
+        path: restoreState.workspacePath,
+      });
       if (restoreWasInterrupted()) return true;
       applyOpenedDropboxDirectory(openedDirectory, {
         rememberLastOpened: false,
@@ -12560,7 +9532,7 @@ function App() {
 
     try {
       setStorageError(t("dropbox.status.openingFile"));
-      const loaded = await invoke<OpenDropboxMarkdownFileResult>("open_dropbox_markdown_file", {
+      const loaded = await openDropboxMarkdownFile({
         path: restoreFilePath,
       });
       if (restoreWasInterrupted()) return true;
@@ -12599,7 +9571,7 @@ function App() {
     setStorageError(t("status.openingFolder"));
 
     try {
-      const openedDirectory = await invoke<OpenMarkdownDirectoryResult>("open_markdown_directory", {
+      const openedDirectory = await openMarkdownDirectory({
         path,
       });
       applyOpenedDirectory(openedDirectory);
@@ -12634,7 +9606,7 @@ function App() {
     setStorageError(t("dropbox.status.openingFile"));
 
     try {
-      const loaded = await invoke<OpenDropboxMarkdownFileResult>("open_dropbox_markdown_file", {
+      const loaded = await openDropboxMarkdownFile({
         path,
       });
       if (selectionRevision !== manualDocumentSelectionRevisionRef.current) return false;
@@ -12708,7 +9680,7 @@ function App() {
     setStorageError(t("dropbox.status.loadingRoot"));
 
     try {
-      const status = await invoke<DropboxOAuthStatusResult>("dropbox_oauth_status");
+      const status = await dropboxOAuthStatus();
       if (pickerSessionRevision !== dropboxPickerSessionRevisionRef.current) return;
       setDropboxConnected(status.connected);
 
@@ -12769,10 +9741,7 @@ function App() {
     setStorageError(t("dropbox.status.loadingRoot"));
 
     try {
-      const openedDirectory = await invoke<OpenDropboxMarkdownDirectoryResult>(
-        "list_dropbox_markdown_directory",
-        { path: "" },
-      );
+      const openedDirectory = await listDropboxMarkdownDirectory({ path: "" });
       if (pickerSessionRevision !== dropboxPickerSessionRevisionRef.current) return;
       const directories = dropboxPickerNodesFromOpenedDirectory(openedDirectory, mode);
       const selectedPath =
@@ -12911,10 +9880,7 @@ function App() {
     setStorageError(t("dropbox.status.loadingRoot"));
 
     try {
-      const openedDirectory = await invoke<OpenDropboxMarkdownDirectoryResult>(
-        "list_dropbox_markdown_directory",
-        { path },
-      );
+      const openedDirectory = await listDropboxMarkdownDirectory({ path });
       if (pickerSessionRevision !== dropboxPickerSessionRevisionRef.current) return;
       const childDirectories = dropboxPickerNodesFromOpenedDirectory(
         openedDirectory,
@@ -13021,10 +9987,9 @@ function App() {
         return;
       }
 
-      const openedDirectory = await invoke<OpenDropboxMarkdownDirectoryResult>(
-        "list_dropbox_markdown_directory",
-        { path: selectedPath },
-      );
+      const openedDirectory = await listDropboxMarkdownDirectory({
+        path: selectedPath,
+      });
       if (pickerSessionRevision !== dropboxPickerSessionRevisionRef.current) return;
       applyOpenedDropboxDirectory(openedDirectory);
       completeMobileLocationPicker();
@@ -13292,10 +10257,10 @@ function App() {
     setStorageError(t("status.openingFile"));
 
     try {
-      const loaded = await invoke<OpenMarkdownFileResult>("open_markdown_file", {
+      const loaded = await openMarkdownFile({
         path: target.path,
       });
-      const nextDocument = documentFromLoadedFile(loaded);
+      const nextDocument = documentFromLoadedFileResult(loaded);
 
       documentsRef.current = [
         nextDocument,
@@ -13333,7 +10298,7 @@ function App() {
     setStorageError(t("status.openingFile"));
 
     try {
-      const loaded = await invoke<OpenMarkdownFileResult>("open_markdown_file", {
+      const loaded = await openMarkdownFile({
         path: result.path,
       });
       mergeLoadedFilesIntoDocumentState([loaded]);
@@ -13387,10 +10352,9 @@ function App() {
       let childEntries: WorkspaceEntry[];
 
       if (entry.source === "dropbox") {
-        const openedDirectory = await invoke<OpenDropboxMarkdownDirectoryResult>(
-          "list_dropbox_markdown_directory",
-          { path: entry.path },
-        );
+        const openedDirectory = await listDropboxMarkdownDirectory({
+          path: entry.path,
+        });
         childEntries = workspaceEntriesFromOpenedDropboxDirectory(openedDirectory, childDepth);
         void loadDropboxTagIndex(
           childEntries,
@@ -13398,13 +10362,13 @@ function App() {
           false,
         );
       } else {
-        const openedDirectory = await invoke<OpenMarkdownDirectoryResult>("open_markdown_directory", {
+        const openedDirectory = await openMarkdownDirectory({
           path: entry.path,
         });
         const loadedFiles = openedDirectory.entries.flatMap((childEntry) =>
           childEntry.kind === "file" ? [childEntry.file] : [],
         );
-        mergeLoadedFilesIntoWorkspace(loadedFiles);
+        mergeLoadedFilesIntoDocumentState(loadedFiles);
         childEntries = workspaceEntriesFromOpenedDirectory(openedDirectory, childDepth);
       }
 
@@ -13436,7 +10400,7 @@ function App() {
 
   async function openDroppedMarkdownPaths(paths: string[]) {
     try {
-      const path = await invoke<string>("validate_dropped_markdown_file", { paths });
+      const path = await validateDroppedMarkdownFile({ paths });
       await openMarkdownFilePath(path);
     } catch {
       setStorageError(t("error.dropOneMdFile"));
@@ -13454,7 +10418,7 @@ function App() {
     setStorageError(t("status.openingFile"));
 
     try {
-      const context = await invoke<OpenMarkdownFileContextResult>("open_markdown_file_context", {
+      const context = await openMarkdownFileContext({
         path,
       });
 
@@ -13476,7 +10440,7 @@ function App() {
     let connected = dropboxConnected || options.allowPendingConnection === true;
     if (!connected) {
       try {
-        const status = await invoke<DropboxOAuthStatusResult>("dropbox_oauth_status");
+        const status = await dropboxOAuthStatus();
         connected = status.connected;
         setDropboxConnected(status.connected);
       } catch (error) {
@@ -13502,10 +10466,7 @@ function App() {
         location.kind === "directory"
           ? location.path
           : dropboxParentDirectoryPath(location.path);
-      const openedDirectory = await invoke<OpenDropboxMarkdownDirectoryResult>(
-        "list_dropbox_markdown_directory",
-        { path: directoryPath },
-      );
+      const openedDirectory = await listDropboxMarkdownDirectory({ path: directoryPath });
 
       const filePath =
         location.kind === "file"
@@ -13553,7 +10514,7 @@ function App() {
     setStorageError("");
 
     try {
-      await invoke("set_native_folder_picker_list_view", { enabled: true });
+      await setNativeFolderPickerListView({ enabled: true });
       let selectedPath: string | string[] | null;
       try {
         selectedPath = await openDialog({
@@ -13561,7 +10522,7 @@ function App() {
           multiple: false,
         });
       } finally {
-        await invoke("set_native_folder_picker_list_view", { enabled: false });
+        await setNativeFolderPickerListView({ enabled: false });
       }
       if (!selectedPath) return false;
       if (Array.isArray(selectedPath)) return true;
@@ -13645,12 +10606,16 @@ function App() {
     documentToExport: MarkdownDocument,
     directory: string,
   ) {
+    const { pdfFileNameForDocument, renderMarkdownDocumentToPdfBase64 } = await import(
+      "./pdfExport"
+    );
     const dataBase64 = await renderMarkdownDocumentToPdfBase64(
       documentToExport,
       t("pdfExport.content.imageUnavailable"),
+      parseMarkdownPreviewBlocks,
     );
 
-    return invoke<WritePdfFileResult>("write_pdf_file_to_directory", {
+    return writePdfFileToDirectory({
       directory,
       fileName: pdfFileNameForDocument(documentToExport),
       dataBase64,
@@ -13691,6 +10656,9 @@ function App() {
         if (outputDirectory) {
           saved = await writeDocumentPdfToDirectory(documentToExport, outputDirectory);
         } else {
+          const { pdfFileNameForDocument, renderMarkdownDocumentToPdfBase64 } = await import(
+            "./pdfExport"
+          );
           const selectedPath = await save({
             defaultPath: pdfFileNameForDocument(documentToExport),
             filters: [{ name: "PDF", extensions: ["pdf"] }],
@@ -13700,8 +10668,9 @@ function App() {
           const dataBase64 = await renderMarkdownDocumentToPdfBase64(
             documentToExport,
             t("pdfExport.content.imageUnavailable"),
+            parseMarkdownPreviewBlocks,
           );
-          saved = await invoke<WritePdfFileResult>("write_pdf_file", {
+          saved = await writePdfFile({
             path: selectedPath,
             dataBase64,
           });
@@ -13778,13 +10747,10 @@ function App() {
     }
 
     try {
-      const loaded = await invoke<OpenDropboxMarkdownFileResult>(
-        "create_dropbox_markdown_file",
-        {
-          parentPath: workspaceRootPath,
-          fileName: trimmedFileName,
-        },
-      );
+      const loaded = await createDropboxMarkdownFileRequest({
+        parentPath: workspaceRootPath,
+        fileName: trimmedFileName,
+      });
       applyLoadedDropboxFile(loaded);
       setActiveDocumentModeState({ editorMode: "preview" });
       setStorageError("");
@@ -13793,14 +10759,6 @@ function App() {
       setStorageError(translatedError(error, "error.createFileFailed"));
       return false;
     }
-  }
-
-  function draftDocumentHasContent(document: MarkdownDocument) {
-    return Boolean(
-      document.body.trim() ||
-        notesForDocument(document.id).length > 0 ||
-        glossaryBindingsForDocument(document.id).length > 0,
-    );
   }
 
   function replaceDraftWithLoadedDocument(
@@ -13853,7 +10811,7 @@ function App() {
           ? loadedDocument.id
           : documentId,
       ),
-      nextDocuments,
+      nextDocuments.map((document) => document.id),
     );
     const nextWorkspaceEntries = sortWorkspaceEntriesForDirectory(
       insertOrUpdateWorkspaceFileEntry(
@@ -13899,14 +10857,21 @@ function App() {
     draftId: string,
     loadedFile: OpenMarkdownFileResult,
   ) {
-    const loadedDocument = documentFromLoadedFile(loadedFile);
+    const loadedDocument = documentFromLoadedFileResult(loadedFile);
     replaceDraftWithLoadedDocument(
       draftId,
       loadedDocument,
-      loadedFile.notes.map((note) => localLoadedNoteFromFile(loadedFile, note)),
+      loadedFile.notes.map((note) =>
+        loadedNoteForDocument(loadedFile, note, loadedFile.path, recoverRenderableAnchor),
+      ),
       loadedFile.glossaryTerms ?? [],
       (loadedFile.glossaryBindings ?? []).map((binding) =>
-        localLoadedGlossaryBindingFromFile(loadedFile, binding),
+        loadedGlossaryBindingForDocument(
+          loadedFile,
+          binding,
+          loadedFile.path,
+          recoverRenderableAnchor,
+        ),
       ),
     );
     rememberLastOpenedMarkdownPath(loadedDocument.filePath);
@@ -13921,11 +10886,21 @@ function App() {
       draftId,
       loadedDocument,
       loadedFile.notes.map((note) =>
-        dropboxLoadedNoteFromFile(loadedFile, note, loadedDocument.id),
+        loadedNoteForDocument(
+          loadedFile,
+          note,
+          loadedDocument.id,
+          recoverRenderableAnchor,
+        ),
       ),
       loadedFile.glossaryTerms ?? [],
       (loadedFile.glossaryBindings ?? []).map((binding) =>
-        dropboxLoadedGlossaryBindingFromFile(loadedFile, binding, loadedDocument.id),
+        loadedGlossaryBindingForDocument(
+          loadedFile,
+          binding,
+          loadedDocument.id,
+          recoverRenderableAnchor,
+        ),
       ),
     );
     rememberLastOpenedDropboxWorkspace(
@@ -13948,7 +10923,7 @@ function App() {
     const notesToSave = notesForDocument(documentToSave.id);
     const glossaryBindingsToSave = glossaryBindingsForDocument(documentToSave.id);
     const glossaryTermsToSave = glossaryTermsForDocument(documentToSave.id);
-    const source = draftDocumentSource(documentToSave);
+    const source = draftDocumentSource(documentToSave.id);
     const defaultFileName = ensureMarkdownExtension(
       documentToSave.title || t("app.untitledFile"),
     );
@@ -13971,24 +10946,18 @@ function App() {
           return "failed";
         }
 
-        const created = await invoke<OpenDropboxMarkdownFileResult>(
-          "create_dropbox_markdown_file",
-          {
-            parentPath: workspaceRootPath,
-            fileName: trimmedFileName,
-          },
-        );
-        const saved = await invoke<OpenDropboxMarkdownFileResult>(
-          "save_dropbox_markdown_file",
-          {
-            path: created.path,
-            body: documentToSave.body,
-            rev: created.rev ?? null,
-            notes: notesToSave,
-            glossaryTerms: glossaryTermsToSave,
-            glossaryBindings: glossaryBindingsToSave,
-          },
-        );
+        const created = await createDropboxMarkdownFileRequest({
+          parentPath: workspaceRootPath,
+          fileName: trimmedFileName,
+        });
+        const saved = await saveDropboxMarkdownFile({
+          path: created.path,
+          body: documentToSave.body,
+          rev: created.rev ?? null,
+          notes: notesToSave,
+          glossaryTerms: glossaryTermsToSave,
+          glossaryBindings: glossaryBindingsToSave,
+        });
         replaceDraftWithLoadedDropboxFile(documentToSave.id, saved);
         setStorageError("");
         return "saved";
@@ -14004,14 +10973,14 @@ function App() {
       if (!selectedPath) return "cancelled";
 
       const path = ensureMarkdownExtension(selectedPath);
-      const saved = await invoke<SaveMarkdownFileResult>("save_markdown_file", {
+      const saved = await saveMarkdownFile({
         path,
         body: documentToSave.body,
         notes: notesToSave,
         glossaryTerms: glossaryTermsToSave,
         glossaryBindings: glossaryBindingsToSave,
       });
-      const loaded = await invoke<OpenMarkdownFileResult>("open_markdown_file", {
+      const loaded = await openMarkdownFile({
         path: saved.path,
       });
       replaceDraftWithLoadedLocalFile(documentToSave.id, loaded);
@@ -14036,7 +11005,13 @@ function App() {
   ): Promise<"unchanged" | "saved" | "discarded" | "blocked"> {
     const documentToLeave = documentsRef.current.find((document) => document.id === documentId);
     if (!documentToLeave || !isDraftDocumentId(documentToLeave.id)) return "unchanged";
-    if (!draftDocumentHasContent(documentToLeave)) {
+    if (
+      !draftDocumentHasContent(
+        documentToLeave.body,
+        notesForDocument(documentToLeave.id).length,
+        glossaryBindingsForDocument(documentToLeave.id).length,
+      )
+    ) {
       removeDocumentsFromWorkspace([documentToLeave.id]);
       return "discarded";
     }
@@ -14114,15 +11089,12 @@ function App() {
     const parentPath = workspaceRootPath;
     const source = workspaceSource;
     try {
-      const created = await invoke<RenamePathResult>(
-        source === "dropbox"
-          ? "create_dropbox_markdown_directory"
-          : "create_markdown_directory",
-        {
-          parentPath,
-          name: trimmedName,
-        },
-      );
+      const createDirectory =
+        source === "dropbox" ? createDropboxMarkdownDirectory : createMarkdownDirectory;
+      const created = await createDirectory({
+        parentPath,
+        name: trimmedName,
+      });
       const createdEntry: WorkspaceEntry = {
         kind: "directory",
         id: source === "dropbox" ? `dropbox-directory:${created.path}` : `directory:${created.path}`,
@@ -14267,50 +11239,40 @@ function App() {
     return sourceTerms.filter((term) => termIds.has(term.id) && glossaryTermHasContent(term));
   }
 
-  function sidecarFingerprint(
-    sourceNotes: SelectionNote[],
-    sourceGlossaryTerms: GlossaryTerm[],
-    sourceGlossaryBindings: GlossaryBinding[],
-  ) {
-    return JSON.stringify({
-      notes: sourceNotes,
-      glossaryTerms: sourceGlossaryTerms,
-      glossaryBindings: sourceGlossaryBindings,
-    });
-  }
-
   function markDocumentSnapshotSaved(
     documentId: string,
     savedBody: string,
     savedSidecarFingerprint: string,
   ) {
-    setSavedDocumentBodies((currentBodies) => ({
-      ...currentBodies,
+    const nextSavedBodies = {
+      ...savedDocumentBodiesRef.current,
       [documentId]: savedBody,
-    }));
-    const nextDirtyStatesFrom = (currentStates: DirtyDocumentStates) => {
-      const currentDocument = documentsRef.current.find((document) => document.id === documentId);
-      const currentSidecarFingerprint = sidecarFingerprint(
-        notesForDocument(documentId),
-        glossaryTermsForDocument(documentId),
-        glossaryBindingsForDocument(documentId),
-      );
-      const nextState: DirtyDocumentState = {
-        body: currentDocument ? currentDocument.body !== savedBody : false,
-        notes: currentSidecarFingerprint !== savedSidecarFingerprint,
-      };
-      const nextStates = { ...currentStates };
-
-      if (hasDirtyState(nextState)) {
-        nextStates[documentId] = nextState;
-      } else {
-        delete nextStates[documentId];
-      }
-
-      return nextStates;
     };
+    savedDocumentBodiesRef.current = nextSavedBodies;
+    setSavedDocumentBodies(nextSavedBodies);
 
-    const nextDirtyStates = nextDirtyStatesFrom(dirtyDocumentStatesRef.current);
+    const currentDocument = documentsRef.current.find((document) => document.id === documentId);
+    const currentSidecarFingerprint = sidecarFingerprint(
+      notesForDocument(documentId, notesRef.current),
+      glossaryTermsForDocument(
+        documentId,
+        glossaryBindingsRef.current,
+        glossaryTermsRef.current,
+      ),
+      glossaryBindingsForDocument(
+        documentId,
+        glossaryBindingsRef.current,
+        glossaryTermsRef.current,
+      ),
+    );
+    const nextDirtyStates = reconcileDirtyAfterSavedSnapshot(
+      dirtyDocumentStatesRef.current,
+      documentId,
+      currentDocument?.body ?? savedBody,
+      savedBody,
+      currentSidecarFingerprint,
+      savedSidecarFingerprint,
+    );
     dirtyDocumentStatesRef.current = nextDirtyStates;
     setDirtyDocumentStates(nextDirtyStates);
   }
@@ -14319,9 +11281,28 @@ function App() {
     if (!documentToSave.filePath) return;
 
     const bodyToSave = documentToSave.body;
+    const sourceNotes = notesRef.current;
+    const sourceGlossaryTerms = glossaryTermsRef.current;
+    const sourceGlossaryBindings = glossaryBindingsRef.current;
+    const notesToSave = notesForDocument(documentToSave.id, sourceNotes);
+    const glossaryBindingsToSave = glossaryBindingsForDocument(
+      documentToSave.id,
+      sourceGlossaryBindings,
+      sourceGlossaryTerms,
+    );
+    const glossaryTermsToSave = glossaryTermsForDocument(
+      documentToSave.id,
+      sourceGlossaryBindings,
+      sourceGlossaryTerms,
+    );
+    const savedSidecarFingerprint = sidecarFingerprint(
+      notesToSave,
+      glossaryTermsToSave,
+      glossaryBindingsToSave,
+    );
     const savedBodySnapshot =
       savedDocumentBodiesRef.current[documentToSave.id] ?? documentToSave.body;
-    const currentDiskFile = await invoke<OpenMarkdownFileResult>("open_markdown_file", {
+    const currentDiskFile = await openMarkdownFile({
       path: documentToSave.filePath,
     });
     if (currentDiskFile.body !== savedBodySnapshot && currentDiskFile.body !== bodyToSave) {
@@ -14330,15 +11311,7 @@ function App() {
       );
     }
 
-    const notesToSave = notesForDocument(documentToSave.id);
-    const glossaryBindingsToSave = glossaryBindingsForDocument(documentToSave.id);
-    const glossaryTermsToSave = glossaryTermsForDocument(documentToSave.id);
-    const savedSidecarFingerprint = sidecarFingerprint(
-      notesToSave,
-      glossaryTermsToSave,
-      glossaryBindingsToSave,
-    );
-    const saved = await invoke<SaveMarkdownFileResult>("save_markdown_file", {
+    const saved = await saveMarkdownFile({
       path: documentToSave.filePath,
       body: bodyToSave,
       notes: notesToSave,
@@ -14346,35 +11319,35 @@ function App() {
       glossaryBindings: glossaryBindingsToSave,
     });
 
-    setDocuments((currentDocuments) =>
-      currentDocuments.map((document) =>
-        document.id === documentToSave.id
+    const nextDocuments = documentsRef.current.map((document) =>
+      document.id === documentToSave.id
+        ? {
+            ...document,
+            filePath: saved.path,
+            path: saved.path,
+            notesPath: saved.notesPath,
+            updatedAt: `Saved ${nowLabel()}`,
+            modifiedAt: saved.modifiedAt ?? Date.now(),
+          }
+        : document,
+    );
+    const nextWorkspaceEntries = sortWorkspaceEntriesForDirectory(
+      workspaceEntriesRef.current.map((entry) =>
+        entry.kind === "file" && entry.documentId === documentToSave.id
           ? {
-              ...document,
-              filePath: saved.path,
+              ...entry,
               path: saved.path,
-              notesPath: saved.notesPath,
-              updatedAt: `Saved ${nowLabel()}`,
+              id: `file:${saved.path}`,
               modifiedAt: saved.modifiedAt ?? Date.now(),
             }
-          : document,
+          : entry,
       ),
+      workspaceSortModeRef.current,
     );
-    setWorkspaceEntries((currentEntries) =>
-      sortWorkspaceEntriesForDirectory(
-        currentEntries.map((entry) =>
-          entry.kind === "file" && entry.documentId === documentToSave.id
-            ? {
-                ...entry,
-                path: saved.path,
-                id: `file:${saved.path}`,
-                modifiedAt: saved.modifiedAt ?? Date.now(),
-              }
-            : entry,
-        ),
-        workspaceSortModeRef.current,
-      ),
-    );
+    documentsRef.current = nextDocuments;
+    workspaceEntriesRef.current = nextWorkspaceEntries;
+    setDocuments(nextDocuments);
+    setWorkspaceEntries(nextWorkspaceEntries);
     markDocumentSnapshotSaved(documentToSave.id, bodyToSave, savedSidecarFingerprint);
   }
 
@@ -14382,15 +11355,26 @@ function App() {
     if (!documentIsFromDropbox(documentToSave)) return;
 
     const bodyToSave = documentToSave.body;
-    const notesToSave = notesForDocument(documentToSave.id);
-    const glossaryBindingsToSave = glossaryBindingsForDocument(documentToSave.id);
-    const glossaryTermsToSave = glossaryTermsForDocument(documentToSave.id);
+    const sourceNotes = notesRef.current;
+    const sourceGlossaryTerms = glossaryTermsRef.current;
+    const sourceGlossaryBindings = glossaryBindingsRef.current;
+    const notesToSave = notesForDocument(documentToSave.id, sourceNotes);
+    const glossaryBindingsToSave = glossaryBindingsForDocument(
+      documentToSave.id,
+      sourceGlossaryBindings,
+      sourceGlossaryTerms,
+    );
+    const glossaryTermsToSave = glossaryTermsForDocument(
+      documentToSave.id,
+      sourceGlossaryBindings,
+      sourceGlossaryTerms,
+    );
     const savedSidecarFingerprint = sidecarFingerprint(
       notesToSave,
       glossaryTermsToSave,
       glossaryBindingsToSave,
     );
-    const saved = await invoke<OpenDropboxMarkdownFileResult>("save_dropbox_markdown_file", {
+    const saved = await saveDropboxMarkdownFile({
       path: documentToSave.path,
       body: bodyToSave,
       rev: documentToSave.dropboxRev ?? null,
@@ -14399,39 +11383,39 @@ function App() {
       glossaryBindings: glossaryBindingsToSave,
     });
 
-    setDocuments((currentDocuments) =>
-      currentDocuments.map((document) =>
-        document.id === documentToSave.id
+    const nextDocuments = documentsRef.current.map((document) =>
+      document.id === documentToSave.id
+        ? {
+            ...document,
+            title: saved.title,
+            path: saved.path,
+            notesPath: saved.notesPath,
+            updatedAt: saved.serverModified
+              ? `Dropbox ${saved.serverModified}`
+              : `Saved ${nowLabel()}`,
+            modifiedAt: saved.serverModified ? Date.parse(saved.serverModified) : Date.now(),
+            dropboxRev: saved.rev ?? null,
+          }
+        : document,
+    );
+    const nextWorkspaceEntries = sortWorkspaceEntriesForDirectory(
+      workspaceEntriesRef.current.map((entry) =>
+        entry.kind === "file" && entry.documentId === documentToSave.id
           ? {
-              ...document,
+              ...entry,
               title: saved.title,
               path: saved.path,
-              notesPath: saved.notesPath,
-              updatedAt: saved.serverModified
-                ? `Dropbox ${saved.serverModified}`
-                : `Saved ${nowLabel()}`,
+              id: `dropbox-file:${saved.path}`,
               modifiedAt: saved.serverModified ? Date.parse(saved.serverModified) : Date.now(),
-              dropboxRev: saved.rev ?? null,
             }
-          : document,
+          : entry,
       ),
+      workspaceSortModeRef.current,
     );
-    setWorkspaceEntries((currentEntries) =>
-      sortWorkspaceEntriesForDirectory(
-        currentEntries.map((entry) =>
-          entry.kind === "file" && entry.documentId === documentToSave.id
-            ? {
-                ...entry,
-                title: saved.title,
-                path: saved.path,
-                id: `dropbox-file:${saved.path}`,
-                modifiedAt: saved.serverModified ? Date.parse(saved.serverModified) : Date.now(),
-              }
-            : entry,
-        ),
-        workspaceSortModeRef.current,
-      ),
-    );
+    documentsRef.current = nextDocuments;
+    workspaceEntriesRef.current = nextWorkspaceEntries;
+    setDocuments(nextDocuments);
+    setWorkspaceEntries(nextWorkspaceEntries);
     markDocumentSnapshotSaved(documentToSave.id, bodyToSave, savedSidecarFingerprint);
   }
 
@@ -14443,51 +11427,72 @@ function App() {
 
     await saveDocumentToDisk(documentToSave);
   }
+  saveDocumentHandlerRef.current = saveDocument;
 
   async function saveDirtyDocuments() {
     if (!nativeStorageAvailable) return;
 
-    if (autosaveInFlightRef.current) {
-      autosaveRequestedWhileSavingRef.current = true;
+    const wasSaving = autosaveCoordinator.isSaving();
+    if (
+      !wasSaving &&
+      !documentsRef.current.some((document) => {
+        const hasBackingFile = Boolean(document.filePath) || documentIsFromDropbox(document);
+        return hasBackingFile && hasDirtyState(dirtyDocumentStatesRef.current[document.id]);
+      })
+    ) {
       return;
     }
 
-    const dirtyDocuments = documentsRef.current.filter((document) => {
-      const hasBackingFile = Boolean(document.filePath) || documentIsFromDropbox(document);
-      return hasBackingFile && hasDirtyState(dirtyDocumentStatesRef.current[document.id]);
-    });
-    if (dirtyDocuments.length === 0) return;
-
+    const saveRequest = autosaveCoordinator.request();
     autosaveInFlightRef.current = true;
+    if (wasSaving) {
+      try {
+        await saveRequest;
+      } catch {
+        // The request owner reports unexpected coordinator errors.
+      } finally {
+        autosaveInFlightRef.current = autosaveCoordinator.isSaving();
+      }
+      return;
+    }
+
     setStorageError("");
 
     try {
-      for (const documentToSave of dirtyDocuments) {
-        await saveDocument(documentToSave);
+      const failures = await saveRequest;
+      const unresolvedFailuresByDocumentId = new Map<
+        string,
+        (typeof failures)[number]
+      >();
+      failures.forEach((failure) => {
+        console.error(failure.error);
+        if (hasDirtyState(dirtyDocumentStatesRef.current[failure.target])) {
+          unresolvedFailuresByDocumentId.set(failure.target, failure);
+        }
+      });
+      const unresolvedFailures = [...unresolvedFailuresByDocumentId.values()];
+      if (unresolvedFailures.length > 0) {
+        const externalFileChangedMessage = t("error.externalFileChanged");
+        const externalFileFailure = unresolvedFailures.find(({ error }) =>
+          (error instanceof Error ? error.message : String(error)) === externalFileChangedMessage,
+        );
+        const localRecoveryFailureKey = unresolvedFailures
+          .map(({ error }) => localRecoveryErrorTranslationKey(error))
+          .find((key): key is TranslationKey => key !== null);
+        setStorageError(
+          externalFileFailure
+            ? externalFileChangedMessage
+            : localRecoveryFailureKey
+              ? t(localRecoveryFailureKey)
+              : t("error.saveFailed"),
+        );
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
       console.error(error);
-      setStorageError(
-        message === t("error.externalFileChanged") ? message : t("error.saveFailed"),
-      );
+      setStorageError(t("error.saveFailed"));
     } finally {
-      autosaveInFlightRef.current = false;
-
-      if (autosaveRequestedWhileSavingRef.current) {
-        autosaveRequestedWhileSavingRef.current = false;
-        window.clearTimeout(autosaveTimerRef.current);
-        autosaveTimerRef.current = window.setTimeout(() => {
-          void saveDirtyDocuments();
-        }, autosaveDelayMs);
-      }
+      autosaveInFlightRef.current = autosaveCoordinator.isSaving();
     }
-  }
-
-  function fileNameFromPath(path: string | null | undefined) {
-    const segments = path?.split(/[\\/]/).filter(Boolean) ?? [];
-
-    return segments[segments.length - 1] ?? "";
   }
 
   function defaultDuplicateFileName(
@@ -14749,7 +11754,7 @@ function App() {
     if (!nativeStorageAvailable) return;
 
     try {
-      const status = await invoke<DropboxOAuthStatusResult>("dropbox_oauth_status");
+      const status = await dropboxOAuthStatus();
       setDropboxConnected(status.connected);
       if (status.connected && isMobileViewport && !readLastOpenedDropboxWorkspace()) {
         setMobileStartupPhase("hidden");
@@ -14844,7 +11849,7 @@ function App() {
     setStorageError(t("dropbox.status.openingAuth"));
 
     try {
-      const oauthStart = await invoke<StartDropboxOAuthResult>("start_dropbox_oauth", {
+      const oauthStart = await startDropboxOAuth({
         appKey: configuredDropboxAppKey,
       });
       await openExternalUrl(oauthStart.authUrl);
@@ -14870,19 +11875,10 @@ function App() {
 
     setStorageError(t("dropbox.status.completingAuth"));
 
-    let unlistenDropboxOAuthConnected: (() => void) | null = null;
     let completionTimeoutId = 0;
 
     try {
-      let resolveCompletionEvent: (status: DropboxOAuthStatusResult) => void = () => undefined;
-      const completionEvent = new Promise<DropboxOAuthStatusResult>((resolve) => {
-        resolveCompletionEvent = resolve;
-      });
-      unlistenDropboxOAuthConnected = await listen<DropboxOAuthStatusResult>(
-        "scholium-dropbox-oauth-connected",
-        (event) => resolveCompletionEvent(event.payload),
-      );
-      const completionRequest = invoke<DropboxOAuthStatusResult>("complete_dropbox_oauth", {
+      const completionRequest = requestDropboxOAuthCompletion({
         code: payload.code,
         state: payload.state,
       });
@@ -14891,11 +11887,7 @@ function App() {
           reject(new Error("Dropbox OAuth completion timed out"));
         }, dropboxOAuthCompletionTimeoutMs);
       });
-      const status = await Promise.race([
-        completionRequest,
-        completionEvent,
-        completionTimeout,
-      ]);
+      const status = await Promise.race([completionRequest, completionTimeout]);
       setDropboxConnected(status.connected);
       setDropboxConnecting(false);
       const pendingLocation = pendingDropboxLocationAfterAuthRef.current;
@@ -14926,7 +11918,6 @@ function App() {
       restoreMobileDataSourceAfterDropboxAuthFailure();
       setStorageError(translatedError(error, "dropbox.error.oauthCallback"));
     } finally {
-      unlistenDropboxOAuthConnected?.();
       window.clearTimeout(completionTimeoutId);
     }
   }
@@ -14956,7 +11947,7 @@ function App() {
     if (!confirmed) return;
 
     try {
-      const status = await invoke<DropboxOAuthStatusResult>("disconnect_dropbox");
+      const status = await disconnectDropbox();
       setDropboxConnected(status.connected);
       completeMobileLocationPicker();
       invalidateDropboxDirectoryPickerSession();
@@ -15067,13 +12058,10 @@ function App() {
           return false;
         }
 
-        const loaded = await invoke<OpenDropboxMarkdownFileResult>(
-          "duplicate_dropbox_markdown_file",
-          {
-            path: dropboxPath,
-            fileName: targetFileName,
-          },
-        );
+        const loaded = await duplicateDropboxMarkdownFile({
+          path: dropboxPath,
+          fileName: targetFileName,
+        });
         applyLoadedDropboxFile(loaded);
         setStorageError("");
         return true;
@@ -15084,7 +12072,7 @@ function App() {
         return false;
       }
 
-      const loaded = await invoke<OpenMarkdownFileResult>("duplicate_markdown_file", {
+      const loaded = await duplicateMarkdownFile({
         path: documentToDuplicate.filePath,
         fileName: targetFileName,
       });
@@ -15146,7 +12134,7 @@ function App() {
         ? documentToCopy.body
         : isDropboxTarget
           ? (
-              await invoke<OpenDropboxMarkdownFileResult>("open_dropbox_markdown_file", {
+              await openDropboxMarkdownFile({
                 path: target.path,
               })
             ).body
@@ -15214,7 +12202,7 @@ function App() {
         throw new Error(t("error.notBackedByMarkdownFile"));
       }
 
-      await invoke<OpenDropboxMarkdownFileResult>("delete_dropbox_markdown_file", {
+      await deleteDropboxMarkdownFile({
         path: dropboxPath,
       });
       return;
@@ -15225,7 +12213,7 @@ function App() {
       throw new Error(t("error.notBackedByMarkdownFile"));
     }
 
-    await invoke<DeleteMarkdownFileResult>("delete_markdown_file", {
+    await deleteMarkdownFile({
       path: localPath,
     });
   }
@@ -15310,12 +12298,17 @@ function App() {
 
     setStorageError(t("status.deletingDirectory"));
     try {
-      await invoke<void>(
-        source === "dropbox"
-          ? "delete_dropbox_markdown_directory"
-          : "delete_markdown_directory",
-        { path: target.path, rootPath: workspaceRootPath },
-      );
+      if (source === "dropbox") {
+        await deleteDropboxMarkdownDirectory({
+          path: target.path,
+          rootPath: workspaceRootPath,
+        });
+      } else {
+        await deleteMarkdownDirectory({
+          path: target.path,
+          rootPath: workspaceRootPath,
+        });
+      }
 
       const deletedDocumentIds = new Set(
         documentsRef.current
@@ -15534,17 +12527,15 @@ function App() {
 
     setStorageError(t("status.renaming"));
     try {
-      const command =
+      const renameEntry =
         target.source === "dropbox"
           ? target.kind === "directory"
-            ? "rename_dropbox_markdown_directory"
-            : "rename_dropbox_markdown_file"
+            ? renameDropboxMarkdownDirectory
+            : renameDropboxMarkdownFile
           : target.kind === "directory"
-            ? "rename_markdown_directory"
-            : "rename_markdown_file";
-      const renamed = await invoke<
-        RenamePathResult | OpenMarkdownFileResult | OpenDropboxMarkdownFileResult
-      >(command, {
+            ? renameMarkdownDirectory
+            : renameMarkdownFile;
+      const renamed = await renameEntry({
         path: target.path,
         name: nextName,
       });
@@ -15591,14 +12582,6 @@ function App() {
 
     setRenameDialog(null);
     setStorageError("");
-  }
-
-  function normalizeTagInput(value: string) {
-    return value.replace(/\s+/g, " ").trim();
-  }
-
-  function tagDedupeKey(value: string) {
-    return normalizeTagInput(value).toLocaleLowerCase();
   }
 
   function updateSelectedDocumentTags(nextTags: string[]) {
@@ -15723,40 +12706,41 @@ function App() {
     anchorTransform?: BodyAnchorTransform,
   ) {
     if (noteEditModalActiveRef.current) return;
-    if (body === selectedDocument.body) return;
+    const documentId = selectedDocumentIdRef.current;
+    const currentDocument = documentsRef.current.find((document) => document.id === documentId);
+    if (!currentDocument || body === currentDocument.body) return;
 
-    const documentId = selectedDocument.id;
-    const previousBody = selectedDocument.body;
+    const previousBody = currentDocument.body;
     const bodyAnchorTransform: BodyAnchorTransform =
       anchorTransform ??
       ((anchor, nextBody) => transformAnchorWithBodyChange(anchor, previousBody, nextBody));
-    const savedBody = savedDocumentBodies[documentId] ?? selectedDocument.body;
+    const savedBody = savedDocumentBodiesRef.current[documentId] ?? currentDocument.body;
+    const nextDocuments = documentsRef.current.map((document) =>
+      document.id === documentId ? { ...document, body } : document,
+    );
+    const nextNotes = notesRef.current.map((note) =>
+      note.documentId === documentId && note.status === "active"
+        ? {
+            ...note,
+            anchor: bodyAnchorTransform(note.anchor, body),
+          }
+        : note,
+    );
+    const nextGlossaryBindings = glossaryBindingsRef.current.map((binding) =>
+      binding.documentId === documentId && binding.status === "active"
+        ? {
+            ...binding,
+            anchor: bodyAnchorTransform(binding.anchor, body),
+          }
+        : binding,
+    );
 
-    setDocuments((currentDocuments) =>
-      currentDocuments.map((document) =>
-        document.id === documentId ? { ...document, body } : document,
-      ),
-    );
-    setNotes((currentNotes) =>
-      currentNotes.map((note) =>
-        note.documentId === documentId && note.status === "active"
-          ? {
-              ...note,
-              anchor: bodyAnchorTransform(note.anchor, body),
-            }
-          : note,
-      ),
-    );
-    setGlossaryBindings((currentBindings) =>
-      currentBindings.map((binding) =>
-        binding.documentId === documentId && binding.status === "active"
-          ? {
-              ...binding,
-              anchor: bodyAnchorTransform(binding.anchor, body),
-            }
-          : binding,
-      ),
-    );
+    documentsRef.current = nextDocuments;
+    notesRef.current = nextNotes;
+    glossaryBindingsRef.current = nextGlossaryBindings;
+    setDocuments(nextDocuments);
+    setNotes(nextNotes);
+    setGlossaryBindings(nextGlossaryBindings);
     markDocumentBodyDirty(documentId, !(source === "undo" && body === savedBody));
   }
 
@@ -15866,7 +12850,7 @@ function App() {
 
     setStorageError(t("status.openingFile"));
     try {
-      const loaded = await invoke<OpenMarkdownFileResult>("open_markdown_file", {
+      const loaded = await openMarkdownFile({
         path: target.path,
       });
       mergeLoadedFilesIntoDocumentState([loaded]);
@@ -16012,25 +12996,25 @@ function App() {
     documentTabTouchStateRef.current = null;
   }
 
-  function handleDocumentTabClick(documentId: string) {
+  function handleDocumentTabClick(
+    documentId: string,
+    event: MouseEvent<HTMLButtonElement>,
+  ) {
     const suppressedClick = suppressedDocumentTabClickRef.current;
     if (suppressedClick?.documentId === documentId && Date.now() < suppressedClick.until) {
       suppressedDocumentTabClickRef.current = null;
       return;
     }
 
-    const pointerActivatedDocumentId = documentTabPointerActivationRef.current;
-
+    const clickSelection = documentTabClickSelection(
+      documentTabPointerActivationRef.current,
+      documentId,
+      event.detail > 0,
+    );
     documentTabPointerActivationRef.current = "";
-
-    if (pointerActivatedDocumentId) {
-      if (selectedDocumentIdRef.current !== pointerActivatedDocumentId) {
-        selectDocument(pointerActivatedDocumentId, { tabBehavior: "none" });
-      }
-      return;
+    if (clickSelection.shouldSelect) {
+      selectDocument(clickSelection.documentId, { tabBehavior: "none" });
     }
-
-    selectDocument(documentId, { tabBehavior: "none" });
   }
 
   function clearNotePanelCloseTimer() {
@@ -17702,7 +14686,7 @@ function App() {
         const copyContentAction = {
           id: "copy-content",
           label: t("file.copyContent"),
-          icon: <CopyIcon />,
+          icon: <NoteCopyIcon />,
           onSelect: () => {
             void copyDocumentContent(fileContextMenu);
           },
@@ -18077,8 +15061,7 @@ function App() {
   const shellStyle = {
     "--document-pane-measured-width": `${documentPaneWidth}px`,
   } as CSSProperties;
-  const settingsCustomSections = useMemo(
-    () => [
+  const settingsCustomSections = [
       {
         category: "cloud" as SettingCategory,
         content: (
@@ -18136,9 +15119,7 @@ function App() {
           </div>
         ),
       },
-    ],
-    [dropboxConnected, dropboxConnecting, nativeStorageAvailable, t],
-  );
+  ];
 
   return (
     <main
@@ -18215,7 +15196,7 @@ function App() {
                   <button
                     aria-selected={tabActive}
                     className="document-tab__main"
-                    onClick={() => handleDocumentTabClick(document.id)}
+                    onClick={(event) => handleDocumentTabClick(document.id, event)}
                     onPointerDown={(event) =>
                       handleDocumentTabPointerDown(document.id, event)
                     }

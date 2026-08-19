@@ -1,5 +1,4 @@
 import { Crepe, CrepeFeature } from "@milkdown/crepe";
-import { invoke } from "@tauri-apps/api/core";
 import { codeBlockConfig } from "@milkdown/kit/component/code-block";
 import { listItemBlockConfig } from "@milkdown/kit/component/list-item-block";
 import {
@@ -38,12 +37,14 @@ import type {
   TextSelectionAnchor,
   TextSelectionEnterContext,
   TextSelectionViewportRect,
-} from "./MarkdownEditor";
+} from "./editorTypes";
+import { makeAnchorFromRange } from "./annotationAnchor";
 import {
   findNormalizedSearchMatchIndexes,
   normalizeDocumentSearchQuery,
   type DocumentSearchState,
 } from "./documentSearch";
+import { clearTouchButtonFocus } from "./touchPointer";
 import { shouldHandlePreviewSelectAllShortcut } from "./editorKeyboardShortcuts";
 import {
   fullSourceOffsetFromFrontmatterBodyOffset,
@@ -52,30 +53,34 @@ import {
   stripMarkdownFrontmatter,
 } from "./markdownFrontmatter";
 import { serializeMarkedTextClipboardSlice } from "./markdownClipboard";
+import { localMarkdownImageNeedsHydration } from "./markdownLinkTarget";
 import {
   appendInlineMarkdownTextMap,
   appendTextMap,
+  closestTextIndex,
+  findNonOverlappingTextIndices,
+  markdownLineStartOffsets,
   markdownListItemContentStartOffset,
   type MarkdownTextMap as MilkdownTextMap,
 } from "./markdownInlineTextMap";
-import {
-  escapeListLeadingAsterisksForPreview,
-  normalizeListItemStrongTrailingWhitespace,
-  normalizeSerializedBulletMarkers,
-  restoreListLeadingAsterisksFromPreview,
-} from "./markdownListLiteral";
+import { escapeListLeadingAsterisksForPreview } from "./markdownListLiteral";
 import {
   deleteAtListItemStart,
   insertEmptyFirstChildListItem,
   mergeRemovedListMarkerLineBackward,
   moveToNextEmptyListItem,
-  normalizeAdjacentSerializedListItems,
   preserveSerializedEmptyParagraphListBoundaries,
   sinkSingleListItem,
 } from "./milkdownListIndent";
 import { createListItemInlineStrongSyntaxPlugin } from "./milkdownInlineMarkdownSyntax";
 import { createPastedInlineMarkBoundaryPlugin } from "./milkdownPastedInlineMarkBoundary";
+import {
+  encodeEmptyParagraphsForMilkdown,
+  normalizeMarkdownForScholium,
+  normalizeSelectedText,
+} from "./milkdownSerialization";
 import { loadScholiumMermaid } from "./mermaid";
+import { readMarkdownImageFile } from "./tauriGateway";
 
 type MilkdownMarkdownEditorProps = {
   value: string;
@@ -243,13 +248,6 @@ function isolateSelectedSoftLine(state: EditorState): SoftLineIsolation | null {
   return { state: state.apply(tr), transaction: tr };
 }
 
-function shouldClearTouchButtonFocus() {
-  return Boolean(
-    typeof window !== "undefined" &&
-      window.matchMedia?.("(hover: none), (pointer: coarse)").matches,
-  );
-}
-
 type ReadonlyDomFocusSnapshot = {
   ariaReadonly: string | null;
   contenteditable: string | null;
@@ -405,188 +403,11 @@ type MilkdownTouchBlockSelectionSession = {
   target: EventTarget | null;
 };
 
-type MarkdownImageFileResult = {
-  path: string;
-  mimeType: string;
-  dataUrl: string;
-};
-
-const standaloneHtmlBreakPattern = /^<br\s*\/?>$/i;
 const localImageHydratedSrcAttribute = "data-scholium-local-image-src";
 const localImageMarkdownPathAttribute = "data-scholium-local-markdown-path";
 const localImageResolvedPathAttribute = "data-scholium-local-image-path";
 const localImageLoadingAttribute = "data-scholium-local-image-loading";
 const localImageErrorAttribute = "data-scholium-local-image-error";
-
-function localMarkdownImageNeedsHydration(src: string) {
-  const trimmedSrc = src.trim();
-  if (!trimmedSrc) return false;
-
-  return !/^(https?:|data:|blob:|asset:|tauri:|ipc:|\/\/)/i.test(trimmedSrc);
-}
-
-function normalizeSelectedText(text: string) {
-  return text.replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
-}
-
-function isStandaloneSerializedBreakLine(line: string) {
-  return standaloneHtmlBreakPattern.test(line.trim());
-}
-
-function normalizeSerializedEmptyParagraphBreaks(markdown: string) {
-  const lines = markdown.replace(/\r\n/g, "\n").split("\n");
-  const normalizedLines: string[] = [];
-  let inFencedCodeBlock = false;
-
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index] ?? "";
-
-    if (/^ {0,3}(```|~~~)/.test(line)) {
-      inFencedCodeBlock = !inFencedCodeBlock;
-      normalizedLines.push(line);
-      continue;
-    }
-
-    if (!inFencedCodeBlock && isStandaloneSerializedBreakLine(line)) {
-      normalizedLines.push("");
-
-      if (
-        normalizedLines.length >= 2 &&
-        !normalizedLines[normalizedLines.length - 2]?.trim() &&
-        !(lines[index + 1] ?? "").trim()
-      ) {
-        index += 1;
-      }
-
-      continue;
-    }
-
-    if (!inFencedCodeBlock) {
-      const emptyListItemBreak = line.match(
-        /^(\s*(?:[-+*]|\d+[.)]))\s+<br\s*\/?>\s*$/i,
-      );
-      if (emptyListItemBreak) {
-        normalizedLines.push(emptyListItemBreak[1] ?? line);
-        continue;
-      }
-    }
-
-    normalizedLines.push(line);
-  }
-
-  return normalizedLines.join("\n");
-}
-
-function normalizeSerializedHardBreaks(markdown: string) {
-  const lines = markdown.replace(/\r\n/g, "\n").split("\n");
-  const normalizedLines: string[] = [];
-  let inFencedCodeBlock = false;
-
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index] ?? "";
-
-    if (/^ {0,3}(```|~~~)/.test(line)) {
-      inFencedCodeBlock = !inFencedCodeBlock;
-      normalizedLines.push(line);
-      continue;
-    }
-
-    if (!inFencedCodeBlock && index < lines.length - 1 && line.endsWith("\\")) {
-      normalizedLines.push(line.slice(0, -1));
-      continue;
-    }
-
-    normalizedLines.push(line);
-  }
-
-  return normalizedLines.join("\n");
-}
-
-function restoreSerializedInlineLinks(markdown: string) {
-  const lines = markdown.replace(/\r\n/g, "\n").split("\n");
-  const normalizedLines: string[] = [];
-  let inFencedCodeBlock = false;
-
-  for (const line of lines) {
-    if (/^ {0,3}(```|~~~)/.test(line)) {
-      inFencedCodeBlock = !inFencedCodeBlock;
-      normalizedLines.push(line);
-      continue;
-    }
-
-    if (inFencedCodeBlock) {
-      normalizedLines.push(line);
-      continue;
-    }
-
-    normalizedLines.push(
-      line.replace(/\\\[([^\]\n]*)\]\\\(([^)\n]*)\)/g, (match, label, href, offset) =>
-        line[offset - 1] === "!" ? match : `[${label}](${href})`,
-      ),
-    );
-  }
-
-  return normalizedLines.join("\n");
-}
-
-function normalizeMarkdownForScholium(markdown: string) {
-  return restoreListLeadingAsterisksFromPreview(
-    normalizeAdjacentSerializedListItems(
-      normalizeListItemStrongTrailingWhitespace(
-        normalizeSerializedBulletMarkers(
-          restoreSerializedInlineLinks(
-            normalizeSerializedHardBreaks(normalizeSerializedEmptyParagraphBreaks(markdown)),
-          ),
-        ),
-      ),
-    )
-  );
-}
-
-function encodeEmptyParagraphsForMilkdown(markdown: string) {
-  const lines = markdown.replace(/\r\n/g, "\n").split("\n");
-  const encodedLines: string[] = [];
-  let inFencedCodeBlock = false;
-
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index] ?? "";
-
-    if (/^ {0,3}(```|~~~)/.test(line)) {
-      inFencedCodeBlock = !inFencedCodeBlock;
-      encodedLines.push(line);
-      continue;
-    }
-
-    if (!inFencedCodeBlock && !line.trim()) {
-      let blankEnd = index;
-      while (blankEnd < lines.length && !(lines[blankEnd] ?? "").trim()) {
-        blankEnd += 1;
-      }
-
-      const blankCount = blankEnd - index;
-      const hasPreviousContent = encodedLines.some((candidate) => candidate.trim());
-      const hasNextContent = lines.slice(blankEnd).some((candidate) => candidate.trim());
-
-      if (hasPreviousContent && hasNextContent) {
-        encodedLines.push("");
-        for (let blankIndex = 1; blankIndex < blankCount; blankIndex += 1) {
-          encodedLines.push("<br />", "");
-        }
-      } else {
-        for (let blankIndex = 0; blankIndex < blankCount; blankIndex += 1) {
-          encodedLines.push("");
-        }
-      }
-
-      index = blankEnd - 1;
-      continue;
-    }
-
-    encodedLines.push(line);
-  }
-
-  return encodedLines.join("\n");
-}
 
 function isMermaidLanguage(language: string) {
   return language.trim().toLowerCase() === "mermaid";
@@ -657,18 +478,6 @@ function lineVisibleStartOffset(line: string) {
   }
 
   return startOffset;
-}
-
-function markdownLineStartOffsets(markdown: string) {
-  const offsets = [0];
-
-  for (let index = 0; index < markdown.length; index += 1) {
-    if (markdown[index] === "\n") {
-      offsets.push(index + 1);
-    }
-  }
-
-  return offsets;
 }
 
 function buildMarkdownVisibleTextMap(markdown: string) {
@@ -744,29 +553,6 @@ function textMapSourceRange(textMap: MilkdownTextMap, from: number, to: number) 
     from: Math.min(...sourceOffsets),
     to: Math.max(...sourceOffsets) + 1,
   };
-}
-
-function textIndices(text: string, query: string) {
-  const indices: number[] = [];
-  if (!query) return indices;
-
-  let index = text.indexOf(query);
-  while (index >= 0) {
-    indices.push(index);
-    index = text.indexOf(query, index + query.length);
-  }
-
-  return indices;
-}
-
-function closestTextIndex(indices: number[], approximateIndex: number) {
-  if (indices.length === 0) return -1;
-
-  return indices.reduce((closestIndex, index) =>
-    Math.abs(index - approximateIndex) < Math.abs(closestIndex - approximateIndex)
-      ? index
-      : closestIndex,
-  );
 }
 
 function roundFrameValue(value: number) {
@@ -1636,16 +1422,6 @@ function milkdownAnnotationFramesAreEqual(
   });
 }
 
-function makeAnchorFromSourceRange(markdown: string, from: number, to: number) {
-  return {
-    from,
-    to,
-    selectedText: markdown.slice(from, to),
-    prefix: markdown.slice(Math.max(0, from - 48), from),
-    suffix: markdown.slice(to, Math.min(markdown.length, to + 48)),
-  };
-}
-
 function buildAnchor(
   markdown: string,
   selectedText: string,
@@ -1654,14 +1430,17 @@ function buildAnchor(
   const normalizedSelection = normalizeSelectedText(selectedText);
   if (!normalizedSelection) return null;
 
-  const exactIndex = closestTextIndex(textIndices(markdown, selectedText), approximateVisibleStart);
+  const exactIndex = closestTextIndex(
+    findNonOverlappingTextIndices(markdown, selectedText),
+    approximateVisibleStart,
+  );
   if (exactIndex >= 0) {
-    return makeAnchorFromSourceRange(markdown, exactIndex, exactIndex + selectedText.length);
+    return makeAnchorFromRange(markdown, exactIndex, exactIndex + selectedText.length);
   }
 
   const markdownTextMap = buildMarkdownVisibleTextMap(markdown);
   const exactVisibleIndex = closestTextIndex(
-    textIndices(markdownTextMap.text, selectedText.trim()),
+    findNonOverlappingTextIndices(markdownTextMap.text, selectedText.trim()),
     approximateVisibleStart,
   );
   if (exactVisibleIndex >= 0) {
@@ -1671,13 +1450,13 @@ function buildAnchor(
       exactVisibleIndex + selectedText.trim().length,
     );
     if (sourceRange) {
-      return makeAnchorFromSourceRange(markdown, sourceRange.from, sourceRange.to);
+      return makeAnchorFromRange(markdown, sourceRange.from, sourceRange.to);
     }
   }
 
   const normalizedTextMap = normalizeTextMapForMatch(markdownTextMap);
   const normalizedIndex = closestTextIndex(
-    textIndices(normalizedTextMap.text, normalizedSelection),
+    findNonOverlappingTextIndices(normalizedTextMap.text, normalizedSelection),
     approximateVisibleStart,
   );
   if (normalizedIndex < 0) return null;
@@ -1689,7 +1468,7 @@ function buildAnchor(
   );
   if (!sourceRange) return null;
 
-  return makeAnchorFromSourceRange(markdown, sourceRange.from, sourceRange.to);
+  return makeAnchorFromRange(markdown, sourceRange.from, sourceRange.to);
 }
 
 function editorMarkdownFromFullSource(markdown: string) {
@@ -1701,7 +1480,7 @@ function sourceAnchorFromEditorAnchor(markdown: string, anchor: TextSelectionAnc
 
   const from = fullSourceOffsetFromFrontmatterBodyOffset(markdown, anchor.from);
   const to = fullSourceOffsetFromFrontmatterBodyOffset(markdown, anchor.to);
-  return makeAnchorFromSourceRange(markdown, from, to);
+  return makeAnchorFromRange(markdown, from, to);
 }
 
 function annotationForEditorSource(annotation: TextAnnotation, markdown: string) {
@@ -1897,7 +1676,9 @@ function proseRangeFromMarkdownSourceRange(
 
   const sourceText = sourceCharacters.join("");
   const target = sourceText.slice(firstSourceIndex, lastSourceIndex + 1);
-  const sourceOccurrence = textIndices(sourceText, target).indexOf(firstSourceIndex);
+  const sourceOccurrence = findNonOverlappingTextIndices(sourceText, target).indexOf(
+    firstSourceIndex,
+  );
   const proseTextIndex = buildProseNonWhitespaceTextIndex(doc);
   const matchedProseIndex =
     sourceOccurrence >= 0
@@ -2383,9 +2164,7 @@ export function MilkdownMarkdownEditor({
     button.classList.add("is-copy-success");
     button.setAttribute("aria-label", label);
     button.setAttribute("title", label);
-    if (shouldClearTouchButtonFocus()) {
-      button.blur();
-    }
+    clearTouchButtonFocus(button);
 
     const textNode = codeBlockCopyButtonTextNode(button);
     if (textNode) {
@@ -2422,9 +2201,7 @@ export function MilkdownMarkdownEditor({
       }
 
       codeBlockCopyFeedbackTimersRef.current.delete(button);
-      if (shouldClearTouchButtonFocus()) {
-        button.blur();
-      }
+      clearTouchButtonFocus(button);
     }, codeBlockCopyFeedbackDurationMs);
 
     codeBlockCopyFeedbackTimersRef.current.set(button, timer);
@@ -2457,9 +2234,7 @@ export function MilkdownMarkdownEditor({
       if (button) {
         e.preventDefault();
         button.click();
-        if (shouldClearTouchButtonFocus()) {
-          button.blur();
-        }
+        clearTouchButtonFocus(button);
       }
     };
 
@@ -2597,7 +2372,7 @@ export function MilkdownMarkdownEditor({
       image.setAttribute(localImageLoadingAttribute, loadingKey);
       image.removeAttribute(localImageErrorAttribute);
 
-      void invoke<MarkdownImageFileResult>("read_markdown_image_file", {
+      void readMarkdownImageFile({
         markdownPath,
         imageSrc: originalSrc,
       })
@@ -4398,7 +4173,7 @@ export function MilkdownMarkdownEditor({
 
     const anchor = sourceAnchorFromEditorAnchor(
       currentMarkdownRef.current,
-      makeAnchorFromSourceRange(editorMarkdownRef.current, from, to),
+      makeAnchorFromRange(editorMarkdownRef.current, from, to),
     );
     if (!anchor || !normalizeSelectedText(anchor.selectedText)) return null;
 
@@ -4413,7 +4188,7 @@ export function MilkdownMarkdownEditor({
     const container = containerRef.current;
     if (!container || to <= from) return [];
 
-    const anchor = makeAnchorFromSourceRange(currentMarkdownRef.current, from, to);
+    const anchor = makeAnchorFromRange(currentMarkdownRef.current, from, to);
     const annotation: TextAnnotation = {
       ...anchor,
       id: "touch-glossary-selection",
@@ -4668,7 +4443,7 @@ export function MilkdownMarkdownEditor({
 
     return sourceAnchorFromEditorAnchor(
       currentMarkdownRef.current,
-      makeAnchorFromSourceRange(editorMarkdownRef.current, sourceRange.from, sourceRange.to),
+      makeAnchorFromRange(editorMarkdownRef.current, sourceRange.from, sourceRange.to),
     );
   }
 
@@ -5021,7 +4796,7 @@ export function MilkdownMarkdownEditor({
     const to = Math.max(...anchors.map((anchor) => anchor.to));
     if (to <= from) return null;
 
-    const anchor = makeAnchorFromSourceRange(currentMarkdownRef.current, from, to);
+    const anchor = makeAnchorFromRange(currentMarkdownRef.current, from, to);
     return normalizeSelectedText(anchor.selectedText) ? anchor : null;
   }
 
@@ -5092,7 +4867,7 @@ export function MilkdownMarkdownEditor({
     const anchor =
       session.codeBlockIndex == null
         ? sourceAnchorFromProseRange(view, session.currentFrom, session.currentTo)
-        : makeAnchorFromSourceRange(
+        : makeAnchorFromRange(
             currentMarkdownRef.current,
             session.currentFrom,
             session.currentTo,
