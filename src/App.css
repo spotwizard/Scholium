@@ -707,6 +707,19 @@ button:disabled {
   stroke: currentColor !important;
 }
 
+.document-icon__flaticon-book {
+  display: block;
+  width: 20px;
+  height: 20px;
+  background: currentColor;
+  mask-position: center;
+  mask-repeat: no-repeat;
+  mask-size: contain;
+  -webkit-mask-position: center;
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-size: contain;
+}
+
 .document-icon.is-selected {
   color: var(--color-heading);
 }

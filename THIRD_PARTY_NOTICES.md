@@ -1,5 +1,7 @@
 # Third-party notices
 
+The sidebar file icons use the [Book icon](https://www.flaticon.com/free-icon/book_4613095) and [Open Book icon](https://www.flaticon.com/free-icon/open-book_4613052) from the Flaticon Books pack by [Freepik](https://www.flaticon.com/authors/freepik). Free for personal and commercial use with attribution.
+
 The source mode icon and desktop floating note and glossary window action icons use Flaticon UIcons Regular Rounded:
 
 - [Display Code](https://www.flaticon.com/free-icon-font/display-code_8778036)

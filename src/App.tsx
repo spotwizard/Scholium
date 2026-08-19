@@ -87,8 +87,8 @@ import { shouldHandlePreviewSelectAllShortcut } from "./editorKeyboardShortcuts"
 import { anchoredFloatingNoteGeometry } from "./floatingNotePosition";
 import { SettingsView } from "./SettingsView";
 import appIconUrl from "../src-tauri/icons/128x128@2x.png";
-import fileSelectedGlyphSvg from "./assets/file-selected-glyph.svg?raw";
-import fileGlyphSvg from "./assets/file-glyph.svg?raw";
+import fileSelectedGlyphUrl from "./assets/file-selected-glyph.png";
+import fileGlyphUrl from "./assets/file-glyph.png";
 import folderGlyphSvg from "./assets/folder-glyph.svg?raw";
 import folderSelectedGlyphSvg from "./assets/folder-selected-glyph.svg?raw";
 import collapseIconSvg from "./assets/collapse.svg?raw";
@@ -406,14 +406,24 @@ type CreateEntryDialogState = {
 };
 
 function DocumentGlyphIcon({ kind, selected = false }: { kind: "file" | "folder"; selected?: boolean }) {
+  if (kind === "file") {
+    const maskImage = `url("${selected ? fileSelectedGlyphUrl : fileGlyphUrl}")`;
+
+    return (
+      <span
+        aria-hidden="true"
+        className={`document-icon ${selected ? "is-selected" : ""}`}
+      >
+        <span
+          className="document-icon__flaticon-book"
+          style={{ maskImage, WebkitMaskImage: maskImage }}
+        />
+      </span>
+    );
+  }
+
   const glyphSvg =
-    kind === "folder"
-      ? selected
-        ? folderSelectedGlyphSvg
-        : folderGlyphSvg
-      : selected
-        ? fileSelectedGlyphSvg
-        : fileGlyphSvg;
+    selected ? folderSelectedGlyphSvg : folderGlyphSvg;
 
   return (
     <span
