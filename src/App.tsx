@@ -84,6 +84,10 @@ import {
   type DocumentTabSessionState,
 } from "./documentTabs";
 import { shouldHandlePreviewSelectAllShortcut } from "./editorKeyboardShortcuts";
+import {
+  fileNameTextIsTruncated,
+  fileNameTooltipPosition,
+} from "./fileNameTooltip";
 import { anchoredFloatingNoteGeometry } from "./floatingNotePosition";
 import { SettingsView } from "./SettingsView";
 import appIconUrl from "../src-tauri/icons/128x128@2x.png";
@@ -244,6 +248,9 @@ const annotationClickDelayMs = 500;
 const libraryAnnotationClickSuppressionMs = annotationClickDelayMs + 350;
 const mobileContextMenuLongPressMs = 500;
 const mobileContextMenuLongPressMoveTolerancePx = 10;
+const fileNameTooltipHoverDelayMs = 250;
+const fileNameTooltipId = "file-name-tooltip";
+const mobileFileContextMenuTitleHeight = 96;
 const pendingAnchorAnnotationId = "__scholium_pending_anchor__";
 
 type AnnotationKind = "note" | "glossary";
@@ -368,6 +375,14 @@ type FileContextMenuState = WorkspaceActionTarget & {
   exportDocumentIds: string[];
   left: number;
   top: number;
+};
+
+type FileNameTooltipState = {
+  anchorRect: Pick<DOMRect, "right" | "top">;
+  detail?: string;
+  key: string;
+  position: { left: number; top: number } | null;
+  title: string;
 };
 
 type DocumentTabContextMenuState = {
@@ -4963,6 +4978,7 @@ function App() {
   const [settingsInitialCategory, setSettingsInitialCategory] =
     useState<SettingCategory>("app");
   const [fileContextMenu, setFileContextMenu] = useState<FileContextMenuState | null>(null);
+  const [fileNameTooltip, setFileNameTooltip] = useState<FileNameTooltipState | null>(null);
   const [documentTabContextMenu, setDocumentTabContextMenu] =
     useState<DocumentTabContextMenuState | null>(null);
   const [duplicateFileDialog, setDuplicateFileDialog] =
@@ -4985,6 +5001,7 @@ function App() {
   const [mobileStartupLogoVisible, setMobileStartupLogoVisible] = useState(false);
   const notePanelRef = useRef<HTMLElement | null>(null);
   const floatingNoteCardRef = useRef<HTMLDivElement | null>(null);
+  const fileNameTooltipRef = useRef<HTMLDivElement | null>(null);
   const settingsCloseButtonRef = useRef<HTMLButtonElement | null>(null);
   const duplicateFileInputRef = useRef<HTMLInputElement | null>(null);
   const renameInputRef = useRef<HTMLInputElement | null>(null);
@@ -5014,6 +5031,7 @@ function App() {
   const noteEditModalActiveRef = useRef(false);
   const copiedNoteActionTimerRef = useRef(0);
   const ignoreNextWorkspaceClickRef = useRef(false);
+  const fileNameTooltipTimerRef = useRef(0);
   const workspaceFileLongPressTimerRef = useRef(0);
   const workspaceFileLongPressStartRef = useRef<{
     pointerId: number;
@@ -5958,6 +5976,52 @@ function App() {
     };
   }, []);
 
+  useLayoutEffect(() => {
+    if (!fileNameTooltip || fileNameTooltip.position || !fileNameTooltipRef.current) return;
+
+    const tooltipRect = fileNameTooltipRef.current.getBoundingClientRect();
+    const position = fileNameTooltipPosition({
+      anchorRect: fileNameTooltip.anchorRect,
+      tooltipRect,
+      viewportRect: currentVisualViewportRect(),
+    });
+    setFileNameTooltip((currentTooltip) =>
+      currentTooltip?.key === fileNameTooltip.key
+        ? { ...currentTooltip, position }
+        : currentTooltip,
+    );
+  }, [fileNameTooltip]);
+
+  useEffect(() => {
+    if (!fileNameTooltip) return;
+
+    const hideTooltip = () => setFileNameTooltip(null);
+    window.addEventListener("resize", hideTooltip);
+    window.visualViewport?.addEventListener("resize", hideTooltip);
+    window.visualViewport?.addEventListener("scroll", hideTooltip);
+    document.addEventListener("scroll", hideTooltip, true);
+
+    return () => {
+      window.removeEventListener("resize", hideTooltip);
+      window.visualViewport?.removeEventListener("resize", hideTooltip);
+      window.visualViewport?.removeEventListener("scroll", hideTooltip);
+      document.removeEventListener("scroll", hideTooltip, true);
+    };
+  }, [fileNameTooltip?.key]);
+
+  useEffect(
+    () => () => {
+      window.clearTimeout(fileNameTooltipTimerRef.current);
+    },
+    [],
+  );
+
+  useEffect(() => {
+    window.clearTimeout(fileNameTooltipTimerRef.current);
+    fileNameTooltipTimerRef.current = 0;
+    setFileNameTooltip(null);
+  }, [directoryPaneOpen, fileSearchMode, fileSearchQuery, workspaceEntries]);
+
   useEffect(() => {
     if (isMobileViewport && directoryPaneOpen) return;
     setMobileSelectedWorkspaceEntryKey("");
@@ -6548,6 +6612,73 @@ function App() {
     }
 
     return shellRelativePointFromViewport(clientX, clientY);
+  }
+
+  function fileNameTooltipTargetIsTruncated(target: HTMLElement) {
+    return Array.from(
+      target.querySelectorAll<HTMLElement>("[data-file-name-overflow]"),
+    ).some((element) => fileNameTextIsTruncated(element));
+  }
+
+  function hideFileNameTooltip() {
+    window.clearTimeout(fileNameTooltipTimerRef.current);
+    fileNameTooltipTimerRef.current = 0;
+    setFileNameTooltip(null);
+  }
+
+  function showFileNameTooltip(
+    target: HTMLButtonElement,
+    key: string,
+    title: string,
+    detail?: string,
+  ) {
+    if (!fileNameTooltipTargetIsTruncated(target)) return;
+
+    const rect = target.getBoundingClientRect();
+    setFileNameTooltip({
+      anchorRect: { right: rect.right, top: rect.top },
+      detail,
+      key,
+      position: null,
+      title,
+    });
+  }
+
+  function scheduleFileNameTooltip(
+    target: HTMLButtonElement,
+    key: string,
+    title: string,
+    detail?: string,
+  ) {
+    if (isMobileViewport) return;
+
+    hideFileNameTooltip();
+    fileNameTooltipTimerRef.current = window.setTimeout(() => {
+      fileNameTooltipTimerRef.current = 0;
+      showFileNameTooltip(target, key, title, detail);
+    }, fileNameTooltipHoverDelayMs);
+  }
+
+  function showFocusedFileNameTooltip(
+    event: FocusEvent<HTMLButtonElement>,
+    key: string,
+    title: string,
+    detail?: string,
+  ) {
+    if (!event.currentTarget.matches(":focus-visible")) return;
+
+    hideFileNameTooltip();
+    showFileNameTooltip(event.currentTarget, key, title, detail);
+  }
+
+  function handleFileNameTooltipKeyDown(event: ReactKeyboardEvent<HTMLButtonElement>) {
+    if (event.key === "Escape") hideFileNameTooltip();
+  }
+
+  function fileNameTooltipDescribedBy(key: string) {
+    return fileNameTooltip?.key === key && fileNameTooltip.position
+      ? fileNameTooltipId
+      : undefined;
   }
 
   function currentVisualViewportRect() {
@@ -14741,17 +14872,26 @@ function App() {
         ];
       })()
     : [];
+  const fileContextMenuTitleHeight =
+    isMobileViewport && fileContextMenu?.kind === "file"
+      ? mobileFileContextMenuTitleHeight
+      : 0;
+  const fileContextMenuViewportRect = currentFloatingNoteViewportRect();
 
   const fileContextMenuStyle: CSSProperties | undefined = fileContextMenu
     ? {
         left: Math.round(
-          clampNumber(fileContextMenu.left, 8, Math.max(8, window.innerWidth - 188)),
+          clampNumber(fileContextMenu.left, 8, Math.max(8, window.innerWidth - 214)),
         ),
         top: Math.round(
           clampNumber(
             fileContextMenu.top,
-            8,
-            Math.max(8, window.innerHeight - (24 + fileContextMenuActions.length * 34)),
+            fileContextMenuViewportRect.top + 8,
+            Math.max(
+              fileContextMenuViewportRect.top + 8,
+              fileContextMenuViewportRect.bottom -
+                (24 + fileContextMenuTitleHeight + fileContextMenuActions.length * 34),
+            ),
           ),
         ),
       }
@@ -15428,18 +15568,39 @@ function App() {
 
                     return (
                       <button
+                        aria-describedby={fileNameTooltipDescribedBy(`tag:${result.path}`)}
                         className={`document-row file-search-result ${
                           isSelected ? "is-selected" : ""
                         }`}
                         key={result.path}
                         onClick={() => {
+                          hideFileNameTooltip();
                           if (result.entry) {
                             openWorkspaceEntry(result.entry);
                           } else {
                             void openLocalFileSearchResult(result);
                           }
                         }}
-                        title={result.relativePath}
+                        onBlur={hideFileNameTooltip}
+                        onFocus={(event) =>
+                          showFocusedFileNameTooltip(
+                            event,
+                            `tag:${result.path}`,
+                            result.title,
+                            result.relativePath,
+                          )
+                        }
+                        onKeyDown={handleFileNameTooltipKeyDown}
+                        onMouseEnter={(event) =>
+                          scheduleFileNameTooltip(
+                            event.currentTarget,
+                            `tag:${result.path}`,
+                            result.title,
+                            result.relativePath,
+                          )
+                        }
+                        onMouseLeave={hideFileNameTooltip}
+                        onPointerDown={hideFileNameTooltip}
                         type="button"
                       >
                         <span
@@ -15448,8 +15609,12 @@ function App() {
                         />
                         <DocumentGlyphIcon kind="file" selected={isSelected} />
                         <span className="document-title">
-                          <span className="document-title__primary">{result.title}</span>
-                          <span className="document-title__meta">{result.relativePath}</span>
+                          <span className="document-title__primary" data-file-name-overflow>
+                            {result.title}
+                          </span>
+                          <span className="document-title__meta" data-file-name-overflow>
+                            {result.relativePath}
+                          </span>
                           <span className="document-title__tags">
                             {result.matchedTags.map((tag) => `#${tag}`).join(" · ")}
                           </span>
@@ -15479,14 +15644,35 @@ function App() {
 
                     return (
                       <button
+                        aria-describedby={fileNameTooltipDescribedBy(`search:${result.path}`)}
                         className={`document-row file-search-result ${
                           isSelected ? "is-selected" : ""
                         }`}
                         key={result.path}
                         onClick={() => {
+                          hideFileNameTooltip();
                           void openLocalFileSearchResult(result);
                         }}
-                        title={result.relativePath}
+                        onBlur={hideFileNameTooltip}
+                        onFocus={(event) =>
+                          showFocusedFileNameTooltip(
+                            event,
+                            `search:${result.path}`,
+                            result.title,
+                            result.relativePath,
+                          )
+                        }
+                        onKeyDown={handleFileNameTooltipKeyDown}
+                        onMouseEnter={(event) =>
+                          scheduleFileNameTooltip(
+                            event.currentTarget,
+                            `search:${result.path}`,
+                            result.title,
+                            result.relativePath,
+                          )
+                        }
+                        onMouseLeave={hideFileNameTooltip}
+                        onPointerDown={hideFileNameTooltip}
                         type="button"
                       >
                         <span
@@ -15495,8 +15681,12 @@ function App() {
                         />
                         <DocumentGlyphIcon kind="file" selected={isSelected} />
                         <span className="document-title">
-                          <span className="document-title__primary">{result.title}</span>
-                          <span className="document-title__meta">{result.relativePath}</span>
+                          <span className="document-title__primary" data-file-name-overflow>
+                            {result.title}
+                          </span>
+                          <span className="document-title__meta" data-file-name-overflow>
+                            {result.relativePath}
+                          </span>
                         </span>
                       </button>
                     );
@@ -15526,6 +15716,9 @@ function App() {
 
               return (
                 <button
+                  aria-describedby={
+                    entry.kind === "file" ? fileNameTooltipDescribedBy(entry.id) : undefined
+                  }
                   aria-expanded={isDirectory ? isExpanded : undefined}
                   className={`document-row ${isDirectory ? "is-folder" : ""} ${
                     entry.kind === "file" ? "is-file" : ""
@@ -15537,18 +15730,42 @@ function App() {
                   key={entry.id}
                   style={rowStyle}
                   onClick={(event) => {
+                    hideFileNameTooltip();
                     openWorkspaceEntry(entry, event);
                   }}
+                  onBlur={entry.kind === "file" ? hideFileNameTooltip : undefined}
                   onContextMenu={(event) => {
                     if (entry.kind === "parent-directory") return;
 
+                    hideFileNameTooltip();
                     cancelWorkspaceFileLongPress();
                     openFileContextMenu(entry, event);
                   }}
+                  onFocus={
+                    entry.kind === "file"
+                      ? (event) =>
+                          showFocusedFileNameTooltip(event, entry.id, entry.title)
+                      : undefined
+                  }
+                  onKeyDown={
+                    entry.kind === "file" ? handleFileNameTooltipKeyDown : undefined
+                  }
+                  onMouseEnter={
+                    entry.kind === "file"
+                      ? (event) =>
+                          scheduleFileNameTooltip(
+                            event.currentTarget,
+                            entry.id,
+                            entry.title,
+                          )
+                      : undefined
+                  }
+                  onMouseLeave={entry.kind === "file" ? hideFileNameTooltip : undefined}
                   onPointerCancel={(event) => {
                     cancelWorkspaceFileLongPress(event.pointerId);
                   }}
                   onPointerDown={(event) => {
+                    hideFileNameTooltip();
                     if (entry.kind === "parent-directory") return;
 
                     startWorkspaceFileLongPress(entry, event);
@@ -15557,7 +15774,7 @@ function App() {
                   onPointerUp={(event) => {
                     cancelWorkspaceFileLongPress(event.pointerId);
                   }}
-                  title={entry.title}
+                  title={entry.kind === "file" ? undefined : entry.title}
                   type="button"
                 >
                   <span
@@ -15574,7 +15791,12 @@ function App() {
                         : isSelected || isMobileSelected || isBatchSelected
                     }
                   />
-                  <span className="document-title">{entry.title}</span>
+                  <span
+                    className="document-title"
+                    data-file-name-overflow={entry.kind === "file" ? "" : undefined}
+                  >
+                    {entry.title}
+                  </span>
                 </button>
               );
             })
@@ -15708,14 +15930,43 @@ function App() {
         </div>
       ) : null}
 
+      {fileNameTooltip ? (
+        <div
+          className="file-name-tooltip"
+          id={fileNameTooltipId}
+          ref={fileNameTooltipRef}
+          role="tooltip"
+          style={{
+            left: fileNameTooltip.position?.left ?? 0,
+            top: fileNameTooltip.position?.top ?? 0,
+            visibility: fileNameTooltip.position ? "visible" : "hidden",
+          }}
+        >
+          <span className="file-name-tooltip__title">{fileNameTooltip.title}</span>
+          {fileNameTooltip.detail ? (
+            <span className="file-name-tooltip__detail">{fileNameTooltip.detail}</span>
+          ) : null}
+        </div>
+      ) : null}
+
       {fileContextMenu ? (
         <div
+          aria-label={fileContextMenu.kind === "file" ? fileContextMenu.title : undefined}
           className="file-context-menu"
           role="menu"
           style={fileContextMenuStyle}
           onContextMenu={(event) => event.preventDefault()}
           onPointerDown={(event) => event.stopPropagation()}
         >
+          {isMobileViewport && fileContextMenu.kind === "file" ? (
+            <div
+              aria-hidden="true"
+              className="file-context-menu__target-title"
+              role="presentation"
+            >
+              {fileContextMenu.title}
+            </div>
+          ) : null}
           {fileContextMenuActions.map((action) => (
             <button
               className={action.tone === "danger" ? "is-danger" : ""}
