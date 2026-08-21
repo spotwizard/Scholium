@@ -78,6 +78,7 @@ import {
 } from "./milkdownListIndent";
 import { createListItemInlineStrongSyntaxPlugin } from "./milkdownInlineMarkdownSyntax";
 import { createPastedInlineMarkBoundaryPlugin } from "./milkdownPastedInlineMarkBoundary";
+import { correctHistoryCaretAfterRestoredText } from "./milkdownHistory";
 import {
   encodeEmptyParagraphsForMilkdown,
   normalizeMarkdownForScholium,
@@ -2999,6 +3000,7 @@ export function MilkdownMarkdownEditor({
     }
 
     return new Plugin({
+      appendTransaction: correctHistoryCaretAfterRestoredText,
       key: milkdownControlHistoryPluginKey,
       props: {
         handleDOMEvents: {
@@ -3026,8 +3028,7 @@ export function MilkdownMarkdownEditor({
         handleKeyDown(view, event) {
           if (
             event.key.toLowerCase() !== "z" ||
-            !event.ctrlKey ||
-            event.metaKey ||
+            event.ctrlKey === event.metaKey ||
             event.altKey ||
             event.isComposing ||
             imeCompositionActiveRef.current ||

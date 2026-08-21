@@ -132,6 +132,12 @@ import {
   type ParsedMarkdownListLine,
 } from "./markdownPreview";
 import {
+  createNoteEditorHistory,
+  recordNoteEditorChange,
+  takeNoteEditorRedo,
+  takeNoteEditorUndo,
+} from "./noteEditorHistory";
+import {
   sortWorkspaceEntriesForDirectory,
   type WorkspaceSortMode,
 } from "./workspaceSort";
@@ -2470,6 +2476,17 @@ function isUndoKeyboardShortcut(
   );
 }
 
+function isRedoKeyboardShortcut(
+  event: Pick<KeyboardEvent | ReactKeyboardEvent, "altKey" | "ctrlKey" | "key" | "metaKey" | "shiftKey">,
+) {
+  return (
+    event.key.toLowerCase() === "z" &&
+    (event.metaKey || event.ctrlKey) &&
+    !event.altKey &&
+    event.shiftKey
+  );
+}
+
 function selectionOffsetsInElement(element: HTMLElement, selection: Selection) {
   if (selection.rangeCount === 0) return null;
 
@@ -2915,7 +2932,8 @@ function MarkdownPreview({
     blockKey: string;
     textOffset: number;
   } | null>(null);
-  const previewUndoStackRef = useRef<string[]>([]);
+  const previewHistoryRef = useRef(createNoteEditorHistory());
+  const previewInputCommitRef = useRef(false);
   previewValueRef.current = value;
 
   useEffect(
@@ -2936,9 +2954,11 @@ function MarkdownPreview({
   useEffect(() => {
     function handleDocumentKeyDown(event: KeyboardEvent) {
       if (readOnly) return;
-      if (!isUndoKeyboardShortcut(event)) return;
+      const shouldRedo = isRedoKeyboardShortcut(event);
+      if (!shouldRedo && !isUndoKeyboardShortcut(event)) return;
       if (!previewShouldHandleDocumentShortcut(event.target)) return;
-      if (!undoPreviewChange()) return;
+      flushPendingPreviewHistoryInput();
+      if (!(shouldRedo ? redoPreviewChange() : undoPreviewChange())) return;
 
       event.preventDefault();
       event.stopPropagation();
@@ -3001,7 +3021,12 @@ function MarkdownPreview({
     const blockElement = Array.from(
       previewElement?.querySelectorAll<HTMLElement>("[data-preview-block-key]") ?? [],
     ).find((element) => element.dataset.previewBlockKey === blockKey);
-    if (!blockElement) return;
+    if (!blockElement) {
+      if (!blockKey && previewElement) {
+        focusEditableElementAtPoint(previewElement, null);
+      }
+      return;
+    }
 
     let remainingOffset = Math.max(0, textOffset);
     const walker = document.createTreeWalker(
@@ -3058,6 +3083,30 @@ function MarkdownPreview({
 
   function focusPreviewBlockTextOffset(blockKey: string, textOffset: number) {
     pendingPreviewTextFocusRef.current = { blockKey, textOffset };
+  }
+
+  function focusPreviewSourcePosition(nextValue: string, sourcePosition: number) {
+    const caretLine = nextValue.slice(0, sourcePosition).split("\n").length - 1;
+    const nextBlocks = parseMarkdownPreviewBlocks(nextValue);
+    const focusBlock =
+      nextBlocks.find(
+        (block) => block.startLine <= caretLine && block.endLine >= caretLine,
+      ) ??
+      nextBlocks.filter((block) => block.endLine < caretLine).slice(-1)[0] ??
+      nextBlocks[0];
+
+    if (!focusBlock) {
+      focusPreviewBlockTextOffset("", 0);
+      return;
+    }
+
+    focusPreviewBlockTextOffset(
+      focusBlock.key,
+      previewTextOffsetForSourcePosition(
+        getPreviewBlockTextMap(nextValue, focusBlock),
+        sourcePosition,
+      ),
+    );
   }
 
   function focusPreviewListItem(
@@ -3616,24 +3665,7 @@ function MarkdownPreview({
       pastedText +
       previewValueRef.current.slice(selectedRange.to);
     const caretSourcePosition = selectedRange.from + pastedText.length;
-    const caretLine =
-      nextValue.slice(0, caretSourcePosition).split("\n").length - 1;
-    const nextBlocks = parseMarkdownPreviewBlocks(nextValue);
-    const focusBlock =
-      nextBlocks.find(
-        (block) => block.startLine <= caretLine && block.endLine >= caretLine,
-      ) ??
-      nextBlocks.filter((block) => block.endLine < caretLine).slice(-1)[0] ??
-      nextBlocks[0];
-    if (focusBlock) {
-      focusPreviewBlockTextOffset(
-        focusBlock.key,
-        previewTextOffsetForSourcePosition(
-          getPreviewBlockTextMap(nextValue, focusBlock),
-          caretSourcePosition,
-        ),
-      );
-    }
+    focusPreviewSourcePosition(nextValue, caretSourcePosition);
     commitPreviewChange(nextValue);
   }
 
@@ -3661,7 +3693,7 @@ function MarkdownPreview({
     window.cancelAnimationFrame(inputCommitFrameRef.current);
     inputCommitFrameRef.current = window.requestAnimationFrame(() => {
       inputCommitFrameRef.current = 0;
-      if (!commitPendingPreviewInput(previewElement) && pendingFocus) {
+      if (!commitPendingPreviewInput(previewElement, true) && pendingFocus) {
         pendingPreviewTextFocusRef.current = null;
       }
     });
@@ -3681,7 +3713,7 @@ function MarkdownPreview({
     }
     window.cancelAnimationFrame(inputCommitFrameRef.current);
     inputCommitFrameRef.current = 0;
-    if (!commitPendingPreviewInput(previewElement) && pendingFocus) {
+    if (!commitPendingPreviewInput(previewElement, true) && pendingFocus) {
       pendingPreviewTextFocusRef.current = null;
     }
   }
@@ -3922,14 +3954,22 @@ function MarkdownPreview({
     return true;
   }
 
-  function commitPendingPreviewInput(previewElement: HTMLElement) {
-    const committedRoot = commitRootTypedPreviewBlock(previewElement);
-    const committedEditedBlocks = commitEditedPreviewBlocks();
-    if (!committedRoot && !committedEditedBlocks) {
-      return commitLooseRootPreviewText(previewElement);
-    }
+  function commitPendingPreviewInput(
+    previewElement: HTMLElement,
+    recordAsInput = false,
+  ) {
+    previewInputCommitRef.current = recordAsInput;
+    try {
+      const committedRoot = commitRootTypedPreviewBlock(previewElement);
+      const committedEditedBlocks = commitEditedPreviewBlocks();
+      if (!committedRoot && !committedEditedBlocks) {
+        return commitLooseRootPreviewText(previewElement);
+      }
 
-    return true;
+      return true;
+    } finally {
+      previewInputCommitRef.current = false;
+    }
   }
 
   function commitPreviewSoftBreak() {
@@ -3937,7 +3977,7 @@ function MarkdownPreview({
     if (previewElement) {
       window.cancelAnimationFrame(inputCommitFrameRef.current);
       inputCommitFrameRef.current = 0;
-      commitPendingPreviewInput(previewElement);
+      commitPendingPreviewInput(previewElement, true);
     }
 
     const selection = window.getSelection();
@@ -3989,7 +4029,7 @@ function MarkdownPreview({
 
     window.cancelAnimationFrame(inputCommitFrameRef.current);
     inputCommitFrameRef.current = 0;
-    commitPendingPreviewInput(event.currentTarget);
+    commitPendingPreviewInput(event.currentTarget, true);
   }
 
   function handlePreviewInlineShortcut(event: ReactKeyboardEvent<HTMLDivElement>) {
@@ -4046,9 +4086,10 @@ function MarkdownPreview({
       return;
     }
 
-    if (isUndoKeyboardShortcut(event)) {
-      if (previewHasActiveUncommittedEdit()) return;
-      if (!undoPreviewChange()) return;
+    const shouldRedo = isRedoKeyboardShortcut(event);
+    if (shouldRedo || isUndoKeyboardShortcut(event)) {
+      flushPendingPreviewHistoryInput();
+      if (!(shouldRedo ? redoPreviewChange() : undoPreviewChange())) return;
 
       event.preventDefault();
       event.stopPropagation();
@@ -4112,6 +4153,16 @@ function MarkdownPreview({
         return;
       }
 
+      if (
+        blockElement &&
+        blockForPreviewElement(blockElement)?.kind === "paragraph" &&
+        commitPreviewSoftBreak()
+      ) {
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
+
       if (transientPreviewElementFromSelection()) return;
 
       if (previewElement && insertTransientPreviewLine(previewElement)) {
@@ -4155,32 +4206,58 @@ function MarkdownPreview({
     return false;
   }
 
-  function previewHasActiveUncommittedEdit() {
-    if (transientPreviewElementFromSelection()) return true;
+  function flushPendingPreviewHistoryInput() {
+    const previewElement = previewRef.current;
+    if (!previewElement) return;
 
-    const blockElement = previewBlockElementFromSelection();
-    return blockElement?.dataset.edited === "true";
+    window.cancelAnimationFrame(inputCommitFrameRef.current);
+    inputCommitFrameRef.current = 0;
+    commitPendingPreviewInput(previewElement, true);
   }
 
   function undoPreviewChange() {
-    const previousValue = previewUndoStackRef.current.pop();
-    if (previousValue === undefined) return false;
+    const undo = takeNoteEditorUndo(
+      previewHistoryRef.current,
+      previewValueRef.current,
+    );
+    if (!undo.snapshot) return false;
 
-    previewValueRef.current = previousValue;
-    onChange(previousValue, "undo");
+    previewHistoryRef.current = undo.history;
+    previewValueRef.current = undo.snapshot.value;
+    focusPreviewSourcePosition(
+      undo.snapshot.value,
+      undo.snapshot.caretSourcePosition,
+    );
+    onChange(undo.snapshot.value, "undo");
+    return true;
+  }
+
+  function redoPreviewChange() {
+    const redo = takeNoteEditorRedo(
+      previewHistoryRef.current,
+      previewValueRef.current,
+    );
+    if (!redo.snapshot) return false;
+
+    previewHistoryRef.current = redo.history;
+    previewValueRef.current = redo.snapshot.value;
+    focusPreviewSourcePosition(
+      redo.snapshot.value,
+      redo.snapshot.caretSourcePosition,
+    );
+    onChange(redo.snapshot.value, "user");
     return true;
   }
 
   function commitPreviewChange(nextValue: string, anchorTransform?: BodyAnchorTransform) {
     const previousValue = previewValueRef.current;
     if (nextValue === previousValue) return;
-    const undoStack = previewUndoStackRef.current;
-    if (undoStack[undoStack.length - 1] !== previousValue) {
-      undoStack.push(previousValue);
-      if (undoStack.length > 100) {
-        undoStack.shift();
-      }
-    }
+    previewHistoryRef.current = recordNoteEditorChange(
+      previewHistoryRef.current,
+      previousValue,
+      nextValue,
+      { input: previewInputCommitRef.current },
+    );
     previewValueRef.current = nextValue;
     onChange(nextValue, "user", anchorTransform);
   }
@@ -4575,6 +4652,7 @@ function NoteMarkdownEditor({
     "note-markdown-editor",
     "note-markdown-editor--preview",
     isEditable ? "is-editing" : "is-previewing",
+    value.length === 0 ? "is-empty" : "",
     readOnly ? "is-readonly" : "",
     className,
   ]
@@ -5629,6 +5707,13 @@ function App() {
     function handleDocumentPointerDown(event: globalThis.PointerEvent) {
       if (event.button !== 0) return;
       if (targetIsInsideNoteMarkdownEditor(event.target)) return;
+      if (
+        elementFromEventTarget(event.target)?.closest(
+          ".floating-note-panel-toggle-button",
+        )
+      ) {
+        return;
+      }
 
       const activeElement = document.activeElement;
       if (
@@ -17324,6 +17409,7 @@ function App() {
                       title={
                         floatingNotePanelExpanded ? t("note.collapse") : t("note.expand")
                       }
+                      onPointerDown={(event) => event.preventDefault()}
                       onClick={toggleFloatingNotePanelExpanded}
                     >
                       {floatingNotePanelExpanded ? (

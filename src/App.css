@@ -4935,6 +4935,7 @@ button.document-tag-chip__label:focus-visible {
 }
 
 .floating-note-panel.is-expanded-sidebar .floating-note-card__body-measure {
+  height: 100%;
   min-height: 100%;
 }
 
@@ -5020,6 +5021,13 @@ button.document-tag-chip__label:focus-visible {
   .floating-note-card__editor.is-editing
   .note-markdown-editor__textarea {
   height: 100% !important;
+}
+
+.floating-note-panel.is-expanded-sidebar .floating-note-card__editor.is-empty,
+.floating-note-panel.is-expanded-sidebar
+  .floating-note-card__editor.is-empty
+  .markdown-preview {
+  min-height: 100%;
 }
 
 @keyframes floating-note-pop-in {
