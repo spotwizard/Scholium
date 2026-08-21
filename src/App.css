@@ -2452,7 +2452,7 @@ button.document-tag-chip__label:focus-visible {
   padding: 0;
 }
 
-.cm-selectionBackground {
+.markdown-editor-host > .cm-editor .cm-selectionBackground {
   background: var(--color-accent-selection) !important;
 }
 
@@ -3182,6 +3182,20 @@ button.document-tag-chip__label:focus-visible {
 
 .milkdown-markdown-editor .milkdown .milkdown-code-block .cm-editor {
   color: var(--color-preview-editor-text);
+}
+
+.milkdown-markdown-editor
+  .milkdown
+  .milkdown-code-block
+  .cm-editor.scholium-native-primary-selection
+  .cm-line::selection,
+.milkdown-markdown-editor
+  .milkdown
+  .milkdown-code-block
+  .cm-editor.scholium-native-primary-selection
+  .cm-line
+  *::selection {
+  background: var(--color-accent-selection) !important;
 }
 
 .milkdown-markdown-editor .milkdown .milkdown-code-block .cm-scroller {

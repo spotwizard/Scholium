@@ -1,4 +1,8 @@
 import { Crepe, CrepeFeature } from "@milkdown/crepe";
+import {
+  EditorView as CodeMirrorEditorView,
+  ViewPlugin as CodeMirrorViewPlugin,
+} from "@codemirror/view";
 import { codeBlockConfig } from "@milkdown/kit/component/code-block";
 import { listItemBlockConfig } from "@milkdown/kit/component/list-item-block";
 import {
@@ -199,6 +203,43 @@ const milkdownNoteModeCodeBlockFocusableSelector =
 const annotationClickDelayMs = 500;
 const annotationFocusTargetPressSuppressionMs = annotationClickDelayMs + 350;
 const imeSelectionSuppressionMs = 350;
+const codeMirrorNativePrimarySelectionClass = "scholium-native-primary-selection";
+const codeMirrorNativePrimarySelectionAttributes = CodeMirrorEditorView.editorAttributes.of(
+  (view) =>
+    view.state.selection.ranges.length === 1
+      ? { class: codeMirrorNativePrimarySelectionClass }
+      : null,
+);
+const codeMirrorNativePrimarySelection = CodeMirrorViewPlugin.define((view) => {
+  const selectionLayer = Array.from(view.scrollDOM.children).find(
+    (element): element is HTMLElement =>
+      element instanceof HTMLElement && element.classList.contains("cm-selectionLayer"),
+  );
+
+  function syncSelectionRenderer() {
+    const useNativeSelection = view.state.selection.ranges.length === 1;
+
+    if (useNativeSelection) {
+      selectionLayer?.remove();
+    } else if (selectionLayer && selectionLayer.parentElement !== view.scrollDOM) {
+      view.scrollDOM.append(selectionLayer);
+    }
+  }
+
+  syncSelectionRenderer();
+
+  return {
+    update: syncSelectionRenderer,
+  };
+});
+
+function webKitCodeBlockSelectionExtensions() {
+  if (typeof navigator === "undefined" || navigator.vendor !== "Apple Computer, Inc.") {
+    return [];
+  }
+
+  return [codeMirrorNativePrimarySelectionAttributes, codeMirrorNativePrimarySelection];
+}
 
 type SoftLineIsolation = {
   state: EditorState;
@@ -5539,6 +5580,10 @@ export function MilkdownMarkdownEditor({
 
       ctx.update(codeBlockConfig.key, (previousConfig) => ({
         ...previousConfig,
+        extensions: [
+          ...previousConfig.extensions,
+          ...webKitCodeBlockSelectionExtensions(),
+        ],
         copyText: codeBlockCopyLabelRef.current,
         onCopy: (code) => {
           previousConfig.onCopy?.(code);
