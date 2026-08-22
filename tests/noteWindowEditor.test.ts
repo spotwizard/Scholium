@@ -185,6 +185,18 @@ assert.match(
   /function selectionOffsetsWithInlineBreaksInElement[\s\S]*?replace\(\/\\u200b\/g, ""\)[\s\S]*?function previewTextFocusFromSelection[\s\S]*?precedingTextLength[\s\S]*?textOffset: precedingTextLength \+ offsets\.to/,
 );
 assert.match(
+  markdownPreviewSource,
+  /function previewRangeFromSelection\(selection: Selection\)[\s\S]*?previewPointerPointRef\.current[\s\S]*?caretRangeFromPoint\(pointerPoint\.clientX, pointerPoint\.clientY\)[\s\S]*?selection\.focusNode !== previewElement[\s\S]*?boundaryRange\.selectNodeContents\(boundaryBlock\)/,
+);
+assert.match(
+  markdownPreviewSource,
+  /function commitPreviewSoftBreak\(\)[\s\S]*?const selectedRange = previewRangeFromSelection\(selection\);[\s\S]*?selectionOffsetsWithInlineBreaksInElement\([\s\S]*?selectedRange/,
+);
+assert.match(
+  markdownPreviewSource,
+  /onPointerDownCapture=\{\(event\) => \{[\s\S]*?previewPointerPointRef\.current = \{[\s\S]*?clientX: event\.clientX,[\s\S]*?clientY: event\.clientY/,
+);
+assert.match(
   appSource,
   /function handlePreviewInput[\s\S]*?previewTextFocusFromSelection\(blockElement\)[\s\S]*?pendingPreviewTextFocusRef\.current = pendingFocus[\s\S]*?commitPendingPreviewInput\(previewElement, true\)/,
 );

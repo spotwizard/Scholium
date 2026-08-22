@@ -2511,10 +2511,11 @@ function selectionOffsetsInElement(element: HTMLElement, selection: Selection) {
 function selectionOffsetsWithInlineBreaksInElement(
   element: HTMLElement,
   selection: Selection,
+  selectedRange = selection.rangeCount > 0 ? selection.getRangeAt(0) : null,
 ) {
-  if (selection.rangeCount === 0) return null;
+  if (!selectedRange) return null;
 
-  const range = selection.getRangeAt(0);
+  const range = selectedRange;
   if (
     !element.contains(range.startContainer) ||
     !element.contains(range.endContainer)
@@ -2926,6 +2927,7 @@ function MarkdownPreview({
 }) {
   const blocks = parseMarkdownPreviewBlocks(value);
   const previewRef = useRef<HTMLDivElement | null>(null);
+  const previewPointerPointRef = useRef<{ clientX: number; clientY: number } | null>(null);
   const previewValueRef = useRef(value);
   const inputCommitFrameRef = useRef(0);
   const pendingPreviewTextFocusRef = useRef<{
@@ -2987,7 +2989,58 @@ function MarkdownPreview({
     const selection = window.getSelection();
     if (!selection || selection.rangeCount === 0) return null;
 
-    return previewBlockElementFromNode(selection.focusNode);
+    return previewBlockElementFromNode(previewRangeFromSelection(selection)?.startContainer ?? null);
+  }
+
+  function previewRangeFromSelection(selection: Selection) {
+    if (selection.rangeCount === 0) return null;
+
+    const range = selection.getRangeAt(0);
+    if (previewBlockElementFromNode(range.startContainer)) return range;
+    if (!selection.isCollapsed) return range;
+
+    const previewElement = previewRef.current;
+    if (!previewElement) return range;
+
+    const pointerPoint = previewPointerPointRef.current;
+    const caretRange = pointerPoint
+      ? caretRangeFromPoint(pointerPoint.clientX, pointerPoint.clientY)
+      : null;
+    if (caretRange && previewBlockElementFromNode(caretRange.startContainer)) {
+      return caretRange;
+    }
+
+    const rangeRect = range.getBoundingClientRect();
+    if (rangeRect.height > 0) {
+      const geometricRange = caretRangeFromPoint(
+        rangeRect.left,
+        rangeRect.top + rangeRect.height / 2,
+      );
+      if (geometricRange && previewBlockElementFromNode(geometricRange.startContainer)) {
+        return geometricRange;
+      }
+    }
+
+    if (selection.focusNode !== previewElement) return range;
+
+    const focusOffset = clampNumber(
+      selection.focusOffset,
+      0,
+      previewElement.childNodes.length,
+    );
+    const nextBlock = previewBlockElementFromNode(
+      previewElement.childNodes[focusOffset] ?? null,
+    );
+    const previousBlock = previewBlockElementFromNode(
+      previewElement.childNodes[focusOffset - 1] ?? null,
+    );
+    const boundaryBlock = nextBlock ?? previousBlock;
+    if (!boundaryBlock) return range;
+
+    const boundaryRange = document.createRange();
+    boundaryRange.selectNodeContents(boundaryBlock);
+    boundaryRange.collapse(Boolean(nextBlock));
+    return boundaryRange;
   }
 
   function focusPreviewBlockEnd(blockKey: string) {
@@ -3675,6 +3728,7 @@ function MarkdownPreview({
       return;
     }
 
+    previewPointerPointRef.current = null;
     const previewElement = event.currentTarget;
     const blockElement =
       previewBlockElementFromTarget(event.target) ?? previewBlockElementFromSelection();
@@ -3702,6 +3756,7 @@ function MarkdownPreview({
   function handlePreviewCompositionEnd(event: CompositionEvent<HTMLDivElement>) {
     if (readOnly) return;
 
+    previewPointerPointRef.current = null;
     const previewElement = event.currentTarget;
     const blockElement =
       previewBlockElementFromTarget(event.target) ?? previewBlockElementFromSelection();
@@ -3985,8 +4040,14 @@ function MarkdownPreview({
     if (!selection || !blockElement) return false;
 
     const renderedBlock = blockForPreviewElement(blockElement);
-    const offsets = selectionOffsetsWithInlineBreaksInElement(blockElement, selection);
+    const selectedRange = previewRangeFromSelection(selection);
+    const offsets = selectionOffsetsWithInlineBreaksInElement(
+      blockElement,
+      selection,
+      selectedRange,
+    );
     if (!renderedBlock || !offsets) return false;
+    previewPointerPointRef.current = null;
 
     const currentValue = previewValueRef.current;
     const block =
@@ -4062,6 +4123,10 @@ function MarkdownPreview({
   }
 
   function handlePreviewKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
+    if (event.key !== "Enter") {
+      previewPointerPointRef.current = null;
+    }
+
     if (readOnly) {
       if (
         event.key === "Tab" &&
@@ -4281,6 +4346,13 @@ function MarkdownPreview({
       onInput={handlePreviewInput}
       onKeyDownCapture={handlePreviewKeyDown}
       onPaste={handlePreviewPaste}
+      onPointerDownCapture={(event) => {
+        if (event.button !== 0) return;
+        previewPointerPointRef.current = {
+          clientX: event.clientX,
+          clientY: event.clientY,
+        };
+      }}
     >
       {blocks.map((block) => (
         <MarkdownPreviewBlockView
