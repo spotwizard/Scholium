@@ -3069,6 +3069,12 @@ function MarkdownPreview({
     });
   }
 
+  function focusPreviewBlockStart(blockKey: string) {
+    window.requestAnimationFrame(() => {
+      applyPreviewBlockTextOffset(blockKey, 0);
+    });
+  }
+
   function applyPreviewBlockTextOffset(blockKey: string, textOffset: number) {
     const previewElement = previewRef.current;
     const blockElement = Array.from(
@@ -3252,6 +3258,23 @@ function MarkdownPreview({
       }
 
       previousNode = previousNode.previousSibling;
+    }
+
+    return null;
+  }
+
+  function previewBlockAfterNode(node: Node | null) {
+    let nextNode = node?.nextSibling ?? null;
+
+    while (nextNode) {
+      if (
+        nextNode instanceof HTMLElement &&
+        nextNode.dataset.previewBlockKey
+      ) {
+        return blockForPreviewElement(nextNode);
+      }
+
+      nextNode = nextNode.nextSibling;
     }
 
     return null;
@@ -3651,6 +3674,282 @@ function MarkdownPreview({
       selectionRange.compareBoundaryPoints(Range.START_TO_START, contentRange) <= 0 &&
       selectionRange.compareBoundaryPoints(Range.END_TO_END, contentRange) >= 0
     );
+  }
+
+  function previewNodePath(root: Node, node: Node) {
+    const path: number[] = [];
+    let current: Node | null = node;
+
+    while (current && current !== root) {
+      const parentNode: ParentNode | null = current.parentNode;
+      if (!parentNode) return null;
+      const index = Array.from(parentNode.childNodes).indexOf(current as ChildNode);
+      if (index < 0) return null;
+      path.unshift(index);
+      current = parentNode;
+    }
+
+    return current === root ? path : null;
+  }
+
+  function previewNodeAtPath(root: Node, path: number[]) {
+    let current = root;
+    for (const index of path) {
+      const child = current.childNodes[index];
+      if (!child) return null;
+      current = child;
+    }
+    return current;
+  }
+
+  function clonedPreviewSelection(
+    previewElement: HTMLElement,
+    selection: Selection,
+  ) {
+    if (selection.isCollapsed || selection.rangeCount === 0) return null;
+
+    const range = selection.getRangeAt(0);
+    const startPath = previewNodePath(previewElement, range.startContainer);
+    const endPath = previewNodePath(previewElement, range.endContainer);
+    if (!startPath || !endPath) return null;
+
+    const clone = previewElement.cloneNode(true) as HTMLElement;
+    const startNode = previewNodeAtPath(clone, startPath);
+    const endNode = previewNodeAtPath(clone, endPath);
+    if (!startNode || !endNode) return null;
+
+    const clonedRange = document.createRange();
+    clonedRange.setStart(startNode, range.startOffset);
+    clonedRange.setEnd(endNode, range.endOffset);
+    return { clone, range: clonedRange };
+  }
+
+  function commitPreviewSelectionDeletion(previewElement: HTMLElement) {
+    const selection = window.getSelection();
+    if (!selection || selection.isCollapsed || selection.rangeCount === 0) return false;
+
+    const selectedRange = selection.getRangeAt(0);
+    if (
+      !previewElement.contains(selectedRange.startContainer) ||
+      !previewElement.contains(selectedRange.endContainer)
+    ) {
+      return false;
+    }
+
+    const coversAllContent = selectionCoversAllPreviewContent(previewElement, selection);
+    const startBlockElement = previewBlockElementFromNode(selectedRange.startContainer);
+    const endBlockElement = previewBlockElementFromNode(selectedRange.endContainer);
+    const renderedBlock = startBlockElement ? blockForPreviewElement(startBlockElement) : null;
+    const renderedEndBlock = endBlockElement ? blockForPreviewElement(endBlockElement) : null;
+    const sameBlockOffsets = startBlockElement
+      ? selectionOffsetsWithInlineBreaksInElement(startBlockElement, selection)
+      : null;
+    const startPointRange = selectedRange.cloneRange();
+    startPointRange.collapse(true);
+    const endPointRange = selectedRange.cloneRange();
+    endPointRange.collapse(false);
+    const startOffsets = startBlockElement
+      ? selectionOffsetsWithInlineBreaksInElement(
+          startBlockElement,
+          selection,
+          startPointRange,
+        )
+      : null;
+    const endOffsets = endBlockElement
+      ? selectionOffsetsWithInlineBreaksInElement(
+          endBlockElement,
+          selection,
+          endPointRange,
+        )
+      : null;
+    const crossesBlocks = Boolean(
+      startBlockElement &&
+      endBlockElement &&
+      startBlockElement !== endBlockElement &&
+      renderedBlock &&
+      renderedEndBlock &&
+      startOffsets &&
+      endOffsets,
+    );
+    const clonedSelection = clonedPreviewSelection(previewElement, selection);
+    if (
+      !coversAllContent &&
+      !crossesBlocks &&
+      (!startBlockElement || startBlockElement !== endBlockElement ||
+        !renderedBlock || !sameBlockOffsets || !clonedSelection)
+    ) {
+      return false;
+    }
+
+    window.cancelAnimationFrame(inputCommitFrameRef.current);
+    inputCommitFrameRef.current = 0;
+    commitPendingPreviewInput(previewElement, true);
+
+    if (coversAllContent) {
+      window.getSelection()?.removeAllRanges();
+      focusPreviewSourcePosition("", 0);
+      commitPreviewChange("");
+      return true;
+    }
+
+    if (
+      crossesBlocks &&
+      renderedBlock &&
+      renderedEndBlock &&
+      startOffsets &&
+      endOffsets
+    ) {
+      const currentValue = previewValueRef.current;
+      const currentBlocks = parseMarkdownPreviewBlocks(currentValue);
+      const startBlock = currentBlocks.find(
+        (candidate) => candidate.key === renderedBlock.key,
+      );
+      const endBlock = currentBlocks.find(
+        (candidate) => candidate.key === renderedEndBlock.key,
+      );
+      if (!startBlock || !endBlock) return true;
+
+      const startTextMap = getPreviewBlockTextMap(currentValue, startBlock);
+      const endTextMap = getPreviewBlockTextMap(currentValue, endBlock);
+      const startBlockRange = getBlockRange(currentValue, startBlock);
+      const endBlockRange = getBlockRange(currentValue, endBlock);
+      const sourceFrom = startOffsets.from === 0
+        ? startBlockRange.start
+        : startOffsets.from >= startTextMap.text.length
+          ? startBlockRange.end
+          : sourcePositionForPreviewTextOffset(startTextMap, startOffsets.from);
+      const sourceTo = endOffsets.from === 0
+        ? endBlockRange.start
+        : endOffsets.from >= endTextMap.text.length
+          ? endBlockRange.end
+          : sourcePositionForPreviewTextOffset(endTextMap, endOffsets.from);
+      if (sourceFrom === null || sourceTo === null || sourceTo < sourceFrom) return true;
+
+      const nextValue = currentValue.slice(0, sourceFrom) + currentValue.slice(sourceTo);
+      window.getSelection()?.removeAllRanges();
+      focusPreviewSourcePosition(nextValue, sourceFrom);
+      commitPreviewChange(nextValue);
+      return true;
+    }
+
+    if (!renderedBlock || !sameBlockOffsets || !clonedSelection) return false;
+    clonedSelection.range.deleteContents();
+    const currentValue = previewValueRef.current;
+    const block =
+      parseMarkdownPreviewBlocks(currentValue).find(
+        (candidate) => candidate.key === renderedBlock.key,
+      );
+    if (!block) return true;
+    const clonedBlockElements = Array.from(
+      clonedSelection.clone.querySelectorAll<HTMLElement>("[data-preview-block-key]"),
+    ).filter((element) => element.dataset.previewBlockKey === block.key);
+    const nextBlock = clonedBlockElements.length > 0
+      ? markdownFromEditedPreviewBlockElements(block, clonedBlockElements)
+      : "";
+    const controlledNextBlock = block.kind === "paragraph" && !nextBlock
+      ? "<br>"
+      : nextBlock;
+    const nextValue = replaceMarkdownBlock(currentValue, block, controlledNextBlock);
+    const nextRenderedBlock = parseMarkdownPreviewBlocks(nextValue).find(
+      (candidate) => candidate.startLine === block.startLine,
+    );
+    const caretSourcePosition = nextRenderedBlock
+      ? sourcePositionForPreviewTextOffset(
+          getPreviewBlockTextMap(nextValue, nextRenderedBlock),
+          sameBlockOffsets.from,
+        ) ?? getBlockRange(currentValue, block).start
+      : getBlockRange(currentValue, block).start;
+
+    window.getSelection()?.removeAllRanges();
+    if (controlledNextBlock === "<br>" && nextRenderedBlock) {
+      focusPreviewBlockTextOffset(nextRenderedBlock.key, 1);
+    } else {
+      focusPreviewSourcePosition(nextValue, caretSourcePosition);
+    }
+    commitPreviewChange(nextValue);
+    return true;
+  }
+
+  function commitPreviewEmptyLineDeletion(
+    previewElement: HTMLElement,
+    key: string,
+  ) {
+    const selection = window.getSelection();
+    if (
+      !selection ||
+      !selection.isCollapsed ||
+      selection.rangeCount === 0 ||
+      !selection.focusNode ||
+      !previewElement.contains(selection.focusNode)
+    ) {
+      return false;
+    }
+
+    const transientElement = transientPreviewElementFromSelection();
+    if (transientElement) {
+      const previousBlock = previewBlockBeforeNode(transientElement);
+      const nextBlock = previewBlockAfterNode(transientElement);
+      if (!previousBlock && !nextBlock) return true;
+
+      clearTransientPreviewNodes([transientElement]);
+      if (key === "Backspace" && previousBlock) {
+        focusPreviewBlockEnd(previousBlock.key);
+      } else if (nextBlock) {
+        focusPreviewBlockStart(nextBlock.key);
+      } else if (previousBlock) {
+        focusPreviewBlockEnd(previousBlock.key);
+      }
+      return true;
+    }
+
+    const blockElement = previewBlockElementFromSelection();
+    const renderedBlock = blockElement ? blockForPreviewElement(blockElement) : null;
+    const offsets = blockElement
+      ? selectionOffsetsWithInlineBreaksInElement(blockElement, selection)
+      : null;
+    if (!blockElement || renderedBlock?.kind !== "paragraph" || !offsets) return false;
+
+    const renderedText = previewTextFromNode(blockElement).replace(/\u200b/g, "");
+    const renderedCaretOffset = clampNumber(offsets.from, 0, renderedText.length);
+    const hasAdjacentBreak =
+      renderedText === "\n" ||
+      (key === "Delete" && renderedText[renderedCaretOffset] === "\n") ||
+      (renderedCaretOffset > 0 && renderedText[renderedCaretOffset - 1] === "\n");
+    if (!hasAdjacentBreak) return false;
+
+    window.cancelAnimationFrame(inputCommitFrameRef.current);
+    inputCommitFrameRef.current = 0;
+    commitPendingPreviewInput(previewElement, true);
+
+    const currentValue = previewValueRef.current;
+    const block = parseMarkdownPreviewBlocks(currentValue).find(
+      (candidate) => candidate.key === renderedBlock.key,
+    );
+    if (!block || block.kind !== "paragraph") return false;
+
+    const textMap = getPreviewBlockTextMap(currentValue, block);
+    const caretOffset = clampNumber(offsets.from, 0, textMap.text.length);
+    const breakFrom =
+      textMap.text === "\n"
+        ? 0
+        : key === "Delete" && textMap.text[caretOffset] === "\n"
+        ? caretOffset
+        : caretOffset > 0 && textMap.text[caretOffset - 1] === "\n"
+          ? caretOffset - 1
+          : null;
+    if (breakFrom === null) return false;
+
+    const sourceFrom = sourcePositionForPreviewTextOffset(textMap, breakFrom);
+    const sourceTo = sourcePositionForPreviewTextOffset(textMap, breakFrom + 1);
+    if (sourceFrom === null || sourceTo === null || sourceTo <= sourceFrom) return false;
+    if (!isInlineBreakToken(currentValue.slice(sourceFrom, sourceTo))) return false;
+
+    const nextValue = currentValue.slice(0, sourceFrom) + currentValue.slice(sourceTo);
+    delete blockElement.dataset.edited;
+    window.getSelection()?.removeAllRanges();
+    focusPreviewSourcePosition(nextValue, sourceFrom);
+    commitPreviewChange(nextValue);
+    return true;
   }
 
   function handlePreviewPaste(event: ReactClipboardEvent<HTMLDivElement>) {
@@ -4161,8 +4460,32 @@ function MarkdownPreview({
       return;
     }
 
+    const isSelectionDelete =
+      (event.key === "Backspace" || event.key === "Delete") &&
+      !event.metaKey &&
+      !event.ctrlKey &&
+      !event.altKey &&
+      !event.shiftKey &&
+      !keyboardEventIsComposing(event);
+    if (
+      isSelectionDelete &&
+      commitPreviewSelectionDeletion(event.currentTarget)
+    ) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+
     if (handlePreviewTabIndent(event)) return;
     if (handlePreviewListDelete(event)) return;
+    if (
+      isSelectionDelete &&
+      commitPreviewEmptyLineDeletion(event.currentTarget, event.key)
+    ) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
     if (handlePreviewInlineShortcut(event)) return;
     if (handlePreviewMarkdownShortcutSpace(event)) return;
 
@@ -4278,6 +4601,12 @@ function MarkdownPreview({
     window.cancelAnimationFrame(inputCommitFrameRef.current);
     inputCommitFrameRef.current = 0;
     commitPendingPreviewInput(previewElement, true);
+    const emptyTransientNodes = Array.from(
+      previewElement.querySelectorAll<HTMLElement>("[data-preview-transient='true']"),
+    ).filter((node) => !previewTextFromNode(node).replace(/\u200b/g, "").trim());
+    if (emptyTransientNodes.length > 0) {
+      clearTransientPreviewNodes(emptyTransientNodes);
+    }
   }
 
   function undoPreviewChange() {

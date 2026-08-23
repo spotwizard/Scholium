@@ -77,6 +77,50 @@ assert.match(
   markdownPreviewSource,
   /function handlePreviewBeforeInput[\s\S]*?nativeEvent\.inputType === "insertLineBreak" && !nativeEvent\.isComposing[\s\S]*?commitPreviewSoftBreak\(\)/,
 );
+assert.doesNotMatch(
+  markdownPreviewSource,
+  /nativeEvent\.inputType\??\.startsWith\("delete"\)/,
+);
+assert.match(
+  markdownPreviewSource,
+  /function clonedPreviewSelection[\s\S]*?previewNodePath\(previewElement, range\.startContainer\)[\s\S]*?previewElement\.cloneNode\(true\)[\s\S]*?clonedRange\.setStart[\s\S]*?clonedRange\.setEnd/,
+);
+assert.match(
+  markdownPreviewSource,
+  /function commitPreviewSelectionDeletion[\s\S]*?commitPendingPreviewInput\(previewElement, true\)[\s\S]*?clonedSelection\.range\.deleteContents\(\)[\s\S]*?markdownFromEditedPreviewBlockElements[\s\S]*?replaceMarkdownBlock[\s\S]*?focusPreviewSourcePosition\(nextValue, caretSourcePosition\)[\s\S]*?commitPreviewChange\(nextValue\)/,
+);
+assert.match(
+  markdownPreviewSource,
+  /function commitPreviewSelectionDeletion[\s\S]*?const clonedSelection = clonedPreviewSelection\(previewElement, selection\);[\s\S]*?commitPendingPreviewInput\(previewElement, true\)/,
+);
+assert.match(
+  markdownPreviewSource,
+  /startPointRange\.collapse\(true\)[\s\S]*?endPointRange\.collapse\(false\)[\s\S]*?const crossesBlocks = Boolean[\s\S]*?sourceFrom[\s\S]*?sourceTo[\s\S]*?currentValue\.slice\(0, sourceFrom\) \+ currentValue\.slice\(sourceTo\)[\s\S]*?commitPreviewChange\(nextValue\)/,
+);
+assert.match(
+  markdownPreviewSource,
+  /const isSelectionDelete =[\s\S]*?event\.key === "Backspace"[\s\S]*?event\.key === "Delete"[\s\S]*?commitPreviewSelectionDeletion\(event\.currentTarget\)[\s\S]*?event\.preventDefault\(\)/,
+);
+assert.match(
+  markdownPreviewSource,
+  /function commitPreviewEmptyLineDeletion[\s\S]*?selection\.isCollapsed[\s\S]*?transientPreviewElementFromSelection\(\)[\s\S]*?clearTransientPreviewNodes/,
+);
+assert.match(
+  markdownPreviewSource,
+  /function commitPreviewEmptyLineDeletion[\s\S]*?selectionOffsetsWithInlineBreaksInElement[\s\S]*?sourcePositionForPreviewTextOffset[\s\S]*?isInlineBreakToken[\s\S]*?commitPreviewChange/,
+);
+assert.match(
+  markdownPreviewSource,
+  /handlePreviewListDelete\(event\)[\s\S]*?commitPreviewEmptyLineDeletion\(event\.currentTarget, event\.key\)[\s\S]*?event\.preventDefault\(\)/,
+);
+assert.match(
+  markdownPreviewSource,
+  /const controlledNextBlock = block\.kind === "paragraph" && !nextBlock[\s\S]*?\? "<br>"/,
+);
+assert.match(
+  markdownPreviewSource,
+  /controlledNextBlock === "<br>" && nextRenderedBlock[\s\S]*?focusPreviewBlockTextOffset\(nextRenderedBlock\.key, 1\)/,
+);
 assert.match(
   markdownPreviewSource,
   /if \(readOnly\) \{\s*if \(\s*event\.key === "Tab" &&[\s\S]*?\) \{\s*return;\s*\}\s*event\.preventDefault\(\);\s*event\.stopPropagation\(\);/,
@@ -146,6 +190,10 @@ assert.match(
 assert.match(
   appSource,
   /function flushPendingPreviewHistoryInput\(\)[\s\S]*?cancelAnimationFrame\(inputCommitFrameRef\.current\)[\s\S]*?commitPendingPreviewInput\(previewElement, true\)/,
+);
+assert.match(
+  markdownPreviewSource,
+  /function flushPendingPreviewHistoryInput[\s\S]*?emptyTransientNodes[\s\S]*?clearTransientPreviewNodes\(emptyTransientNodes\)/,
 );
 assert.match(
   appSource,
@@ -223,6 +271,10 @@ assert.match(
 assert.match(
   appSource,
   /textMap\.text\.endsWith\("\\n"\)[\s\S]*?data-preview-trailing-caret="true"[\s\S]*?"\\u200b"/,
+);
+assert.match(
+  markdownPreviewSource,
+  /textMap\.text === "\\n"[\s\S]*?\? 0[\s\S]*?key === "Delete"/,
 );
 assert.match(
   appSource,

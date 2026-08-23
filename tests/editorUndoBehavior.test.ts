@@ -69,6 +69,62 @@ const groupedDeletionRedo = takeNoteEditorRedo(
 assert.equal(groupedDeletionRedo.snapshot?.value, "前");
 assert.equal(groupedDeletionRedo.snapshot?.caretSourcePosition, "前".length);
 
+const fullLineBefore = "前段內容\n\n禁止用迎合人類的模式回覆\n\n後段內容";
+const fullLineAfter = "前段內容\n\n\n\n後段內容";
+const fullLinePrefixLength = "前段內容\n\n".length;
+const fullLineHistory = recordNoteEditorChange(
+  createNoteEditorHistory(),
+  fullLineBefore,
+  fullLineAfter,
+);
+const fullLineUndo = takeNoteEditorUndo(fullLineHistory, fullLineAfter);
+assert.equal(fullLineUndo.snapshot?.value, fullLineBefore);
+assert.equal(
+  fullLineUndo.snapshot?.caretSourcePosition,
+  fullLinePrefixLength + "禁止用迎合人類的模式回覆".length,
+);
+const fullLineRedo = takeNoteEditorRedo(
+  fullLineUndo.history,
+  fullLineUndo.snapshot?.value ?? "",
+);
+assert.equal(fullLineRedo.snapshot?.value, fullLineAfter);
+assert.equal(fullLineRedo.snapshot?.caretSourcePosition, fullLinePrefixLength);
+
+const fullLineWithBoundaryAfter = "前段內容\n\n後段內容";
+const fullLineWithBoundaryHistory = recordNoteEditorChange(
+  createNoteEditorHistory(),
+  fullLineBefore,
+  fullLineWithBoundaryAfter,
+);
+const fullLineWithBoundaryUndo = takeNoteEditorUndo(
+  fullLineWithBoundaryHistory,
+  fullLineWithBoundaryAfter,
+);
+assert.equal(fullLineWithBoundaryUndo.snapshot?.value, fullLineBefore);
+const fullLineWithBoundaryRedo = takeNoteEditorRedo(
+  fullLineWithBoundaryUndo.history,
+  fullLineWithBoundaryUndo.snapshot?.value ?? "",
+);
+assert.equal(fullLineWithBoundaryRedo.snapshot?.value, fullLineWithBoundaryAfter);
+
+for (const [emptyLineBefore, emptyLineAfter] of [
+  ["前段內容<br>\n\n後段內容", "前段內容\n\n後段內容"],
+  ["前段內容\n\n<br>\n\n後段內容", "前段內容\n\n\n\n後段內容"],
+] as const) {
+  const emptyLineHistory = recordNoteEditorChange(
+    createNoteEditorHistory(),
+    emptyLineBefore,
+    emptyLineAfter,
+  );
+  const emptyLineUndo = takeNoteEditorUndo(emptyLineHistory, emptyLineAfter);
+  assert.equal(emptyLineUndo.snapshot?.value, emptyLineBefore);
+  const emptyLineRedo = takeNoteEditorRedo(
+    emptyLineUndo.history,
+    emptyLineUndo.snapshot?.value ?? "",
+  );
+  assert.equal(emptyLineRedo.snapshot?.value, emptyLineAfter);
+}
+
 const schema = new Schema({
   nodes: {
     doc: { content: "block+" },
