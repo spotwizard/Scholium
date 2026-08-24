@@ -58,6 +58,7 @@ import {
 } from "./markdownFrontmatter";
 import { serializeMarkedTextClipboardSlice } from "./markdownClipboard";
 import { localMarkdownImageNeedsHydration } from "./markdownLinkTarget";
+import { linkTooltipPositionWithinBounds } from "./linkTooltipPosition";
 import {
   appendInlineMarkdownTextMap,
   appendTextMap,
@@ -3713,6 +3714,95 @@ export function MilkdownMarkdownEditor({
     };
   }, [editorRevision]);
 
+  useLayoutEffect(() => {
+    const root = rootRef.current;
+    if (!root) return;
+
+    const tooltipSelector = ".milkdown-link-preview, .milkdown-link-edit";
+    const editorContentFrame = root.closest<HTMLElement>(".editor-content-frame");
+    let positionFrame = 0;
+
+    function syncLinkTooltipPositions() {
+      positionFrame = 0;
+      const currentRoot = rootRef.current;
+      if (!currentRoot) return;
+      const bounds = currentRoot.getBoundingClientRect();
+
+      currentRoot.querySelectorAll<HTMLElement>(tooltipSelector).forEach((tooltip) => {
+        if (tooltip.dataset.show !== "true") {
+          delete tooltip.dataset.scholiumPositioned;
+          return;
+        }
+
+        const maxWidth = Math.max(0, bounds.width - 16);
+        const maxWidthStyle = `${maxWidth}px`;
+        if (tooltip.style.maxWidth !== maxWidthStyle) {
+          tooltip.style.maxWidth = maxWidthStyle;
+        }
+
+        const tooltipRect = tooltip.getBoundingClientRect();
+        const position = linkTooltipPositionWithinBounds({ bounds, tooltip: tooltipRect });
+        const currentLeft = Number.parseFloat(tooltip.style.left);
+        const currentTop = Number.parseFloat(tooltip.style.top);
+
+        if (!Number.isFinite(currentLeft) || !Number.isFinite(currentTop)) {
+          delete tooltip.dataset.scholiumPositioned;
+          return;
+        }
+
+        if (Math.abs(position.left - tooltipRect.left) > 0.5) {
+          tooltip.style.left = `${currentLeft + position.left - tooltipRect.left}px`;
+        }
+        if (Math.abs(position.top - tooltipRect.top) > 0.5) {
+          tooltip.style.top = `${currentTop + position.top - tooltipRect.top}px`;
+        }
+        tooltip.dataset.scholiumPositioned = "true";
+      });
+    }
+
+    function scheduleLinkTooltipPositionSync() {
+      window.cancelAnimationFrame(positionFrame);
+      positionFrame = window.requestAnimationFrame(syncLinkTooltipPositions);
+    }
+
+    const mutationObserver = new MutationObserver((mutations) => {
+      mutations.forEach((mutation) => {
+        const target = mutation.target;
+        if (
+          mutation.type === "attributes" &&
+          target instanceof HTMLElement &&
+          target.matches(tooltipSelector)
+        ) {
+          delete target.dataset.scholiumPositioned;
+        }
+      });
+      scheduleLinkTooltipPositionSync();
+    });
+    mutationObserver.observe(root, {
+      attributeFilter: ["data-show", "style"],
+      attributes: true,
+      childList: true,
+      subtree: true,
+    });
+    const resizeObserver = new ResizeObserver(scheduleLinkTooltipPositionSync);
+    resizeObserver.observe(root);
+    editorContentFrame?.addEventListener("transitionend", scheduleLinkTooltipPositionSync);
+    editorContentFrame?.addEventListener("transitioncancel", scheduleLinkTooltipPositionSync);
+    window.addEventListener("resize", scheduleLinkTooltipPositionSync);
+    window.addEventListener("scroll", scheduleLinkTooltipPositionSync, true);
+    scheduleLinkTooltipPositionSync();
+
+    return () => {
+      window.cancelAnimationFrame(positionFrame);
+      mutationObserver.disconnect();
+      resizeObserver.disconnect();
+      editorContentFrame?.removeEventListener("transitionend", scheduleLinkTooltipPositionSync);
+      editorContentFrame?.removeEventListener("transitioncancel", scheduleLinkTooltipPositionSync);
+      window.removeEventListener("resize", scheduleLinkTooltipPositionSync);
+      window.removeEventListener("scroll", scheduleLinkTooltipPositionSync, true);
+    };
+  }, [editorRevision]);
+
   useEffect(() => {
     const root = rootRef.current;
     if (!root) return;
@@ -5757,12 +5847,11 @@ export function MilkdownMarkdownEditor({
     function targetShouldKeepOwnKeyboardShortcut(target: EventTarget | null) {
       const root = rootRef.current;
       if (!root || !(target instanceof Element)) return false;
+
+      if (target.closest("button, input, textarea, select")) return true;
       if (root.contains(target)) return false;
 
-      return Boolean(
-        target.closest("button, input, textarea, select") ||
-          (target instanceof HTMLElement && target.isContentEditable),
-      );
+      return target instanceof HTMLElement && target.isContentEditable;
     }
 
     function handleDocumentKeyDown(event: KeyboardEvent) {
@@ -5772,6 +5861,20 @@ export function MilkdownMarkdownEditor({
       if (!root) return;
 
       const targetElement = elementFromEventTarget(event.target);
+      const targetTextControl =
+        targetElement instanceof HTMLInputElement || targetElement instanceof HTMLTextAreaElement
+          ? targetElement
+          : null;
+      if (
+        targetTextControl &&
+        targetTextControl.closest(".milkdown-link-edit") &&
+        shouldHandlePreviewSelectAllShortcut(event, true, false)
+      ) {
+        targetTextControl.select();
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
       const targetIsNestedEditor = Boolean(
         targetElement?.closest(".milkdown-code-block .cm-editor"),
       );

@@ -88,7 +88,10 @@ import {
   fileNameTextIsTruncated,
   fileNameTooltipPosition,
 } from "./fileNameTooltip";
-import { anchoredFloatingNoteGeometry } from "./floatingNotePosition";
+import {
+  anchoredFloatingNoteGeometry,
+  floatingNoteViewportRectWithinHorizontalBounds,
+} from "./floatingNotePosition";
 import { SettingsView } from "./SettingsView";
 import appIconUrl from "../src-tauri/icons/128x128@2x.png";
 import fileSelectedGlyphUrl from "./assets/file-selected-glyph.png";
@@ -773,6 +776,7 @@ type FloatingNotePosition = {
     width: number;
   } | null;
   left: number;
+  maxWidth: number;
   top: number;
   placement: "above" | "below" | "detached";
 };
@@ -7201,15 +7205,32 @@ function App() {
     };
   }
 
+  function currentFloatingNoteBoundsRect() {
+    const viewportRect = currentFloatingNoteViewportRect();
+    if (isMobileViewport) return viewportRect;
+
+    const editorBodyRect = document
+      .querySelector<HTMLElement>(
+        ".editor-content-frame > .milkdown-markdown-editor-shell, .editor-content-frame > .markdown-editor-host",
+      )
+      ?.getBoundingClientRect();
+
+    return floatingNoteViewportRectWithinHorizontalBounds({
+      contentRect: editorBodyRect ?? null,
+      viewportRect,
+    });
+  }
+
   function calculateFloatingNotePosition(
     anchorRect: TextRangeRect,
     cardRect: Pick<DOMRect, "height" | "width">,
   ): FloatingNotePosition {
-    const viewportRect = currentFloatingNoteViewportRect();
+    const viewportRect = currentFloatingNoteBoundsRect();
     const viewportMargin = isMobileViewport ? 32 : 12;
+    const maxWidth = Math.max(0, viewportRect.right - viewportRect.left - viewportMargin * 2);
     const cardWidth = Math.min(
       cardRect.width || 450,
-      Math.max(180, viewportRect.width - viewportMargin * 2),
+      maxWidth,
     );
     const cardHeight = cardRect.height || 260;
     const anchorLock =
@@ -7251,6 +7272,7 @@ function App() {
         width: geometry.connector.width,
       },
       left: Math.round(panelPoint.left),
+      maxWidth: Math.round(maxWidth),
       placement: geometry.placement,
       top: Math.round(panelPoint.top),
     };
@@ -7259,8 +7281,9 @@ function App() {
   function calculateDetachedFloatingNotePosition(
     cardRect: Pick<DOMRect, "height" | "width">,
   ): FloatingNotePosition {
-    const viewportRect = currentFloatingNoteViewportRect();
+    const viewportRect = currentFloatingNoteBoundsRect();
     const viewportMargin = 12;
+    const maxWidth = Math.max(0, viewportRect.right - viewportRect.left - viewportMargin * 2);
     const cardHeight = Math.min(
       cardRect.height || 260,
       Math.max(120, viewportRect.height - viewportMargin * 2),
@@ -7275,6 +7298,7 @@ function App() {
     return {
       connector: null,
       left: Math.round(panelPoint.left),
+      maxWidth: Math.round(maxWidth),
       placement: "detached",
       top: Math.round(panelPoint.top),
     };
@@ -7286,6 +7310,7 @@ function App() {
   ) {
     return (
       leftPosition?.left === rightPosition.left &&
+      leftPosition.maxWidth === rightPosition.maxWidth &&
       leftPosition.top === rightPosition.top &&
       leftPosition.placement === rightPosition.placement &&
       leftPosition.connector?.left === rightPosition.connector?.left &&
@@ -7661,6 +7686,22 @@ function App() {
       closeDocumentSearch();
     }
   }
+
+  useEffect(() => {
+    if (!documentSearchOpen) return;
+
+    function handleDocumentPointerDown(event: globalThis.PointerEvent) {
+      if (targetIsInsideDocumentSearch(event.target)) return;
+
+      documentSearchInputRef.current?.blur();
+    }
+
+    document.addEventListener("pointerdown", handleDocumentPointerDown, true);
+
+    return () => {
+      document.removeEventListener("pointerdown", handleDocumentPointerDown, true);
+    };
+  }, [documentSearchOpen]);
 
   function handleDocumentSearchMatchCountChange(count: number) {
     setDocumentSearchMatchCount(count);
@@ -8226,6 +8267,12 @@ function App() {
   useEffect(() => {
     function handleEditorSelectAllKeyUp(event: KeyboardEvent) {
       const activeElement = document.activeElement;
+      if (
+        activeElement instanceof HTMLInputElement ||
+        activeElement instanceof HTMLTextAreaElement
+      ) {
+        return;
+      }
       const activeEditor =
         activeElement instanceof Element
           ? activeElement.closest(
@@ -15228,6 +15275,7 @@ function App() {
     : floatingNotePanelPosition
       ? {
           left: floatingNotePanelPosition.left,
+          maxWidth: floatingNotePanelPosition.maxWidth,
           top: floatingNotePanelPosition.top,
         }
       : {

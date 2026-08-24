@@ -2739,6 +2739,22 @@ button.document-tag-chip__label:focus-visible {
   line-height: inherit;
 }
 
+.milkdown-markdown-editor .milkdown-link-preview > .link-preview,
+.milkdown-markdown-editor .milkdown-link-edit > .link-edit {
+  max-width: 100%;
+}
+
+.milkdown-markdown-editor
+  .milkdown-link-preview[data-show="true"]:not([data-scholium-positioned="true"]),
+.milkdown-markdown-editor
+  .milkdown-link-edit[data-show="true"]:not([data-scholium-positioned="true"]) {
+  visibility: hidden;
+}
+
+.milkdown-markdown-editor .milkdown-link-edit > .link-edit > .input-area {
+  min-width: 0;
+}
+
 .milkdown-annotation-layer {
   position: absolute;
   inset: 0;

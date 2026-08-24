@@ -40,5 +40,6 @@ assert.match(
   appStyles,
   /\.milkdown-markdown-editor \.ProseMirror a\[href\] \{\n  cursor: pointer;\n\}/,
 );
+assert.doesNotMatch(appStyles, /milkdown-link-(?:preview|edit)[\s\S]*?z-index: 91;/);
 
 console.log("milkdown link click regression: PASS");
