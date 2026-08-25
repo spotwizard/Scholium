@@ -381,6 +381,7 @@ button:disabled {
 .mobile-feedback-surface,
 .duplicate-file-dialog__message,
 .dropbox-directory-dialog__message,
+.file-name-tooltip,
 .selection-warning-popover,
 .milkdown-touch-block-selection-hint {
   box-sizing: border-box;
@@ -394,6 +395,38 @@ button:disabled {
   font-weight: 650;
   line-height: 1.35;
   overflow-wrap: anywhere;
+}
+
+.file-name-tooltip {
+  position: fixed;
+  z-index: 79;
+  display: grid;
+  width: max-content;
+  max-width: min(360px, calc(var(--visual-viewport-width, 100vw) - 16px));
+  gap: 4px;
+  pointer-events: none;
+}
+
+.file-name-tooltip__title,
+.file-name-tooltip__detail {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.file-name-tooltip__title {
+  color: var(--color-heading);
+}
+
+.file-name-tooltip__detail {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--color-muted);
+  font-size: 0.7rem;
+  font-weight: 540;
+  line-height: 1.25;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .mobile-feedback-surface {
@@ -941,6 +974,20 @@ button:disabled {
   border-radius: 8px;
   background: var(--color-surface-raised);
   box-shadow: var(--shadow-high);
+}
+
+.file-context-menu__target-title {
+  max-height: 96px;
+  margin: 0 4px 6px;
+  overflow-y: auto;
+  border-bottom: 1px solid var(--color-border-soft);
+  padding: 4px 6px 10px;
+  color: var(--color-heading);
+  font-size: 0.84rem;
+  font-weight: 700;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  -webkit-overflow-scrolling: touch;
 }
 
 .document-tab-context-menu {
@@ -2386,6 +2433,11 @@ button.document-tag-chip__label:focus-visible {
   outline: none;
 }
 
+.markdown-editor-host > .cm-editor > .cm-announced {
+  position: fixed !important;
+  top: -10000px !important;
+}
+
 .cm-scroller {
   min-height: calc(100vh - var(--editor-content-gutter) * 2);
   font-family:
@@ -2405,7 +2457,7 @@ button.document-tag-chip__label:focus-visible {
   padding: 0;
 }
 
-.cm-selectionBackground {
+.markdown-editor-host > .cm-editor .cm-selectionBackground {
   background: var(--color-accent-selection) !important;
 }
 
@@ -2685,6 +2737,22 @@ button.document-tag-chip__label:focus-visible {
   background: transparent;
   font-size: inherit;
   line-height: inherit;
+}
+
+.milkdown-markdown-editor .milkdown-link-preview > .link-preview,
+.milkdown-markdown-editor .milkdown-link-edit > .link-edit {
+  max-width: 100%;
+}
+
+.milkdown-markdown-editor
+  .milkdown-link-preview[data-show="true"]:not([data-scholium-positioned="true"]),
+.milkdown-markdown-editor
+  .milkdown-link-edit[data-show="true"]:not([data-scholium-positioned="true"]) {
+  visibility: hidden;
+}
+
+.milkdown-markdown-editor .milkdown-link-edit > .link-edit > .input-area {
+  min-width: 0;
 }
 
 .milkdown-annotation-layer {
@@ -3135,6 +3203,20 @@ button.document-tag-chip__label:focus-visible {
 
 .milkdown-markdown-editor .milkdown .milkdown-code-block .cm-editor {
   color: var(--color-preview-editor-text);
+}
+
+.milkdown-markdown-editor
+  .milkdown
+  .milkdown-code-block
+  .cm-editor.scholium-native-primary-selection
+  .cm-line::selection,
+.milkdown-markdown-editor
+  .milkdown
+  .milkdown-code-block
+  .cm-editor.scholium-native-primary-selection
+  .cm-line
+  *::selection {
+  background: var(--color-accent-selection) !important;
 }
 
 .milkdown-markdown-editor .milkdown .milkdown-code-block .cm-scroller {
@@ -4874,6 +4956,7 @@ button.document-tag-chip__label:focus-visible {
 }
 
 .floating-note-panel.is-expanded-sidebar .floating-note-card__body-measure {
+  height: 100%;
   min-height: 100%;
 }
 
@@ -4959,6 +5042,13 @@ button.document-tag-chip__label:focus-visible {
   .floating-note-card__editor.is-editing
   .note-markdown-editor__textarea {
   height: 100% !important;
+}
+
+.floating-note-panel.is-expanded-sidebar .floating-note-card__editor.is-empty,
+.floating-note-panel.is-expanded-sidebar
+  .floating-note-card__editor.is-empty
+  .markdown-preview {
+  min-height: 100%;
 }
 
 @keyframes floating-note-pop-in {
@@ -5612,6 +5702,12 @@ button.document-tag-chip__label:focus-visible {
     overflow: hidden;
     background: var(--color-surface);
     box-shadow: 0 18px 42px rgba(32, 35, 41, 0.22);
+  }
+
+  .file-context-menu {
+    max-width: calc(var(--visual-viewport-width, 100vw) - 16px);
+    max-height: calc(var(--visual-viewport-height, 100svh) - 16px);
+    overflow-y: auto;
   }
 
   .document-pane {

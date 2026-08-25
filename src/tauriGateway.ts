@@ -366,7 +366,7 @@ export function deleteDropboxMarkdownDirectory(args: DeleteMarkdownDirectoryArgs
 }
 
 export function renameDropboxMarkdownFile(args: RenameMarkdownPathArgs) {
-  return invoke<OpenDropboxMarkdownFileResult>("rename_dropbox_markdown_file", args);
+  return invoke<RenamePathResult>("rename_dropbox_markdown_file", args);
 }
 
 export function renameDropboxMarkdownDirectory(args: RenameMarkdownPathArgs) {

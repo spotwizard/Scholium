@@ -1,13 +1,50 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { anchoredFloatingNoteGeometry } from "../src/floatingNotePosition.ts";
+import {
+  anchoredFloatingNoteGeometry,
+  floatingNoteViewportRectWithinHorizontalBounds,
+} from "../src/floatingNotePosition.ts";
 
 const viewportRect = {
   bottom: 615,
+  height: 615,
   left: 0,
   right: 820,
   top: 0,
+  width: 820,
 };
+
+assert.deepEqual(
+  floatingNoteViewportRectWithinHorizontalBounds({
+    contentRect: { left: 220, right: 660 },
+    viewportRect,
+  }),
+  { ...viewportRect, left: 220, right: 660 },
+);
+assert.equal(
+  floatingNoteViewportRectWithinHorizontalBounds({
+    contentRect: { left: 900, right: 1000 },
+    viewportRect,
+  }),
+  viewportRect,
+);
+
+const contentBoundedNearLeft = anchoredFloatingNoteGeometry({
+  anchorRect: {
+    bottom: 250,
+    top: 220,
+    targetBottom: 250,
+    targetX: 300,
+  },
+  cardHeight: 100,
+  cardWidth: 360,
+  viewportMargin: 12,
+  viewportRect: { ...viewportRect, left: 220, right: 660 },
+});
+
+assert.equal(contentBoundedNearLeft.left, 232);
+assert.ok(contentBoundedNearLeft.left >= 220 + 12);
+assert.ok(contentBoundedNearLeft.left + 360 <= 660 - 12);
 
 const centered = anchoredFloatingNoteGeometry({
   anchorRect: {
@@ -198,6 +235,18 @@ const appSource = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8
 assert.match(
   appSource,
   /function currentFloatingNoteViewportRect\(\)[\s\S]*?querySelector<HTMLElement>\("\.mobile-command-bar"\)[\s\S]*?height: Math\.max\(0, bottom - viewportRect\.top\)/,
+);
+assert.match(
+  appSource,
+  /function currentFloatingNoteBoundsRect\(\)[\s\S]*?\.editor-content-frame > \.milkdown-markdown-editor-shell, \.editor-content-frame > \.markdown-editor-host[\s\S]*?floatingNoteViewportRectWithinHorizontalBounds/,
+);
+assert.ok(
+  (appSource.match(/const viewportRect = currentFloatingNoteBoundsRect\(\);/g) ?? []).length >= 2,
+  "anchored and detached floating note panels must share the editor-body bounds",
+);
+assert.match(
+  appSource,
+  /left: floatingNotePanelPosition\.left,\s*maxWidth: floatingNotePanelPosition\.maxWidth,\s*top: floatingNotePanelPosition\.top/,
 );
 assert.match(
   appSource,

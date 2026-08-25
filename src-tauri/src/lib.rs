@@ -4022,7 +4022,7 @@ async fn rename_dropbox_markdown_file(
     app: tauri::AppHandle,
     path: String,
     name: String,
-) -> Result<DropboxMarkdownFile, String> {
+) -> Result<RenamedPath, String> {
     let source_path = normalize_dropbox_path(&path);
     if !is_markdown_path(Path::new(&source_path)) {
         return Err("selected Dropbox file is not a Markdown file".to_string());
@@ -4031,30 +4031,35 @@ async fn rename_dropbox_markdown_file(
     let target_file_name = normalized_markdown_file_name(&name)?;
     let parent_path = dropbox_parent_path(&source_path).unwrap_or_default();
     let target_path = dropbox_child_path(&parent_path, &target_file_name);
-    if source_path == target_path {
-        return open_dropbox_markdown_file(app, target_path).await;
+    if source_path != target_path {
+        let source_notes_markdown_path = dropbox_notes_markdown_path(&source_path);
+        let source_notes_file = match download_dropbox_notes_file(&app, &source_path).await? {
+            Some(parsed) => Some(parsed),
+            None => read_notes_file(&app, &source_notes_markdown_path)?,
+        };
+
+        move_dropbox_path(&app, source_path.clone(), target_path.clone()).await?;
+
+        if let Some(notes_file) = source_notes_file {
+            let target_notes_markdown_path = dropbox_notes_markdown_path(&target_path);
+            let target_document_id = format!("dropbox:{target_path}");
+            let notes_file = move_notes_file_for_document(notes_file, &target_document_id);
+
+            write_notes_file(&app, &target_notes_markdown_path, notes_file.clone())?;
+            upload_dropbox_notes_file(&app, &target_path, notes_file).await?;
+            delete_dropbox_notes_file(&app, &source_path).await?;
+            remove_document_notes(&app, &source_notes_markdown_path)?;
+        }
     }
 
-    let source_notes_markdown_path = dropbox_notes_markdown_path(&source_path);
-    let source_notes_file = match download_dropbox_notes_file(&app, &source_path).await? {
-        Some(parsed) => Some(parsed),
-        None => read_notes_file(&app, &source_notes_markdown_path)?,
-    };
-
-    move_dropbox_path(&app, source_path.clone(), target_path.clone()).await?;
-
-    if let Some(notes_file) = source_notes_file {
-        let target_notes_markdown_path = dropbox_notes_markdown_path(&target_path);
-        let target_document_id = format!("dropbox:{target_path}");
-        let notes_file = move_notes_file_for_document(notes_file, &target_document_id);
-
-        write_notes_file(&app, &target_notes_markdown_path, notes_file.clone())?;
-        upload_dropbox_notes_file(&app, &target_path, notes_file).await?;
-        delete_dropbox_notes_file(&app, &source_path).await?;
-        remove_document_notes(&app, &source_notes_markdown_path)?;
-    }
-
-    open_dropbox_markdown_file(app, target_path).await
+    let notes_path = notes_store_path(&app, &dropbox_notes_markdown_path(&target_path))?
+        .to_string_lossy()
+        .to_string();
+    Ok(RenamedPath {
+        title: dropbox_path_title(&target_path),
+        path: target_path,
+        notes_path: Some(notes_path),
+    })
 }
 
 #[tauri::command]

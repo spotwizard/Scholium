@@ -84,7 +84,14 @@ import {
   type DocumentTabSessionState,
 } from "./documentTabs";
 import { shouldHandlePreviewSelectAllShortcut } from "./editorKeyboardShortcuts";
-import { anchoredFloatingNoteGeometry } from "./floatingNotePosition";
+import {
+  fileNameTextIsTruncated,
+  fileNameTooltipPosition,
+} from "./fileNameTooltip";
+import {
+  anchoredFloatingNoteGeometry,
+  floatingNoteViewportRectWithinHorizontalBounds,
+} from "./floatingNotePosition";
 import { SettingsView } from "./SettingsView";
 import appIconUrl from "../src-tauri/icons/128x128@2x.png";
 import fileSelectedGlyphUrl from "./assets/file-selected-glyph.png";
@@ -127,6 +134,12 @@ import {
   type NoteMarkdownPreviewBlock,
   type ParsedMarkdownListLine,
 } from "./markdownPreview";
+import {
+  createNoteEditorHistory,
+  recordNoteEditorChange,
+  takeNoteEditorRedo,
+  takeNoteEditorUndo,
+} from "./noteEditorHistory";
 import {
   sortWorkspaceEntriesForDirectory,
   type WorkspaceSortMode,
@@ -244,6 +257,9 @@ const annotationClickDelayMs = 500;
 const libraryAnnotationClickSuppressionMs = annotationClickDelayMs + 350;
 const mobileContextMenuLongPressMs = 500;
 const mobileContextMenuLongPressMoveTolerancePx = 10;
+const fileNameTooltipHoverDelayMs = 250;
+const fileNameTooltipId = "file-name-tooltip";
+const mobileFileContextMenuTitleHeight = 96;
 const pendingAnchorAnnotationId = "__scholium_pending_anchor__";
 
 type AnnotationKind = "note" | "glossary";
@@ -368,6 +384,14 @@ type FileContextMenuState = WorkspaceActionTarget & {
   exportDocumentIds: string[];
   left: number;
   top: number;
+};
+
+type FileNameTooltipState = {
+  anchorRect: Pick<DOMRect, "right" | "top">;
+  detail?: string;
+  key: string;
+  position: { left: number; top: number } | null;
+  title: string;
 };
 
 type DocumentTabContextMenuState = {
@@ -752,6 +776,7 @@ type FloatingNotePosition = {
     width: number;
   } | null;
   left: number;
+  maxWidth: number;
   top: number;
   placement: "above" | "below" | "detached";
 };
@@ -2455,6 +2480,17 @@ function isUndoKeyboardShortcut(
   );
 }
 
+function isRedoKeyboardShortcut(
+  event: Pick<KeyboardEvent | ReactKeyboardEvent, "altKey" | "ctrlKey" | "key" | "metaKey" | "shiftKey">,
+) {
+  return (
+    event.key.toLowerCase() === "z" &&
+    (event.metaKey || event.ctrlKey) &&
+    !event.altKey &&
+    event.shiftKey
+  );
+}
+
 function selectionOffsetsInElement(element: HTMLElement, selection: Selection) {
   if (selection.rangeCount === 0) return null;
 
@@ -2479,10 +2515,11 @@ function selectionOffsetsInElement(element: HTMLElement, selection: Selection) {
 function selectionOffsetsWithInlineBreaksInElement(
   element: HTMLElement,
   selection: Selection,
+  selectedRange = selection.rangeCount > 0 ? selection.getRangeAt(0) : null,
 ) {
-  if (selection.rangeCount === 0) return null;
+  if (!selectedRange) return null;
 
-  const range = selection.getRangeAt(0);
+  const range = selectedRange;
   if (
     !element.contains(range.startContainer) ||
     !element.contains(range.endContainer)
@@ -2894,13 +2931,15 @@ function MarkdownPreview({
 }) {
   const blocks = parseMarkdownPreviewBlocks(value);
   const previewRef = useRef<HTMLDivElement | null>(null);
+  const previewPointerPointRef = useRef<{ clientX: number; clientY: number } | null>(null);
   const previewValueRef = useRef(value);
   const inputCommitFrameRef = useRef(0);
   const pendingPreviewTextFocusRef = useRef<{
     blockKey: string;
     textOffset: number;
   } | null>(null);
-  const previewUndoStackRef = useRef<string[]>([]);
+  const previewHistoryRef = useRef(createNoteEditorHistory());
+  const previewInputCommitRef = useRef(false);
   previewValueRef.current = value;
 
   useEffect(
@@ -2921,9 +2960,11 @@ function MarkdownPreview({
   useEffect(() => {
     function handleDocumentKeyDown(event: KeyboardEvent) {
       if (readOnly) return;
-      if (!isUndoKeyboardShortcut(event)) return;
+      const shouldRedo = isRedoKeyboardShortcut(event);
+      if (!shouldRedo && !isUndoKeyboardShortcut(event)) return;
       if (!previewShouldHandleDocumentShortcut(event.target)) return;
-      if (!undoPreviewChange()) return;
+      flushPendingPreviewHistoryInput();
+      if (!(shouldRedo ? redoPreviewChange() : undoPreviewChange())) return;
 
       event.preventDefault();
       event.stopPropagation();
@@ -2952,7 +2993,58 @@ function MarkdownPreview({
     const selection = window.getSelection();
     if (!selection || selection.rangeCount === 0) return null;
 
-    return previewBlockElementFromNode(selection.focusNode);
+    return previewBlockElementFromNode(previewRangeFromSelection(selection)?.startContainer ?? null);
+  }
+
+  function previewRangeFromSelection(selection: Selection) {
+    if (selection.rangeCount === 0) return null;
+
+    const range = selection.getRangeAt(0);
+    if (previewBlockElementFromNode(range.startContainer)) return range;
+    if (!selection.isCollapsed) return range;
+
+    const previewElement = previewRef.current;
+    if (!previewElement) return range;
+
+    const pointerPoint = previewPointerPointRef.current;
+    const caretRange = pointerPoint
+      ? caretRangeFromPoint(pointerPoint.clientX, pointerPoint.clientY)
+      : null;
+    if (caretRange && previewBlockElementFromNode(caretRange.startContainer)) {
+      return caretRange;
+    }
+
+    const rangeRect = range.getBoundingClientRect();
+    if (rangeRect.height > 0) {
+      const geometricRange = caretRangeFromPoint(
+        rangeRect.left,
+        rangeRect.top + rangeRect.height / 2,
+      );
+      if (geometricRange && previewBlockElementFromNode(geometricRange.startContainer)) {
+        return geometricRange;
+      }
+    }
+
+    if (selection.focusNode !== previewElement) return range;
+
+    const focusOffset = clampNumber(
+      selection.focusOffset,
+      0,
+      previewElement.childNodes.length,
+    );
+    const nextBlock = previewBlockElementFromNode(
+      previewElement.childNodes[focusOffset] ?? null,
+    );
+    const previousBlock = previewBlockElementFromNode(
+      previewElement.childNodes[focusOffset - 1] ?? null,
+    );
+    const boundaryBlock = nextBlock ?? previousBlock;
+    if (!boundaryBlock) return range;
+
+    const boundaryRange = document.createRange();
+    boundaryRange.selectNodeContents(boundaryBlock);
+    boundaryRange.collapse(Boolean(nextBlock));
+    return boundaryRange;
   }
 
   function focusPreviewBlockEnd(blockKey: string) {
@@ -2981,12 +3073,23 @@ function MarkdownPreview({
     });
   }
 
+  function focusPreviewBlockStart(blockKey: string) {
+    window.requestAnimationFrame(() => {
+      applyPreviewBlockTextOffset(blockKey, 0);
+    });
+  }
+
   function applyPreviewBlockTextOffset(blockKey: string, textOffset: number) {
     const previewElement = previewRef.current;
     const blockElement = Array.from(
       previewElement?.querySelectorAll<HTMLElement>("[data-preview-block-key]") ?? [],
     ).find((element) => element.dataset.previewBlockKey === blockKey);
-    if (!blockElement) return;
+    if (!blockElement) {
+      if (!blockKey && previewElement) {
+        focusEditableElementAtPoint(previewElement, null);
+      }
+      return;
+    }
 
     let remainingOffset = Math.max(0, textOffset);
     const walker = document.createTreeWalker(
@@ -3043,6 +3146,30 @@ function MarkdownPreview({
 
   function focusPreviewBlockTextOffset(blockKey: string, textOffset: number) {
     pendingPreviewTextFocusRef.current = { blockKey, textOffset };
+  }
+
+  function focusPreviewSourcePosition(nextValue: string, sourcePosition: number) {
+    const caretLine = nextValue.slice(0, sourcePosition).split("\n").length - 1;
+    const nextBlocks = parseMarkdownPreviewBlocks(nextValue);
+    const focusBlock =
+      nextBlocks.find(
+        (block) => block.startLine <= caretLine && block.endLine >= caretLine,
+      ) ??
+      nextBlocks.filter((block) => block.endLine < caretLine).slice(-1)[0] ??
+      nextBlocks[0];
+
+    if (!focusBlock) {
+      focusPreviewBlockTextOffset("", 0);
+      return;
+    }
+
+    focusPreviewBlockTextOffset(
+      focusBlock.key,
+      previewTextOffsetForSourcePosition(
+        getPreviewBlockTextMap(nextValue, focusBlock),
+        sourcePosition,
+      ),
+    );
   }
 
   function focusPreviewListItem(
@@ -3135,6 +3262,23 @@ function MarkdownPreview({
       }
 
       previousNode = previousNode.previousSibling;
+    }
+
+    return null;
+  }
+
+  function previewBlockAfterNode(node: Node | null) {
+    let nextNode = node?.nextSibling ?? null;
+
+    while (nextNode) {
+      if (
+        nextNode instanceof HTMLElement &&
+        nextNode.dataset.previewBlockKey
+      ) {
+        return blockForPreviewElement(nextNode);
+      }
+
+      nextNode = nextNode.nextSibling;
     }
 
     return null;
@@ -3536,6 +3680,282 @@ function MarkdownPreview({
     );
   }
 
+  function previewNodePath(root: Node, node: Node) {
+    const path: number[] = [];
+    let current: Node | null = node;
+
+    while (current && current !== root) {
+      const parentNode: ParentNode | null = current.parentNode;
+      if (!parentNode) return null;
+      const index = Array.from(parentNode.childNodes).indexOf(current as ChildNode);
+      if (index < 0) return null;
+      path.unshift(index);
+      current = parentNode;
+    }
+
+    return current === root ? path : null;
+  }
+
+  function previewNodeAtPath(root: Node, path: number[]) {
+    let current = root;
+    for (const index of path) {
+      const child = current.childNodes[index];
+      if (!child) return null;
+      current = child;
+    }
+    return current;
+  }
+
+  function clonedPreviewSelection(
+    previewElement: HTMLElement,
+    selection: Selection,
+  ) {
+    if (selection.isCollapsed || selection.rangeCount === 0) return null;
+
+    const range = selection.getRangeAt(0);
+    const startPath = previewNodePath(previewElement, range.startContainer);
+    const endPath = previewNodePath(previewElement, range.endContainer);
+    if (!startPath || !endPath) return null;
+
+    const clone = previewElement.cloneNode(true) as HTMLElement;
+    const startNode = previewNodeAtPath(clone, startPath);
+    const endNode = previewNodeAtPath(clone, endPath);
+    if (!startNode || !endNode) return null;
+
+    const clonedRange = document.createRange();
+    clonedRange.setStart(startNode, range.startOffset);
+    clonedRange.setEnd(endNode, range.endOffset);
+    return { clone, range: clonedRange };
+  }
+
+  function commitPreviewSelectionDeletion(previewElement: HTMLElement) {
+    const selection = window.getSelection();
+    if (!selection || selection.isCollapsed || selection.rangeCount === 0) return false;
+
+    const selectedRange = selection.getRangeAt(0);
+    if (
+      !previewElement.contains(selectedRange.startContainer) ||
+      !previewElement.contains(selectedRange.endContainer)
+    ) {
+      return false;
+    }
+
+    const coversAllContent = selectionCoversAllPreviewContent(previewElement, selection);
+    const startBlockElement = previewBlockElementFromNode(selectedRange.startContainer);
+    const endBlockElement = previewBlockElementFromNode(selectedRange.endContainer);
+    const renderedBlock = startBlockElement ? blockForPreviewElement(startBlockElement) : null;
+    const renderedEndBlock = endBlockElement ? blockForPreviewElement(endBlockElement) : null;
+    const sameBlockOffsets = startBlockElement
+      ? selectionOffsetsWithInlineBreaksInElement(startBlockElement, selection)
+      : null;
+    const startPointRange = selectedRange.cloneRange();
+    startPointRange.collapse(true);
+    const endPointRange = selectedRange.cloneRange();
+    endPointRange.collapse(false);
+    const startOffsets = startBlockElement
+      ? selectionOffsetsWithInlineBreaksInElement(
+          startBlockElement,
+          selection,
+          startPointRange,
+        )
+      : null;
+    const endOffsets = endBlockElement
+      ? selectionOffsetsWithInlineBreaksInElement(
+          endBlockElement,
+          selection,
+          endPointRange,
+        )
+      : null;
+    const crossesBlocks = Boolean(
+      startBlockElement &&
+      endBlockElement &&
+      startBlockElement !== endBlockElement &&
+      renderedBlock &&
+      renderedEndBlock &&
+      startOffsets &&
+      endOffsets,
+    );
+    const clonedSelection = clonedPreviewSelection(previewElement, selection);
+    if (
+      !coversAllContent &&
+      !crossesBlocks &&
+      (!startBlockElement || startBlockElement !== endBlockElement ||
+        !renderedBlock || !sameBlockOffsets || !clonedSelection)
+    ) {
+      return false;
+    }
+
+    window.cancelAnimationFrame(inputCommitFrameRef.current);
+    inputCommitFrameRef.current = 0;
+    commitPendingPreviewInput(previewElement, true);
+
+    if (coversAllContent) {
+      window.getSelection()?.removeAllRanges();
+      focusPreviewSourcePosition("", 0);
+      commitPreviewChange("");
+      return true;
+    }
+
+    if (
+      crossesBlocks &&
+      renderedBlock &&
+      renderedEndBlock &&
+      startOffsets &&
+      endOffsets
+    ) {
+      const currentValue = previewValueRef.current;
+      const currentBlocks = parseMarkdownPreviewBlocks(currentValue);
+      const startBlock = currentBlocks.find(
+        (candidate) => candidate.key === renderedBlock.key,
+      );
+      const endBlock = currentBlocks.find(
+        (candidate) => candidate.key === renderedEndBlock.key,
+      );
+      if (!startBlock || !endBlock) return true;
+
+      const startTextMap = getPreviewBlockTextMap(currentValue, startBlock);
+      const endTextMap = getPreviewBlockTextMap(currentValue, endBlock);
+      const startBlockRange = getBlockRange(currentValue, startBlock);
+      const endBlockRange = getBlockRange(currentValue, endBlock);
+      const sourceFrom = startOffsets.from === 0
+        ? startBlockRange.start
+        : startOffsets.from >= startTextMap.text.length
+          ? startBlockRange.end
+          : sourcePositionForPreviewTextOffset(startTextMap, startOffsets.from);
+      const sourceTo = endOffsets.from === 0
+        ? endBlockRange.start
+        : endOffsets.from >= endTextMap.text.length
+          ? endBlockRange.end
+          : sourcePositionForPreviewTextOffset(endTextMap, endOffsets.from);
+      if (sourceFrom === null || sourceTo === null || sourceTo < sourceFrom) return true;
+
+      const nextValue = currentValue.slice(0, sourceFrom) + currentValue.slice(sourceTo);
+      window.getSelection()?.removeAllRanges();
+      focusPreviewSourcePosition(nextValue, sourceFrom);
+      commitPreviewChange(nextValue);
+      return true;
+    }
+
+    if (!renderedBlock || !sameBlockOffsets || !clonedSelection) return false;
+    clonedSelection.range.deleteContents();
+    const currentValue = previewValueRef.current;
+    const block =
+      parseMarkdownPreviewBlocks(currentValue).find(
+        (candidate) => candidate.key === renderedBlock.key,
+      );
+    if (!block) return true;
+    const clonedBlockElements = Array.from(
+      clonedSelection.clone.querySelectorAll<HTMLElement>("[data-preview-block-key]"),
+    ).filter((element) => element.dataset.previewBlockKey === block.key);
+    const nextBlock = clonedBlockElements.length > 0
+      ? markdownFromEditedPreviewBlockElements(block, clonedBlockElements)
+      : "";
+    const controlledNextBlock = block.kind === "paragraph" && !nextBlock
+      ? "<br>"
+      : nextBlock;
+    const nextValue = replaceMarkdownBlock(currentValue, block, controlledNextBlock);
+    const nextRenderedBlock = parseMarkdownPreviewBlocks(nextValue).find(
+      (candidate) => candidate.startLine === block.startLine,
+    );
+    const caretSourcePosition = nextRenderedBlock
+      ? sourcePositionForPreviewTextOffset(
+          getPreviewBlockTextMap(nextValue, nextRenderedBlock),
+          sameBlockOffsets.from,
+        ) ?? getBlockRange(currentValue, block).start
+      : getBlockRange(currentValue, block).start;
+
+    window.getSelection()?.removeAllRanges();
+    if (controlledNextBlock === "<br>" && nextRenderedBlock) {
+      focusPreviewBlockTextOffset(nextRenderedBlock.key, 1);
+    } else {
+      focusPreviewSourcePosition(nextValue, caretSourcePosition);
+    }
+    commitPreviewChange(nextValue);
+    return true;
+  }
+
+  function commitPreviewEmptyLineDeletion(
+    previewElement: HTMLElement,
+    key: string,
+  ) {
+    const selection = window.getSelection();
+    if (
+      !selection ||
+      !selection.isCollapsed ||
+      selection.rangeCount === 0 ||
+      !selection.focusNode ||
+      !previewElement.contains(selection.focusNode)
+    ) {
+      return false;
+    }
+
+    const transientElement = transientPreviewElementFromSelection();
+    if (transientElement) {
+      const previousBlock = previewBlockBeforeNode(transientElement);
+      const nextBlock = previewBlockAfterNode(transientElement);
+      if (!previousBlock && !nextBlock) return true;
+
+      clearTransientPreviewNodes([transientElement]);
+      if (key === "Backspace" && previousBlock) {
+        focusPreviewBlockEnd(previousBlock.key);
+      } else if (nextBlock) {
+        focusPreviewBlockStart(nextBlock.key);
+      } else if (previousBlock) {
+        focusPreviewBlockEnd(previousBlock.key);
+      }
+      return true;
+    }
+
+    const blockElement = previewBlockElementFromSelection();
+    const renderedBlock = blockElement ? blockForPreviewElement(blockElement) : null;
+    const offsets = blockElement
+      ? selectionOffsetsWithInlineBreaksInElement(blockElement, selection)
+      : null;
+    if (!blockElement || renderedBlock?.kind !== "paragraph" || !offsets) return false;
+
+    const renderedText = previewTextFromNode(blockElement).replace(/\u200b/g, "");
+    const renderedCaretOffset = clampNumber(offsets.from, 0, renderedText.length);
+    const hasAdjacentBreak =
+      renderedText === "\n" ||
+      (key === "Delete" && renderedText[renderedCaretOffset] === "\n") ||
+      (renderedCaretOffset > 0 && renderedText[renderedCaretOffset - 1] === "\n");
+    if (!hasAdjacentBreak) return false;
+
+    window.cancelAnimationFrame(inputCommitFrameRef.current);
+    inputCommitFrameRef.current = 0;
+    commitPendingPreviewInput(previewElement, true);
+
+    const currentValue = previewValueRef.current;
+    const block = parseMarkdownPreviewBlocks(currentValue).find(
+      (candidate) => candidate.key === renderedBlock.key,
+    );
+    if (!block || block.kind !== "paragraph") return false;
+
+    const textMap = getPreviewBlockTextMap(currentValue, block);
+    const caretOffset = clampNumber(offsets.from, 0, textMap.text.length);
+    const breakFrom =
+      textMap.text === "\n"
+        ? 0
+        : key === "Delete" && textMap.text[caretOffset] === "\n"
+        ? caretOffset
+        : caretOffset > 0 && textMap.text[caretOffset - 1] === "\n"
+          ? caretOffset - 1
+          : null;
+    if (breakFrom === null) return false;
+
+    const sourceFrom = sourcePositionForPreviewTextOffset(textMap, breakFrom);
+    const sourceTo = sourcePositionForPreviewTextOffset(textMap, breakFrom + 1);
+    if (sourceFrom === null || sourceTo === null || sourceTo <= sourceFrom) return false;
+    if (!isInlineBreakToken(currentValue.slice(sourceFrom, sourceTo))) return false;
+
+    const nextValue = currentValue.slice(0, sourceFrom) + currentValue.slice(sourceTo);
+    delete blockElement.dataset.edited;
+    window.getSelection()?.removeAllRanges();
+    focusPreviewSourcePosition(nextValue, sourceFrom);
+    commitPreviewChange(nextValue);
+    return true;
+  }
+
   function handlePreviewPaste(event: ReactClipboardEvent<HTMLDivElement>) {
     if (readOnly) return;
 
@@ -3601,24 +4021,7 @@ function MarkdownPreview({
       pastedText +
       previewValueRef.current.slice(selectedRange.to);
     const caretSourcePosition = selectedRange.from + pastedText.length;
-    const caretLine =
-      nextValue.slice(0, caretSourcePosition).split("\n").length - 1;
-    const nextBlocks = parseMarkdownPreviewBlocks(nextValue);
-    const focusBlock =
-      nextBlocks.find(
-        (block) => block.startLine <= caretLine && block.endLine >= caretLine,
-      ) ??
-      nextBlocks.filter((block) => block.endLine < caretLine).slice(-1)[0] ??
-      nextBlocks[0];
-    if (focusBlock) {
-      focusPreviewBlockTextOffset(
-        focusBlock.key,
-        previewTextOffsetForSourcePosition(
-          getPreviewBlockTextMap(nextValue, focusBlock),
-          caretSourcePosition,
-        ),
-      );
-    }
+    focusPreviewSourcePosition(nextValue, caretSourcePosition);
     commitPreviewChange(nextValue);
   }
 
@@ -3628,6 +4031,7 @@ function MarkdownPreview({
       return;
     }
 
+    previewPointerPointRef.current = null;
     const previewElement = event.currentTarget;
     const blockElement =
       previewBlockElementFromTarget(event.target) ?? previewBlockElementFromSelection();
@@ -3646,7 +4050,7 @@ function MarkdownPreview({
     window.cancelAnimationFrame(inputCommitFrameRef.current);
     inputCommitFrameRef.current = window.requestAnimationFrame(() => {
       inputCommitFrameRef.current = 0;
-      if (!commitPendingPreviewInput(previewElement) && pendingFocus) {
+      if (!commitPendingPreviewInput(previewElement, true) && pendingFocus) {
         pendingPreviewTextFocusRef.current = null;
       }
     });
@@ -3655,6 +4059,7 @@ function MarkdownPreview({
   function handlePreviewCompositionEnd(event: CompositionEvent<HTMLDivElement>) {
     if (readOnly) return;
 
+    previewPointerPointRef.current = null;
     const previewElement = event.currentTarget;
     const blockElement =
       previewBlockElementFromTarget(event.target) ?? previewBlockElementFromSelection();
@@ -3666,7 +4071,7 @@ function MarkdownPreview({
     }
     window.cancelAnimationFrame(inputCommitFrameRef.current);
     inputCommitFrameRef.current = 0;
-    if (!commitPendingPreviewInput(previewElement) && pendingFocus) {
+    if (!commitPendingPreviewInput(previewElement, true) && pendingFocus) {
       pendingPreviewTextFocusRef.current = null;
     }
   }
@@ -3907,14 +4312,22 @@ function MarkdownPreview({
     return true;
   }
 
-  function commitPendingPreviewInput(previewElement: HTMLElement) {
-    const committedRoot = commitRootTypedPreviewBlock(previewElement);
-    const committedEditedBlocks = commitEditedPreviewBlocks();
-    if (!committedRoot && !committedEditedBlocks) {
-      return commitLooseRootPreviewText(previewElement);
-    }
+  function commitPendingPreviewInput(
+    previewElement: HTMLElement,
+    recordAsInput = false,
+  ) {
+    previewInputCommitRef.current = recordAsInput;
+    try {
+      const committedRoot = commitRootTypedPreviewBlock(previewElement);
+      const committedEditedBlocks = commitEditedPreviewBlocks();
+      if (!committedRoot && !committedEditedBlocks) {
+        return commitLooseRootPreviewText(previewElement);
+      }
 
-    return true;
+      return true;
+    } finally {
+      previewInputCommitRef.current = false;
+    }
   }
 
   function commitPreviewSoftBreak() {
@@ -3922,7 +4335,7 @@ function MarkdownPreview({
     if (previewElement) {
       window.cancelAnimationFrame(inputCommitFrameRef.current);
       inputCommitFrameRef.current = 0;
-      commitPendingPreviewInput(previewElement);
+      commitPendingPreviewInput(previewElement, true);
     }
 
     const selection = window.getSelection();
@@ -3930,8 +4343,14 @@ function MarkdownPreview({
     if (!selection || !blockElement) return false;
 
     const renderedBlock = blockForPreviewElement(blockElement);
-    const offsets = selectionOffsetsWithInlineBreaksInElement(blockElement, selection);
+    const selectedRange = previewRangeFromSelection(selection);
+    const offsets = selectionOffsetsWithInlineBreaksInElement(
+      blockElement,
+      selection,
+      selectedRange,
+    );
     if (!renderedBlock || !offsets) return false;
+    previewPointerPointRef.current = null;
 
     const currentValue = previewValueRef.current;
     const block =
@@ -3974,7 +4393,7 @@ function MarkdownPreview({
 
     window.cancelAnimationFrame(inputCommitFrameRef.current);
     inputCommitFrameRef.current = 0;
-    commitPendingPreviewInput(event.currentTarget);
+    commitPendingPreviewInput(event.currentTarget, true);
   }
 
   function handlePreviewInlineShortcut(event: ReactKeyboardEvent<HTMLDivElement>) {
@@ -4007,6 +4426,10 @@ function MarkdownPreview({
   }
 
   function handlePreviewKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
+    if (event.key !== "Enter") {
+      previewPointerPointRef.current = null;
+    }
+
     if (readOnly) {
       if (
         event.key === "Tab" &&
@@ -4031,10 +4454,27 @@ function MarkdownPreview({
       return;
     }
 
-    if (isUndoKeyboardShortcut(event)) {
-      if (previewHasActiveUncommittedEdit()) return;
-      if (!undoPreviewChange()) return;
+    const shouldRedo = isRedoKeyboardShortcut(event);
+    if (shouldRedo || isUndoKeyboardShortcut(event)) {
+      flushPendingPreviewHistoryInput();
+      if (!(shouldRedo ? redoPreviewChange() : undoPreviewChange())) return;
 
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+
+    const isSelectionDelete =
+      (event.key === "Backspace" || event.key === "Delete") &&
+      !event.metaKey &&
+      !event.ctrlKey &&
+      !event.altKey &&
+      !event.shiftKey &&
+      !keyboardEventIsComposing(event);
+    if (
+      isSelectionDelete &&
+      commitPreviewSelectionDeletion(event.currentTarget)
+    ) {
       event.preventDefault();
       event.stopPropagation();
       return;
@@ -4042,6 +4482,14 @@ function MarkdownPreview({
 
     if (handlePreviewTabIndent(event)) return;
     if (handlePreviewListDelete(event)) return;
+    if (
+      isSelectionDelete &&
+      commitPreviewEmptyLineDeletion(event.currentTarget, event.key)
+    ) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
     if (handlePreviewInlineShortcut(event)) return;
     if (handlePreviewMarkdownShortcutSpace(event)) return;
 
@@ -4097,6 +4545,16 @@ function MarkdownPreview({
         return;
       }
 
+      if (
+        blockElement &&
+        blockForPreviewElement(blockElement)?.kind === "paragraph" &&
+        commitPreviewSoftBreak()
+      ) {
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
+
       if (transientPreviewElementFromSelection()) return;
 
       if (previewElement && insertTransientPreviewLine(previewElement)) {
@@ -4140,32 +4598,64 @@ function MarkdownPreview({
     return false;
   }
 
-  function previewHasActiveUncommittedEdit() {
-    if (transientPreviewElementFromSelection()) return true;
+  function flushPendingPreviewHistoryInput() {
+    const previewElement = previewRef.current;
+    if (!previewElement) return;
 
-    const blockElement = previewBlockElementFromSelection();
-    return blockElement?.dataset.edited === "true";
+    window.cancelAnimationFrame(inputCommitFrameRef.current);
+    inputCommitFrameRef.current = 0;
+    commitPendingPreviewInput(previewElement, true);
+    const emptyTransientNodes = Array.from(
+      previewElement.querySelectorAll<HTMLElement>("[data-preview-transient='true']"),
+    ).filter((node) => !previewTextFromNode(node).replace(/\u200b/g, "").trim());
+    if (emptyTransientNodes.length > 0) {
+      clearTransientPreviewNodes(emptyTransientNodes);
+    }
   }
 
   function undoPreviewChange() {
-    const previousValue = previewUndoStackRef.current.pop();
-    if (previousValue === undefined) return false;
+    const undo = takeNoteEditorUndo(
+      previewHistoryRef.current,
+      previewValueRef.current,
+    );
+    if (!undo.snapshot) return false;
 
-    previewValueRef.current = previousValue;
-    onChange(previousValue, "undo");
+    previewHistoryRef.current = undo.history;
+    previewValueRef.current = undo.snapshot.value;
+    focusPreviewSourcePosition(
+      undo.snapshot.value,
+      undo.snapshot.caretSourcePosition,
+    );
+    onChange(undo.snapshot.value, "undo");
+    return true;
+  }
+
+  function redoPreviewChange() {
+    const redo = takeNoteEditorRedo(
+      previewHistoryRef.current,
+      previewValueRef.current,
+    );
+    if (!redo.snapshot) return false;
+
+    previewHistoryRef.current = redo.history;
+    previewValueRef.current = redo.snapshot.value;
+    focusPreviewSourcePosition(
+      redo.snapshot.value,
+      redo.snapshot.caretSourcePosition,
+    );
+    onChange(redo.snapshot.value, "user");
     return true;
   }
 
   function commitPreviewChange(nextValue: string, anchorTransform?: BodyAnchorTransform) {
     const previousValue = previewValueRef.current;
     if (nextValue === previousValue) return;
-    const undoStack = previewUndoStackRef.current;
-    if (undoStack[undoStack.length - 1] !== previousValue) {
-      undoStack.push(previousValue);
-      if (undoStack.length > 100) {
-        undoStack.shift();
-      }
-    }
+    previewHistoryRef.current = recordNoteEditorChange(
+      previewHistoryRef.current,
+      previousValue,
+      nextValue,
+      { input: previewInputCommitRef.current },
+    );
     previewValueRef.current = nextValue;
     onChange(nextValue, "user", anchorTransform);
   }
@@ -4189,6 +4679,13 @@ function MarkdownPreview({
       onInput={handlePreviewInput}
       onKeyDownCapture={handlePreviewKeyDown}
       onPaste={handlePreviewPaste}
+      onPointerDownCapture={(event) => {
+        if (event.button !== 0) return;
+        previewPointerPointRef.current = {
+          clientX: event.clientX,
+          clientY: event.clientY,
+        };
+      }}
     >
       {blocks.map((block) => (
         <MarkdownPreviewBlockView
@@ -4560,6 +5057,7 @@ function NoteMarkdownEditor({
     "note-markdown-editor",
     "note-markdown-editor--preview",
     isEditable ? "is-editing" : "is-previewing",
+    value.length === 0 ? "is-empty" : "",
     readOnly ? "is-readonly" : "",
     className,
   ]
@@ -4963,6 +5461,7 @@ function App() {
   const [settingsInitialCategory, setSettingsInitialCategory] =
     useState<SettingCategory>("app");
   const [fileContextMenu, setFileContextMenu] = useState<FileContextMenuState | null>(null);
+  const [fileNameTooltip, setFileNameTooltip] = useState<FileNameTooltipState | null>(null);
   const [documentTabContextMenu, setDocumentTabContextMenu] =
     useState<DocumentTabContextMenuState | null>(null);
   const [duplicateFileDialog, setDuplicateFileDialog] =
@@ -4985,6 +5484,7 @@ function App() {
   const [mobileStartupLogoVisible, setMobileStartupLogoVisible] = useState(false);
   const notePanelRef = useRef<HTMLElement | null>(null);
   const floatingNoteCardRef = useRef<HTMLDivElement | null>(null);
+  const fileNameTooltipRef = useRef<HTMLDivElement | null>(null);
   const settingsCloseButtonRef = useRef<HTMLButtonElement | null>(null);
   const duplicateFileInputRef = useRef<HTMLInputElement | null>(null);
   const renameInputRef = useRef<HTMLInputElement | null>(null);
@@ -5014,6 +5514,7 @@ function App() {
   const noteEditModalActiveRef = useRef(false);
   const copiedNoteActionTimerRef = useRef(0);
   const ignoreNextWorkspaceClickRef = useRef(false);
+  const fileNameTooltipTimerRef = useRef(0);
   const workspaceFileLongPressTimerRef = useRef(0);
   const workspaceFileLongPressStartRef = useRef<{
     pointerId: number;
@@ -5611,6 +6112,13 @@ function App() {
     function handleDocumentPointerDown(event: globalThis.PointerEvent) {
       if (event.button !== 0) return;
       if (targetIsInsideNoteMarkdownEditor(event.target)) return;
+      if (
+        elementFromEventTarget(event.target)?.closest(
+          ".floating-note-panel-toggle-button",
+        )
+      ) {
+        return;
+      }
 
       const activeElement = document.activeElement;
       if (
@@ -5957,6 +6465,52 @@ function App() {
       safeLayoutMediaQuery.removeEventListener("change", updateMobileViewport);
     };
   }, []);
+
+  useLayoutEffect(() => {
+    if (!fileNameTooltip || fileNameTooltip.position || !fileNameTooltipRef.current) return;
+
+    const tooltipRect = fileNameTooltipRef.current.getBoundingClientRect();
+    const position = fileNameTooltipPosition({
+      anchorRect: fileNameTooltip.anchorRect,
+      tooltipRect,
+      viewportRect: currentVisualViewportRect(),
+    });
+    setFileNameTooltip((currentTooltip) =>
+      currentTooltip?.key === fileNameTooltip.key
+        ? { ...currentTooltip, position }
+        : currentTooltip,
+    );
+  }, [fileNameTooltip]);
+
+  useEffect(() => {
+    if (!fileNameTooltip) return;
+
+    const hideTooltip = () => setFileNameTooltip(null);
+    window.addEventListener("resize", hideTooltip);
+    window.visualViewport?.addEventListener("resize", hideTooltip);
+    window.visualViewport?.addEventListener("scroll", hideTooltip);
+    document.addEventListener("scroll", hideTooltip, true);
+
+    return () => {
+      window.removeEventListener("resize", hideTooltip);
+      window.visualViewport?.removeEventListener("resize", hideTooltip);
+      window.visualViewport?.removeEventListener("scroll", hideTooltip);
+      document.removeEventListener("scroll", hideTooltip, true);
+    };
+  }, [fileNameTooltip?.key]);
+
+  useEffect(
+    () => () => {
+      window.clearTimeout(fileNameTooltipTimerRef.current);
+    },
+    [],
+  );
+
+  useEffect(() => {
+    window.clearTimeout(fileNameTooltipTimerRef.current);
+    fileNameTooltipTimerRef.current = 0;
+    setFileNameTooltip(null);
+  }, [directoryPaneOpen, fileSearchMode, fileSearchQuery, workspaceEntries]);
 
   useEffect(() => {
     if (isMobileViewport && directoryPaneOpen) return;
@@ -6550,6 +7104,73 @@ function App() {
     return shellRelativePointFromViewport(clientX, clientY);
   }
 
+  function fileNameTooltipTargetIsTruncated(target: HTMLElement) {
+    return Array.from(
+      target.querySelectorAll<HTMLElement>("[data-file-name-overflow]"),
+    ).some((element) => fileNameTextIsTruncated(element));
+  }
+
+  function hideFileNameTooltip() {
+    window.clearTimeout(fileNameTooltipTimerRef.current);
+    fileNameTooltipTimerRef.current = 0;
+    setFileNameTooltip(null);
+  }
+
+  function showFileNameTooltip(
+    target: HTMLButtonElement,
+    key: string,
+    title: string,
+    detail?: string,
+  ) {
+    if (!fileNameTooltipTargetIsTruncated(target)) return;
+
+    const rect = target.getBoundingClientRect();
+    setFileNameTooltip({
+      anchorRect: { right: rect.right, top: rect.top },
+      detail,
+      key,
+      position: null,
+      title,
+    });
+  }
+
+  function scheduleFileNameTooltip(
+    target: HTMLButtonElement,
+    key: string,
+    title: string,
+    detail?: string,
+  ) {
+    if (isMobileViewport) return;
+
+    hideFileNameTooltip();
+    fileNameTooltipTimerRef.current = window.setTimeout(() => {
+      fileNameTooltipTimerRef.current = 0;
+      showFileNameTooltip(target, key, title, detail);
+    }, fileNameTooltipHoverDelayMs);
+  }
+
+  function showFocusedFileNameTooltip(
+    event: FocusEvent<HTMLButtonElement>,
+    key: string,
+    title: string,
+    detail?: string,
+  ) {
+    if (!event.currentTarget.matches(":focus-visible")) return;
+
+    hideFileNameTooltip();
+    showFileNameTooltip(event.currentTarget, key, title, detail);
+  }
+
+  function handleFileNameTooltipKeyDown(event: ReactKeyboardEvent<HTMLButtonElement>) {
+    if (event.key === "Escape") hideFileNameTooltip();
+  }
+
+  function fileNameTooltipDescribedBy(key: string) {
+    return fileNameTooltip?.key === key && fileNameTooltip.position
+      ? fileNameTooltipId
+      : undefined;
+  }
+
   function currentVisualViewportRect() {
     const visualViewport = window.visualViewport;
     const left = visualViewport?.offsetLeft ?? 0;
@@ -6584,15 +7205,32 @@ function App() {
     };
   }
 
+  function currentFloatingNoteBoundsRect() {
+    const viewportRect = currentFloatingNoteViewportRect();
+    if (isMobileViewport) return viewportRect;
+
+    const editorBodyRect = document
+      .querySelector<HTMLElement>(
+        ".editor-content-frame > .milkdown-markdown-editor-shell, .editor-content-frame > .markdown-editor-host",
+      )
+      ?.getBoundingClientRect();
+
+    return floatingNoteViewportRectWithinHorizontalBounds({
+      contentRect: editorBodyRect ?? null,
+      viewportRect,
+    });
+  }
+
   function calculateFloatingNotePosition(
     anchorRect: TextRangeRect,
     cardRect: Pick<DOMRect, "height" | "width">,
   ): FloatingNotePosition {
-    const viewportRect = currentFloatingNoteViewportRect();
+    const viewportRect = currentFloatingNoteBoundsRect();
     const viewportMargin = isMobileViewport ? 32 : 12;
+    const maxWidth = Math.max(0, viewportRect.right - viewportRect.left - viewportMargin * 2);
     const cardWidth = Math.min(
       cardRect.width || 450,
-      Math.max(180, viewportRect.width - viewportMargin * 2),
+      maxWidth,
     );
     const cardHeight = cardRect.height || 260;
     const anchorLock =
@@ -6634,6 +7272,7 @@ function App() {
         width: geometry.connector.width,
       },
       left: Math.round(panelPoint.left),
+      maxWidth: Math.round(maxWidth),
       placement: geometry.placement,
       top: Math.round(panelPoint.top),
     };
@@ -6642,8 +7281,9 @@ function App() {
   function calculateDetachedFloatingNotePosition(
     cardRect: Pick<DOMRect, "height" | "width">,
   ): FloatingNotePosition {
-    const viewportRect = currentFloatingNoteViewportRect();
+    const viewportRect = currentFloatingNoteBoundsRect();
     const viewportMargin = 12;
+    const maxWidth = Math.max(0, viewportRect.right - viewportRect.left - viewportMargin * 2);
     const cardHeight = Math.min(
       cardRect.height || 260,
       Math.max(120, viewportRect.height - viewportMargin * 2),
@@ -6658,6 +7298,7 @@ function App() {
     return {
       connector: null,
       left: Math.round(panelPoint.left),
+      maxWidth: Math.round(maxWidth),
       placement: "detached",
       top: Math.round(panelPoint.top),
     };
@@ -6669,6 +7310,7 @@ function App() {
   ) {
     return (
       leftPosition?.left === rightPosition.left &&
+      leftPosition.maxWidth === rightPosition.maxWidth &&
       leftPosition.top === rightPosition.top &&
       leftPosition.placement === rightPosition.placement &&
       leftPosition.connector?.left === rightPosition.connector?.left &&
@@ -7044,6 +7686,22 @@ function App() {
       closeDocumentSearch();
     }
   }
+
+  useEffect(() => {
+    if (!documentSearchOpen) return;
+
+    function handleDocumentPointerDown(event: globalThis.PointerEvent) {
+      if (targetIsInsideDocumentSearch(event.target)) return;
+
+      documentSearchInputRef.current?.blur();
+    }
+
+    document.addEventListener("pointerdown", handleDocumentPointerDown, true);
+
+    return () => {
+      document.removeEventListener("pointerdown", handleDocumentPointerDown, true);
+    };
+  }, [documentSearchOpen]);
 
   function handleDocumentSearchMatchCountChange(count: number) {
     setDocumentSearchMatchCount(count);
@@ -7609,6 +8267,12 @@ function App() {
   useEffect(() => {
     function handleEditorSelectAllKeyUp(event: KeyboardEvent) {
       const activeElement = document.activeElement;
+      if (
+        activeElement instanceof HTMLInputElement ||
+        activeElement instanceof HTMLTextAreaElement
+      ) {
+        return;
+      }
       const activeEditor =
         activeElement instanceof Element
           ? activeElement.closest(
@@ -14611,6 +15275,7 @@ function App() {
     : floatingNotePanelPosition
       ? {
           left: floatingNotePanelPosition.left,
+          maxWidth: floatingNotePanelPosition.maxWidth,
           top: floatingNotePanelPosition.top,
         }
       : {
@@ -14741,17 +15406,26 @@ function App() {
         ];
       })()
     : [];
+  const fileContextMenuTitleHeight =
+    isMobileViewport && fileContextMenu?.kind === "file"
+      ? mobileFileContextMenuTitleHeight
+      : 0;
+  const fileContextMenuViewportRect = currentFloatingNoteViewportRect();
 
   const fileContextMenuStyle: CSSProperties | undefined = fileContextMenu
     ? {
         left: Math.round(
-          clampNumber(fileContextMenu.left, 8, Math.max(8, window.innerWidth - 188)),
+          clampNumber(fileContextMenu.left, 8, Math.max(8, window.innerWidth - 214)),
         ),
         top: Math.round(
           clampNumber(
             fileContextMenu.top,
-            8,
-            Math.max(8, window.innerHeight - (24 + fileContextMenuActions.length * 34)),
+            fileContextMenuViewportRect.top + 8,
+            Math.max(
+              fileContextMenuViewportRect.top + 8,
+              fileContextMenuViewportRect.bottom -
+                (24 + fileContextMenuTitleHeight + fileContextMenuActions.length * 34),
+            ),
           ),
         ),
       }
@@ -15428,18 +16102,39 @@ function App() {
 
                     return (
                       <button
+                        aria-describedby={fileNameTooltipDescribedBy(`tag:${result.path}`)}
                         className={`document-row file-search-result ${
                           isSelected ? "is-selected" : ""
                         }`}
                         key={result.path}
                         onClick={() => {
+                          hideFileNameTooltip();
                           if (result.entry) {
                             openWorkspaceEntry(result.entry);
                           } else {
                             void openLocalFileSearchResult(result);
                           }
                         }}
-                        title={result.relativePath}
+                        onBlur={hideFileNameTooltip}
+                        onFocus={(event) =>
+                          showFocusedFileNameTooltip(
+                            event,
+                            `tag:${result.path}`,
+                            result.title,
+                            result.relativePath,
+                          )
+                        }
+                        onKeyDown={handleFileNameTooltipKeyDown}
+                        onMouseEnter={(event) =>
+                          scheduleFileNameTooltip(
+                            event.currentTarget,
+                            `tag:${result.path}`,
+                            result.title,
+                            result.relativePath,
+                          )
+                        }
+                        onMouseLeave={hideFileNameTooltip}
+                        onPointerDown={hideFileNameTooltip}
                         type="button"
                       >
                         <span
@@ -15448,8 +16143,12 @@ function App() {
                         />
                         <DocumentGlyphIcon kind="file" selected={isSelected} />
                         <span className="document-title">
-                          <span className="document-title__primary">{result.title}</span>
-                          <span className="document-title__meta">{result.relativePath}</span>
+                          <span className="document-title__primary" data-file-name-overflow>
+                            {result.title}
+                          </span>
+                          <span className="document-title__meta" data-file-name-overflow>
+                            {result.relativePath}
+                          </span>
                           <span className="document-title__tags">
                             {result.matchedTags.map((tag) => `#${tag}`).join(" · ")}
                           </span>
@@ -15479,14 +16178,35 @@ function App() {
 
                     return (
                       <button
+                        aria-describedby={fileNameTooltipDescribedBy(`search:${result.path}`)}
                         className={`document-row file-search-result ${
                           isSelected ? "is-selected" : ""
                         }`}
                         key={result.path}
                         onClick={() => {
+                          hideFileNameTooltip();
                           void openLocalFileSearchResult(result);
                         }}
-                        title={result.relativePath}
+                        onBlur={hideFileNameTooltip}
+                        onFocus={(event) =>
+                          showFocusedFileNameTooltip(
+                            event,
+                            `search:${result.path}`,
+                            result.title,
+                            result.relativePath,
+                          )
+                        }
+                        onKeyDown={handleFileNameTooltipKeyDown}
+                        onMouseEnter={(event) =>
+                          scheduleFileNameTooltip(
+                            event.currentTarget,
+                            `search:${result.path}`,
+                            result.title,
+                            result.relativePath,
+                          )
+                        }
+                        onMouseLeave={hideFileNameTooltip}
+                        onPointerDown={hideFileNameTooltip}
                         type="button"
                       >
                         <span
@@ -15495,8 +16215,12 @@ function App() {
                         />
                         <DocumentGlyphIcon kind="file" selected={isSelected} />
                         <span className="document-title">
-                          <span className="document-title__primary">{result.title}</span>
-                          <span className="document-title__meta">{result.relativePath}</span>
+                          <span className="document-title__primary" data-file-name-overflow>
+                            {result.title}
+                          </span>
+                          <span className="document-title__meta" data-file-name-overflow>
+                            {result.relativePath}
+                          </span>
                         </span>
                       </button>
                     );
@@ -15526,6 +16250,9 @@ function App() {
 
               return (
                 <button
+                  aria-describedby={
+                    entry.kind === "file" ? fileNameTooltipDescribedBy(entry.id) : undefined
+                  }
                   aria-expanded={isDirectory ? isExpanded : undefined}
                   className={`document-row ${isDirectory ? "is-folder" : ""} ${
                     entry.kind === "file" ? "is-file" : ""
@@ -15537,18 +16264,42 @@ function App() {
                   key={entry.id}
                   style={rowStyle}
                   onClick={(event) => {
+                    hideFileNameTooltip();
                     openWorkspaceEntry(entry, event);
                   }}
+                  onBlur={entry.kind === "file" ? hideFileNameTooltip : undefined}
                   onContextMenu={(event) => {
                     if (entry.kind === "parent-directory") return;
 
+                    hideFileNameTooltip();
                     cancelWorkspaceFileLongPress();
                     openFileContextMenu(entry, event);
                   }}
+                  onFocus={
+                    entry.kind === "file"
+                      ? (event) =>
+                          showFocusedFileNameTooltip(event, entry.id, entry.title)
+                      : undefined
+                  }
+                  onKeyDown={
+                    entry.kind === "file" ? handleFileNameTooltipKeyDown : undefined
+                  }
+                  onMouseEnter={
+                    entry.kind === "file"
+                      ? (event) =>
+                          scheduleFileNameTooltip(
+                            event.currentTarget,
+                            entry.id,
+                            entry.title,
+                          )
+                      : undefined
+                  }
+                  onMouseLeave={entry.kind === "file" ? hideFileNameTooltip : undefined}
                   onPointerCancel={(event) => {
                     cancelWorkspaceFileLongPress(event.pointerId);
                   }}
                   onPointerDown={(event) => {
+                    hideFileNameTooltip();
                     if (entry.kind === "parent-directory") return;
 
                     startWorkspaceFileLongPress(entry, event);
@@ -15557,7 +16308,7 @@ function App() {
                   onPointerUp={(event) => {
                     cancelWorkspaceFileLongPress(event.pointerId);
                   }}
-                  title={entry.title}
+                  title={entry.kind === "file" ? undefined : entry.title}
                   type="button"
                 >
                   <span
@@ -15574,7 +16325,12 @@ function App() {
                         : isSelected || isMobileSelected || isBatchSelected
                     }
                   />
-                  <span className="document-title">{entry.title}</span>
+                  <span
+                    className="document-title"
+                    data-file-name-overflow={entry.kind === "file" ? "" : undefined}
+                  >
+                    {entry.title}
+                  </span>
                 </button>
               );
             })
@@ -15708,14 +16464,43 @@ function App() {
         </div>
       ) : null}
 
+      {fileNameTooltip ? (
+        <div
+          className="file-name-tooltip"
+          id={fileNameTooltipId}
+          ref={fileNameTooltipRef}
+          role="tooltip"
+          style={{
+            left: fileNameTooltip.position?.left ?? 0,
+            top: fileNameTooltip.position?.top ?? 0,
+            visibility: fileNameTooltip.position ? "visible" : "hidden",
+          }}
+        >
+          <span className="file-name-tooltip__title">{fileNameTooltip.title}</span>
+          {fileNameTooltip.detail ? (
+            <span className="file-name-tooltip__detail">{fileNameTooltip.detail}</span>
+          ) : null}
+        </div>
+      ) : null}
+
       {fileContextMenu ? (
         <div
+          aria-label={fileContextMenu.kind === "file" ? fileContextMenu.title : undefined}
           className="file-context-menu"
           role="menu"
           style={fileContextMenuStyle}
           onContextMenu={(event) => event.preventDefault()}
           onPointerDown={(event) => event.stopPropagation()}
         >
+          {isMobileViewport && fileContextMenu.kind === "file" ? (
+            <div
+              aria-hidden="true"
+              className="file-context-menu__target-title"
+              role="presentation"
+            >
+              {fileContextMenu.title}
+            </div>
+          ) : null}
           {fileContextMenuActions.map((action) => (
             <button
               className={action.tone === "danger" ? "is-danger" : ""}
@@ -17073,6 +17858,7 @@ function App() {
                       title={
                         floatingNotePanelExpanded ? t("note.collapse") : t("note.expand")
                       }
+                      onPointerDown={(event) => event.preventDefault()}
                       onClick={toggleFloatingNotePanelExpanded}
                     >
                       {floatingNotePanelExpanded ? (

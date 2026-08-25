@@ -1,4 +1,8 @@
 import { Crepe, CrepeFeature } from "@milkdown/crepe";
+import {
+  EditorView as CodeMirrorEditorView,
+  ViewPlugin as CodeMirrorViewPlugin,
+} from "@codemirror/view";
 import { codeBlockConfig } from "@milkdown/kit/component/code-block";
 import { listItemBlockConfig } from "@milkdown/kit/component/list-item-block";
 import {
@@ -54,6 +58,7 @@ import {
 } from "./markdownFrontmatter";
 import { serializeMarkedTextClipboardSlice } from "./markdownClipboard";
 import { localMarkdownImageNeedsHydration } from "./markdownLinkTarget";
+import { linkTooltipPositionWithinBounds } from "./linkTooltipPosition";
 import {
   appendInlineMarkdownTextMap,
   appendTextMap,
@@ -74,6 +79,7 @@ import {
 } from "./milkdownListIndent";
 import { createListItemInlineStrongSyntaxPlugin } from "./milkdownInlineMarkdownSyntax";
 import { createPastedInlineMarkBoundaryPlugin } from "./milkdownPastedInlineMarkBoundary";
+import { correctHistoryCaretAfterRestoredText } from "./milkdownHistory";
 import {
   encodeEmptyParagraphsForMilkdown,
   normalizeMarkdownForScholium,
@@ -199,6 +205,43 @@ const milkdownNoteModeCodeBlockFocusableSelector =
 const annotationClickDelayMs = 500;
 const annotationFocusTargetPressSuppressionMs = annotationClickDelayMs + 350;
 const imeSelectionSuppressionMs = 350;
+const codeMirrorNativePrimarySelectionClass = "scholium-native-primary-selection";
+const codeMirrorNativePrimarySelectionAttributes = CodeMirrorEditorView.editorAttributes.of(
+  (view) =>
+    view.state.selection.ranges.length === 1
+      ? { class: codeMirrorNativePrimarySelectionClass }
+      : null,
+);
+const codeMirrorNativePrimarySelection = CodeMirrorViewPlugin.define((view) => {
+  const selectionLayer = Array.from(view.scrollDOM.children).find(
+    (element): element is HTMLElement =>
+      element instanceof HTMLElement && element.classList.contains("cm-selectionLayer"),
+  );
+
+  function syncSelectionRenderer() {
+    const useNativeSelection = view.state.selection.ranges.length === 1;
+
+    if (useNativeSelection) {
+      selectionLayer?.remove();
+    } else if (selectionLayer && selectionLayer.parentElement !== view.scrollDOM) {
+      view.scrollDOM.append(selectionLayer);
+    }
+  }
+
+  syncSelectionRenderer();
+
+  return {
+    update: syncSelectionRenderer,
+  };
+});
+
+function webKitCodeBlockSelectionExtensions() {
+  if (typeof navigator === "undefined" || navigator.vendor !== "Apple Computer, Inc.") {
+    return [];
+  }
+
+  return [codeMirrorNativePrimarySelectionAttributes, codeMirrorNativePrimarySelection];
+}
 
 type SoftLineIsolation = {
   state: EditorState;
@@ -2958,6 +3001,7 @@ export function MilkdownMarkdownEditor({
     }
 
     return new Plugin({
+      appendTransaction: correctHistoryCaretAfterRestoredText,
       key: milkdownControlHistoryPluginKey,
       props: {
         handleDOMEvents: {
@@ -2985,8 +3029,7 @@ export function MilkdownMarkdownEditor({
         handleKeyDown(view, event) {
           if (
             event.key.toLowerCase() !== "z" ||
-            !event.ctrlKey ||
-            event.metaKey ||
+            event.ctrlKey === event.metaKey ||
             event.altKey ||
             event.isComposing ||
             imeCompositionActiveRef.current ||
@@ -3668,6 +3711,95 @@ export function MilkdownMarkdownEditor({
         scheduleSettledAnnotationFrameUpdate,
       );
       window.removeEventListener("resize", scheduleSettledAnnotationFrameUpdate);
+    };
+  }, [editorRevision]);
+
+  useLayoutEffect(() => {
+    const root = rootRef.current;
+    if (!root) return;
+
+    const tooltipSelector = ".milkdown-link-preview, .milkdown-link-edit";
+    const editorContentFrame = root.closest<HTMLElement>(".editor-content-frame");
+    let positionFrame = 0;
+
+    function syncLinkTooltipPositions() {
+      positionFrame = 0;
+      const currentRoot = rootRef.current;
+      if (!currentRoot) return;
+      const bounds = currentRoot.getBoundingClientRect();
+
+      currentRoot.querySelectorAll<HTMLElement>(tooltipSelector).forEach((tooltip) => {
+        if (tooltip.dataset.show !== "true") {
+          delete tooltip.dataset.scholiumPositioned;
+          return;
+        }
+
+        const maxWidth = Math.max(0, bounds.width - 16);
+        const maxWidthStyle = `${maxWidth}px`;
+        if (tooltip.style.maxWidth !== maxWidthStyle) {
+          tooltip.style.maxWidth = maxWidthStyle;
+        }
+
+        const tooltipRect = tooltip.getBoundingClientRect();
+        const position = linkTooltipPositionWithinBounds({ bounds, tooltip: tooltipRect });
+        const currentLeft = Number.parseFloat(tooltip.style.left);
+        const currentTop = Number.parseFloat(tooltip.style.top);
+
+        if (!Number.isFinite(currentLeft) || !Number.isFinite(currentTop)) {
+          delete tooltip.dataset.scholiumPositioned;
+          return;
+        }
+
+        if (Math.abs(position.left - tooltipRect.left) > 0.5) {
+          tooltip.style.left = `${currentLeft + position.left - tooltipRect.left}px`;
+        }
+        if (Math.abs(position.top - tooltipRect.top) > 0.5) {
+          tooltip.style.top = `${currentTop + position.top - tooltipRect.top}px`;
+        }
+        tooltip.dataset.scholiumPositioned = "true";
+      });
+    }
+
+    function scheduleLinkTooltipPositionSync() {
+      window.cancelAnimationFrame(positionFrame);
+      positionFrame = window.requestAnimationFrame(syncLinkTooltipPositions);
+    }
+
+    const mutationObserver = new MutationObserver((mutations) => {
+      mutations.forEach((mutation) => {
+        const target = mutation.target;
+        if (
+          mutation.type === "attributes" &&
+          target instanceof HTMLElement &&
+          target.matches(tooltipSelector)
+        ) {
+          delete target.dataset.scholiumPositioned;
+        }
+      });
+      scheduleLinkTooltipPositionSync();
+    });
+    mutationObserver.observe(root, {
+      attributeFilter: ["data-show", "style"],
+      attributes: true,
+      childList: true,
+      subtree: true,
+    });
+    const resizeObserver = new ResizeObserver(scheduleLinkTooltipPositionSync);
+    resizeObserver.observe(root);
+    editorContentFrame?.addEventListener("transitionend", scheduleLinkTooltipPositionSync);
+    editorContentFrame?.addEventListener("transitioncancel", scheduleLinkTooltipPositionSync);
+    window.addEventListener("resize", scheduleLinkTooltipPositionSync);
+    window.addEventListener("scroll", scheduleLinkTooltipPositionSync, true);
+    scheduleLinkTooltipPositionSync();
+
+    return () => {
+      window.cancelAnimationFrame(positionFrame);
+      mutationObserver.disconnect();
+      resizeObserver.disconnect();
+      editorContentFrame?.removeEventListener("transitionend", scheduleLinkTooltipPositionSync);
+      editorContentFrame?.removeEventListener("transitioncancel", scheduleLinkTooltipPositionSync);
+      window.removeEventListener("resize", scheduleLinkTooltipPositionSync);
+      window.removeEventListener("scroll", scheduleLinkTooltipPositionSync, true);
     };
   }, [editorRevision]);
 
@@ -5539,6 +5671,10 @@ export function MilkdownMarkdownEditor({
 
       ctx.update(codeBlockConfig.key, (previousConfig) => ({
         ...previousConfig,
+        extensions: [
+          ...previousConfig.extensions,
+          ...webKitCodeBlockSelectionExtensions(),
+        ],
         copyText: codeBlockCopyLabelRef.current,
         onCopy: (code) => {
           previousConfig.onCopy?.(code);
@@ -5711,12 +5847,11 @@ export function MilkdownMarkdownEditor({
     function targetShouldKeepOwnKeyboardShortcut(target: EventTarget | null) {
       const root = rootRef.current;
       if (!root || !(target instanceof Element)) return false;
+
+      if (target.closest("button, input, textarea, select")) return true;
       if (root.contains(target)) return false;
 
-      return Boolean(
-        target.closest("button, input, textarea, select") ||
-          (target instanceof HTMLElement && target.isContentEditable),
-      );
+      return target instanceof HTMLElement && target.isContentEditable;
     }
 
     function handleDocumentKeyDown(event: KeyboardEvent) {
@@ -5726,6 +5861,20 @@ export function MilkdownMarkdownEditor({
       if (!root) return;
 
       const targetElement = elementFromEventTarget(event.target);
+      const targetTextControl =
+        targetElement instanceof HTMLInputElement || targetElement instanceof HTMLTextAreaElement
+          ? targetElement
+          : null;
+      if (
+        targetTextControl &&
+        targetTextControl.closest(".milkdown-link-edit") &&
+        shouldHandlePreviewSelectAllShortcut(event, true, false)
+      ) {
+        targetTextControl.select();
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
       const targetIsNestedEditor = Boolean(
         targetElement?.closest(".milkdown-code-block .cm-editor"),
       );

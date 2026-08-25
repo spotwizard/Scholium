@@ -104,6 +104,10 @@ assert.match(
   app,
   /if \(isDocumentSearchSelectAllShortcut\(event\.nativeEvent\)\) \{\s*event\.preventDefault\(\);\s*event\.stopPropagation\(\);\s*event\.currentTarget\.select\(\);/,
 );
+assert.match(
+  app,
+  /if \(!documentSearchOpen\) return;\s*function handleDocumentPointerDown\(event: globalThis\.PointerEvent\) \{\s*if \(targetIsInsideDocumentSearch\(event\.target\)\) return;\s*documentSearchInputRef\.current\?\.blur\(\);[\s\S]*?document\.addEventListener\("pointerdown", handleDocumentPointerDown, true\);[\s\S]*?document\.removeEventListener\("pointerdown", handleDocumentPointerDown, true\);/,
+);
 
 const candidateCommitEnter = {
   isComposing: true,

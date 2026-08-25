@@ -1792,7 +1792,7 @@ const editorSource = readFileSync(
   "utf8",
 );
 assert.match(editorSource, /event\.key\.toLowerCase\(\) !== "z"/);
-assert.match(editorSource, /!event\.ctrlKey/);
+assert.match(editorSource, /event\.ctrlKey === event\.metaKey/);
 assert.match(editorSource, /const command = shouldRedo \? redo : undo/);
 assert.match(editorSource, /event\.inputType !== "historyUndo"/);
 assert.match(editorSource, /event\.inputType === "historyRedo"/);
