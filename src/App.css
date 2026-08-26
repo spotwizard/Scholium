@@ -2433,7 +2433,7 @@ button.document-tag-chip__label:focus-visible {
   outline: none;
 }
 
-.markdown-editor-host > .cm-editor > .cm-announced {
+.cm-editor > .cm-announced {
   position: fixed !important;
   top: -10000px !important;
 }
