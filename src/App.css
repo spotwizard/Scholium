@@ -906,6 +906,22 @@ button:disabled {
   overflow-wrap: anywhere;
 }
 
+.directory-empty-state {
+  margin: 0;
+  padding: 2px 12px 8px calc(56px + var(--document-row-depth, 1) * 6px);
+  color: var(--color-muted);
+  font-size: 0.76rem;
+  font-weight: 570;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.directory-empty-state.is-root {
+  padding: 8px 14px 8px 43px;
+}
+
 .tag-search-browser {
   padding-top: 0;
   background: var(--color-document-pane-bg);
@@ -1477,6 +1493,7 @@ button:disabled {
   .scholium-shell.is-note-library-expanded .editor-surface {
     min-height: 100%;
   }
+
 }
 
 .note-actions button {
@@ -3561,8 +3578,6 @@ button.document-tag-chip__label:focus-visible {
 .scholium-shell.is-note-panel-expanded {
   --editor-content-offset: 0px;
   --editor-content-end-offset: var(--expanded-note-panel-width);
-  height: 100vh;
-  overflow: hidden;
 }
 
 .note-library-pane {
@@ -4601,6 +4616,7 @@ button.document-tag-chip__label:focus-visible {
 }
 
 .floating-note-panel.is-expanded-sidebar {
+  position: fixed;
   top: 0;
   right: 0;
   bottom: 0;
@@ -4609,7 +4625,16 @@ button.document-tag-chip__label:focus-visible {
   max-width: none;
   height: 100vh;
   max-height: 100vh;
+  overflow: hidden;
   pointer-events: auto;
+}
+
+@media (min-width: 821px) {
+  .scholium-shell.has-document-tabs .floating-note-panel.is-expanded-sidebar {
+    top: var(--document-tab-bar-occupied-height);
+    height: calc(100vh - var(--document-tab-bar-occupied-height));
+    max-height: calc(100vh - var(--document-tab-bar-occupied-height));
+  }
 }
 
 .note-edit-backdrop {
@@ -4945,9 +4970,14 @@ button.document-tag-chip__label:focus-visible {
 }
 
 .floating-note-panel.is-expanded-sidebar .floating-note-card__body-shell {
-  max-height: none;
+  height: 100%;
+  max-height: 100%;
+  min-width: 0;
+  overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  -webkit-overflow-scrolling: touch;
   padding-right: 6px;
 }
 

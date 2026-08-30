@@ -40,6 +40,22 @@ assert.match(
 );
 assert.match(
   css,
+  /\.floating-note-panel\.is-expanded-sidebar \{[\s\S]*?position:\s*fixed;[\s\S]*?top:\s*0;[\s\S]*?bottom:\s*0;[\s\S]*?height:\s*100vh;[\s\S]*?overflow:\s*hidden;/,
+);
+assert.match(
+  css,
+  /@media \(min-width:\s*821px\) \{[\s\S]*?\.scholium-shell\.has-document-tabs \.floating-note-panel\.is-expanded-sidebar \{[\s\S]*?top:\s*var\(--document-tab-bar-occupied-height\);[\s\S]*?height:\s*calc\(100vh - var\(--document-tab-bar-occupied-height\)\);[\s\S]*?max-height:\s*calc\(100vh - var\(--document-tab-bar-occupied-height\)\);/,
+);
+assert.match(
+  css,
+  /\.floating-note-panel\.is-expanded-sidebar \.floating-note-card \{[\s\S]*?grid-template-rows:\s*auto auto minmax\(0, 1fr\) auto;[\s\S]*?overflow:\s*hidden;/,
+);
+assert.match(
+  css,
+  /\.floating-note-panel\.is-expanded-sidebar \.floating-note-card__body-shell \{[\s\S]*?height:\s*100%;[\s\S]*?max-height:\s*100%;[\s\S]*?overflow-x:\s*hidden;[\s\S]*?overflow-y:\s*auto;[\s\S]*?overscroll-behavior:\s*contain;[\s\S]*?scrollbar-gutter:\s*stable;/,
+);
+assert.match(
+  css,
   /\.floating-note-card \{[\s\S]*?max-height:\s*none;[\s\S]*?overflow:\s*visible;/,
 );
 assert.doesNotMatch(

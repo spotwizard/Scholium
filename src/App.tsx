@@ -92,6 +92,10 @@ import {
   anchoredFloatingNoteGeometry,
   floatingNoteViewportRectWithinHorizontalBounds,
 } from "./floatingNotePosition";
+import {
+  containWheelInPanel,
+  panelScrollTargetCanConsumeWheel,
+} from "./expandedPanelWheel";
 import { SettingsView } from "./SettingsView";
 import appIconUrl from "../src-tauri/icons/128x128@2x.png";
 import fileSelectedGlyphUrl from "./assets/file-selected-glyph.png";
@@ -6056,7 +6060,7 @@ function App() {
   const floatingCopySuccessLabel = activeGlossaryTerm
     ? t("glossary.copy.copied")
     : t("note.copy.copied");
-  const expandedNotePanelScrollLocked =
+  const expandedNotePanelActive =
     floatingNotePanelExpanded || libraryNotePanelExpanded;
   const floatingNoteBackdropActive = notePanelModalActive;
   const activeFloatingNoteKey = activeNote
@@ -6070,32 +6074,49 @@ function App() {
           : "";
   noteEditModalActiveRef.current = notePanelModalActive;
 
-  const previousFloatingNotePanelExpandedRef = useRef(floatingNotePanelExpanded);
+  useEffect(() => {
+    const bodyShell = notePanelRef.current?.querySelector<HTMLElement>(
+      ".floating-note-card__body-shell",
+    );
+    if (bodyShell) {
+      bodyShell.scrollTop = 0;
+    }
+  }, [activeFloatingNoteKey]);
 
   useEffect(() => {
-    if (
-      previousFloatingNotePanelExpandedRef.current === true &&
-      floatingNotePanelExpanded === false
-    ) {
-      if (activeNoteId) {
-        scrollTextAnnotationIntoView(activeNoteId);
-      } else if (activeGlossaryBindingId) {
-        scrollTextAnnotationIntoView(`glossary:${activeGlossaryBindingId}`);
-      } else if (pendingAnchor) {
-        scrollTextAnnotationIntoView("__scholium_pending_anchor__");
-      }
-    }
-    previousFloatingNotePanelExpandedRef.current = floatingNotePanelExpanded;
-  }, [floatingNotePanelExpanded, activeNoteId, activeGlossaryBindingId, pendingAnchor]);
+    if (!floatingNotePanelExpanded) return;
 
-  useEffect(() => {
-    if (floatingNotePanelExpanded) {
-      const bodyShell = document.querySelector(".floating-note-card__body-shell");
-      if (bodyShell) {
-        bodyShell.scrollTop = 0;
+    const panel = notePanelRef.current;
+    const bodyShell = panel?.querySelector<HTMLElement>(".floating-note-card__body-shell");
+    if (!panel || !bodyShell) return;
+    const scrollRoot = bodyShell;
+
+    function handleExpandedFloatingNoteWheel(event: WheelEvent) {
+      let scrollTarget = scrollRoot;
+      let candidate = event.target instanceof Element ? event.target : null;
+
+      while (candidate && scrollRoot.contains(candidate)) {
+        if (
+          candidate instanceof HTMLElement &&
+          panelScrollTargetCanConsumeWheel(
+            event,
+            candidate,
+            window.getComputedStyle(candidate),
+          )
+        ) {
+          scrollTarget = candidate;
+          break;
+        }
+        if (candidate === scrollRoot) break;
+        candidate = candidate.parentElement;
       }
+
+      containWheelInPanel(event, scrollTarget);
     }
-  }, [floatingNotePanelExpanded]);
+
+    panel.addEventListener("wheel", handleExpandedFloatingNoteWheel, { passive: false });
+    return () => panel.removeEventListener("wheel", handleExpandedFloatingNoteWheel);
+  }, [floatingNotePanelExpanded, activeFloatingNoteKey]);
 
   useEffect(() => {
     if (libraryNotePanelExpanded) {
@@ -6163,7 +6184,7 @@ function App() {
   }, [floatingNotePanelShouldRender]);
 
   useEffect(() => {
-    if (!expandedNotePanelScrollLocked) return undefined;
+    if (!libraryNotePanelExpanded) return undefined;
 
     const originalBodyOverflow = document.body.style.overflow;
     const originalDocumentOverflow = document.documentElement.style.overflow;
@@ -6174,13 +6195,13 @@ function App() {
       document.body.style.overflow = originalBodyOverflow;
       document.documentElement.style.overflow = originalDocumentOverflow;
     };
-  }, [expandedNotePanelScrollLocked]);
+  }, [libraryNotePanelExpanded]);
 
   useEffect(() => {
-    if (!expandedNotePanelScrollLocked || !directoryPaneOpen) return;
+    if (!expandedNotePanelActive || !directoryPaneOpen) return;
 
     collapseDirectoryPaneForNoteExpansion();
-  }, [directoryPaneOpen, expandedNotePanelScrollLocked]);
+  }, [directoryPaneOpen, expandedNotePanelActive]);
 
   useEffect(() => {
     setDocumentModeState(selectedDocumentId, {
@@ -9334,7 +9355,7 @@ function App() {
     options: { rememberRecent?: boolean; sortEntries?: boolean } = {},
   ) {
     if (loadedFiles.length === 0) {
-      setStorageError(t("status.noFoldersOrMarkdown"));
+      setStorageError("");
       return;
     }
 
@@ -9530,11 +9551,7 @@ function App() {
       setNativeCurrentDirectory(openedDirectory.path, openedDirectory.title, "dropbox");
     }
 
-    if (nextEntries.length === 0) {
-      setStorageError(t("dropbox.emptyFolder"));
-    } else {
-      setStorageError("");
-    }
+    setStorageError("");
   }
 
   function applyLoadedDropboxFile(
@@ -9846,11 +9863,7 @@ function App() {
     setActiveNoteMode("view");
     setActiveGlossaryMode("view");
 
-    if (nextEntries.length === 0) {
-      setStorageError(t("status.noFoldersOrMarkdown"));
-    } else {
-      setStorageError("");
-    }
+    setStorageError("");
 
     if (options.rememberRecent !== false) {
       rememberNativeRecentLocation({
@@ -10190,7 +10203,7 @@ function App() {
 
     if (!restoreFilePath) {
       rememberLastOpenedDropboxWorkspace(openedDirectory.path, "");
-      setStorageError(openedDirectory.entries.length === 0 ? t("dropbox.emptyFolder") : "");
+      setStorageError("");
       return true;
     }
 
@@ -10662,8 +10675,6 @@ function App() {
       const firstFile = firstDropboxMarkdownFileEntry(openedDirectory);
       if (firstFile) {
         await openDropboxMarkdownFilePath(firstFile.path);
-      } else {
-        setStorageError(openedDirectory.entries.length === 0 ? t("dropbox.emptyFolder") : "");
       }
 
       if (isMobileViewport && mobileStartupPhase === "welcome") {
@@ -11009,7 +11020,7 @@ function App() {
     }
 
     setLoadingDirectoryKeys((currentKeys) => new Set(currentKeys).add(entryKey));
-    setStorageError(entry.source === "dropbox" ? t("dropbox.status.openingFolder") : t("status.openingFolder"));
+    setStorageError("");
 
     try {
       const childDepth = (entry.depth ?? 1) + 1;
@@ -11037,9 +11048,8 @@ function App() {
       }
 
       if (childEntries.length === 0) {
-        setStorageError(
-          entry.source === "dropbox" ? t("dropbox.emptyFolder") : t("status.noFoldersOrMarkdown"),
-        );
+        setExpandedDirectoryKeys((currentKeys) => new Set(currentKeys).add(entryKey));
+        setStorageError("");
         return;
       }
 
@@ -15726,7 +15736,7 @@ function App() {
     !settingsViewOpen && noteLibraryFocusActive ? "is-note-library-focus-active" : "",
     !settingsViewOpen && libraryNotePanelExpanded ? "is-note-library-expanded" : "",
     !settingsViewOpen && notePanelModalActive ? "is-note-panel-modal-active" : "",
-    !settingsViewOpen && expandedNotePanelScrollLocked ? "is-note-panel-expanded" : "",
+    !settingsViewOpen && expandedNotePanelActive ? "is-note-panel-expanded" : "",
     documentTabsVisible ? "has-document-tabs" : "",
   ]
     .filter(Boolean)
@@ -16228,7 +16238,7 @@ function App() {
                 : null}
             </>
           ) : (
-            visibleWorkspaceEntries.map((entry) => {
+            visibleWorkspaceEntries.map((entry, entryIndex) => {
               const mobileSelectionKey = workspaceEntrySelectionKey(entry);
               const isMobileSelected =
                 isMobileViewport && mobileSelectedWorkspaceEntryKey === mobileSelectionKey;
@@ -16244,97 +16254,118 @@ function App() {
               const isExpanded = isDirectory && expandedDirectoryKeys.has(entryKey);
               const useSelectedFolderIcon = isDirectory && isExpanded;
               const isLoading = isDirectory && loadingDirectoryKeys.has(entryKey);
+              const nextEntry = visibleWorkspaceEntries[entryIndex + 1];
+              const isExpandedDirectoryEmpty =
+                isDirectory &&
+                isExpanded &&
+                !fileSearchActive &&
+                (!nextEntry || (nextEntry.depth ?? 1) <= (entry.depth ?? 1));
               const rowStyle = {
                 "--document-row-depth": entry.depth ?? 1,
               } as CSSProperties;
+              const emptyStateStyle = {
+                "--document-row-depth": (entry.depth ?? 1) + 1,
+              } as CSSProperties;
 
               return (
-                <button
-                  aria-describedby={
-                    entry.kind === "file" ? fileNameTooltipDescribedBy(entry.id) : undefined
-                  }
-                  aria-expanded={isDirectory ? isExpanded : undefined}
-                  className={`document-row ${isDirectory ? "is-folder" : ""} ${
-                    entry.kind === "file" ? "is-file" : ""
-                  } ${isExpanded ? "is-expanded" : ""} ${isLoading ? "is-loading" : ""} ${
-                    rowIsSelected ? "is-selected" : ""
-                  } ${
-                    isBatchSelected ? "is-batch-selected" : ""
-                  }`}
-                  key={entry.id}
-                  style={rowStyle}
-                  onClick={(event) => {
-                    hideFileNameTooltip();
-                    openWorkspaceEntry(entry, event);
-                  }}
-                  onBlur={entry.kind === "file" ? hideFileNameTooltip : undefined}
-                  onContextMenu={(event) => {
-                    if (entry.kind === "parent-directory") return;
-
-                    hideFileNameTooltip();
-                    cancelWorkspaceFileLongPress();
-                    openFileContextMenu(entry, event);
-                  }}
-                  onFocus={
-                    entry.kind === "file"
-                      ? (event) =>
-                          showFocusedFileNameTooltip(event, entry.id, entry.title)
-                      : undefined
-                  }
-                  onKeyDown={
-                    entry.kind === "file" ? handleFileNameTooltipKeyDown : undefined
-                  }
-                  onMouseEnter={
-                    entry.kind === "file"
-                      ? (event) =>
-                          scheduleFileNameTooltip(
-                            event.currentTarget,
-                            entry.id,
-                            entry.title,
-                          )
-                      : undefined
-                  }
-                  onMouseLeave={entry.kind === "file" ? hideFileNameTooltip : undefined}
-                  onPointerCancel={(event) => {
-                    cancelWorkspaceFileLongPress(event.pointerId);
-                  }}
-                  onPointerDown={(event) => {
-                    hideFileNameTooltip();
-                    if (entry.kind === "parent-directory") return;
-
-                    startWorkspaceFileLongPress(entry, event);
-                  }}
-                  onPointerMove={moveWorkspaceFileLongPress}
-                  onPointerUp={(event) => {
-                    cancelWorkspaceFileLongPress(event.pointerId);
-                  }}
-                  title={entry.kind === "file" ? undefined : entry.title}
-                  type="button"
-                >
-                  <span
-                    className={`document-disclosure ${isDirectory ? "" : "is-placeholder"}`}
-                    aria-hidden="true"
-                  >
-                    {isDirectory ? (isLoading ? "..." : isExpanded ? "⌄" : "›") : ""}
-                  </span>
-                  <DocumentGlyphIcon
-                    kind={isDirectory ? "folder" : "file"}
-                    selected={
-                      isDirectory
-                        ? useSelectedFolderIcon || isMobileSelected
-                        : isSelected || isMobileSelected || isBatchSelected
+                <Fragment key={entry.id}>
+                  <button
+                    aria-describedby={
+                      entry.kind === "file" ? fileNameTooltipDescribedBy(entry.id) : undefined
                     }
-                  />
-                  <span
-                    className="document-title"
-                    data-file-name-overflow={entry.kind === "file" ? "" : undefined}
+                    aria-expanded={isDirectory ? isExpanded : undefined}
+                    className={`document-row ${isDirectory ? "is-folder" : ""} ${
+                      entry.kind === "file" ? "is-file" : ""
+                    } ${isExpanded ? "is-expanded" : ""} ${isLoading ? "is-loading" : ""} ${
+                      rowIsSelected ? "is-selected" : ""
+                    } ${isBatchSelected ? "is-batch-selected" : ""}`}
+                    style={rowStyle}
+                    onClick={(event) => {
+                      hideFileNameTooltip();
+                      openWorkspaceEntry(entry, event);
+                    }}
+                    onBlur={entry.kind === "file" ? hideFileNameTooltip : undefined}
+                    onContextMenu={(event) => {
+                      if (entry.kind === "parent-directory") return;
+
+                      hideFileNameTooltip();
+                      cancelWorkspaceFileLongPress();
+                      openFileContextMenu(entry, event);
+                    }}
+                    onFocus={
+                      entry.kind === "file"
+                        ? (event) => showFocusedFileNameTooltip(event, entry.id, entry.title)
+                        : undefined
+                    }
+                    onKeyDown={
+                      entry.kind === "file" ? handleFileNameTooltipKeyDown : undefined
+                    }
+                    onMouseEnter={
+                      entry.kind === "file"
+                        ? (event) =>
+                            scheduleFileNameTooltip(event.currentTarget, entry.id, entry.title)
+                        : undefined
+                    }
+                    onMouseLeave={entry.kind === "file" ? hideFileNameTooltip : undefined}
+                    onPointerCancel={(event) => {
+                      cancelWorkspaceFileLongPress(event.pointerId);
+                    }}
+                    onPointerDown={(event) => {
+                      hideFileNameTooltip();
+                      if (entry.kind === "parent-directory") return;
+
+                      startWorkspaceFileLongPress(entry, event);
+                    }}
+                    onPointerMove={moveWorkspaceFileLongPress}
+                    onPointerUp={(event) => {
+                      cancelWorkspaceFileLongPress(event.pointerId);
+                    }}
+                    title={entry.kind === "file" ? undefined : entry.title}
+                    type="button"
                   >
-                    {entry.title}
-                  </span>
-                </button>
+                    <span
+                      className={`document-disclosure ${isDirectory ? "" : "is-placeholder"}`}
+                      aria-hidden="true"
+                    >
+                      {isDirectory ? (isLoading ? "..." : isExpanded ? "⌄" : "›") : ""}
+                    </span>
+                    <DocumentGlyphIcon
+                      kind={isDirectory ? "folder" : "file"}
+                      selected={
+                        isDirectory
+                          ? useSelectedFolderIcon || isMobileSelected
+                          : isSelected || isMobileSelected || isBatchSelected
+                      }
+                    />
+                    <span
+                      className="document-title"
+                      data-file-name-overflow={entry.kind === "file" ? "" : undefined}
+                    >
+                      {entry.title}
+                    </span>
+                  </button>
+                  {isExpandedDirectoryEmpty ? (
+                    <p className="directory-empty-state" role="status" style={emptyStateStyle}>
+                      {entry.source === "dropbox"
+                        ? t("dropbox.emptyFolder")
+                        : t("status.noFoldersOrMarkdown")}
+                    </p>
+                  ) : null}
+                </Fragment>
               );
             })
           )}
+
+          {fileSearchMode === "files" &&
+          !fileSearchActive &&
+          workspaceSource &&
+          workspaceEntries.length === 0 ? (
+            <p className="directory-empty-state is-root" role="status">
+              {workspaceSource === "dropbox"
+                ? t("dropbox.emptyFolder")
+                : t("status.noFoldersOrMarkdown")}
+            </p>
+          ) : null}
 
           {fileSearchHasNoResults ? (
             <p className="file-search-status" role="status">

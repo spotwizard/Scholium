@@ -232,6 +232,33 @@ assert.equal(mobileLockedPastViewport.top, 718);
 assert.ok(mobileLockedPastViewport.top > 543);
 
 const appSource = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
+const appCss = readFileSync(new URL("../src/App.css", import.meta.url), "utf8");
+assert.match(appCss, /\.editor-toolbar \{\s*position: absolute;/);
+assert.doesNotMatch(appCss, /\.editor-toolbar \{\s*position: fixed;/);
+const expandedShellRule = appCss.match(
+  /\.scholium-shell\.is-note-panel-expanded \{([^}]*)\}/,
+)?.[1];
+assert.ok(expandedShellRule, "expanded floating panel shell rule must exist");
+assert.doesNotMatch(expandedShellRule, /height|overflow/);
+assert.doesNotMatch(appCss, /\.scholium-shell\.is-note-panel-expanded \.editor-pane/);
+const floatingPanelToggle = appSource.match(
+  /function toggleFloatingNotePanelExpanded\(\) \{([\s\S]*?)\n  \}/,
+)?.[1];
+assert.ok(floatingPanelToggle, "floating panel toggle must exist");
+assert.doesNotMatch(floatingPanelToggle, /scroll|overflow|editorPane/);
+assert.doesNotMatch(appSource, /floatingNotePanelScrollPositionRef/);
+assert.doesNotMatch(appSource, /expandedNotePanelScrollLocked/);
+assert.match(
+  appSource,
+  /const expandedNotePanelActive =\s*floatingNotePanelExpanded \|\| libraryNotePanelExpanded;/,
+);
+assert.match(
+  appSource,
+  /useEffect\(\(\) => \{\s*if \(!libraryNotePanelExpanded\) return undefined;[\s\S]*?document\.body\.style\.overflow = "hidden";[\s\S]*?\}, \[libraryNotePanelExpanded\]\);/,
+);
+assert.doesNotMatch(appSource, /document\.body\.style\.position = "fixed";/);
+assert.doesNotMatch(appSource, /ensureTextAnnotationVisible/);
+assert.doesNotMatch(appSource, /previousFloatingNotePanelExpandedRef/);
 assert.match(
   appSource,
   /function currentFloatingNoteViewportRect\(\)[\s\S]*?querySelector<HTMLElement>\("\.mobile-command-bar"\)[\s\S]*?height: Math\.max\(0, bottom - viewportRect\.top\)/,
