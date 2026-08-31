@@ -3,10 +3,10 @@ import { readFileSync } from "node:fs";
 
 const css = readFileSync(new URL("../src/App.css", import.meta.url), "utf8");
 const announcementRule = css.match(
-  /\.markdown-editor-host > \.cm-editor > \.cm-announced \{[\s\S]*?\}/,
+  /\.cm-editor > \.cm-announced \{[\s\S]*?\}/,
 )?.[0];
 
-assert.ok(announcementRule, "the source editor must keep CodeMirror announcements off-screen");
+assert.ok(announcementRule, "every CodeMirror editor must keep announcements off-screen");
 assert.match(announcementRule, /position:\s*fixed\s*!important;/);
 assert.match(announcementRule, /top:\s*-10000px\s*!important;/);
 assert.doesNotMatch(
@@ -15,4 +15,4 @@ assert.doesNotMatch(
   "screen readers must still receive CodeMirror accessibility announcements",
 );
 
-console.log("source mode accessibility announcement regression: PASS");
+console.log("CodeMirror accessibility announcement regression: PASS");
