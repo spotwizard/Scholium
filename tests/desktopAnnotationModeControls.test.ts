@@ -26,7 +26,7 @@ assert.match(css, /note-mode\.svg/);
 assert.match(css, /glossary-mode\.svg/);
 assert.match(noteIcon, /viewBox="0 0 300 300"/);
 assert.match(glossaryIcon, /viewBox="0 0 300 300"/);
-assert.match(notices, /notebook_3914245/);
-assert.match(notices, /book-alt_3914149/);
+assert.match(notices, /memo-pad_9585401/);
+assert.match(notices, /book-font_9083447/);
 
 console.log("desktop annotation mode controls regression: PASS");
