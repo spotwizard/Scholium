@@ -17173,26 +17173,35 @@ function App() {
         <div className="editor-grid">
           <div className="editor-surface" style={editorSurfaceStyle}>
             {noteModeEnabled ? (
-              <p
-                aria-hidden={
-                  !mobileNoteSelectionHintVisible && !noteModeSourceBlockedNoticePosition
-                }
-                className={`mobile-feedback-surface mobile-note-selection-hint ${
-                  mobileNoteSelectionHintVisible || noteModeSourceBlockedNoticePosition
-                    ? "is-visible"
-                    : ""
-                } ${noteModeSourceBlockedNoticePosition ? "is-source-mode-blocked" : ""}`}
-                role="status"
-                style={noteModeSourceBlockedNoticePosition ?? undefined}
-              >
-                {noteModeSourceBlockedNoticePosition
-                  ? t("toolbar.sourceMode.blockedByNoteMode")
-                  : t(
-                      mobileAnnotationKeyboardShouldStayClosed
-                        ? "selection.mobileNoteModeHint"
-                        : "selection.desktopNoteModeHint",
-                    )}
-              </p>
+              <>
+                {mobileNoteSelectionHintVisible && !noteModeSourceBlockedNoticePosition ? (
+                  <div aria-hidden="true" className="mobile-feedback-backdrop" />
+                ) : null}
+                <p
+                  aria-hidden={
+                    !mobileNoteSelectionHintVisible && !noteModeSourceBlockedNoticePosition
+                  }
+                  className={`mobile-feedback-surface mobile-note-selection-hint ${
+                    mobileNoteSelectionHintVisible || noteModeSourceBlockedNoticePosition
+                      ? "is-visible"
+                      : ""
+                  } ${
+                    mobileNoteSelectionHintVisible && !noteModeSourceBlockedNoticePosition
+                      ? "has-backdrop"
+                      : ""
+                  } ${noteModeSourceBlockedNoticePosition ? "is-source-mode-blocked" : ""}`}
+                  role="status"
+                  style={noteModeSourceBlockedNoticePosition ?? undefined}
+                >
+                  {noteModeSourceBlockedNoticePosition
+                    ? t("toolbar.sourceMode.blockedByNoteMode")
+                    : t(
+                        mobileAnnotationKeyboardShouldStayClosed
+                          ? "selection.mobileNoteModeHint"
+                          : "selection.desktopNoteModeHint",
+                      )}
+                </p>
+              </>
             ) : null}
             <div className="editor-content-frame">
               {hasOpenDocument ? (
@@ -17749,29 +17758,22 @@ function App() {
         </nav>
       ) : null}
 
-      {!settingsViewOpen && storageError && storageLoading && !dropboxDirectoryPicker ? (
-        <div className="mobile-storage-loading-overlay">
-          <p className="mobile-feedback-surface mobile-storage-status is-loading" role="status">
-            {storageError}
-          </p>
-        </div>
-      ) : null}
-
       {!settingsViewOpen &&
         storageError &&
-        !storageLoading &&
         !createEntryDialog &&
         !duplicateFileDialog &&
         !renameDialog &&
         !dropboxDirectoryPicker ? (
-        <p
-          className={`mobile-feedback-surface mobile-storage-status ${
-            dropboxConnecting ? "is-informational" : "is-error"
-          }`}
-          role="status"
-        >
-          {storageError}
-        </p>
+        <div className="mobile-feedback-backdrop mobile-storage-loading-overlay">
+          <p
+            className={`mobile-feedback-surface mobile-storage-status ${
+              storageLoading ? "is-loading" : dropboxConnecting ? "is-informational" : "is-error"
+            }`}
+            role="status"
+          >
+            {storageError}
+          </p>
+        </div>
       ) : null}
 
       {!settingsViewOpen && noteModeEnabled && selectionWarningPosition ? (
