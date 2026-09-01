@@ -14,6 +14,7 @@ const mermaidConfig = {
     fontFamily: "Inter, ui-sans-serif, system-ui, sans-serif",
   },
   flowchart: {
+    curve: "linear",
     htmlLabels: false,
   },
 } as const;

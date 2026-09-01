@@ -2656,6 +2656,58 @@ button.document-tag-chip__label:focus-visible {
   overflow: visible;
 }
 
+:is(
+    .markdown-preview .mermaid-diagram,
+    .bottom-note-body .mermaid-diagram,
+    .milkdown-markdown-editor .milkdown-mermaid-diagram
+  )
+  .node
+  :is(rect, circle, ellipse, polygon, path) {
+  fill: #dbeafe;
+  stroke: #3b82c4;
+}
+
+:is(
+    .markdown-preview .mermaid-diagram,
+    .bottom-note-body .mermaid-diagram,
+    .milkdown-markdown-editor .milkdown-mermaid-diagram
+  )
+  .cluster
+  rect {
+  fill: #f3f4f6;
+  stroke: #dbdbdb;
+}
+
+:is(
+    .markdown-preview .mermaid-diagram,
+    .bottom-note-body .mermaid-diagram,
+    .milkdown-markdown-editor .milkdown-mermaid-diagram
+  )
+  .flowchart-link {
+  fill: none;
+  stroke: #2f333b;
+  stroke-width: 1px;
+}
+
+:is(
+    .markdown-preview .mermaid-diagram,
+    .bottom-note-body .mermaid-diagram,
+    .milkdown-markdown-editor .milkdown-mermaid-diagram
+  )
+  .arrowMarkerPath {
+  fill: #2f333b;
+  stroke: #2f333b;
+}
+
+:is(
+    .markdown-preview .mermaid-diagram,
+    .bottom-note-body .mermaid-diagram,
+    .milkdown-markdown-editor .milkdown-mermaid-diagram
+  )
+  :is(.rough-node .label text, .node .label text, .image-shape .label, .icon-shape .label) {
+  text-anchor: middle;
+}
+
 .markdown-preview .mermaid-diagram foreignObject,
 .bottom-note-body .mermaid-diagram foreignObject,
 .milkdown-markdown-editor .milkdown-mermaid-diagram foreignObject {
