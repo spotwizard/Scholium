@@ -157,7 +157,11 @@ export type CreateNewWindowArgs = {
   requesterSceneIdentifier: string | null;
 };
 
-export type ValidateDroppedMarkdownFileArgs = { paths: string[] };
+export type ValidateDroppedMarkdownPathArgs = { paths: string[] };
+export type DroppedMarkdownPathResult = {
+  kind: "directory" | "file";
+  path: string;
+};
 export type SetNativeFolderPickerListViewArgs = { enabled: boolean };
 
 export type WritePdfFileArgs = {
@@ -285,8 +289,12 @@ export function checkDropboxConnection() {
   return invoke<DropboxOAuthStatusResult>("check_dropbox_connection");
 }
 
-export function validateDroppedMarkdownFile(args: ValidateDroppedMarkdownFileArgs) {
-  return invoke<string>("validate_dropped_markdown_file", args);
+export function validateDroppedMarkdownPath(args: ValidateDroppedMarkdownPathArgs) {
+  return invoke<DroppedMarkdownPathResult>("validate_dropped_markdown_path", args);
+}
+
+export function focusAndFullscreenAppWindow() {
+  return invoke<void>("focus_and_fullscreen_app_window");
 }
 
 export function setNativeFolderPickerListView(args: SetNativeFolderPickerListViewArgs) {

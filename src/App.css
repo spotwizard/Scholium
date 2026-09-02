@@ -3128,12 +3128,14 @@ button.document-tag-chip__label:focus-visible {
 
 .milkdown-markdown-editor .milkdown .milkdown-code-block {
   position: relative;
-  --code-block-toolbar-reserved-space: 42px;
+  --code-block-toolbar-reserved-space: 34px;
+  --code-block-content-bottom-space: 14px;
   isolation: isolate;
   overflow: visible;
   border: 1px solid var(--color-border);
   border-radius: 8px;
-  padding: var(--code-block-toolbar-reserved-space) 12px;
+  padding: var(--code-block-toolbar-reserved-space) 12px
+    var(--code-block-content-bottom-space);
   background: var(--color-surface-soft);
 }
 
@@ -3341,6 +3343,47 @@ button.document-tag-chip__label:focus-visible {
   padding: 0;
 }
 
+.milkdown-markdown-editor .milkdown .milkdown-code-block .tok-keyword,
+.milkdown-markdown-editor .milkdown .milkdown-code-block .tok-atom,
+.milkdown-markdown-editor .milkdown .milkdown-code-block .tok-bool {
+  color: var(--color-source-syntax-heading);
+}
+
+.milkdown-markdown-editor .milkdown .milkdown-code-block .tok-typeName,
+.milkdown-markdown-editor .milkdown .milkdown-code-block .tok-className,
+.milkdown-markdown-editor .milkdown .milkdown-code-block .tok-namespace {
+  color: var(--color-source-syntax-strong);
+}
+
+.milkdown-markdown-editor .milkdown .milkdown-code-block .tok-propertyName,
+.milkdown-markdown-editor .milkdown .milkdown-code-block .tok-variableName,
+.milkdown-markdown-editor .milkdown .milkdown-code-block .tok-labelName {
+  color: var(--color-source-syntax-quote);
+}
+
+.milkdown-markdown-editor .milkdown .milkdown-code-block .tok-string,
+.milkdown-markdown-editor .milkdown .milkdown-code-block .tok-string2,
+.milkdown-markdown-editor .milkdown .milkdown-code-block .tok-regexp {
+  color: var(--color-source-syntax-code);
+}
+
+.milkdown-markdown-editor .milkdown .milkdown-code-block .tok-number,
+.milkdown-markdown-editor .milkdown .milkdown-code-block .tok-literal {
+  color: var(--color-source-syntax-emphasis);
+}
+
+.milkdown-markdown-editor .milkdown .milkdown-code-block .tok-comment,
+.milkdown-markdown-editor .milkdown .milkdown-code-block .tok-meta {
+  color: var(--color-source-syntax-meta);
+  font-style: italic;
+}
+
+.milkdown-markdown-editor .milkdown .milkdown-code-block .tok-operator,
+.milkdown-markdown-editor .milkdown .milkdown-code-block .tok-punctuation,
+.milkdown-markdown-editor .milkdown .milkdown-code-block .tok-url {
+  color: var(--color-source-syntax-url);
+}
+
 .milkdown-markdown-editor .milkdown .milkdown-code-block .cm-gutters,
 .milkdown-markdown-editor .milkdown .milkdown-code-block .cm-activeLineGutter {
   display: none;
@@ -3381,6 +3424,99 @@ button.document-tag-chip__label:focus-visible {
   font: inherit;
   line-height: inherit;
   white-space: inherit;
+}
+
+.milkdown-markdown-editor .milkdown .milkdown-code-block.is-text-diagram {
+  overflow: hidden;
+  border-color: color-mix(in srgb, #6e1b2b 38%, var(--color-border));
+  border-left: 4px solid #6e1b2b;
+  padding: var(--code-block-toolbar-reserved-space) 20px
+    var(--code-block-content-bottom-space);
+  background:
+    linear-gradient(145deg, color-mix(in srgb, var(--color-surface) 88%, transparent), transparent),
+    var(--color-surface-soft);
+  box-shadow: var(--shadow-low);
+}
+
+.milkdown-markdown-editor
+  .milkdown
+  .milkdown-code-block.is-text-diagram
+  .cm-scroller {
+  font-family:
+    Menlo, "SFMono-Regular", "Cascadia Code", "Roboto Mono", Consolas, "Liberation Mono",
+    monospace;
+}
+
+.milkdown-markdown-editor
+  .milkdown
+  .milkdown-code-block.is-text-diagram
+  .cm-line.text-diagram-line {
+  position: relative;
+  z-index: 0;
+  width: max-content;
+  min-height: 1.45em;
+  color: var(--color-preview-editor-text);
+  line-height: 1.45;
+}
+
+.milkdown-markdown-editor
+  .milkdown
+  .milkdown-code-block.is-text-diagram
+  .cm-line.text-diagram-line.is-blank {
+  min-height: 0.7em;
+}
+
+.milkdown-markdown-editor
+  .milkdown
+  .milkdown-code-block.is-text-diagram
+  .cm-line.text-diagram-line.is-connector {
+  color: color-mix(in srgb, #9a7044 82%, var(--color-muted));
+  font-weight: 700;
+}
+
+.milkdown-markdown-editor
+  .milkdown
+  .milkdown-code-block.is-text-diagram
+  .cm-line.text-diagram-line.is-node {
+  border: 1px solid color-mix(in srgb, #cdb48f 74%, var(--color-border));
+  border-radius: 6px;
+  margin: 2px 0;
+  padding: 4px 11px;
+  color: #fff1de;
+  background: #6e1b2b;
+  box-shadow: 0 3px 9px rgba(70, 20, 35, 0.12);
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+  font-weight: 720;
+}
+
+.milkdown-markdown-editor
+  .milkdown
+  .milkdown-code-block.is-text-diagram
+  .cm-line.text-diagram-line.is-branch {
+  margin: 2px 0;
+  padding: 2px 9px 2px 0;
+}
+
+.milkdown-markdown-editor
+  .milkdown
+  .milkdown-code-block.is-text-diagram
+  .cm-line.text-diagram-line.is-branch::before {
+  position: absolute;
+  inset: 0 0 0 var(--text-diagram-label-offset, 0);
+  z-index: -1;
+  border: 1px solid color-mix(in srgb, #cdb48f 74%, var(--color-border));
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--color-surface-raised) 92%, #fff4df);
+  box-shadow: 0 3px 9px rgba(70, 48, 30, 0.07);
+  content: "";
+}
+
+.milkdown-markdown-editor
+  .milkdown
+  .milkdown-code-block.is-text-diagram
+  .cm-line.text-diagram-line.is-depth-2::before {
+  border-color: color-mix(in srgb, var(--color-glossary-border) 62%, var(--color-border));
+  background: color-mix(in srgb, var(--color-glossary-surface-soft) 54%, var(--color-surface));
 }
 
 .milkdown-note-annotation {
@@ -7167,7 +7303,8 @@ button.document-tag-chip__label:focus-visible {
     box-sizing: border-box;
     max-width: 100%;
     overflow: hidden;
-    padding: var(--code-block-toolbar-reserved-space) 10px;
+    padding: var(--code-block-toolbar-reserved-space) 10px
+      var(--code-block-content-bottom-space);
   }
 
   .milkdown-markdown-editor .milkdown .milkdown-code-block .tools {
@@ -7219,6 +7356,11 @@ button.document-tag-chip__label:focus-visible {
   .milkdown-markdown-editor .milkdown .milkdown-code-block-preview {
     overflow-wrap: anywhere;
     white-space: pre-wrap;
+  }
+
+  .milkdown-markdown-editor .milkdown .milkdown-code-block.is-text-diagram {
+    padding: var(--code-block-toolbar-reserved-space) 12px
+      var(--code-block-content-bottom-space);
   }
 
   .markdown-preview h1 {

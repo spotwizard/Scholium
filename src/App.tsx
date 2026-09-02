@@ -237,7 +237,8 @@ import {
   startDropboxOAuth,
   takeNewWindowDocumentTarget,
   takeOpenedFilePaths,
-  validateDroppedMarkdownFile,
+  validateDroppedMarkdownPath,
+  focusAndFullscreenAppWindow,
   writePdfFile,
   writePdfFileToDirectory,
   type DropboxOAuthStatusResult,
@@ -10242,7 +10243,7 @@ function App() {
   async function openDirectoryPath(path: string) {
     if (!nativeStorageAvailable) {
       setStorageError(t("error.nativeRuntimeRequired"));
-      return;
+      return false;
     }
 
     setStorageError(t("status.openingFolder"));
@@ -10252,8 +10253,10 @@ function App() {
         path,
       });
       applyOpenedDirectory(openedDirectory);
+      return true;
     } catch (error) {
       setStorageError(translatedError(error, "error.openFolderFailed"));
+      return false;
     }
   }
 
@@ -11073,20 +11076,36 @@ function App() {
   }
 
   async function openDroppedMarkdownPaths(paths: string[]) {
+    let droppedPath;
+
     try {
-      const path = await validateDroppedMarkdownFile({ paths });
-      await openMarkdownFilePath(path);
+      droppedPath = await validateDroppedMarkdownPath({ paths });
     } catch {
       setStorageError(t("error.dropOneMdFile"));
-    } finally {
       setMobileStartupPhase("hidden");
+      return;
     }
+
+    const opened =
+      droppedPath.kind === "directory"
+        ? await openDirectoryPath(droppedPath.path)
+        : await openMarkdownFilePath(droppedPath.path);
+
+    if (opened) {
+      try {
+        await focusAndFullscreenAppWindow();
+      } catch (error) {
+        console.error(error);
+      }
+    }
+
+    setMobileStartupPhase("hidden");
   }
 
   async function openMarkdownFilePath(path: string) {
     if (!nativeStorageAvailable) {
       setStorageError(t("error.nativeRuntimeRequired"));
-      return;
+      return false;
     }
 
     setStorageError(t("status.openingFile"));
@@ -11097,8 +11116,10 @@ function App() {
       });
 
       applyOpenedDirectory(directoryWithSelectedFile(context), context.selectedFile.path);
+      return true;
     } catch (error) {
       setStorageError(translatedError(error, "error.openFileFailed"));
+      return false;
     }
   }
 

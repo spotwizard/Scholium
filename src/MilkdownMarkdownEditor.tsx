@@ -1,8 +1,14 @@
 import { Crepe, CrepeFeature } from "@milkdown/crepe";
 import {
+  Decoration as CodeMirrorDecoration,
+  type DecorationSet as CodeMirrorDecorationSet,
   EditorView as CodeMirrorEditorView,
+  type ViewUpdate as CodeMirrorViewUpdate,
   ViewPlugin as CodeMirrorViewPlugin,
 } from "@codemirror/view";
+import { syntaxHighlighting as codeMirrorSyntaxHighlighting } from "@codemirror/language";
+import { languages as codeMirrorLanguages } from "@codemirror/language-data";
+import { classHighlighter as codeMirrorClassHighlighter } from "@lezer/highlight";
 import { codeBlockConfig } from "@milkdown/kit/component/code-block";
 import { listItemBlockConfig } from "@milkdown/kit/component/list-item-block";
 import {
@@ -87,6 +93,7 @@ import {
 } from "./milkdownSerialization";
 import { loadScholiumMermaid } from "./mermaid";
 import { readMarkdownImageFile } from "./tauriGateway";
+import { parseTextDiagramPreview } from "./textDiagramPreview";
 
 type MilkdownMarkdownEditorProps = {
   value: string;
@@ -234,6 +241,61 @@ const codeMirrorNativePrimarySelection = CodeMirrorViewPlugin.define((view) => {
     update: syncSelectionRenderer,
   };
 });
+
+function codeMirrorBlockLanguage(view: CodeMirrorEditorView) {
+  const languageButton = view.dom
+    .closest<HTMLElement>(".milkdown-code-block")
+    ?.querySelector<HTMLElement>(".language-button");
+
+  return (
+    Array.from(languageButton?.childNodes ?? []).find(
+      (node) => node.nodeType === Node.TEXT_NODE && Boolean(node.textContent?.trim()),
+    )?.textContent ?? ""
+  );
+}
+
+function buildCodeMirrorTextDiagramDecorations(view: CodeMirrorEditorView) {
+  const codeBlock = view.dom.closest<HTMLElement>(".milkdown-code-block");
+  const lines = parseTextDiagramPreview(codeMirrorBlockLanguage(view), view.state.doc.toString());
+  codeBlock?.classList.toggle("is-text-diagram", Boolean(lines));
+  if (!lines) return CodeMirrorDecoration.none;
+
+  return CodeMirrorDecoration.set(
+    lines.map((line, index) => {
+      const classes = ["text-diagram-line", `is-${line.kind}`];
+      const attributes: Record<string, string> = { class: classes.join(" ") };
+      if (line.kind === "branch") {
+        classes.push(`is-depth-${line.depth}`);
+        attributes.class = classes.join(" ");
+        attributes.style = `--text-diagram-label-offset:${Math.max(0, line.prefix.length - 1)}ch`;
+      }
+
+      return CodeMirrorDecoration.line({ attributes }).range(view.state.doc.line(index + 1).from);
+    }),
+  );
+}
+
+const codeMirrorTextDiagramPreview = CodeMirrorViewPlugin.fromClass(
+  class {
+    decorations: CodeMirrorDecorationSet;
+    codeBlock: HTMLElement | null;
+
+    constructor(view: CodeMirrorEditorView) {
+      this.codeBlock = view.dom.closest<HTMLElement>(".milkdown-code-block");
+      this.decorations = buildCodeMirrorTextDiagramDecorations(view);
+    }
+
+    update(update: CodeMirrorViewUpdate) {
+      this.codeBlock = update.view.dom.closest<HTMLElement>(".milkdown-code-block");
+      this.decorations = buildCodeMirrorTextDiagramDecorations(update.view);
+    }
+
+    destroy() {
+      this.codeBlock?.classList.remove("is-text-diagram");
+    }
+  },
+  { decorations: (plugin) => plugin.decorations },
+);
 
 function webKitCodeBlockSelectionExtensions() {
   if (typeof navigator === "undefined" || navigator.vendor !== "Apple Computer, Inc.") {
@@ -3619,6 +3681,7 @@ export function MilkdownMarkdownEditor({
     observer.observe(root, {
       attributeFilter: ["contenteditable", "tabindex"],
       attributes: true,
+      characterData: true,
       childList: true,
       subtree: true,
     });
@@ -5671,8 +5734,11 @@ export function MilkdownMarkdownEditor({
 
       ctx.update(codeBlockConfig.key, (previousConfig) => ({
         ...previousConfig,
+        languages: codeMirrorLanguages,
         extensions: [
           ...previousConfig.extensions,
+          codeMirrorTextDiagramPreview,
+          codeMirrorSyntaxHighlighting(codeMirrorClassHighlighter),
           ...webKitCodeBlockSelectionExtensions(),
         ],
         copyText: codeBlockCopyLabelRef.current,

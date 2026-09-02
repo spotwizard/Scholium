@@ -73,7 +73,12 @@ function normalizeSerializedHardBreaks(markdown: string) {
       continue;
     }
 
-    if (!inFencedCodeBlock && index < lines.length - 1 && line.endsWith("\\")) {
+    const trailingBackslashCount = line.match(/\\+$/)?.[0].length ?? 0;
+    if (
+      !inFencedCodeBlock &&
+      index < lines.length - 1 &&
+      trailingBackslashCount % 2 === 1
+    ) {
       normalizedLines.push(line.slice(0, -1));
       continue;
     }
