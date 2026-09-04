@@ -171,6 +171,11 @@ assert.match(
   appSource,
   /function handlePreviewPaste[\s\S]*?const caretSourcePosition = selectedRange\.from \+ pastedText\.length;[\s\S]*?focusPreviewSourcePosition\(nextValue, caretSourcePosition\);[\s\S]*?commitPreviewChange\(nextValue\)/,
 );
+assert.match(
+  markdownPreviewSource,
+  /function handlePreviewCut[\s\S]*?const selectedText = selection\.toString\(\);[\s\S]*?commitPreviewSelectionDeletion\(previewElement\)[\s\S]*?event\.preventDefault\(\);[\s\S]*?clipboardData\.setData\("text\/plain", selectedText\)/,
+);
+assert.match(markdownPreviewSource, /onCut=\{handlePreviewCut\}/);
 assert.doesNotMatch(
   appSource,
   /function handlePreviewPaste[\s\S]*?focusPreviewBlockEnd\(focusBlock\.key\)/,

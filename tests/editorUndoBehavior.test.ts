@@ -107,6 +107,26 @@ const fullLineWithBoundaryRedo = takeNoteEditorRedo(
 );
 assert.equal(fullLineWithBoundaryRedo.snapshot?.value, fullLineWithBoundaryAfter);
 
+const cutBefore = "前段內容<br>💡 建議：<br>後段內容";
+const cutText = "💡 建議：";
+const cutFrom = cutBefore.indexOf(cutText);
+const cutAfter = cutBefore.slice(0, cutFrom) + cutBefore.slice(cutFrom + cutText.length);
+const cutHistory = recordNoteEditorChange(
+  createNoteEditorHistory(),
+  cutBefore,
+  cutAfter,
+);
+assert.equal(cutAfter, "前段內容<br><br>後段內容");
+const cutUndo = takeNoteEditorUndo(cutHistory, cutAfter);
+assert.equal(cutUndo.snapshot?.value, cutBefore);
+assert.equal(cutUndo.snapshot?.caretSourcePosition, cutFrom + cutText.length);
+const cutRedo = takeNoteEditorRedo(
+  cutUndo.history,
+  cutUndo.snapshot?.value ?? "",
+);
+assert.equal(cutRedo.snapshot?.value, cutAfter);
+assert.equal(cutRedo.snapshot?.caretSourcePosition, cutFrom);
+
 for (const [emptyLineBefore, emptyLineAfter] of [
   ["前段內容<br>\n\n後段內容", "前段內容\n\n後段內容"],
   ["前段內容\n\n<br>\n\n後段內容", "前段內容\n\n\n\n後段內容"],

@@ -4040,6 +4040,30 @@ function MarkdownPreview({
     commitPreviewChange(nextValue);
   }
 
+  function handlePreviewCut(event: ReactClipboardEvent<HTMLDivElement>) {
+    if (readOnly || !event.clipboardData) return;
+
+    const selection = window.getSelection();
+    if (!selection || selection.isCollapsed || selection.rangeCount === 0) return;
+
+    const previewElement = event.currentTarget;
+    const selectedRange = selection.getRangeAt(0);
+    if (
+      !previewElement.contains(selectedRange.startContainer) ||
+      !previewElement.contains(selectedRange.endContainer)
+    ) {
+      return;
+    }
+
+    const selectedText = selection.toString();
+    if (!selectedText || !commitPreviewSelectionDeletion(previewElement)) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    event.clipboardData.clearData();
+    event.clipboardData.setData("text/plain", selectedText);
+  }
+
   function handlePreviewInput(event: FormEvent<HTMLDivElement>) {
     if (readOnly) {
       event.preventDefault();
@@ -4691,6 +4715,7 @@ function MarkdownPreview({
       onBlur={handlePreviewBlur}
       onBeforeInput={handlePreviewBeforeInput}
       onCompositionEnd={handlePreviewCompositionEnd}
+      onCut={handlePreviewCut}
       onInput={handlePreviewInput}
       onKeyDownCapture={handlePreviewKeyDown}
       onPaste={handlePreviewPaste}
