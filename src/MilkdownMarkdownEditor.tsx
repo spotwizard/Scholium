@@ -34,7 +34,9 @@ import "@milkdown/crepe/theme/common/style.css";
 import "@milkdown/crepe/theme/frame.css";
 import {
   type KeyboardEvent as ReactKeyboardEvent,
+  forwardRef,
   useEffect,
+  useImperativeHandle,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -43,6 +45,8 @@ import {
 import type {
   AnnotationTone,
   EditorChangeSource,
+  EditorSelectionHandle,
+  EditorSelectionSnapshot,
   TextAnnotation,
   TextSelectionAnchor,
   TextSelectionEnterContext,
@@ -57,11 +61,17 @@ import {
 import { clearTouchButtonFocus } from "./touchPointer";
 import { shouldHandlePreviewSelectAllShortcut } from "./editorKeyboardShortcuts";
 import {
+  frontmatterBodyOffsetFromFullSourceOffset,
   fullSourceOffsetFromFrontmatterBodyOffset,
   mergeMarkdownFrontmatter,
   splitMarkdownFrontmatter,
   stripMarkdownFrontmatter,
 } from "./markdownFrontmatter";
+import { scheduleEditorViewportRestore } from "./editorViewport";
+import {
+  fencedCodeBlockSelectionFromSource,
+  sourceSelectionFromFencedCodeBlock,
+} from "./fencedCodeBlockSelection";
 import { serializeMarkedTextClipboardSlice } from "./markdownClipboard";
 import { localMarkdownImageNeedsHydration } from "./markdownLinkTarget";
 import { linkTooltipPositionWithinBounds } from "./linkTooltipPosition";
@@ -99,6 +109,7 @@ type MilkdownMarkdownEditorProps = {
   value: string;
   annotations: TextAnnotation[];
   documentFilePath?: string | null;
+  focusRequestKey?: number;
   noteModeEnabled: boolean;
   readOnly?: boolean;
   mobileBlockSelectionEnabled?: boolean;
@@ -108,7 +119,9 @@ type MilkdownMarkdownEditorProps = {
   mobileCommittedSelectionTone?: AnnotationTone;
   mobileSelectionToneForAnchor?: (anchor: TextSelectionAnchor) => AnnotationTone;
   search?: DocumentSearchState;
+  selectionToRestore?: EditorSelectionSnapshot | null;
   selectAllRequestKey?: number;
+  onFocusRequestHandled?: (requestKey: number) => void;
   onSearchMatchCountChange?: (count: number) => void;
   toolbarEnabled?: boolean;
   codeBlockCopyLabel: string;
@@ -260,19 +273,40 @@ function buildCodeMirrorTextDiagramDecorations(view: CodeMirrorEditorView) {
   codeBlock?.classList.toggle("is-text-diagram", Boolean(lines));
   if (!lines) return CodeMirrorDecoration.none;
 
-  return CodeMirrorDecoration.set(
-    lines.map((line, index) => {
+  const decorations = lines.flatMap((line, index) => {
+      const documentLine = view.state.doc.line(index + 1);
+      const previousLine = lines[index - 1];
       const classes = ["text-diagram-line", `is-${line.kind}`];
+      if (
+        (line.kind === "node" || line.kind === "branch") &&
+        (previousLine?.kind === "node" || previousLine?.kind === "branch")
+      ) {
+        classes.push("has-box-before");
+      }
       const attributes: Record<string, string> = { class: classes.join(" ") };
       if (line.kind === "branch") {
         classes.push(`is-depth-${line.depth}`);
         attributes.class = classes.join(" ");
-        attributes.style = `--text-diagram-label-offset:${Math.max(0, line.prefix.length - 1)}ch`;
       }
 
-      return CodeMirrorDecoration.line({ attributes }).range(view.state.doc.line(index + 1).from);
-    }),
-  );
+      const lineDecoration = CodeMirrorDecoration.line({ attributes }).range(documentLine.from);
+      if ((line.kind !== "node" && line.kind !== "branch") || !line.label) {
+        return [lineDecoration];
+      }
+
+      const labelFrom = line.kind === "branch"
+        ? documentLine.from + line.prefix.length
+        : documentLine.from;
+      return [
+        lineDecoration,
+        CodeMirrorDecoration.mark({ class: "text-diagram-label" }).range(
+          labelFrom,
+          documentLine.to,
+        ),
+      ];
+    });
+
+  return CodeMirrorDecoration.set(decorations, true);
 }
 
 const codeMirrorTextDiagramPreview = CodeMirrorViewPlugin.fromClass(
@@ -1732,6 +1766,124 @@ function visibleTextIndexFromProsePosition(doc: ProseMirrorNode, position: numbe
   return index >= 0 ? index : visibleTextIndex.text.length;
 }
 
+function markdownSourceOffsetFromProsePosition(
+  doc: ProseMirrorNode,
+  markdown: string,
+  position: number,
+) {
+  const frontmatter = splitMarkdownFrontmatter(markdown);
+  const bodyStart = frontmatter?.bodyStart ?? 0;
+  const body = frontmatter?.body ?? markdown.replace(/\r\n/g, "\n");
+  const textMap = normalizeTextMapForMatch(buildMarkdownVisibleTextMap(body));
+  const visiblePrefix = doc.textBetween(0, position, "\n");
+  const visibleIndex = normalizeSelectedText(visiblePrefix).length;
+  const mappedOffsets = textMap.sourceOffsets.filter(
+    (offset): offset is number => offset !== null,
+  );
+  if (mappedOffsets.length === 0) return bodyStart;
+  if (visibleIndex <= 0) return bodyStart + mappedOffsets[0];
+  if (visibleIndex >= textMap.sourceOffsets.length) {
+    return bodyStart + mappedOffsets[mappedOffsets.length - 1] + 1;
+  }
+
+  if (/\s/.test(textMap.text[visibleIndex] ?? "")) {
+    const visibleTextIndex = buildNormalizedVisibleTextIndex(doc);
+    const proseTextIndex = visibleTextIndex.positions.findIndex(
+      (visiblePosition) => visiblePosition === position,
+    );
+    const isStartOfNextVisibleText =
+      proseTextIndex >= 0 && visibleTextIndex.text[proseTextIndex] !== " ";
+
+    if (!isStartOfNextVisibleText) {
+      const previousOffset = textMap.sourceOffsets
+        .slice(0, visibleIndex)
+        .reverse()
+        .find((offset): offset is number => offset !== null);
+      if (previousOffset !== undefined) return bodyStart + previousOffset + 1;
+    }
+
+    const nextVisibleOffset = textMap.sourceOffsets
+      .slice(visibleIndex + 1)
+      .find((offset): offset is number => offset !== null);
+    if (nextVisibleOffset !== undefined) return bodyStart + nextVisibleOffset;
+  }
+
+  const nextOffset = textMap.sourceOffsets
+    .slice(visibleIndex)
+    .find((offset): offset is number => offset !== null);
+  return bodyStart + (nextOffset ?? mappedOffsets[mappedOffsets.length - 1] + 1);
+}
+
+function prosePositionFromMarkdownSourceOffset(
+  doc: ProseMirrorNode,
+  markdown: string,
+  sourceOffset: number,
+) {
+  const frontmatter = splitMarkdownFrontmatter(markdown);
+  const bodyStart = frontmatter?.bodyStart ?? 0;
+  const body = frontmatter?.body ?? markdown.replace(/\r\n/g, "\n");
+  const textMap = normalizeTextMapForMatch(buildMarkdownVisibleTextMap(body));
+  const bodyOffset = Math.min(Math.max(sourceOffset - bodyStart, 0), body.length);
+  const visibleIndex = textMap.sourceOffsets.findIndex(
+    (offset) => offset !== null && offset >= bodyOffset,
+  );
+  const targetVisibleLength = visibleIndex >= 0 ? visibleIndex : textMap.text.length;
+
+  let low = 0;
+  let high = doc.content.size;
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2);
+    const visibleLength = normalizeSelectedText(doc.textBetween(0, middle, "\n")).length;
+    if (visibleLength < targetVisibleLength) {
+      low = middle + 1;
+    } else {
+      high = middle;
+    }
+  }
+
+  return low;
+}
+
+function markdownSelectionFromProseSelection(
+  doc: ProseMirrorNode,
+  markdown: string,
+  selection: EditorSelectionSnapshot,
+) {
+  return {
+    anchor: markdownSourceOffsetFromProsePosition(doc, markdown, selection.anchor),
+    head: markdownSourceOffsetFromProsePosition(doc, markdown, selection.head),
+  };
+}
+
+function proseSelectionFromMarkdownSelection(
+  doc: ProseMirrorNode,
+  markdown: string,
+  selection: EditorSelectionSnapshot,
+) {
+  return {
+    anchor: prosePositionFromMarkdownSourceOffset(doc, markdown, selection.anchor),
+    head: prosePositionFromMarkdownSourceOffset(doc, markdown, selection.head),
+  };
+}
+
+function proseCodeBlockContentStartAtIndex(doc: ProseMirrorNode, codeBlockIndex: number) {
+  let currentIndex = 0;
+  let contentStart: number | null = null;
+
+  doc.descendants((node, position) => {
+    if (contentStart !== null) return false;
+    if (node.type.name !== "code_block") return true;
+    if (currentIndex === codeBlockIndex) {
+      contentStart = position + 1;
+      return false;
+    }
+    currentIndex += 1;
+    return true;
+  });
+
+  return contentStart;
+}
+
 function buildProseNonWhitespaceTextIndex(doc: ProseMirrorNode) {
   const characters: string[] = [];
   const positions: number[] = [];
@@ -2036,36 +2188,45 @@ function createSearchPlugin({ getSearch }: { getSearch: () => DocumentSearchStat
   });
 }
 
-export function MilkdownMarkdownEditor({
-  value,
-  annotations,
-  documentFilePath = null,
-  noteModeEnabled,
-  readOnly = false,
-  mobileBlockSelectionEnabled = false,
-  mobileBlockSelectionHint,
-  mobileSelectionKind = "note",
-  mobileCommittedSelectionKey = "",
-  mobileCommittedSelectionTone = 0,
-  mobileSelectionToneForAnchor,
-  search = { activeIndex: 0, query: "" },
-  selectAllRequestKey = 0,
-  onSearchMatchCountChange,
-  toolbarEnabled = true,
-  codeBlockCopyLabel,
-  codeBlockCopiedLabel,
-  codeBlockDeleteLabel,
-  mermaidEmptyDefinitionLabel,
-  mermaidErrorLabel,
-  mermaidLoadingLabel,
-  onChange,
-  onSelectionChange,
-  onSelectionEnter,
-  onLinkClick,
-  onAnnotationClick,
-  onAnnotationDoubleClick,
-  onFocusTargetAnnotationPress,
-}: MilkdownMarkdownEditorProps) {
+export const MilkdownMarkdownEditor = forwardRef<
+  EditorSelectionHandle,
+  MilkdownMarkdownEditorProps
+>(function MilkdownMarkdownEditor(
+  {
+    value,
+    annotations,
+    documentFilePath = null,
+    focusRequestKey = 0,
+    noteModeEnabled,
+    readOnly = false,
+    mobileBlockSelectionEnabled = false,
+    mobileBlockSelectionHint,
+    mobileSelectionKind = "note",
+    mobileCommittedSelectionKey = "",
+    mobileCommittedSelectionTone = 0,
+    mobileSelectionToneForAnchor,
+    search = { activeIndex: 0, query: "" },
+    selectionToRestore = null,
+    selectAllRequestKey = 0,
+    onFocusRequestHandled,
+    onSearchMatchCountChange,
+    toolbarEnabled = true,
+    codeBlockCopyLabel,
+    codeBlockCopiedLabel,
+    codeBlockDeleteLabel,
+    mermaidEmptyDefinitionLabel,
+    mermaidErrorLabel,
+    mermaidLoadingLabel,
+    onChange,
+    onSelectionChange,
+    onSelectionEnter,
+    onLinkClick,
+    onAnnotationClick,
+    onAnnotationDoubleClick,
+    onFocusTargetAnnotationPress,
+  },
+  ref,
+) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const crepeRef = useRef<Crepe | null>(null);
@@ -2151,6 +2312,62 @@ export function MilkdownMarkdownEditor({
         .join("|"),
     [annotations],
   );
+
+  useImperativeHandle(ref, () => ({
+    getSelectionSnapshot() {
+      const root = rootRef.current;
+      const activeElement = document.activeElement;
+      const codeMirrorElement =
+        root && activeElement instanceof HTMLElement && root.contains(activeElement)
+          ? activeElement.closest<HTMLElement>(".milkdown-code-block .cm-editor")
+          : null;
+      const codeMirrorView = codeMirrorElement
+        ? CodeMirrorEditorView.findFromDOM(codeMirrorElement)
+        : null;
+      const codeBlock = codeMirrorElement?.closest<HTMLElement>(".milkdown-code-block");
+      const codeBlockIndex =
+        root && codeBlock
+          ? Array.from(root.querySelectorAll<HTMLElement>(".milkdown-code-block")).indexOf(
+              codeBlock,
+            )
+          : -1;
+      const codeMirrorSelection = codeMirrorView?.state.selection.main;
+      if (codeMirrorView && codeMirrorSelection && codeBlockIndex >= 0) {
+        const bodySelection = sourceSelectionFromFencedCodeBlock(
+          editorMarkdownRef.current,
+          codeBlockIndex,
+          codeMirrorSelection,
+        );
+        if (bodySelection) {
+          return {
+            association: codeMirrorSelection.assoc,
+            anchor: fullSourceOffsetFromFrontmatterBodyOffset(
+              currentMarkdownRef.current,
+              bodySelection.anchor,
+            ),
+            head: fullSourceOffsetFromFrontmatterBodyOffset(
+              currentMarkdownRef.current,
+              bodySelection.head,
+            ),
+            viewportY: codeMirrorView.coordsAtPos(codeMirrorSelection.head)?.top ?? null,
+          };
+        }
+      }
+
+      const view = currentEditorView();
+      if (!view) return null;
+
+      const selection = markdownSelectionFromProseSelection(
+        view.state.doc,
+        currentMarkdownRef.current,
+        view.state.selection,
+      );
+      return {
+        ...selection,
+        viewportY: view.coordsAtPos(view.state.selection.head).top,
+      };
+    },
+  }));
 
   function clearCodeBlockCopyFeedbackTimers() {
     window.clearTimeout(pendingCodeBlockCopyClearTimerRef.current);
@@ -5858,6 +6075,104 @@ export function MilkdownMarkdownEditor({
         restoreScrollAfterValueRefresh(root);
         acceptsMarkdownUpdates = true;
         syncMilkdownReadOnlyState();
+        const view = currentEditorView();
+        if (view && focusRequestKey > 0) {
+          let codeBlockFocusScheduled = false;
+          if (selectionToRestore) {
+            const bodySelection = {
+              anchor: frontmatterBodyOffsetFromFullSourceOffset(
+                currentMarkdownRef.current,
+                selectionToRestore.anchor,
+              ),
+              head: frontmatterBodyOffsetFromFullSourceOffset(
+                currentMarkdownRef.current,
+                selectionToRestore.head,
+              ),
+            };
+            const codeBlockSelection = fencedCodeBlockSelectionFromSource(
+              editorMarkdownRef.current,
+              bodySelection,
+            );
+            const codeBlockContentStart = codeBlockSelection
+              ? proseCodeBlockContentStartAtIndex(
+                  view.state.doc,
+                  codeBlockSelection.index,
+                )
+              : null;
+
+            if (codeBlockSelection && codeBlockContentStart !== null) {
+              codeBlockFocusScheduled = true;
+              const anchor = codeBlockContentStart + codeBlockSelection.selection.anchor;
+              const head = codeBlockContentStart + codeBlockSelection.selection.head;
+              view.dispatch(
+                view.state.tr
+                  .setSelection(TextSelection.create(view.state.doc, anchor, head))
+                  .scrollIntoView(),
+              );
+
+              const restoreCodeBlockFocus = (attempt = 0) => {
+                if (disposed) return;
+                const codeBlockElement = root.querySelectorAll<HTMLElement>(
+                  ".milkdown-code-block",
+                )[codeBlockSelection.index];
+                const codeMirrorElement =
+                  codeBlockElement?.querySelector<HTMLElement>(".cm-editor");
+                const codeMirrorView = codeMirrorElement
+                  ? CodeMirrorEditorView.findFromDOM(codeMirrorElement)
+                  : null;
+                if (codeBlockElement && !codeMirrorView && attempt === 0) {
+                  codeBlockElement.scrollIntoView({ block: "nearest" });
+                }
+                if ((!codeBlockElement || !codeMirrorView) && attempt < 40) {
+                  window.setTimeout(() => restoreCodeBlockFocus(attempt + 1), 25);
+                  return;
+                }
+
+                if (codeMirrorView) {
+                  codeMirrorView.dispatch({ selection: codeBlockSelection.selection });
+                  codeMirrorView.focus();
+                  scheduleEditorViewportRestore(
+                    codeMirrorView.dom,
+                    selectionToRestore.viewportY,
+                    () => codeMirrorView.coordsAtPos(codeMirrorView.state.selection.main.head)?.top,
+                  );
+                } else {
+                  view.dom.focus({ preventScroll: true });
+                }
+                onFocusRequestHandled?.(focusRequestKey);
+              };
+              restoreCodeBlockFocus();
+            } else {
+              const { anchor, head } = proseSelectionFromMarkdownSelection(
+                view.state.doc,
+                currentMarkdownRef.current,
+                selectionToRestore,
+              );
+              try {
+                view.dispatch(
+                  view.state.tr.setSelection(TextSelection.create(view.state.doc, anchor, head)),
+                );
+              } catch {
+                view.dispatch(
+                  view.state.tr.setSelection(
+                    TextSelection.near(view.state.doc.resolve(head), head < anchor ? -1 : 1),
+                  ),
+                );
+              }
+            }
+          }
+          if (!codeBlockFocusScheduled) {
+            view.dom.focus({ preventScroll: true });
+            if (selectionToRestore) {
+              scheduleEditorViewportRestore(
+                view.dom,
+                selectionToRestore.viewportY,
+                () => view.coordsAtPos(view.state.selection.head).top,
+              );
+            }
+            onFocusRequestHandled?.(focusRequestKey);
+          }
+        }
         hydrateLocalMarkdownImages();
         scheduleAnnotationFrameUpdate();
         dispatchSearchUpdate();
@@ -6128,4 +6443,4 @@ export function MilkdownMarkdownEditor({
       />
     </div>
   );
-}
+});

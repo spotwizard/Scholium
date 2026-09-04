@@ -70,6 +70,13 @@ export function fullSourceOffsetFromFrontmatterBodyOffset(markdown: string, body
   return sourceOffset;
 }
 
+export function frontmatterBodyOffsetFromFullSourceOffset(markdown: string, sourceOffset: number) {
+  const boundedOffset = Math.min(Math.max(sourceOffset, 0), markdown.length);
+  const normalizedOffset = markdown.slice(0, boundedOffset).replace(/\r\n/g, "\n").length;
+  const bodyStart = splitMarkdownFrontmatter(markdown)?.bodyStart ?? 0;
+  return Math.max(0, normalizedOffset - bodyStart);
+}
+
 export function normalizeMarkdownTag(tag: string) {
   return tag.replace(/\s+/g, " ").trim();
 }

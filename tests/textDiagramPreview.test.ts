@@ -33,6 +33,51 @@ assert.equal(parseTextDiagramPreview("typescript", diagram), null);
 assert.equal(parseTextDiagramPreview("text", "const value = 1;"), null);
 assert.equal(parseTextDiagramPreview("text", "root\n└── only child"), null);
 
+const linearFlow = [
+  "搜尋地點",
+  "→ 確認正確地點",
+  "→ 加入口袋名單",
+  "→ 建立旅程與日期",
+  "→ 從口袋名單加入地點",
+  "→ 手動調整順序",
+  "├── 手動完成：儲存使用者排列的順序",
+  "└── 需要系統協助：取得安排建議",
+  "↓",
+  "更新可離線查看的行程摘要",
+].join("\n");
+const parsedLinearFlow = parseTextDiagramPreview("text", linearFlow);
+assert.ok(parsedLinearFlow);
+assert.equal(textDiagramPreviewSource(parsedLinearFlow), linearFlow);
+assert.equal(parsedLinearFlow[1]?.kind, "branch");
+assert.equal(parsedLinearFlow[1]?.prefix, "→ ");
+assert.equal(parsedLinearFlow[8]?.kind, "connector");
+assert.equal(parsedLinearFlow[8]?.prefix, "↓");
+
+const horizontalArrows = [
+  "使用者",
+  "  ├──────────► Supabase Data API",
+  "  │",
+  "  ├──────────► PostgreSQL 資料庫函式",
+  "  │",
+  "  └──────────► Supabase Edge Functions",
+].join("\n");
+const parsedHorizontalArrows = parseTextDiagramPreview("text", horizontalArrows);
+assert.ok(parsedHorizontalArrows);
+assert.equal(textDiagramPreviewSource(parsedHorizontalArrows), horizontalArrows);
+assert.equal(parsedHorizontalArrows[1]?.prefix, "  ├──────────► ");
+assert.equal(parsedHorizontalArrows[1]?.label, "Supabase Data API");
+
+const continuedHorizontalArrows = `${horizontalArrows}\n  │              儲存帳號、口袋名單與旅程`;
+const parsedContinuedHorizontalArrows = parseTextDiagramPreview(
+  "text",
+  continuedHorizontalArrows,
+);
+assert.ok(parsedContinuedHorizontalArrows);
+assert.equal(textDiagramPreviewSource(parsedContinuedHorizontalArrows), continuedHorizontalArrows);
+assert.equal(parsedContinuedHorizontalArrows.at(-1)?.kind, "branch");
+assert.equal(parsedContinuedHorizontalArrows.at(-1)?.prefix, "  │              ");
+assert.equal(parsedContinuedHorizontalArrows.at(-1)?.label, "儲存帳號、口袋名單與旅程");
+
 const typescriptLanguage = codeMirrorLanguages.find((language) => language.alias.includes("ts"));
 assert.ok(typescriptLanguage);
 assert.ok(await typescriptLanguage.load());
@@ -56,11 +101,14 @@ const editor = readFileSync(
 );
 const styles = readFileSync(new URL("../src/App.css", import.meta.url), "utf8");
 assert.match(editor, /CodeMirrorDecoration\.line\(\{ attributes \}\)/);
+assert.match(editor, /CodeMirrorDecoration\.mark\(\{ class: "text-diagram-label" \}\)/);
+assert.match(editor, /previousLine\?\.kind === "node" \|\| previousLine\?\.kind === "branch"/);
+assert.match(editor, /classes\.push\("has-box-before"\)/);
 assert.match(editor, /codeMirrorTextDiagramPreview/);
 assert.match(editor, /classHighlighter as codeMirrorClassHighlighter/);
 assert.match(editor, /codeMirrorSyntaxHighlighting\(codeMirrorClassHighlighter\)/);
 assert.match(editor, /\.\.\.previousConfig,\s*languages: codeMirrorLanguages,\s*extensions:/);
-assert.match(editor, /--text-diagram-label-offset:\$\{Math\.max\(0, line\.prefix\.length - 1\)\}ch/);
+assert.doesNotMatch(editor, /--text-diagram-label-offset/);
 assert.match(styles, /\.milkdown-code-block\.is-text-diagram \{/);
 assert.match(styles, /--code-block-toolbar-reserved-space: 34px/);
 assert.match(styles, /--code-block-content-bottom-space: 14px/);
@@ -80,8 +128,37 @@ assert.match(
   styles,
   /@media \(max-width: 640px\)[\s\S]*?\.milkdown-code-block\.is-text-diagram \{[\s\S]*?padding: var\(--code-block-toolbar-reserved-space\) 12px\s+var\(--code-block-content-bottom-space\)/,
 );
-assert.match(styles, /inset: 0 0 0 var\(--text-diagram-label-offset, 0\)/);
-assert.match(styles, /\.cm-line\.text-diagram-line\.is-depth-2::before/);
+assert.match(
+  styles,
+  /\.milkdown-code-block\.is-text-diagram\s+\.cm-content \{\s*line-height: 1\.45;/,
+);
+const textDiagramLineStyles = styles.match(
+  /\.cm-line\.text-diagram-line \{([^}]*)\}/s,
+)?.[1];
+const textDiagramNodeStyles = styles.match(
+  /\.cm-line\.text-diagram-line\.is-node\s+\.text-diagram-label \{([^}]*)\}/s,
+)?.[1];
+const textDiagramBranchStyles = styles.match(
+  /\.cm-line\.text-diagram-line\.is-branch\s+\.text-diagram-label \{([^}]*)\}/s,
+)?.[1];
+const textDiagramConnectorStyles = styles.match(
+  /\.cm-line\.text-diagram-line\.is-connector \{([^}]*)\}/s,
+)?.[1];
+assert.ok(textDiagramLineStyles);
+assert.ok(textDiagramNodeStyles);
+assert.ok(textDiagramBranchStyles);
+assert.ok(textDiagramConnectorStyles);
+assert.doesNotMatch(textDiagramLineStyles, /^\s*(?:min-height|line-height|margin|border):/m);
+assert.match(textDiagramNodeStyles, /padding: 8px 22px;/);
+assert.doesNotMatch(textDiagramNodeStyles, /^\s*(?:margin|line-height):/m);
+assert.match(textDiagramBranchStyles, /padding: 4px 18px;/);
+assert.doesNotMatch(textDiagramBranchStyles, /^\s*(?:margin|line-height):/m);
+assert.match(styles, /\.cm-line\.text-diagram-line\s+\.text-diagram-label \{[\s\S]*?margin: 1px 0;/);
+assert.match(styles, /\.cm-line\.text-diagram-line\.has-box-before\s+\.text-diagram-label \{[\s\S]*?margin-top: 7px;/);
+assert.doesNotMatch(textDiagramConnectorStyles, /^\s*line-height:/m);
+assert.doesNotMatch(styles, /\.cm-line\.text-diagram-line\.is-blank \{/);
+assert.doesNotMatch(styles, /\.cm-line\.text-diagram-line\.is-(?:node|branch)::before/);
+assert.match(styles, /\.cm-line\.text-diagram-line\.is-depth-2\s+\.text-diagram-label/);
 assert.match(styles, /\.tok-keyword/);
 assert.match(styles, /\.tok-string/);
 assert.match(styles, /\.tok-number/);

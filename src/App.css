@@ -452,6 +452,10 @@ button:disabled {
   opacity: 1;
 }
 
+.mobile-note-selection-hint.has-backdrop {
+  z-index: 161;
+}
+
 .mobile-note-selection-hint.is-source-mode-blocked {
   width: min(320px, calc(100vw - 32px));
   transform: none;
@@ -471,18 +475,21 @@ button:disabled {
   transform: translate(-50%, -50%);
 }
 
-.mobile-storage-loading-overlay {
+.mobile-feedback-backdrop {
   position: fixed;
   top: var(--visual-viewport-offset-top, 0px);
   left: var(--visual-viewport-offset-left, 0px);
   z-index: 160;
-  display: grid;
   width: var(--visual-viewport-width, 100vw);
   height: var(--visual-viewport-height, 100svh);
-  place-items: center;
-  padding: 24px;
   background: rgba(32, 35, 41, 0.32);
   pointer-events: none;
+}
+
+.mobile-storage-loading-overlay {
+  display: grid;
+  place-items: center;
+  padding: 24px;
 }
 
 .mobile-storage-loading-overlay .mobile-storage-status {
@@ -3450,20 +3457,18 @@ button.document-tag-chip__label:focus-visible {
 .milkdown-markdown-editor
   .milkdown
   .milkdown-code-block.is-text-diagram
-  .cm-line.text-diagram-line {
-  position: relative;
-  z-index: 0;
-  width: max-content;
-  min-height: 1.45em;
-  color: var(--color-preview-editor-text);
+  .cm-content {
   line-height: 1.45;
 }
 
 .milkdown-markdown-editor
   .milkdown
   .milkdown-code-block.is-text-diagram
-  .cm-line.text-diagram-line.is-blank {
-  min-height: 0.7em;
+  .cm-line.text-diagram-line {
+  position: relative;
+  z-index: 0;
+  width: max-content;
+  color: var(--color-preview-editor-text);
 }
 
 .milkdown-markdown-editor
@@ -3477,11 +3482,22 @@ button.document-tag-chip__label:focus-visible {
 .milkdown-markdown-editor
   .milkdown
   .milkdown-code-block.is-text-diagram
-  .cm-line.text-diagram-line.is-node {
+  .cm-line.text-diagram-line
+  .text-diagram-label {
+  display: inline-block;
+  box-sizing: border-box;
+  margin: 1px 0;
+  vertical-align: middle;
+}
+
+.milkdown-markdown-editor
+  .milkdown
+  .milkdown-code-block.is-text-diagram
+  .cm-line.text-diagram-line.is-node
+  .text-diagram-label {
   border: 1px solid color-mix(in srgb, #cdb48f 74%, var(--color-border));
   border-radius: 6px;
-  margin: 2px 0;
-  padding: 4px 11px;
+  padding: 8px 22px;
   color: #fff1de;
   background: #6e1b2b;
   box-shadow: 0 3px 9px rgba(70, 20, 35, 0.12);
@@ -3492,29 +3508,28 @@ button.document-tag-chip__label:focus-visible {
 .milkdown-markdown-editor
   .milkdown
   .milkdown-code-block.is-text-diagram
-  .cm-line.text-diagram-line.is-branch {
-  margin: 2px 0;
-  padding: 2px 9px 2px 0;
-}
-
-.milkdown-markdown-editor
-  .milkdown
-  .milkdown-code-block.is-text-diagram
-  .cm-line.text-diagram-line.is-branch::before {
-  position: absolute;
-  inset: 0 0 0 var(--text-diagram-label-offset, 0);
-  z-index: -1;
+  .cm-line.text-diagram-line.is-branch
+  .text-diagram-label {
   border: 1px solid color-mix(in srgb, #cdb48f 74%, var(--color-border));
   border-radius: 6px;
+  padding: 4px 18px;
   background: color-mix(in srgb, var(--color-surface-raised) 92%, #fff4df);
   box-shadow: 0 3px 9px rgba(70, 48, 30, 0.07);
-  content: "";
 }
 
 .milkdown-markdown-editor
   .milkdown
   .milkdown-code-block.is-text-diagram
-  .cm-line.text-diagram-line.is-depth-2::before {
+  .cm-line.text-diagram-line.has-box-before
+  .text-diagram-label {
+  margin-top: 7px;
+}
+
+.milkdown-markdown-editor
+  .milkdown
+  .milkdown-code-block.is-text-diagram
+  .cm-line.text-diagram-line.is-depth-2
+  .text-diagram-label {
   border-color: color-mix(in srgb, var(--color-glossary-border) 62%, var(--color-border));
   background: color-mix(in srgb, var(--color-glossary-surface-soft) 54%, var(--color-surface));
 }

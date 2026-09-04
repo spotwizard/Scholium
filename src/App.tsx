@@ -30,6 +30,8 @@ import { MarkdownEditor } from "./MarkdownEditor";
 import type {
   AnnotationTone,
   EditorChangeSource,
+  EditorSelectionHandle,
+  EditorSelectionSnapshot,
   TextAnnotation,
   TextSelectionAnchor,
   TextSelectionEnterContext,
@@ -348,6 +350,13 @@ type DocumentModeState = {
   editorMode: EditorMode;
   noteModeEnabled: boolean;
   glossaryModeEnabled: boolean;
+};
+
+type EditorFocusRequest = {
+  documentId: string;
+  mode: EditorMode;
+  requestKey: number;
+  selection: EditorSelectionSnapshot | null;
 };
 
 type TextRangeRect = {
@@ -813,6 +822,7 @@ const markdownFilters = [
 const noteLibraryFocusAlignmentRatio = 0.35;
 const notePanelAnimationMs = 180;
 const selectionWarningAutoDismissMs = 2600;
+const storageFeedbackAutoDismissMs = 3000;
 const appDrivenSelectionClearGuardMs = 1200;
 const autosaveDelayMs = 500;
 const externalFileRefreshIntervalMs = 1500;
@@ -5433,6 +5443,7 @@ function App() {
   const mobileAnnotationKeyboardShouldStayClosed =
     isMobileViewport || isMobileSafeLayoutViewport;
   const [editorMode, setEditorMode] = useState<EditorMode>("preview");
+  const [editorFocusRequest, setEditorFocusRequest] = useState<EditorFocusRequest | null>(null);
   const [editorSelectAllRequestKey, setEditorSelectAllRequestKey] = useState(0);
   const initialNoteModeEnabled =
     noteModeEnabledByDefault && documentsSeed.length > 0;
@@ -5604,6 +5615,8 @@ function App() {
   const previousNoteModeEnabledRef = useRef(noteModeEnabled);
   const glossaryModeEnabledRef = useRef(glossaryModeEnabled);
   const editorModeRef = useRef(editorMode);
+  const activeDocumentEditorRef = useRef<EditorSelectionHandle | null>(null);
+  const editorFocusRequestSequenceRef = useRef(0);
   const documentModeStatesRef = useRef(documentModeStates);
   const notePanelHasContentRef = useRef(false);
   const selectionWarningPreserveUntilRef = useRef(0);
@@ -8803,7 +8816,7 @@ function App() {
         return;
       }
       closeNotePanel();
-      toggleEditorMode();
+      toggleEditorMode(undefined, true);
     }
 
     window.addEventListener("keydown", handleModeShortcut, true);
@@ -9069,13 +9082,40 @@ function App() {
     setGlossaryModeEnabled(normalizedModeState.glossaryModeEnabled);
   }
 
-  function toggleEditorMode(event?: MouseEvent<HTMLButtonElement>) {
+  function completeEditorFocusRequest(requestKey: number) {
+    setEditorFocusRequest((currentRequest) =>
+      currentRequest?.requestKey === requestKey ? null : currentRequest,
+    );
+  }
+
+  function toggleEditorMode(
+    event?: MouseEvent<HTMLButtonElement>,
+    restoreEditorFocus = false,
+  ) {
     if (noteModeEnabledRef.current) {
       showNoteModeSourceBlockedNotice(event?.currentTarget);
       return;
     }
 
     const nextEditorMode = editorModeRef.current === "preview" ? "edit" : "preview";
+    const activeElement = document.activeElement;
+    const activeEditor =
+      activeElement instanceof Element
+        ? activeElement.closest(
+            ".editor-content-frame .milkdown-markdown-editor-shell, .editor-content-frame .markdown-editor-host",
+          )
+        : null;
+    const shouldRestoreEditorFocus = Boolean(event) || Boolean(restoreEditorFocus && activeEditor);
+    if (shouldRestoreEditorFocus) {
+      const currentSelection = activeDocumentEditorRef.current?.getSelectionSnapshot();
+      editorFocusRequestSequenceRef.current += 1;
+      setEditorFocusRequest({
+        documentId: selectedDocumentIdRef.current,
+        mode: nextEditorMode,
+        requestKey: editorFocusRequestSequenceRef.current,
+        selection: currentSelection ?? null,
+      });
+    }
     setActiveDocumentModeState({
       editorMode: nextEditorMode,
       noteModeEnabled: noteModeEnabledRef.current,
@@ -15721,7 +15761,30 @@ function App() {
     t("dropbox.status.openingFile"),
     t("dropbox.status.restoringLastFile"),
   ].includes(storageError);
+  const storageFeedbackVisible = Boolean(
+    !settingsViewOpen &&
+      storageError &&
+      !createEntryDialog &&
+      !duplicateFileDialog &&
+      !renameDialog &&
+      !dropboxDirectoryPicker,
+  );
   const startupActive = mobileStartupPhase !== "hidden" && !settingsViewOpen;
+
+  useEffect(() => {
+    if (!storageFeedbackVisible || storageLoading || dropboxConnecting) return;
+
+    const dismiss = () => setStorageError("");
+    const dismissTimer = window.setTimeout(dismiss, storageFeedbackAutoDismissMs);
+    document.addEventListener("pointerdown", dismiss, true);
+    document.addEventListener("keydown", dismiss, true);
+
+    return () => {
+      window.clearTimeout(dismissTimer);
+      document.removeEventListener("pointerdown", dismiss, true);
+      document.removeEventListener("keydown", dismiss, true);
+    };
+  }, [dropboxConnecting, storageError, storageFeedbackVisible, storageLoading]);
 
   useEffect(() => {
     let firstFrame = 0;
@@ -15762,6 +15825,11 @@ function App() {
   ]
     .filter(Boolean)
     .join(" ");
+  const activeEditorFocusRequest =
+    editorFocusRequest?.documentId === selectedDocument.id &&
+    editorFocusRequest.mode === editorMode
+      ? editorFocusRequest
+      : null;
   const documentPaneWidth = estimateDocumentPaneWidth(workspaceTitle, workspaceEntries);
   const shellStyle = {
     "--document-pane-measured-width": `${documentPaneWidth}px`,
@@ -17122,6 +17190,7 @@ function App() {
               editorMode === "edit" ? "is-active" : ""
             }`}
             onClick={toggleEditorMode}
+            onPointerDown={(event) => event.preventDefault()}
             ref={mobileSourceModeButtonRef}
             type="button"
           >
@@ -17142,6 +17211,7 @@ function App() {
               aria-disabled={noteModeEnabled}
               className={`editor-mode-toggle ${editorMode === "edit" ? "is-active" : ""}`}
               onClick={toggleEditorMode}
+              onPointerDown={(event) => event.preventDefault()}
               ref={desktopSourceModeButtonRef}
               title={
                 editorMode === "edit" ? t("toolbar.previewMode.open") : t("toolbar.sourceMode.open")
@@ -17194,26 +17264,35 @@ function App() {
         <div className="editor-grid">
           <div className="editor-surface" style={editorSurfaceStyle}>
             {noteModeEnabled ? (
-              <p
-                aria-hidden={
-                  !mobileNoteSelectionHintVisible && !noteModeSourceBlockedNoticePosition
-                }
-                className={`mobile-feedback-surface mobile-note-selection-hint ${
-                  mobileNoteSelectionHintVisible || noteModeSourceBlockedNoticePosition
-                    ? "is-visible"
-                    : ""
-                } ${noteModeSourceBlockedNoticePosition ? "is-source-mode-blocked" : ""}`}
-                role="status"
-                style={noteModeSourceBlockedNoticePosition ?? undefined}
-              >
-                {noteModeSourceBlockedNoticePosition
-                  ? t("toolbar.sourceMode.blockedByNoteMode")
-                  : t(
-                      mobileAnnotationKeyboardShouldStayClosed
-                        ? "selection.mobileNoteModeHint"
-                        : "selection.desktopNoteModeHint",
-                    )}
-              </p>
+              <>
+                {mobileNoteSelectionHintVisible && !noteModeSourceBlockedNoticePosition ? (
+                  <div aria-hidden="true" className="mobile-feedback-backdrop" />
+                ) : null}
+                <p
+                  aria-hidden={
+                    !mobileNoteSelectionHintVisible && !noteModeSourceBlockedNoticePosition
+                  }
+                  className={`mobile-feedback-surface mobile-note-selection-hint ${
+                    mobileNoteSelectionHintVisible || noteModeSourceBlockedNoticePosition
+                      ? "is-visible"
+                      : ""
+                  } ${
+                    mobileNoteSelectionHintVisible && !noteModeSourceBlockedNoticePosition
+                      ? "has-backdrop"
+                      : ""
+                  } ${noteModeSourceBlockedNoticePosition ? "is-source-mode-blocked" : ""}`}
+                  role="status"
+                  style={noteModeSourceBlockedNoticePosition ?? undefined}
+                >
+                  {noteModeSourceBlockedNoticePosition
+                    ? t("toolbar.sourceMode.blockedByNoteMode")
+                    : t(
+                        mobileAnnotationKeyboardShouldStayClosed
+                          ? "selection.mobileNoteModeHint"
+                          : "selection.desktopNoteModeHint",
+                      )}
+                </p>
+              </>
             ) : null}
             <div className="editor-content-frame">
               {hasOpenDocument ? (
@@ -17376,6 +17455,7 @@ function App() {
                 <MilkdownMarkdownEditor
                   annotations={annotations}
                   documentFilePath={selectedDocument.filePath}
+                  focusRequestKey={activeEditorFocusRequest?.requestKey}
                   key={selectedDocument.id}
                   mobileBlockSelectionEnabled={mobileAnnotationKeyboardShouldStayClosed}
                   mobileBlockSelectionHint={t(
@@ -17392,7 +17472,9 @@ function App() {
                   mermaidLoadingLabel={t("mermaid.loading")}
                   noteModeEnabled={noteModeEnabled}
                   readOnly={previewEditorReadOnly}
+                  ref={activeDocumentEditorRef}
                   search={documentSearchState}
+                  selectionToRestore={activeEditorFocusRequest?.selection ?? null}
                   selectAllRequestKey={editorSelectAllRequestKey}
                   toolbarEnabled={false}
                   value={selectedDocument.body}
@@ -17402,6 +17484,7 @@ function App() {
                   onAnnotationClick={showAnnotationViewer}
                   onAnnotationDoubleClick={showAnnotationViewer}
                   onChange={updateSelectedDocumentBody}
+                  onFocusRequestHandled={completeEditorFocusRequest}
                   onFocusTargetAnnotationPress={dismissFocusTargetAnnotationFromEditor}
                   onLinkClick={(href) => void openMarkdownLink(href)}
                   onSearchMatchCountChange={handleDocumentSearchMatchCountChange}
@@ -17410,10 +17493,14 @@ function App() {
                 />
               ) : (
                 <MarkdownEditor
+                  focusRequestKey={activeEditorFocusRequest?.requestKey}
+                  ref={activeDocumentEditorRef}
                   search={documentSearchState}
+                  selectionToRestore={activeEditorFocusRequest?.selection ?? null}
                   selectAllRequestKey={editorSelectAllRequestKey}
                   value={selectedDocument.body}
                   onChange={updateSelectedDocumentBody}
+                  onFocusRequestHandled={completeEditorFocusRequest}
                   onSearchMatchCountChange={handleDocumentSearchMatchCountChange}
                 />
               )}
@@ -17770,29 +17857,17 @@ function App() {
         </nav>
       ) : null}
 
-      {!settingsViewOpen && storageError && storageLoading && !dropboxDirectoryPicker ? (
-        <div className="mobile-storage-loading-overlay">
-          <p className="mobile-feedback-surface mobile-storage-status is-loading" role="status">
+      {storageFeedbackVisible ? (
+        <div className="mobile-feedback-backdrop mobile-storage-loading-overlay">
+          <p
+            className={`mobile-feedback-surface mobile-storage-status ${
+              storageLoading ? "is-loading" : dropboxConnecting ? "is-informational" : "is-error"
+            }`}
+            role="status"
+          >
             {storageError}
           </p>
         </div>
-      ) : null}
-
-      {!settingsViewOpen &&
-        storageError &&
-        !storageLoading &&
-        !createEntryDialog &&
-        !duplicateFileDialog &&
-        !renameDialog &&
-        !dropboxDirectoryPicker ? (
-        <p
-          className={`mobile-feedback-surface mobile-storage-status ${
-            dropboxConnecting ? "is-informational" : "is-error"
-          }`}
-          role="status"
-        >
-          {storageError}
-        </p>
       ) : null}
 
       {!settingsViewOpen && noteModeEnabled && selectionWarningPosition ? (

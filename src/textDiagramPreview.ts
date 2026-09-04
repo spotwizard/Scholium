@@ -6,8 +6,9 @@ export type TextDiagramPreviewLine = {
   source: string;
 };
 
-const textDiagramBranchPattern = /^(\s*[│ ]*[├└]──\s*)(.*)$/;
-const textDiagramConnectorPattern = /^[\s│▼]+$/;
+const textDiagramBranchPattern = /^(\s*(?:[│ ]*[├└]─{2,}[►→]?|[►→])\s*)(.*)$/;
+const textDiagramContinuationPattern = /^(\s*│\s+)((?![│▼↓]\s*$)\S.*)$/;
+const textDiagramConnectorPattern = /^[\s│▼↓]+$/;
 
 export function parseTextDiagramPreview(language: string, content: string) {
   if (language.trim().toLowerCase() !== "text") return null;
@@ -30,6 +31,17 @@ export function parseTextDiagramPreview(language: string, content: string) {
         kind: "branch",
         label: branch[2] ?? "",
         prefix,
+        source: line,
+      };
+    }
+
+    const continuation = line.match(textDiagramContinuationPattern);
+    if (continuation) {
+      return {
+        depth: 1,
+        kind: "branch",
+        label: continuation[2] ?? "",
+        prefix: continuation[1] ?? "",
         source: line,
       };
     }
