@@ -99,6 +99,10 @@ assert.match(
 );
 assert.match(
   markdownPreviewSource,
+  /removeSelectedPreviewSoftLine[\s\S]*?selectedSoftLine\.caretOffset[\s\S]*?currentValue\.slice\(0, sourceFrom\) \+ currentValue\.slice\(sourceTo\)[\s\S]*?focusPreviewBlockTextOffset\(nextRenderedBlock\.key, selectedSoftLine\.caretOffset\)/,
+);
+assert.match(
+  markdownPreviewSource,
   /const isSelectionDelete =[\s\S]*?event\.key === "Backspace"[\s\S]*?event\.key === "Delete"[\s\S]*?commitPreviewSelectionDeletion\(event\.currentTarget\)[\s\S]*?event\.preventDefault\(\)/,
 );
 assert.match(
@@ -113,14 +117,10 @@ assert.match(
   markdownPreviewSource,
   /handlePreviewListDelete\(event\)[\s\S]*?commitPreviewEmptyLineDeletion\(event\.currentTarget, event\.key\)[\s\S]*?event\.preventDefault\(\)/,
 );
-assert.match(
-  markdownPreviewSource,
-  /const controlledNextBlock = block\.kind === "paragraph" && !nextBlock[\s\S]*?\? "<br>"/,
-);
-assert.match(
-  markdownPreviewSource,
-  /controlledNextBlock === "<br>" && nextRenderedBlock[\s\S]*?focusPreviewBlockTextOffset\(nextRenderedBlock\.key, 1\)/,
-);
+assert.doesNotMatch(markdownPreviewSource, /controlledNextBlock|selectedSoftLine\.text\.split/);
+assert.match(markdownPreviewSource, /preserveEmptyParagraphs: !readOnly/);
+assert.match(markdownPreviewSource, /replaceMarkdownBlock\(currentValue, block, nextBlock\)/);
+assert.doesNotMatch(appSource, /key=\{`\$\{block\.key\}-\$\{textMap\.text/);
 assert.match(
   markdownPreviewSource,
   /if \(readOnly\) \{\s*if \(\s*event\.key === "Tab" &&[\s\S]*?\) \{\s*return;\s*\}\s*event\.preventDefault\(\);\s*event\.stopPropagation\(\);/,

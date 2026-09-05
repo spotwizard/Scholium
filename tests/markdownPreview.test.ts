@@ -3,6 +3,8 @@ import {
   parseMarkdownListLine,
   parseMarkdownPreviewBlocks,
   parseNoteMarkdownPreviewBlocks,
+  removeSelectedPreviewSoftLine,
+  replaceMarkdownBlock,
 } from "../src/markdownPreview.ts";
 
 assert.deepEqual(parseMarkdownListLine("\t12) item"), {
@@ -214,5 +216,71 @@ assert.deepEqual(
     },
   ],
 );
+
+const softLineText = "前段內容\n💡 建議：\n後段內容";
+const softLineFrom = "前段內容\n".length;
+const softLineTo = softLineFrom + "💡 建議：".length;
+for (const [from, to] of [
+  [softLineFrom - 1, softLineTo],
+  [softLineFrom, softLineTo + 1],
+] as const) {
+  assert.deepEqual(
+    removeSelectedPreviewSoftLine({
+      from,
+      selectedText: "💡 建議：",
+      text: softLineText,
+      to,
+    }),
+    {
+      caretOffset: softLineFrom,
+      text: "前段內容\n\n後段內容",
+    },
+  );
+}
+assert.equal(
+  removeSelectedPreviewSoftLine({
+    from: softLineFrom + 3,
+    selectedText: "建議",
+    text: softLineText,
+    to: softLineFrom + 5,
+  }),
+  null,
+);
+assert.equal(
+  removeSelectedPreviewSoftLine({
+    from: 0,
+    selectedText: "單一段落",
+    text: "單一段落",
+    to: "單一段落".length,
+  }),
+  null,
+);
+
+// Clearing contents retains the paragraph's source slot. No synthetic break is
+// inserted, and editing that same empty block must not merge its neighbors.
+for (const [before, line, after] of [
+  ["前段\n\n刪除段\n\n後段", 2, "前段\n\n\n\n後段"],
+  ["前段\n\n刪除段", 2, "前段\n\n"],
+  ["刪除段\n\n後段", 0, "\n\n後段"],
+  ["刪除段", 0, ""],
+  ["前段\n\n第一行\n第二行\n\n後段", 2, "前段\n\n\n\n後段"],
+  ["前段\n\n第一行<br>第二行", 2, "前段\n\n"],
+] as const) {
+  const original = parseMarkdownPreviewBlocks(before).find((block) => block.startLine === line)!;
+  assert.equal(replaceMarkdownBlock(before, original, ""), after);
+  const parsed = parseMarkdownPreviewBlocks(after, { preserveEmptyParagraphs: true });
+  const empty = parsed.find((block) => block.key === original.key)!;
+  assert.deepEqual(empty, {
+    kind: "paragraph", key: original.key, startLine: line, endLine: line, text: "",
+  });
+  const typed = replaceMarkdownBlock(after, empty, "重新輸入");
+  assert.equal(typed, replaceMarkdownBlock(before, original, "重新輸入"));
+  assert.equal(parseMarkdownPreviewBlocks(typed).find((block) => block.key === original.key)?.kind, "paragraph");
+}
+assert.deepEqual(
+  parseMarkdownPreviewBlocks("前段\n\n後段", { preserveEmptyParagraphs: true }),
+  parseMarkdownPreviewBlocks("前段\n\n後段"),
+);
+assert.equal(parseMarkdownPreviewBlocks("前段\n\n\n\n後段").length, 2);
 
 console.log("markdown preview parser behavior: PASS");

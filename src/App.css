@@ -4382,6 +4382,10 @@ button.document-tag-chip__label:focus-visible {
   pointer-events: none;
 }
 
+.note-markdown-editor .markdown-preview[contenteditable="true"] > p:empty {
+  min-height: 1lh;
+}
+
 .scholium-shell.is-mobile-safe-layout .note-markdown-editor .markdown-preview {
   min-height: var(--note-markdown-editor-min-height);
 }

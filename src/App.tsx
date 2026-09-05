@@ -133,7 +133,9 @@ import {
 import {
   parseMarkdownListLine,
   parseMarkdownPreviewBlocks,
+  replaceMarkdownBlock,
   parseNoteMarkdownPreviewBlocks,
+  removeSelectedPreviewSoftLine,
   type MarkdownPreviewBlock,
   type MarkdownPreviewList,
   type MarkdownPreviewListKind,
@@ -1619,7 +1621,9 @@ function getParagraphTextMap(
 ) {
   const lines = markdown.replace(/\r\n/g, "\n").split("\n");
   const lineStartOffsets = getLineStartOffsets(markdown);
-  const textMap: PreviewTextMap = { text: "", sourceOffsets: [] };
+  const textMap: PreviewTextMap = {
+    text: "", sourceOffsets: [], sourceEndOffset: lineStartOffsets[block.startLine] ?? 0,
+  };
 
   for (let lineIndex = block.startLine; lineIndex <= block.endLine; lineIndex += 1) {
     const line = lines[lineIndex] ?? "";
@@ -2475,15 +2479,6 @@ function markdownFromEditedPreviewBlockElements(
   );
 }
 
-function replaceMarkdownBlock(markdown: string, block: MarkdownPreviewBlock, nextBlock: string) {
-  const lines = markdown.replace(/\r\n/g, "\n").split("\n");
-  const nextLines = nextBlock ? nextBlock.split("\n") : [""];
-
-  lines.splice(block.startLine, block.endLine - block.startLine + 1, ...nextLines);
-
-  return lines.join("\n");
-}
-
 function isUndoKeyboardShortcut(
   event: Pick<KeyboardEvent | ReactKeyboardEvent, "altKey" | "ctrlKey" | "key" | "metaKey" | "shiftKey">,
 ) {
@@ -2593,7 +2588,7 @@ function selectionOffsetsWithInlineBreaksInElement(
 }
 
 function sourcePositionForPreviewTextOffset(textMap: PreviewTextMap, offset: number) {
-  if (textMap.sourceOffsets.length === 0) return null;
+  if (textMap.sourceOffsets.length === 0) return textMap.sourceEndOffset ?? null;
 
   const clampedOffset = clampNumber(offset, 0, textMap.sourceOffsets.length);
   if (
@@ -2944,7 +2939,10 @@ function MarkdownPreview({
     anchorTransform?: BodyAnchorTransform,
   ) => void;
 }) {
-  const blocks = parseMarkdownPreviewBlocks(value);
+  function parsePreviewBlocks(markdown: string) {
+    return parseMarkdownPreviewBlocks(markdown, { preserveEmptyParagraphs: !readOnly });
+  }
+  const blocks = parsePreviewBlocks(value);
   const previewRef = useRef<HTMLDivElement | null>(null);
   const previewPointerPointRef = useRef<{ clientX: number; clientY: number } | null>(null);
   const previewValueRef = useRef(value);
@@ -3165,7 +3163,7 @@ function MarkdownPreview({
 
   function focusPreviewSourcePosition(nextValue: string, sourcePosition: number) {
     const caretLine = nextValue.slice(0, sourcePosition).split("\n").length - 1;
-    const nextBlocks = parseMarkdownPreviewBlocks(nextValue);
+    const nextBlocks = parsePreviewBlocks(nextValue);
     const focusBlock =
       nextBlocks.find(
         (block) => block.startLine <= caretLine && block.endLine >= caretLine,
@@ -3819,7 +3817,7 @@ function MarkdownPreview({
       endOffsets
     ) {
       const currentValue = previewValueRef.current;
-      const currentBlocks = parseMarkdownPreviewBlocks(currentValue);
+      const currentBlocks = parsePreviewBlocks(currentValue);
       const startBlock = currentBlocks.find(
         (candidate) => candidate.key === renderedBlock.key,
       );
@@ -3852,24 +3850,50 @@ function MarkdownPreview({
     }
 
     if (!renderedBlock || !sameBlockOffsets || !clonedSelection) return false;
-    clonedSelection.range.deleteContents();
     const currentValue = previewValueRef.current;
     const block =
-      parseMarkdownPreviewBlocks(currentValue).find(
+      parsePreviewBlocks(currentValue).find(
         (candidate) => candidate.key === renderedBlock.key,
       );
     if (!block) return true;
+    const selectedSoftLine = block.kind === "paragraph"
+      ? removeSelectedPreviewSoftLine({
+          from: sameBlockOffsets.from,
+          selectedText: selectedRange.toString(),
+          text: getPreviewBlockTextMap(currentValue, block).text,
+          to: sameBlockOffsets.to,
+        })
+      : null;
+    if (selectedSoftLine) {
+      const textMap = getPreviewBlockTextMap(currentValue, block);
+      const sourceFrom = sourcePositionForPreviewTextOffset(textMap, selectedSoftLine.caretOffset);
+      const sourceTo = sourcePositionForPreviewTextOffset(
+        textMap,
+        selectedSoftLine.caretOffset + textMap.text.length - selectedSoftLine.text.length,
+      );
+      if (sourceFrom === null || sourceTo === null) return false;
+      const nextValue = currentValue.slice(0, sourceFrom) + currentValue.slice(sourceTo);
+      const nextRenderedBlock = parsePreviewBlocks(nextValue).find(
+        (candidate) => candidate.startLine === block.startLine,
+      );
+
+      window.getSelection()?.removeAllRanges();
+      if (nextRenderedBlock) {
+        focusPreviewBlockTextOffset(nextRenderedBlock.key, selectedSoftLine.caretOffset);
+      }
+      commitPreviewChange(nextValue);
+      return true;
+    }
+
+    clonedSelection.range.deleteContents();
     const clonedBlockElements = Array.from(
       clonedSelection.clone.querySelectorAll<HTMLElement>("[data-preview-block-key]"),
     ).filter((element) => element.dataset.previewBlockKey === block.key);
     const nextBlock = clonedBlockElements.length > 0
       ? markdownFromEditedPreviewBlockElements(block, clonedBlockElements)
       : "";
-    const controlledNextBlock = block.kind === "paragraph" && !nextBlock
-      ? "<br>"
-      : nextBlock;
-    const nextValue = replaceMarkdownBlock(currentValue, block, controlledNextBlock);
-    const nextRenderedBlock = parseMarkdownPreviewBlocks(nextValue).find(
+    const nextValue = replaceMarkdownBlock(currentValue, block, nextBlock);
+    const nextRenderedBlock = parsePreviewBlocks(nextValue).find(
       (candidate) => candidate.startLine === block.startLine,
     );
     const caretSourcePosition = nextRenderedBlock
@@ -3880,11 +3904,7 @@ function MarkdownPreview({
       : getBlockRange(currentValue, block).start;
 
     window.getSelection()?.removeAllRanges();
-    if (controlledNextBlock === "<br>" && nextRenderedBlock) {
-      focusPreviewBlockTextOffset(nextRenderedBlock.key, 1);
-    } else {
-      focusPreviewSourcePosition(nextValue, caretSourcePosition);
-    }
+    focusPreviewSourcePosition(nextValue, caretSourcePosition);
     commitPreviewChange(nextValue);
     return true;
   }
@@ -3929,6 +3949,21 @@ function MarkdownPreview({
     if (!blockElement || renderedBlock?.kind !== "paragraph" || !offsets) return false;
 
     const renderedText = previewTextFromNode(blockElement).replace(/\u200b/g, "");
+    if (renderedText === "") {
+      const blockIndex = blocks.findIndex((block) => block.key === renderedBlock.key);
+      const neighbor = blocks[blockIndex + (key === "Backspace" ? -1 : 1)];
+      if (!neighbor) return true;
+      const currentValue = previewValueRef.current;
+      const emptyRange = getBlockRange(currentValue, renderedBlock);
+      const neighborRange = getBlockRange(currentValue, neighbor);
+      const from = key === "Backspace" ? neighborRange.end : emptyRange.start;
+      const to = key === "Backspace" ? emptyRange.end : neighborRange.start;
+      const nextValue = currentValue.slice(0, from) + currentValue.slice(to);
+      window.getSelection()?.removeAllRanges();
+      focusPreviewSourcePosition(nextValue, from);
+      commitPreviewChange(nextValue);
+      return true;
+    }
     const renderedCaretOffset = clampNumber(offsets.from, 0, renderedText.length);
     const hasAdjacentBreak =
       renderedText === "\n" ||
@@ -3941,7 +3976,7 @@ function MarkdownPreview({
     commitPendingPreviewInput(previewElement, true);
 
     const currentValue = previewValueRef.current;
-    const block = parseMarkdownPreviewBlocks(currentValue).find(
+    const block = parsePreviewBlocks(currentValue).find(
       (candidate) => candidate.key === renderedBlock.key,
     );
     if (!block || block.kind !== "paragraph") return false;
@@ -4334,7 +4369,7 @@ function MarkdownPreview({
     let nextValue = currentValue;
     editedBlocks.forEach(({ block, blockKey, elements }) => {
       const currentBlock =
-        parseMarkdownPreviewBlocks(nextValue).find(
+        parsePreviewBlocks(nextValue).find(
           (candidate) => candidate.key === blockKey,
         ) ?? block;
       nextValue = replaceMarkdownBlock(
@@ -4342,6 +4377,12 @@ function MarkdownPreview({
         currentBlock,
         markdownFromEditedPreviewBlockElements(currentBlock, elements),
       );
+      if (currentBlock.kind === "paragraph" && currentBlock.text === "") {
+        // The browser inserted these nodes into a paragraph with no React
+        // children. Remove only those unmanaged nodes before React adds the
+        // committed text, keeping the paragraph element itself intact.
+        elements.forEach((element) => element.replaceChildren());
+      }
       elements.forEach((element) => delete element.dataset.edited);
     });
 
@@ -4393,7 +4434,7 @@ function MarkdownPreview({
 
     const currentValue = previewValueRef.current;
     const block =
-      parseMarkdownPreviewBlocks(currentValue).find(
+      parsePreviewBlocks(currentValue).find(
         (candidate) => candidate.key === renderedBlock.key,
       ) ?? renderedBlock;
     const textMap = getPreviewBlockTextMap(currentValue, block);
@@ -4703,7 +4744,7 @@ function MarkdownPreview({
     <div
       className="markdown-preview"
       contentEditable={!readOnly}
-      data-empty={blocks.length === 0 ? "true" : undefined}
+      data-empty={!value.trim() ? "true" : undefined}
       data-placeholder={placeholder}
       aria-readonly={readOnly || undefined}
       ref={previewRef}
