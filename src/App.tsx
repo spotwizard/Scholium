@@ -30,6 +30,8 @@ import { MarkdownEditor } from "./MarkdownEditor";
 import type {
   AnnotationTone,
   EditorChangeSource,
+  EditorSelectionHandle,
+  EditorSelectionSnapshot,
   TextAnnotation,
   TextSelectionAnchor,
   TextSelectionEnterContext,
@@ -131,7 +133,9 @@ import {
 import {
   parseMarkdownListLine,
   parseMarkdownPreviewBlocks,
+  replaceMarkdownBlock,
   parseNoteMarkdownPreviewBlocks,
+  removeSelectedPreviewSoftLine,
   type MarkdownPreviewBlock,
   type MarkdownPreviewList,
   type MarkdownPreviewListKind,
@@ -237,7 +241,8 @@ import {
   startDropboxOAuth,
   takeNewWindowDocumentTarget,
   takeOpenedFilePaths,
-  validateDroppedMarkdownFile,
+  validateDroppedMarkdownPath,
+  focusAndFullscreenAppWindow,
   writePdfFile,
   writePdfFileToDirectory,
   type DropboxOAuthStatusResult,
@@ -347,6 +352,13 @@ type DocumentModeState = {
   editorMode: EditorMode;
   noteModeEnabled: boolean;
   glossaryModeEnabled: boolean;
+};
+
+type EditorFocusRequest = {
+  documentId: string;
+  mode: EditorMode;
+  requestKey: number;
+  selection: EditorSelectionSnapshot | null;
 };
 
 type TextRangeRect = {
@@ -812,6 +824,7 @@ const markdownFilters = [
 const noteLibraryFocusAlignmentRatio = 0.35;
 const notePanelAnimationMs = 180;
 const selectionWarningAutoDismissMs = 2600;
+const storageFeedbackAutoDismissMs = 3000;
 const appDrivenSelectionClearGuardMs = 1200;
 const autosaveDelayMs = 500;
 const externalFileRefreshIntervalMs = 1500;
@@ -1608,7 +1621,9 @@ function getParagraphTextMap(
 ) {
   const lines = markdown.replace(/\r\n/g, "\n").split("\n");
   const lineStartOffsets = getLineStartOffsets(markdown);
-  const textMap: PreviewTextMap = { text: "", sourceOffsets: [] };
+  const textMap: PreviewTextMap = {
+    text: "", sourceOffsets: [], sourceEndOffset: lineStartOffsets[block.startLine] ?? 0,
+  };
 
   for (let lineIndex = block.startLine; lineIndex <= block.endLine; lineIndex += 1) {
     const line = lines[lineIndex] ?? "";
@@ -2464,15 +2479,6 @@ function markdownFromEditedPreviewBlockElements(
   );
 }
 
-function replaceMarkdownBlock(markdown: string, block: MarkdownPreviewBlock, nextBlock: string) {
-  const lines = markdown.replace(/\r\n/g, "\n").split("\n");
-  const nextLines = nextBlock ? nextBlock.split("\n") : [""];
-
-  lines.splice(block.startLine, block.endLine - block.startLine + 1, ...nextLines);
-
-  return lines.join("\n");
-}
-
 function isUndoKeyboardShortcut(
   event: Pick<KeyboardEvent | ReactKeyboardEvent, "altKey" | "ctrlKey" | "key" | "metaKey" | "shiftKey">,
 ) {
@@ -2582,7 +2588,7 @@ function selectionOffsetsWithInlineBreaksInElement(
 }
 
 function sourcePositionForPreviewTextOffset(textMap: PreviewTextMap, offset: number) {
-  if (textMap.sourceOffsets.length === 0) return null;
+  if (textMap.sourceOffsets.length === 0) return textMap.sourceEndOffset ?? null;
 
   const clampedOffset = clampNumber(offset, 0, textMap.sourceOffsets.length);
   if (
@@ -2933,7 +2939,10 @@ function MarkdownPreview({
     anchorTransform?: BodyAnchorTransform,
   ) => void;
 }) {
-  const blocks = parseMarkdownPreviewBlocks(value);
+  function parsePreviewBlocks(markdown: string) {
+    return parseMarkdownPreviewBlocks(markdown, { preserveEmptyParagraphs: !readOnly });
+  }
+  const blocks = parsePreviewBlocks(value);
   const previewRef = useRef<HTMLDivElement | null>(null);
   const previewPointerPointRef = useRef<{ clientX: number; clientY: number } | null>(null);
   const previewValueRef = useRef(value);
@@ -3154,7 +3163,7 @@ function MarkdownPreview({
 
   function focusPreviewSourcePosition(nextValue: string, sourcePosition: number) {
     const caretLine = nextValue.slice(0, sourcePosition).split("\n").length - 1;
-    const nextBlocks = parseMarkdownPreviewBlocks(nextValue);
+    const nextBlocks = parsePreviewBlocks(nextValue);
     const focusBlock =
       nextBlocks.find(
         (block) => block.startLine <= caretLine && block.endLine >= caretLine,
@@ -3808,7 +3817,7 @@ function MarkdownPreview({
       endOffsets
     ) {
       const currentValue = previewValueRef.current;
-      const currentBlocks = parseMarkdownPreviewBlocks(currentValue);
+      const currentBlocks = parsePreviewBlocks(currentValue);
       const startBlock = currentBlocks.find(
         (candidate) => candidate.key === renderedBlock.key,
       );
@@ -3841,24 +3850,50 @@ function MarkdownPreview({
     }
 
     if (!renderedBlock || !sameBlockOffsets || !clonedSelection) return false;
-    clonedSelection.range.deleteContents();
     const currentValue = previewValueRef.current;
     const block =
-      parseMarkdownPreviewBlocks(currentValue).find(
+      parsePreviewBlocks(currentValue).find(
         (candidate) => candidate.key === renderedBlock.key,
       );
     if (!block) return true;
+    const selectedSoftLine = block.kind === "paragraph"
+      ? removeSelectedPreviewSoftLine({
+          from: sameBlockOffsets.from,
+          selectedText: selectedRange.toString(),
+          text: getPreviewBlockTextMap(currentValue, block).text,
+          to: sameBlockOffsets.to,
+        })
+      : null;
+    if (selectedSoftLine) {
+      const textMap = getPreviewBlockTextMap(currentValue, block);
+      const sourceFrom = sourcePositionForPreviewTextOffset(textMap, selectedSoftLine.caretOffset);
+      const sourceTo = sourcePositionForPreviewTextOffset(
+        textMap,
+        selectedSoftLine.caretOffset + textMap.text.length - selectedSoftLine.text.length,
+      );
+      if (sourceFrom === null || sourceTo === null) return false;
+      const nextValue = currentValue.slice(0, sourceFrom) + currentValue.slice(sourceTo);
+      const nextRenderedBlock = parsePreviewBlocks(nextValue).find(
+        (candidate) => candidate.startLine === block.startLine,
+      );
+
+      window.getSelection()?.removeAllRanges();
+      if (nextRenderedBlock) {
+        focusPreviewBlockTextOffset(nextRenderedBlock.key, selectedSoftLine.caretOffset);
+      }
+      commitPreviewChange(nextValue);
+      return true;
+    }
+
+    clonedSelection.range.deleteContents();
     const clonedBlockElements = Array.from(
       clonedSelection.clone.querySelectorAll<HTMLElement>("[data-preview-block-key]"),
     ).filter((element) => element.dataset.previewBlockKey === block.key);
     const nextBlock = clonedBlockElements.length > 0
       ? markdownFromEditedPreviewBlockElements(block, clonedBlockElements)
       : "";
-    const controlledNextBlock = block.kind === "paragraph" && !nextBlock
-      ? "<br>"
-      : nextBlock;
-    const nextValue = replaceMarkdownBlock(currentValue, block, controlledNextBlock);
-    const nextRenderedBlock = parseMarkdownPreviewBlocks(nextValue).find(
+    const nextValue = replaceMarkdownBlock(currentValue, block, nextBlock);
+    const nextRenderedBlock = parsePreviewBlocks(nextValue).find(
       (candidate) => candidate.startLine === block.startLine,
     );
     const caretSourcePosition = nextRenderedBlock
@@ -3869,11 +3904,7 @@ function MarkdownPreview({
       : getBlockRange(currentValue, block).start;
 
     window.getSelection()?.removeAllRanges();
-    if (controlledNextBlock === "<br>" && nextRenderedBlock) {
-      focusPreviewBlockTextOffset(nextRenderedBlock.key, 1);
-    } else {
-      focusPreviewSourcePosition(nextValue, caretSourcePosition);
-    }
+    focusPreviewSourcePosition(nextValue, caretSourcePosition);
     commitPreviewChange(nextValue);
     return true;
   }
@@ -3918,6 +3949,21 @@ function MarkdownPreview({
     if (!blockElement || renderedBlock?.kind !== "paragraph" || !offsets) return false;
 
     const renderedText = previewTextFromNode(blockElement).replace(/\u200b/g, "");
+    if (renderedText === "") {
+      const blockIndex = blocks.findIndex((block) => block.key === renderedBlock.key);
+      const neighbor = blocks[blockIndex + (key === "Backspace" ? -1 : 1)];
+      if (!neighbor) return true;
+      const currentValue = previewValueRef.current;
+      const emptyRange = getBlockRange(currentValue, renderedBlock);
+      const neighborRange = getBlockRange(currentValue, neighbor);
+      const from = key === "Backspace" ? neighborRange.end : emptyRange.start;
+      const to = key === "Backspace" ? emptyRange.end : neighborRange.start;
+      const nextValue = currentValue.slice(0, from) + currentValue.slice(to);
+      window.getSelection()?.removeAllRanges();
+      focusPreviewSourcePosition(nextValue, from);
+      commitPreviewChange(nextValue);
+      return true;
+    }
     const renderedCaretOffset = clampNumber(offsets.from, 0, renderedText.length);
     const hasAdjacentBreak =
       renderedText === "\n" ||
@@ -3930,7 +3976,7 @@ function MarkdownPreview({
     commitPendingPreviewInput(previewElement, true);
 
     const currentValue = previewValueRef.current;
-    const block = parseMarkdownPreviewBlocks(currentValue).find(
+    const block = parsePreviewBlocks(currentValue).find(
       (candidate) => candidate.key === renderedBlock.key,
     );
     if (!block || block.kind !== "paragraph") return false;
@@ -4027,6 +4073,30 @@ function MarkdownPreview({
     const caretSourcePosition = selectedRange.from + pastedText.length;
     focusPreviewSourcePosition(nextValue, caretSourcePosition);
     commitPreviewChange(nextValue);
+  }
+
+  function handlePreviewCut(event: ReactClipboardEvent<HTMLDivElement>) {
+    if (readOnly || !event.clipboardData) return;
+
+    const selection = window.getSelection();
+    if (!selection || selection.isCollapsed || selection.rangeCount === 0) return;
+
+    const previewElement = event.currentTarget;
+    const selectedRange = selection.getRangeAt(0);
+    if (
+      !previewElement.contains(selectedRange.startContainer) ||
+      !previewElement.contains(selectedRange.endContainer)
+    ) {
+      return;
+    }
+
+    const selectedText = selection.toString();
+    if (!selectedText || !commitPreviewSelectionDeletion(previewElement)) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    event.clipboardData.clearData();
+    event.clipboardData.setData("text/plain", selectedText);
   }
 
   function handlePreviewInput(event: FormEvent<HTMLDivElement>) {
@@ -4299,7 +4369,7 @@ function MarkdownPreview({
     let nextValue = currentValue;
     editedBlocks.forEach(({ block, blockKey, elements }) => {
       const currentBlock =
-        parseMarkdownPreviewBlocks(nextValue).find(
+        parsePreviewBlocks(nextValue).find(
           (candidate) => candidate.key === blockKey,
         ) ?? block;
       nextValue = replaceMarkdownBlock(
@@ -4307,6 +4377,12 @@ function MarkdownPreview({
         currentBlock,
         markdownFromEditedPreviewBlockElements(currentBlock, elements),
       );
+      if (currentBlock.kind === "paragraph" && currentBlock.text === "") {
+        // The browser inserted these nodes into a paragraph with no React
+        // children. Remove only those unmanaged nodes before React adds the
+        // committed text, keeping the paragraph element itself intact.
+        elements.forEach((element) => element.replaceChildren());
+      }
       elements.forEach((element) => delete element.dataset.edited);
     });
 
@@ -4358,7 +4434,7 @@ function MarkdownPreview({
 
     const currentValue = previewValueRef.current;
     const block =
-      parseMarkdownPreviewBlocks(currentValue).find(
+      parsePreviewBlocks(currentValue).find(
         (candidate) => candidate.key === renderedBlock.key,
       ) ?? renderedBlock;
     const textMap = getPreviewBlockTextMap(currentValue, block);
@@ -4668,7 +4744,7 @@ function MarkdownPreview({
     <div
       className="markdown-preview"
       contentEditable={!readOnly}
-      data-empty={blocks.length === 0 ? "true" : undefined}
+      data-empty={!value.trim() ? "true" : undefined}
       data-placeholder={placeholder}
       aria-readonly={readOnly || undefined}
       ref={previewRef}
@@ -4680,6 +4756,7 @@ function MarkdownPreview({
       onBlur={handlePreviewBlur}
       onBeforeInput={handlePreviewBeforeInput}
       onCompositionEnd={handlePreviewCompositionEnd}
+      onCut={handlePreviewCut}
       onInput={handlePreviewInput}
       onKeyDownCapture={handlePreviewKeyDown}
       onPaste={handlePreviewPaste}
@@ -5432,6 +5509,7 @@ function App() {
   const mobileAnnotationKeyboardShouldStayClosed =
     isMobileViewport || isMobileSafeLayoutViewport;
   const [editorMode, setEditorMode] = useState<EditorMode>("preview");
+  const [editorFocusRequest, setEditorFocusRequest] = useState<EditorFocusRequest | null>(null);
   const [editorSelectAllRequestKey, setEditorSelectAllRequestKey] = useState(0);
   const initialNoteModeEnabled =
     noteModeEnabledByDefault && documentsSeed.length > 0;
@@ -5603,6 +5681,8 @@ function App() {
   const previousNoteModeEnabledRef = useRef(noteModeEnabled);
   const glossaryModeEnabledRef = useRef(glossaryModeEnabled);
   const editorModeRef = useRef(editorMode);
+  const activeDocumentEditorRef = useRef<EditorSelectionHandle | null>(null);
+  const editorFocusRequestSequenceRef = useRef(0);
   const documentModeStatesRef = useRef(documentModeStates);
   const notePanelHasContentRef = useRef(false);
   const selectionWarningPreserveUntilRef = useRef(0);
@@ -8802,7 +8882,7 @@ function App() {
         return;
       }
       closeNotePanel();
-      toggleEditorMode();
+      toggleEditorMode(undefined, true);
     }
 
     window.addEventListener("keydown", handleModeShortcut, true);
@@ -9068,13 +9148,40 @@ function App() {
     setGlossaryModeEnabled(normalizedModeState.glossaryModeEnabled);
   }
 
-  function toggleEditorMode(event?: MouseEvent<HTMLButtonElement>) {
+  function completeEditorFocusRequest(requestKey: number) {
+    setEditorFocusRequest((currentRequest) =>
+      currentRequest?.requestKey === requestKey ? null : currentRequest,
+    );
+  }
+
+  function toggleEditorMode(
+    event?: MouseEvent<HTMLButtonElement>,
+    restoreEditorFocus = false,
+  ) {
     if (noteModeEnabledRef.current) {
       showNoteModeSourceBlockedNotice(event?.currentTarget);
       return;
     }
 
     const nextEditorMode = editorModeRef.current === "preview" ? "edit" : "preview";
+    const activeElement = document.activeElement;
+    const activeEditor =
+      activeElement instanceof Element
+        ? activeElement.closest(
+            ".editor-content-frame .milkdown-markdown-editor-shell, .editor-content-frame .markdown-editor-host",
+          )
+        : null;
+    const shouldRestoreEditorFocus = Boolean(event) || Boolean(restoreEditorFocus && activeEditor);
+    if (shouldRestoreEditorFocus) {
+      const currentSelection = activeDocumentEditorRef.current?.getSelectionSnapshot();
+      editorFocusRequestSequenceRef.current += 1;
+      setEditorFocusRequest({
+        documentId: selectedDocumentIdRef.current,
+        mode: nextEditorMode,
+        requestKey: editorFocusRequestSequenceRef.current,
+        selection: currentSelection ?? null,
+      });
+    }
     setActiveDocumentModeState({
       editorMode: nextEditorMode,
       noteModeEnabled: noteModeEnabledRef.current,
@@ -10242,7 +10349,7 @@ function App() {
   async function openDirectoryPath(path: string) {
     if (!nativeStorageAvailable) {
       setStorageError(t("error.nativeRuntimeRequired"));
-      return;
+      return false;
     }
 
     setStorageError(t("status.openingFolder"));
@@ -10252,8 +10359,10 @@ function App() {
         path,
       });
       applyOpenedDirectory(openedDirectory);
+      return true;
     } catch (error) {
       setStorageError(translatedError(error, "error.openFolderFailed"));
+      return false;
     }
   }
 
@@ -11073,20 +11182,36 @@ function App() {
   }
 
   async function openDroppedMarkdownPaths(paths: string[]) {
+    let droppedPath;
+
     try {
-      const path = await validateDroppedMarkdownFile({ paths });
-      await openMarkdownFilePath(path);
+      droppedPath = await validateDroppedMarkdownPath({ paths });
     } catch {
       setStorageError(t("error.dropOneMdFile"));
-    } finally {
       setMobileStartupPhase("hidden");
+      return;
     }
+
+    const opened =
+      droppedPath.kind === "directory"
+        ? await openDirectoryPath(droppedPath.path)
+        : await openMarkdownFilePath(droppedPath.path);
+
+    if (opened) {
+      try {
+        await focusAndFullscreenAppWindow();
+      } catch (error) {
+        console.error(error);
+      }
+    }
+
+    setMobileStartupPhase("hidden");
   }
 
   async function openMarkdownFilePath(path: string) {
     if (!nativeStorageAvailable) {
       setStorageError(t("error.nativeRuntimeRequired"));
-      return;
+      return false;
     }
 
     setStorageError(t("status.openingFile"));
@@ -11097,8 +11222,10 @@ function App() {
       });
 
       applyOpenedDirectory(directoryWithSelectedFile(context), context.selectedFile.path);
+      return true;
     } catch (error) {
       setStorageError(translatedError(error, "error.openFileFailed"));
+      return false;
     }
   }
 
@@ -15700,7 +15827,30 @@ function App() {
     t("dropbox.status.openingFile"),
     t("dropbox.status.restoringLastFile"),
   ].includes(storageError);
+  const storageFeedbackVisible = Boolean(
+    !settingsViewOpen &&
+      storageError &&
+      !createEntryDialog &&
+      !duplicateFileDialog &&
+      !renameDialog &&
+      !dropboxDirectoryPicker,
+  );
   const startupActive = mobileStartupPhase !== "hidden" && !settingsViewOpen;
+
+  useEffect(() => {
+    if (!storageFeedbackVisible || storageLoading || dropboxConnecting) return;
+
+    const dismiss = () => setStorageError("");
+    const dismissTimer = window.setTimeout(dismiss, storageFeedbackAutoDismissMs);
+    document.addEventListener("pointerdown", dismiss, true);
+    document.addEventListener("keydown", dismiss, true);
+
+    return () => {
+      window.clearTimeout(dismissTimer);
+      document.removeEventListener("pointerdown", dismiss, true);
+      document.removeEventListener("keydown", dismiss, true);
+    };
+  }, [dropboxConnecting, storageError, storageFeedbackVisible, storageLoading]);
 
   useEffect(() => {
     let firstFrame = 0;
@@ -15741,6 +15891,11 @@ function App() {
   ]
     .filter(Boolean)
     .join(" ");
+  const activeEditorFocusRequest =
+    editorFocusRequest?.documentId === selectedDocument.id &&
+    editorFocusRequest.mode === editorMode
+      ? editorFocusRequest
+      : null;
   const documentPaneWidth = estimateDocumentPaneWidth(workspaceTitle, workspaceEntries);
   const shellStyle = {
     "--document-pane-measured-width": `${documentPaneWidth}px`,
@@ -17101,6 +17256,7 @@ function App() {
               editorMode === "edit" ? "is-active" : ""
             }`}
             onClick={toggleEditorMode}
+            onPointerDown={(event) => event.preventDefault()}
             ref={mobileSourceModeButtonRef}
             type="button"
           >
@@ -17121,6 +17277,7 @@ function App() {
               aria-disabled={noteModeEnabled}
               className={`editor-mode-toggle ${editorMode === "edit" ? "is-active" : ""}`}
               onClick={toggleEditorMode}
+              onPointerDown={(event) => event.preventDefault()}
               ref={desktopSourceModeButtonRef}
               title={
                 editorMode === "edit" ? t("toolbar.previewMode.open") : t("toolbar.sourceMode.open")
@@ -17173,26 +17330,35 @@ function App() {
         <div className="editor-grid">
           <div className="editor-surface" style={editorSurfaceStyle}>
             {noteModeEnabled ? (
-              <p
-                aria-hidden={
-                  !mobileNoteSelectionHintVisible && !noteModeSourceBlockedNoticePosition
-                }
-                className={`mobile-feedback-surface mobile-note-selection-hint ${
-                  mobileNoteSelectionHintVisible || noteModeSourceBlockedNoticePosition
-                    ? "is-visible"
-                    : ""
-                } ${noteModeSourceBlockedNoticePosition ? "is-source-mode-blocked" : ""}`}
-                role="status"
-                style={noteModeSourceBlockedNoticePosition ?? undefined}
-              >
-                {noteModeSourceBlockedNoticePosition
-                  ? t("toolbar.sourceMode.blockedByNoteMode")
-                  : t(
-                      mobileAnnotationKeyboardShouldStayClosed
-                        ? "selection.mobileNoteModeHint"
-                        : "selection.desktopNoteModeHint",
-                    )}
-              </p>
+              <>
+                {mobileNoteSelectionHintVisible && !noteModeSourceBlockedNoticePosition ? (
+                  <div aria-hidden="true" className="mobile-feedback-backdrop" />
+                ) : null}
+                <p
+                  aria-hidden={
+                    !mobileNoteSelectionHintVisible && !noteModeSourceBlockedNoticePosition
+                  }
+                  className={`mobile-feedback-surface mobile-note-selection-hint ${
+                    mobileNoteSelectionHintVisible || noteModeSourceBlockedNoticePosition
+                      ? "is-visible"
+                      : ""
+                  } ${
+                    mobileNoteSelectionHintVisible && !noteModeSourceBlockedNoticePosition
+                      ? "has-backdrop"
+                      : ""
+                  } ${noteModeSourceBlockedNoticePosition ? "is-source-mode-blocked" : ""}`}
+                  role="status"
+                  style={noteModeSourceBlockedNoticePosition ?? undefined}
+                >
+                  {noteModeSourceBlockedNoticePosition
+                    ? t("toolbar.sourceMode.blockedByNoteMode")
+                    : t(
+                        mobileAnnotationKeyboardShouldStayClosed
+                          ? "selection.mobileNoteModeHint"
+                          : "selection.desktopNoteModeHint",
+                      )}
+                </p>
+              </>
             ) : null}
             <div className="editor-content-frame">
               {hasOpenDocument ? (
@@ -17355,6 +17521,7 @@ function App() {
                 <MilkdownMarkdownEditor
                   annotations={annotations}
                   documentFilePath={selectedDocument.filePath}
+                  focusRequestKey={activeEditorFocusRequest?.requestKey}
                   key={selectedDocument.id}
                   mobileBlockSelectionEnabled={mobileAnnotationKeyboardShouldStayClosed}
                   mobileBlockSelectionHint={t(
@@ -17371,7 +17538,9 @@ function App() {
                   mermaidLoadingLabel={t("mermaid.loading")}
                   noteModeEnabled={noteModeEnabled}
                   readOnly={previewEditorReadOnly}
+                  ref={activeDocumentEditorRef}
                   search={documentSearchState}
+                  selectionToRestore={activeEditorFocusRequest?.selection ?? null}
                   selectAllRequestKey={editorSelectAllRequestKey}
                   toolbarEnabled={false}
                   value={selectedDocument.body}
@@ -17381,6 +17550,7 @@ function App() {
                   onAnnotationClick={showAnnotationViewer}
                   onAnnotationDoubleClick={showAnnotationViewer}
                   onChange={updateSelectedDocumentBody}
+                  onFocusRequestHandled={completeEditorFocusRequest}
                   onFocusTargetAnnotationPress={dismissFocusTargetAnnotationFromEditor}
                   onLinkClick={(href) => void openMarkdownLink(href)}
                   onSearchMatchCountChange={handleDocumentSearchMatchCountChange}
@@ -17389,10 +17559,14 @@ function App() {
                 />
               ) : (
                 <MarkdownEditor
+                  focusRequestKey={activeEditorFocusRequest?.requestKey}
+                  ref={activeDocumentEditorRef}
                   search={documentSearchState}
+                  selectionToRestore={activeEditorFocusRequest?.selection ?? null}
                   selectAllRequestKey={editorSelectAllRequestKey}
                   value={selectedDocument.body}
                   onChange={updateSelectedDocumentBody}
+                  onFocusRequestHandled={completeEditorFocusRequest}
                   onSearchMatchCountChange={handleDocumentSearchMatchCountChange}
                 />
               )}
@@ -17749,29 +17923,17 @@ function App() {
         </nav>
       ) : null}
 
-      {!settingsViewOpen && storageError && storageLoading && !dropboxDirectoryPicker ? (
-        <div className="mobile-storage-loading-overlay">
-          <p className="mobile-feedback-surface mobile-storage-status is-loading" role="status">
+      {storageFeedbackVisible ? (
+        <div className="mobile-feedback-backdrop mobile-storage-loading-overlay">
+          <p
+            className={`mobile-feedback-surface mobile-storage-status ${
+              storageLoading ? "is-loading" : dropboxConnecting ? "is-informational" : "is-error"
+            }`}
+            role="status"
+          >
             {storageError}
           </p>
         </div>
-      ) : null}
-
-      {!settingsViewOpen &&
-        storageError &&
-        !storageLoading &&
-        !createEntryDialog &&
-        !duplicateFileDialog &&
-        !renameDialog &&
-        !dropboxDirectoryPicker ? (
-        <p
-          className={`mobile-feedback-surface mobile-storage-status ${
-            dropboxConnecting ? "is-informational" : "is-error"
-          }`}
-          role="status"
-        >
-          {storageError}
-        </p>
       ) : null}
 
       {!settingsViewOpen && noteModeEnabled && selectionWarningPosition ? (

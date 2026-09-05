@@ -81,6 +81,45 @@ export type ParsedMarkdownListLine = {
   text: string;
 };
 
+function normalizedPreviewSelectionText(text: string) {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+export function removeSelectedPreviewSoftLine({
+  from,
+  selectedText,
+  text,
+  to,
+}: {
+  from: number;
+  selectedText: string;
+  text: string;
+  to: number;
+}) {
+  const normalizedSelection = normalizedPreviewSelectionText(selectedText);
+  if (!normalizedSelection || !text.includes("\n")) return null;
+
+  let lineFrom = 0;
+  for (const line of text.split("\n")) {
+    const lineTo = lineFrom + line.length;
+    const startsAtBoundary = from === lineFrom || (lineFrom > 0 && from === lineFrom - 1);
+    const endsAtBoundary = to === lineTo || (lineTo < text.length && to === lineTo + 1);
+    if (
+      startsAtBoundary &&
+      endsAtBoundary &&
+      normalizedSelection === normalizedPreviewSelectionText(line)
+    ) {
+      return {
+        caretOffset: lineFrom,
+        text: text.slice(0, lineFrom) + text.slice(lineTo),
+      };
+    }
+    lineFrom = lineTo + 1;
+  }
+
+  return null;
+}
+
 function normalizedMarkdownIndent(rawIndent: string) {
   return rawIndent.replace(/\t/g, "    ").length;
 }
@@ -183,7 +222,16 @@ function parseCodeFenceInfo(line: string) {
   return { info, language };
 }
 
-export function parseMarkdownPreviewBlocks(markdown: string): MarkdownPreviewBlock[] {
+export function replaceMarkdownBlock(markdown: string, block: MarkdownPreviewBlock, nextBlock: string) {
+  const lines = markdown.replace(/\r\n/g, "\n").split("\n");
+  lines.splice(block.startLine, block.endLine - block.startLine + 1, ...nextBlock.split("\n"));
+  return lines.join("\n");
+}
+
+export function parseMarkdownPreviewBlocks(
+  markdown: string,
+  { preserveEmptyParagraphs = false }: { preserveEmptyParagraphs?: boolean } = {},
+): MarkdownPreviewBlock[] {
   const normalizedMarkdown = markdown.replace(/\r\n/g, "\n");
   const lines = normalizedMarkdown.split("\n");
   const blocks: MarkdownPreviewBlock[] = [];
@@ -195,6 +243,18 @@ export function parseMarkdownPreviewBlocks(markdown: string): MarkdownPreviewBlo
     const key = `markdown-block-${index}`;
 
     if (!trimmed) {
+      // One blank line separates blocks. An empty paragraph occupies its own
+      // source line between separators, including at the beginning or end.
+      const previousBlock = blocks[blocks.length - 1];
+      const paragraphStart = previousBlock
+        ? previousBlock.endLine + 2
+        : markdownFrontmatterBodyStartLine(normalizedMarkdown);
+      if (
+        preserveEmptyParagraphs && index >= paragraphStart &&
+        (index === lines.length - 1 || !lines[index + 1].trim())
+      ) {
+        blocks.push({ kind: "paragraph", key, startLine: index, endLine: index, text: "" });
+      }
       index += 1;
       continue;
     }

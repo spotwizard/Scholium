@@ -1,5 +1,11 @@
 use std::path::{Path, PathBuf};
 
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum DroppedMarkdownPath<'a> {
+    File(&'a Path),
+    Directory(&'a Path),
+}
+
 pub(crate) fn validate_markdown_file_name(file_name: &str) -> Result<PathBuf, String> {
     validate_path_name(
         file_name,
@@ -52,11 +58,15 @@ pub(crate) fn validate_existing_markdown_file(
     Ok(())
 }
 
-pub(crate) fn dropped_markdown_path(paths: &[String]) -> Result<&Path, String> {
+pub(crate) fn dropped_markdown_path(paths: &[String]) -> Result<DroppedMarkdownPath<'_>, String> {
     let [path] = paths else {
-        return Err("drop requires exactly one .md file".to_string());
+        return Err("drop requires exactly one .md file or directory".to_string());
     };
     let path = Path::new(path);
+
+    if path.is_dir() {
+        return Ok(DroppedMarkdownPath::Directory(path));
+    }
 
     if !path
         .extension()
@@ -66,7 +76,7 @@ pub(crate) fn dropped_markdown_path(paths: &[String]) -> Result<&Path, String> {
         return Err("dropped file must use the .md extension".to_string());
     }
 
-    Ok(path)
+    Ok(DroppedMarkdownPath::File(path))
 }
 
 #[cfg(test)]
@@ -74,12 +84,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn dropped_file_must_be_one_md_path() {
+    fn dropped_path_must_be_one_md_file_or_directory() {
         let markdown = vec!["draft.MD".to_string()];
         assert_eq!(
             dropped_markdown_path(&markdown).unwrap(),
-            Path::new("draft.MD")
+            DroppedMarkdownPath::File(Path::new("draft.MD"))
         );
+
+        let directory =
+            std::env::temp_dir().join(format!("scholium-dropped-directory-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        assert_eq!(
+            dropped_markdown_path(&[directory.to_string_lossy().into_owned()]).unwrap(),
+            DroppedMarkdownPath::Directory(directory.as_path())
+        );
+        std::fs::remove_dir(directory).unwrap();
 
         assert!(is_markdown_path(Path::new("draft.md")));
         assert!(is_markdown_path(Path::new("draft.MARKDOWN")));

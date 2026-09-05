@@ -3,6 +3,7 @@ import { history, redo, undo } from "@milkdown/prose/history";
 import { Schema } from "@milkdown/prose/model";
 import { EditorState, Plugin, TextSelection } from "@milkdown/prose/state";
 import { correctHistoryCaretAfterRestoredText } from "../src/milkdownHistory.ts";
+import { parseMarkdownPreviewBlocks, removeSelectedPreviewSoftLine, replaceMarkdownBlock } from "../src/markdownPreview.ts";
 import {
   createNoteEditorHistory,
   noteEditorHistoryGroupDelayMs,
@@ -70,7 +71,9 @@ assert.equal(groupedDeletionRedo.snapshot?.value, "前");
 assert.equal(groupedDeletionRedo.snapshot?.caretSourcePosition, "前".length);
 
 const fullLineBefore = "前段內容\n\n禁止用迎合人類的模式回覆\n\n後段內容";
-const fullLineAfter = "前段內容\n\n\n\n後段內容";
+const fullLineBlock = parseMarkdownPreviewBlocks(fullLineBefore)[1];
+const fullLineAfter = replaceMarkdownBlock(fullLineBefore, fullLineBlock, "");
+assert.equal(fullLineAfter, "前段內容\n\n\n\n後段內容");
 const fullLinePrefixLength = "前段內容\n\n".length;
 const fullLineHistory = recordNoteEditorChange(
   createNoteEditorHistory(),
@@ -89,6 +92,14 @@ const fullLineRedo = takeNoteEditorRedo(
 );
 assert.equal(fullLineRedo.snapshot?.value, fullLineAfter);
 assert.equal(fullLineRedo.snapshot?.caretSourcePosition, fullLinePrefixLength);
+const restoredEmptyBlock = parseMarkdownPreviewBlocks(fullLineRedo.snapshot!.value, {
+  preserveEmptyParagraphs: true,
+}).find((block) => block.key === fullLineBlock.key);
+assert.deepEqual(restoredEmptyBlock, {
+  kind: "paragraph", key: fullLineBlock.key, startLine: 2, endLine: 2, text: "",
+});
+const typedAfterRedo = replaceMarkdownBlock(fullLineRedo.snapshot!.value, restoredEmptyBlock!, "重新輸入");
+assert.equal(typedAfterRedo, "前段內容\n\n重新輸入\n\n後段內容");
 
 const fullLineWithBoundaryAfter = "前段內容\n\n後段內容";
 const fullLineWithBoundaryHistory = recordNoteEditorChange(
@@ -106,6 +117,39 @@ const fullLineWithBoundaryRedo = takeNoteEditorRedo(
   fullLineWithBoundaryUndo.snapshot?.value ?? "",
 );
 assert.equal(fullLineWithBoundaryRedo.snapshot?.value, fullLineWithBoundaryAfter);
+
+const cutBefore = "前段內容<br>💡 建議：<br>後段內容";
+const cutText = "💡 建議：";
+const cutFrom = cutBefore.indexOf(cutText);
+const cutRenderedBefore = "前段內容\n💡 建議：\n後段內容";
+const cutRenderedLineFrom = "前段內容\n".length;
+const cutRenderedLineTo = cutRenderedLineFrom + cutText.length;
+const cutRenderedAfter = removeSelectedPreviewSoftLine({
+  from: cutRenderedLineFrom - 1,
+  selectedText: cutText,
+  text: cutRenderedBefore,
+  to: cutRenderedLineTo,
+});
+assert.deepEqual(cutRenderedAfter, {
+  caretOffset: cutRenderedLineFrom,
+  text: "前段內容\n\n後段內容",
+});
+const cutAfter = cutBefore.slice(0, cutFrom) + cutBefore.slice(cutFrom + cutText.length);
+const cutHistory = recordNoteEditorChange(
+  createNoteEditorHistory(),
+  cutBefore,
+  cutAfter,
+);
+assert.equal(cutAfter, "前段內容<br><br>後段內容");
+const cutUndo = takeNoteEditorUndo(cutHistory, cutAfter);
+assert.equal(cutUndo.snapshot?.value, cutBefore);
+assert.equal(cutUndo.snapshot?.caretSourcePosition, cutFrom + cutText.length);
+const cutRedo = takeNoteEditorRedo(
+  cutUndo.history,
+  cutUndo.snapshot?.value ?? "",
+);
+assert.equal(cutRedo.snapshot?.value, cutAfter);
+assert.equal(cutRedo.snapshot?.caretSourcePosition, cutFrom);
 
 for (const [emptyLineBefore, emptyLineAfter] of [
   ["前段內容<br>\n\n後段內容", "前段內容\n\n後段內容"],

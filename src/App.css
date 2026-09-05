@@ -452,6 +452,10 @@ button:disabled {
   opacity: 1;
 }
 
+.mobile-note-selection-hint.has-backdrop {
+  z-index: 161;
+}
+
 .mobile-note-selection-hint.is-source-mode-blocked {
   width: min(320px, calc(100vw - 32px));
   transform: none;
@@ -471,18 +475,21 @@ button:disabled {
   transform: translate(-50%, -50%);
 }
 
-.mobile-storage-loading-overlay {
+.mobile-feedback-backdrop {
   position: fixed;
   top: var(--visual-viewport-offset-top, 0px);
   left: var(--visual-viewport-offset-left, 0px);
   z-index: 160;
-  display: grid;
   width: var(--visual-viewport-width, 100vw);
   height: var(--visual-viewport-height, 100svh);
-  place-items: center;
-  padding: 24px;
   background: rgba(32, 35, 41, 0.32);
   pointer-events: none;
+}
+
+.mobile-storage-loading-overlay {
+  display: grid;
+  place-items: center;
+  padding: 24px;
 }
 
 .mobile-storage-loading-overlay .mobile-storage-status {
@@ -2656,6 +2663,58 @@ button.document-tag-chip__label:focus-visible {
   overflow: visible;
 }
 
+:is(
+    .markdown-preview .mermaid-diagram,
+    .bottom-note-body .mermaid-diagram,
+    .milkdown-markdown-editor .milkdown-mermaid-diagram
+  )
+  .node
+  :is(rect, circle, ellipse, polygon, path) {
+  fill: #dbeafe;
+  stroke: #3b82c4;
+}
+
+:is(
+    .markdown-preview .mermaid-diagram,
+    .bottom-note-body .mermaid-diagram,
+    .milkdown-markdown-editor .milkdown-mermaid-diagram
+  )
+  .cluster
+  rect {
+  fill: #f3f4f6;
+  stroke: #dbdbdb;
+}
+
+:is(
+    .markdown-preview .mermaid-diagram,
+    .bottom-note-body .mermaid-diagram,
+    .milkdown-markdown-editor .milkdown-mermaid-diagram
+  )
+  .flowchart-link {
+  fill: none;
+  stroke: #2f333b;
+  stroke-width: 1px;
+}
+
+:is(
+    .markdown-preview .mermaid-diagram,
+    .bottom-note-body .mermaid-diagram,
+    .milkdown-markdown-editor .milkdown-mermaid-diagram
+  )
+  .arrowMarkerPath {
+  fill: #2f333b;
+  stroke: #2f333b;
+}
+
+:is(
+    .markdown-preview .mermaid-diagram,
+    .bottom-note-body .mermaid-diagram,
+    .milkdown-markdown-editor .milkdown-mermaid-diagram
+  )
+  :is(.rough-node .label text, .node .label text, .image-shape .label, .icon-shape .label) {
+  text-anchor: middle;
+}
+
 .markdown-preview .mermaid-diagram foreignObject,
 .bottom-note-body .mermaid-diagram foreignObject,
 .milkdown-markdown-editor .milkdown-mermaid-diagram foreignObject {
@@ -3076,12 +3135,14 @@ button.document-tag-chip__label:focus-visible {
 
 .milkdown-markdown-editor .milkdown .milkdown-code-block {
   position: relative;
-  --code-block-toolbar-reserved-space: 42px;
+  --code-block-toolbar-reserved-space: 34px;
+  --code-block-content-bottom-space: 14px;
   isolation: isolate;
   overflow: visible;
   border: 1px solid var(--color-border);
   border-radius: 8px;
-  padding: var(--code-block-toolbar-reserved-space) 12px;
+  padding: var(--code-block-toolbar-reserved-space) 12px
+    var(--code-block-content-bottom-space);
   background: var(--color-surface-soft);
 }
 
@@ -3289,6 +3350,47 @@ button.document-tag-chip__label:focus-visible {
   padding: 0;
 }
 
+.milkdown-markdown-editor .milkdown .milkdown-code-block .tok-keyword,
+.milkdown-markdown-editor .milkdown .milkdown-code-block .tok-atom,
+.milkdown-markdown-editor .milkdown .milkdown-code-block .tok-bool {
+  color: var(--color-source-syntax-heading);
+}
+
+.milkdown-markdown-editor .milkdown .milkdown-code-block .tok-typeName,
+.milkdown-markdown-editor .milkdown .milkdown-code-block .tok-className,
+.milkdown-markdown-editor .milkdown .milkdown-code-block .tok-namespace {
+  color: var(--color-source-syntax-strong);
+}
+
+.milkdown-markdown-editor .milkdown .milkdown-code-block .tok-propertyName,
+.milkdown-markdown-editor .milkdown .milkdown-code-block .tok-variableName,
+.milkdown-markdown-editor .milkdown .milkdown-code-block .tok-labelName {
+  color: var(--color-source-syntax-quote);
+}
+
+.milkdown-markdown-editor .milkdown .milkdown-code-block .tok-string,
+.milkdown-markdown-editor .milkdown .milkdown-code-block .tok-string2,
+.milkdown-markdown-editor .milkdown .milkdown-code-block .tok-regexp {
+  color: var(--color-source-syntax-code);
+}
+
+.milkdown-markdown-editor .milkdown .milkdown-code-block .tok-number,
+.milkdown-markdown-editor .milkdown .milkdown-code-block .tok-literal {
+  color: var(--color-source-syntax-emphasis);
+}
+
+.milkdown-markdown-editor .milkdown .milkdown-code-block .tok-comment,
+.milkdown-markdown-editor .milkdown .milkdown-code-block .tok-meta {
+  color: var(--color-source-syntax-meta);
+  font-style: italic;
+}
+
+.milkdown-markdown-editor .milkdown .milkdown-code-block .tok-operator,
+.milkdown-markdown-editor .milkdown .milkdown-code-block .tok-punctuation,
+.milkdown-markdown-editor .milkdown .milkdown-code-block .tok-url {
+  color: var(--color-source-syntax-url);
+}
+
 .milkdown-markdown-editor .milkdown .milkdown-code-block .cm-gutters,
 .milkdown-markdown-editor .milkdown .milkdown-code-block .cm-activeLineGutter {
   display: none;
@@ -3329,6 +3431,107 @@ button.document-tag-chip__label:focus-visible {
   font: inherit;
   line-height: inherit;
   white-space: inherit;
+}
+
+.milkdown-markdown-editor .milkdown .milkdown-code-block.is-text-diagram {
+  overflow: hidden;
+  border-color: color-mix(in srgb, #6e1b2b 38%, var(--color-border));
+  border-left: 4px solid #6e1b2b;
+  padding: var(--code-block-toolbar-reserved-space) 20px
+    var(--code-block-content-bottom-space);
+  background:
+    linear-gradient(145deg, color-mix(in srgb, var(--color-surface) 88%, transparent), transparent),
+    var(--color-surface-soft);
+  box-shadow: var(--shadow-low);
+}
+
+.milkdown-markdown-editor
+  .milkdown
+  .milkdown-code-block.is-text-diagram
+  .cm-scroller {
+  font-family:
+    Menlo, "SFMono-Regular", "Cascadia Code", "Roboto Mono", Consolas, "Liberation Mono",
+    monospace;
+}
+
+.milkdown-markdown-editor
+  .milkdown
+  .milkdown-code-block.is-text-diagram
+  .cm-content {
+  line-height: 1.45;
+}
+
+.milkdown-markdown-editor
+  .milkdown
+  .milkdown-code-block.is-text-diagram
+  .cm-line.text-diagram-line {
+  position: relative;
+  z-index: 0;
+  width: max-content;
+  color: var(--color-preview-editor-text);
+}
+
+.milkdown-markdown-editor
+  .milkdown
+  .milkdown-code-block.is-text-diagram
+  .cm-line.text-diagram-line.is-connector {
+  color: color-mix(in srgb, #9a7044 82%, var(--color-muted));
+  font-weight: 700;
+}
+
+.milkdown-markdown-editor
+  .milkdown
+  .milkdown-code-block.is-text-diagram
+  .cm-line.text-diagram-line
+  .text-diagram-label {
+  display: inline-block;
+  box-sizing: border-box;
+  margin: 1px 0;
+  vertical-align: middle;
+}
+
+.milkdown-markdown-editor
+  .milkdown
+  .milkdown-code-block.is-text-diagram
+  .cm-line.text-diagram-line.is-node
+  .text-diagram-label {
+  border: 1px solid color-mix(in srgb, #cdb48f 74%, var(--color-border));
+  border-radius: 6px;
+  padding: 8px 22px;
+  color: #fff1de;
+  background: #6e1b2b;
+  box-shadow: 0 3px 9px rgba(70, 20, 35, 0.12);
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+  font-weight: 720;
+}
+
+.milkdown-markdown-editor
+  .milkdown
+  .milkdown-code-block.is-text-diagram
+  .cm-line.text-diagram-line.is-branch
+  .text-diagram-label {
+  border: 1px solid color-mix(in srgb, #cdb48f 74%, var(--color-border));
+  border-radius: 6px;
+  padding: 4px 18px;
+  background: color-mix(in srgb, var(--color-surface-raised) 92%, #fff4df);
+  box-shadow: 0 3px 9px rgba(70, 48, 30, 0.07);
+}
+
+.milkdown-markdown-editor
+  .milkdown
+  .milkdown-code-block.is-text-diagram
+  .cm-line.text-diagram-line.has-box-before
+  .text-diagram-label {
+  margin-top: 7px;
+}
+
+.milkdown-markdown-editor
+  .milkdown
+  .milkdown-code-block.is-text-diagram
+  .cm-line.text-diagram-line.is-depth-2
+  .text-diagram-label {
+  border-color: color-mix(in srgb, var(--color-glossary-border) 62%, var(--color-border));
+  background: color-mix(in srgb, var(--color-glossary-surface-soft) 54%, var(--color-surface));
 }
 
 .milkdown-note-annotation {
@@ -4177,6 +4380,10 @@ button.document-tag-chip__label:focus-visible {
   color: var(--color-muted);
   content: attr(data-placeholder);
   pointer-events: none;
+}
+
+.note-markdown-editor .markdown-preview[contenteditable="true"] > p:empty {
+  min-height: 1lh;
 }
 
 .scholium-shell.is-mobile-safe-layout .note-markdown-editor .markdown-preview {
@@ -7115,7 +7322,8 @@ button.document-tag-chip__label:focus-visible {
     box-sizing: border-box;
     max-width: 100%;
     overflow: hidden;
-    padding: var(--code-block-toolbar-reserved-space) 10px;
+    padding: var(--code-block-toolbar-reserved-space) 10px
+      var(--code-block-content-bottom-space);
   }
 
   .milkdown-markdown-editor .milkdown .milkdown-code-block .tools {
@@ -7167,6 +7375,11 @@ button.document-tag-chip__label:focus-visible {
   .milkdown-markdown-editor .milkdown .milkdown-code-block-preview {
     overflow-wrap: anywhere;
     white-space: pre-wrap;
+  }
+
+  .milkdown-markdown-editor .milkdown .milkdown-code-block.is-text-diagram {
+    padding: var(--code-block-toolbar-reserved-space) 12px
+      var(--code-block-content-bottom-space);
   }
 
   .markdown-preview h1 {

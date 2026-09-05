@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
+  frontmatterBodyOffsetFromFullSourceOffset,
   fullSourceOffsetFromFrontmatterBodyOffset,
   markdownTagDedupeKey,
   mergeMarkdownFrontmatter,
@@ -63,6 +64,7 @@ test("CRLF frontmatter body offsets map back to the original source", () => {
   assert.equal(normalizedBody, "甲\n😀é乙");
   for (const bodyOffset of [0, 1, 2, 4, 6, normalizedBody.length]) {
     const sourceOffset = fullSourceOffsetFromFrontmatterBodyOffset(source, bodyOffset);
+    assert.equal(frontmatterBodyOffsetFromFullSourceOffset(source, sourceOffset), bodyOffset);
     assert.equal(
       source.slice(sourceBodyStart, sourceOffset).replace(/\r\n/g, "\n"),
       normalizedBody.slice(0, bodyOffset),

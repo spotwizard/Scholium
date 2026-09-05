@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef } from "react";
 import {
   defaultKeymap,
   history,
@@ -7,7 +7,7 @@ import {
 } from "@codemirror/commands";
 import { markdown } from "@codemirror/lang-markdown";
 import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
-import { EditorState, StateEffect, StateField } from "@codemirror/state";
+import { EditorSelection, EditorState, StateEffect, StateField } from "@codemirror/state";
 import {
   Decoration,
   DecorationSet,
@@ -20,12 +20,20 @@ import {
   findDocumentSearchMatches,
   type DocumentSearchState,
 } from "./documentSearch";
-import type { EditorChangeSource } from "./editorTypes";
+import type {
+  EditorChangeSource,
+  EditorSelectionHandle,
+  EditorSelectionSnapshot,
+} from "./editorTypes";
+import { scheduleEditorViewportRestore } from "./editorViewport";
 
 type MarkdownEditorProps = {
   value: string;
+  focusRequestKey?: number;
   search?: DocumentSearchState;
+  selectionToRestore?: EditorSelectionSnapshot | null;
   selectAllRequestKey?: number;
+  onFocusRequestHandled?: (requestKey: number) => void;
   onSearchMatchCountChange?: (count: number) => void;
   onChange: (value: string, source: EditorChangeSource) => void;
 };
@@ -160,13 +168,20 @@ function applySearchState(view: EditorView, search: DocumentSearchState, shouldS
   });
 }
 
-export function MarkdownEditor({
-  value,
-  search = { activeIndex: 0, query: "" },
-  selectAllRequestKey = 0,
-  onSearchMatchCountChange,
-  onChange,
-}: MarkdownEditorProps) {
+export const MarkdownEditor = forwardRef<EditorSelectionHandle, MarkdownEditorProps>(
+  function MarkdownEditor(
+    {
+      value,
+      focusRequestKey = 0,
+      search = { activeIndex: 0, query: "" },
+      selectionToRestore = null,
+      selectAllRequestKey = 0,
+      onFocusRequestHandled,
+      onSearchMatchCountChange,
+      onChange,
+    },
+    ref,
+  ) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const viewRef = useRef<EditorView | null>(null);
   const onChangeRef = useRef(onChange);
@@ -178,6 +193,21 @@ export function MarkdownEditor({
     [search.query, value],
   );
   const searchSignature = `${search.query}\n${search.activeIndex}\n${searchMatchCount}\n${search.scrollRequestKey ?? 0}`;
+
+  useImperativeHandle(ref, () => ({
+    getSelectionSnapshot() {
+      const view = viewRef.current;
+      const selection = view?.state.selection.main;
+      return selection
+        ? {
+            association: selection.assoc,
+            anchor: selection.anchor,
+            head: selection.head,
+            viewportY: view.coordsAtPos(selection.head)?.top ?? null,
+          }
+        : null;
+    },
+  }));
 
   useEffect(() => {
     onChangeRef.current = onChange;
@@ -242,6 +272,34 @@ export function MarkdownEditor({
 
     viewRef.current = view;
 
+    if (focusRequestKey > 0) {
+      if (selectionToRestore) {
+        const documentLength = view.state.doc.length;
+        const anchor = Math.min(Math.max(selectionToRestore.anchor, 0), documentLength);
+        const head = Math.min(Math.max(selectionToRestore.head, 0), documentLength);
+        view.dispatch({
+          selection: EditorSelection.create([
+            EditorSelection.range(
+              anchor,
+              head,
+              undefined,
+              undefined,
+              selectionToRestore.association,
+            ),
+          ]),
+        });
+      }
+      view.focus();
+      if (selectionToRestore) {
+        scheduleEditorViewportRestore(
+          view.dom,
+          selectionToRestore.viewportY,
+          () => view.coordsAtPos(view.state.selection.main.head)?.top,
+        );
+      }
+      onFocusRequestHandled?.(focusRequestKey);
+    }
+
     return () => {
       view.destroy();
       viewRef.current = null;
@@ -287,5 +345,6 @@ export function MarkdownEditor({
     applySearchState(view, search, true);
   }, [searchSignature, search]);
 
-  return <div className="markdown-editor-host" ref={containerRef} />;
-}
+    return <div className="markdown-editor-host" ref={containerRef} />;
+  },
+);
