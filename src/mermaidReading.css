@@ -1,0 +1,118 @@
+.reading-diagram {
+  --reading-ink: var(--color-text);
+  --reading-accent: #6e1b2b;
+  --reading-line: #74665b;
+  container-type: inline-size;
+  width: 100%;
+  min-width: 0;
+  color: var(--reading-ink);
+  background: var(--color-surface);
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+  font-size: 16px;
+  line-height: 1.5;
+}
+
+:root[data-theme="dark"] .reading-diagram {
+  --reading-accent: #edb4bd;
+  --reading-line: #c7bcb0;
+}
+
+:is(.mermaid-diagram__svg, .milkdown-mermaid-diagram__svg):has(.reading-diagram) {
+  display: block;
+  min-width: 0;
+}
+
+:is(.markdown-preview, .bottom-note-body, .milkdown-markdown-editor) :is(.mermaid-diagram, .milkdown-mermaid-diagram):has(.reading-diagram) { overflow: visible; }
+.reading-diagram__body { display: grid; grid-template-columns: 180px minmax(0, 1fr); gap: 16px; align-items: start; }
+.reading-diagram__canvas { min-width: 0; container-type: inline-size; }
+.reading-diagram .reading-diagram__overview { position: relative; display: flex; flex-direction: column; gap: 3px; max-height: calc(100vh - 120px); overflow-y: auto; padding: 20px 12px 12px 0; border-right: 1px solid var(--color-border); font-size: 13px; }
+.reading-diagram__overview strong { color: var(--reading-accent); font-size: 14px; }
+.reading-diagram .reading-diagram__overview-group { margin-top: 9px; color: var(--color-muted); font-weight: 600; overflow-wrap: anywhere; }
+.reading-diagram .reading-diagram__overview button { width: 100%; min-width: 0; padding: 3px 5px; border: 0; border-radius: 3px; background: transparent; color: var(--reading-ink); font: inherit; text-align: left; white-space: normal; cursor: pointer; overflow-wrap: anywhere; }
+.reading-diagram .reading-diagram__overview button[aria-current="true"] { background: var(--color-surface-soft); color: var(--reading-accent); }
+@container (max-width: 720px) {
+  .reading-diagram__body { grid-template-columns: minmax(0, 1fr); }
+  .reading-diagram .reading-diagram__overview { position: static; display: none; }
+}
+
+.reading-diagram__legend { color: var(--color-muted); font-size: 13px; }
+/* Keep diagram spacing above Milkdown's .milkdown * reset in either load order. */
+.reading-diagram .reading-diagram__stage { position: relative; padding: 20px 64px 28px; }
+.reading-diagram .reading-diagram__stage svg.reading-diagram__connections {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  pointer-events: none;
+  z-index: 1;
+  overflow: visible;
+}
+.reading-diagram .reading-diagram__group { position: relative; padding: 20px 0 48px; }
+.reading-diagram__group .reading-diagram__group { padding-left: 16px; border-left: 1px solid var(--color-border); }
+.reading-diagram .reading-diagram__group-title {
+  position: relative;
+  z-index: 2;
+  display: table;
+  max-width: 100%;
+  margin: 0 0 24px;
+  padding: 3px 10px;
+  border-left: 3px solid var(--reading-accent);
+  background: var(--color-surface-soft);
+  color: var(--reading-ink);
+  font-size: 15px;
+  line-height: 1.5;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.reading-diagram__nodes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 80px 64px; }
+.reading-diagram .reading-diagram__node {
+  position: relative;
+  z-index: 2;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+  padding: 12px;
+  border: 1px solid var(--color-selected-border);
+  border-radius: 6px;
+  background: var(--color-surface-raised);
+  color: var(--reading-ink);
+  box-shadow: none;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.reading-diagram .reading-diagram__node[aria-pressed="true"] { border-color: var(--reading-accent); box-shadow: inset 0 0 0 1px var(--reading-accent); background: var(--color-surface-soft); }
+.reading-diagram__name { color: var(--reading-accent); font-size: 16px; font-weight: 650; }
+.reading-diagram__description { color: var(--color-muted); font-size: 14px; font-weight: 400; white-space: pre-line; }
+.reading-diagram [data-diagram-text] .cm-editor { min-height: 0; font: inherit; background: transparent; outline: none; }
+.reading-diagram [data-diagram-text] .cm-scroller { min-height: 0; font: inherit; line-height: inherit; overflow: visible; }
+.reading-diagram [data-diagram-text] .cm-content { padding: 0; font: inherit; line-height: inherit; min-height: 1.5em; caret-color: var(--reading-accent); }
+.reading-diagram [data-diagram-text] .cm-line { padding: 0; }
+.reading-diagram [data-diagram-text]:focus-within { outline: 1px solid var(--color-selected-border); outline-offset: 2px; }
+.reading-diagram__node[data-shape="diamond"] { border-radius: 0; border-style: double; border-width: 3px; }
+.reading-diagram__node[data-shape="diamond"] .reading-diagram__name::before { content: "◇ "; }
+.reading-diagram__node[data-shape="diamond"] .reading-diagram__name:has(.cm-editor) { display: flex; align-items: flex-start; gap: 4px; }
+.reading-diagram__node[data-shape="cylinder"] { border-top-width: 3px; border-bottom-width: 3px; border-radius: 12px / 6px; }
+.reading-diagram__edge { stroke: var(--reading-line); stroke-width: 1.5; fill: none; stroke-linejoin: round; }
+.reading-diagram__edge.is-related { stroke: var(--reading-accent); stroke-width: 2.5; }
+.reading-diagram__edge-clearance { stroke: var(--color-surface); stroke-width: 7; fill: none; stroke-linejoin: round; }
+.reading-diagram .reading-diagram__relations { margin-top: 12px; padding-top: 14px; border-top: 1px solid var(--color-border); font-size: 14px; overflow-wrap: anywhere; }
+.reading-diagram .reading-diagram__relations strong { display: block; margin-bottom: 8px; color: var(--reading-accent); }
+.reading-diagram .reading-diagram__relations > div + div { margin-top: 5px; }
+.reading-diagram .reading-diagram__error { margin: 8px 0; color: var(--color-danger-text); font-size: 14px; }
+
+@container (max-width: 760px) {
+  .reading-diagram__nodes { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@container (max-width: 500px) {
+  .reading-diagram__nodes { grid-template-columns: 1fr; }
+  .reading-diagram .reading-diagram__stage { padding-left: 80px; padding-right: 80px; }
+}

@@ -38,6 +38,17 @@ function sources(csp: Csp, directive: string): string[] {
 const csp = requireCsp(config.app?.security?.csp, "production CSP");
 const devCsp = requireCsp(config.app?.security?.devCsp, "development CSP");
 
+// Tauri adds a style nonce for each inline <style> in the entry document.
+// A nonce makes the configured unsafe-inline ineffective, blocking Mermaid
+// styles and the editor's runtime styles in installed builds.
+const entryHtml = fs.readFileSync(new URL("../index.html", import.meta.url), "utf8");
+assert.doesNotMatch(entryHtml, /<style[\s>]/i);
+assert.match(entryHtml, /<link\b[^>]*href="\/src\/startup\.css"/);
+assert.match(
+  fs.readFileSync(new URL("../src/startup.css", import.meta.url), "utf8"),
+  /html\s*\{\s*background:\s*#fffdf8;/,
+);
+
 assert.deepEqual(sources(csp, "default-src"), [
   "'self'",
   "customprotocol:",

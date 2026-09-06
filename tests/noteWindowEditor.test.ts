@@ -206,8 +206,9 @@ assert.match(
 );
 assert.match(
   appSource,
-  /function commitPreviewChange[\s\S]*?recordNoteEditorChange\([\s\S]*?input: previewInputCommitRef\.current/,
+  /function commitPreviewChange\([^)]*input = previewInputCommitRef\.current\)[\s\S]*?recordNoteEditorChange\([\s\S]*?\{ input \}/,
 );
+assert.match(appSource, /commitPreviewChange\(lines\.join\(eol\), undefined, true\)/);
 assert.match(appSource, /onPaste=\{handlePreviewPaste\}/);
 assert.match(
   appSource,
