@@ -33,6 +33,25 @@ assert.equal(parseTextDiagramPreview("typescript", diagram), null);
 assert.equal(parseTextDiagramPreview("text", "const value = 1;"), null);
 assert.equal(parseTextDiagramPreview("text", "root\n└── only child"), null);
 
+const boxedFlow = [
+  "┌──────────────────────────────┐",
+  "│ 第一層：功能規格 (What & Why) │",
+  "└──────────────┬───────────────┘",
+  "               │ 雙向追溯",
+  "               ▼",
+  "┌──────────────────────────────┐",
+  "│ 第二層：系統架構              │",
+  "└──────────────┬───────────────┘",
+  "               ▼",
+  "┌──────────────────────────────┐",
+  "│ 第三層：技術設計 (How)        │",
+  "└──────────────────────────────┘",
+].join("\n");
+// Box borders are geometry, not tree branches or red title labels.
+assert.equal(parseTextDiagramPreview("Text", boxedFlow), null);
+assert.equal(parseTextDiagramPreview("text", boxedFlow.replace(/\n/g, "\r\n")), null);
+assert.equal(parseTextDiagramPreview("text", `${diagram}\n${boxedFlow}`), null);
+
 const linearFlow = [
   "搜尋地點",
   "→ 確認正確地點",
