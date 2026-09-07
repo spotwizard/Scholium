@@ -46,7 +46,8 @@ const mermaidConfig = {
     sectionBkgColor2: "#fff4df",
     gridColor: "#e7dcca",
     todayLineColor: "#6e1b2b",
-    fontFamily: "Inter, ui-sans-serif, system-ui, sans-serif",
+    fontFamily:
+      'Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang TC", "Noto Sans TC", "Microsoft JhengHei", "Heiti TC", sans-serif',
   },
   flowchart: {
     curve: "linear",
