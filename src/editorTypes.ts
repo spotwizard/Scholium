@@ -39,3 +39,14 @@ export type TextAnnotation = {
 };
 
 export type EditorChangeSource = "user" | "undo";
+
+export type EditorSelectionSnapshot = {
+  association?: -1 | 0 | 1;
+  anchor: number;
+  head: number;
+  viewportY?: number | null;
+};
+
+export type EditorSelectionHandle = {
+  getSelectionSnapshot: () => EditorSelectionSnapshot | null;
+};

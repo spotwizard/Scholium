@@ -46,7 +46,7 @@ use local_save_recovery::{
 };
 use markdown_path::{
     dropped_markdown_path, is_markdown_path, validate_existing_markdown_file,
-    validate_markdown_file_name, validate_path_name,
+    validate_markdown_file_name, validate_path_name, DroppedMarkdownPath,
 };
 use pdf_export::{write_pdf_file, write_pdf_file_to_directory};
 
@@ -191,6 +191,13 @@ struct OpenLocationPayload {
     path: String,
     source: String,
     title: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DroppedPathPayload {
+    kind: String,
+    path: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -4374,14 +4381,39 @@ fn take_new_window_document_target(
 }
 
 #[tauri::command]
-fn validate_dropped_markdown_file(paths: Vec<String>) -> Result<String, String> {
-    let path = dropped_markdown_path(&paths)?;
+fn validate_dropped_markdown_path(paths: Vec<String>) -> Result<DroppedPathPayload, String> {
+    let (kind, path) = match dropped_markdown_path(&paths)? {
+        DroppedMarkdownPath::File(path) if path.is_file() => ("file", path),
+        DroppedMarkdownPath::File(_) => {
+            return Err("dropped path is not an existing file".to_string())
+        }
+        DroppedMarkdownPath::Directory(path) => ("directory", path),
+    };
 
-    if !path.is_file() {
-        return Err("dropped path is not an existing file".to_string());
+    Ok(DroppedPathPayload {
+        kind: kind.to_string(),
+        path: path.to_string_lossy().into_owned(),
+    })
+}
+
+#[tauri::command]
+fn focus_and_fullscreen_app_window(app: AppHandle) -> Result<(), String> {
+    #[cfg(desktop)]
+    if let Some(label) = target_webview_window_label(&app) {
+        let window = app
+            .get_webview_window(&label)
+            .ok_or_else(|| "target window is unavailable".to_string())?;
+        window
+            .unminimize()
+            .and_then(|_| window.show())
+            .and_then(|_| window.set_focus())
+            .map_err(|error| format!("failed to focus app window: {error}"))?;
+        window
+            .set_fullscreen(true)
+            .map_err(|error| format!("failed to make app window fullscreen: {error}"))?;
     }
 
-    Ok(path.to_string_lossy().into_owned())
+    Ok(())
 }
 
 #[tauri::command]
@@ -4578,7 +4610,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             create_new_window,
             take_new_window_document_target,
-            validate_dropped_markdown_file,
+            validate_dropped_markdown_path,
+            focus_and_fullscreen_app_window,
             take_opened_file_paths,
             set_native_folder_picker_list_view,
             open_markdown_directory,

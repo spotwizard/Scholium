@@ -14,7 +14,7 @@ assert.match(
 );
 assert.match(
   app,
-  /function toggleEditorMode\(event\?: MouseEvent<HTMLButtonElement>\) \{\s*if \(noteModeEnabledRef\.current\) \{\s*showNoteModeSourceBlockedNotice\(event\?\.currentTarget\);\s*return;/,
+  /function toggleEditorMode\(\s*event\?: MouseEvent<HTMLButtonElement>,\s*restoreEditorFocus = false,\s*\) \{\s*if \(noteModeEnabledRef\.current\) \{\s*showNoteModeSourceBlockedNotice\(event\?\.currentTarget\);\s*return;/,
 );
 assert.match(
   app,
@@ -22,7 +22,7 @@ assert.match(
 );
 assert.match(
   app,
-  /event\.preventDefault\(\);\s*if \(noteModeEnabled\) \{\s*event\.stopPropagation\(\);\s*showNoteModeSourceBlockedNotice\(\);\s*return;\s*\}\s*closeNotePanel\(\);\s*toggleEditorMode\(\);/,
+  /event\.preventDefault\(\);\s*if \(noteModeEnabled\) \{\s*event\.stopPropagation\(\);\s*showNoteModeSourceBlockedNotice\(\);\s*return;\s*\}\s*closeNotePanel\(\);\s*toggleEditorMode\(undefined, true\);/,
 );
 
 const disabledSourceModeControls = app.match(/aria-disabled=\{noteModeEnabled\}/g) ?? [];
@@ -56,7 +56,7 @@ const sourceEditorRender = app.match(/<MarkdownEditor\s+[\s\S]*?\/>/)?.[0] ?? ""
 assert.ok(sourceEditorRender, "source editor render must exist");
 assert.doesNotMatch(
   sourceEditorRender,
-  /annotations=|noteModeEnabled=|onAnnotation|onSelection/,
+  /annotations=|noteModeEnabled=|onAnnotation|onSelectionChange=|onSelectionEnter/,
 );
 assert.match(sourceEditorRender, /onChange=\{updateSelectedDocumentBody\}/);
 

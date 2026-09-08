@@ -26,6 +26,8 @@ assert.match(css, /note-mode\.svg/);
 assert.match(css, /glossary-mode\.svg/);
 assert.match(noteIcon, /viewBox="0 0 300 300"/);
 assert.match(glossaryIcon, /viewBox="0 0 300 300"/);
+assert.match(noteIcon, /M88 275H213/);
+assert.match(glossaryIcon, /M250 238V100H100V275H213/);
 assert.match(notices, /memo-pad_9585401/);
 assert.match(notices, /book-font_9083447/);
 

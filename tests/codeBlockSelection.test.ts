@@ -30,7 +30,7 @@ assert.match(editor, /selectionLayer\?\.remove\(\)/);
 assert.match(editor, /view\.scrollDOM\.append\(selectionLayer\)/);
 assert.match(
   editor,
-  /extensions: \[\s*\.\.\.previousConfig\.extensions,\s*\.\.\.webKitCodeBlockSelectionExtensions\(\),\s*\]/,
+  /extensions: \[\s*\.\.\.previousConfig\.extensions,\s*codeMirrorTextDiagramPreview,\s*codeMirrorSyntaxHighlighting\(codeMirrorClassHighlighter\),\s*\.\.\.webKitCodeBlockSelectionExtensions\(\),\s*\]/,
 );
 
 console.log("code block selection renderer structure: PASS");

@@ -99,6 +99,10 @@ assert.match(
 );
 assert.match(
   markdownPreviewSource,
+  /removeSelectedPreviewSoftLine[\s\S]*?selectedSoftLine\.caretOffset[\s\S]*?currentValue\.slice\(0, sourceFrom\) \+ currentValue\.slice\(sourceTo\)[\s\S]*?focusPreviewBlockTextOffset\(nextRenderedBlock\.key, selectedSoftLine\.caretOffset\)/,
+);
+assert.match(
+  markdownPreviewSource,
   /const isSelectionDelete =[\s\S]*?event\.key === "Backspace"[\s\S]*?event\.key === "Delete"[\s\S]*?commitPreviewSelectionDeletion\(event\.currentTarget\)[\s\S]*?event\.preventDefault\(\)/,
 );
 assert.match(
@@ -113,14 +117,10 @@ assert.match(
   markdownPreviewSource,
   /handlePreviewListDelete\(event\)[\s\S]*?commitPreviewEmptyLineDeletion\(event\.currentTarget, event\.key\)[\s\S]*?event\.preventDefault\(\)/,
 );
-assert.match(
-  markdownPreviewSource,
-  /const controlledNextBlock = block\.kind === "paragraph" && !nextBlock[\s\S]*?\? "<br>"/,
-);
-assert.match(
-  markdownPreviewSource,
-  /controlledNextBlock === "<br>" && nextRenderedBlock[\s\S]*?focusPreviewBlockTextOffset\(nextRenderedBlock\.key, 1\)/,
-);
+assert.doesNotMatch(markdownPreviewSource, /controlledNextBlock|selectedSoftLine\.text\.split/);
+assert.match(markdownPreviewSource, /preserveEmptyParagraphs: !readOnly/);
+assert.match(markdownPreviewSource, /replaceMarkdownBlock\(currentValue, block, nextBlock\)/);
+assert.doesNotMatch(appSource, /key=\{`\$\{block\.key\}-\$\{textMap\.text/);
 assert.match(
   markdownPreviewSource,
   /if \(readOnly\) \{\s*if \(\s*event\.key === "Tab" &&[\s\S]*?\) \{\s*return;\s*\}\s*event\.preventDefault\(\);\s*event\.stopPropagation\(\);/,
@@ -171,6 +171,11 @@ assert.match(
   appSource,
   /function handlePreviewPaste[\s\S]*?const caretSourcePosition = selectedRange\.from \+ pastedText\.length;[\s\S]*?focusPreviewSourcePosition\(nextValue, caretSourcePosition\);[\s\S]*?commitPreviewChange\(nextValue\)/,
 );
+assert.match(
+  markdownPreviewSource,
+  /function handlePreviewCut[\s\S]*?const selectedText = selection\.toString\(\);[\s\S]*?commitPreviewSelectionDeletion\(previewElement\)[\s\S]*?event\.preventDefault\(\);[\s\S]*?clipboardData\.setData\("text\/plain", selectedText\)/,
+);
+assert.match(markdownPreviewSource, /onCut=\{handlePreviewCut\}/);
 assert.doesNotMatch(
   appSource,
   /function handlePreviewPaste[\s\S]*?focusPreviewBlockEnd\(focusBlock\.key\)/,

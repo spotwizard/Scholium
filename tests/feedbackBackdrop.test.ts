@@ -16,8 +16,13 @@ assert.match(
 );
 assert.match(
   app,
-  /className="mobile-feedback-backdrop mobile-storage-loading-overlay"[\s\S]*?storageLoading \? "is-loading"/,
+  /storageFeedbackVisible \? \([\s\S]*?className="mobile-feedback-backdrop mobile-storage-loading-overlay"[\s\S]*?storageLoading \? "is-loading"/,
   "every global storage message must render inside the shared backdrop",
 );
+assert.match(
+  app,
+  /if \(!storageFeedbackVisible \|\| storageLoading \|\| dropboxConnecting\) return;[\s\S]*?window\.setTimeout\(dismiss, storageFeedbackAutoDismissMs\)[\s\S]*?document\.addEventListener\("pointerdown", dismiss, true\)[\s\S]*?document\.addEventListener\("keydown", dismiss, true\)/,
+  "non-loading global feedback must dismiss automatically and on the next user action",
+);
 
-console.log("feedback backdrop regression: PASS");
+console.log("feedback backdrop and dismissal regression: PASS");
