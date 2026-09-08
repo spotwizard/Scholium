@@ -116,8 +116,8 @@ const pdfContentWidth = pdfCssPageWidth - pdfPagePaddingX * 2;
 const pdfContentBottom = pdfCssPageHeight - pdfPagePaddingY;
 const pdfMaxImageHeight = 720;
 const pdfBodyFontFamily =
-  '-apple-system, BlinkMacSystemFont, "PingFang TC", "Noto Sans TC", "Helvetica Neue", Arial, sans-serif';
-const pdfMonoFontFamily = '"SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace';
+  '-apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", Arial, "PingFang TC", "Noto Sans TC", "Microsoft JhengHei", "Heiti TC", sans-serif';
+const pdfMonoFontFamily = pdfBodyFontFamily;
 const pdfBodyTextStyle: PdfTextStyle = {
   fill: "#161616",
   fontFamily: pdfBodyFontFamily,
