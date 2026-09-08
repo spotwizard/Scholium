@@ -14,6 +14,8 @@ export function parseTextDiagramPreview(language: string, content: string) {
   if (language.trim().toLowerCase() !== "text") return null;
 
   const source = content.replace(/\r\n/g, "\n");
+  // Keep boxed diagrams intact; their bottom borders also match tree branches.
+  if (/┌[─┬]+┐/.test(source)) return null;
   const sourceLines = source.split("\n");
   const branchCount = sourceLines.filter((line) => textDiagramBranchPattern.test(line)).length;
   if (branchCount < 2) return null;

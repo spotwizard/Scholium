@@ -19,7 +19,7 @@ import {
 } from "@milkdown/kit/core";
 import { hardbreakAttr, hardbreakSchema } from "@milkdown/kit/preset/commonmark";
 import { splitBlock } from "@milkdown/prose/commands";
-import { closeHistory, redo, undo } from "@milkdown/prose/history";
+import { closeHistory, redo, redoNoScroll, undo, undoNoScroll } from "@milkdown/prose/history";
 import { InputRule, inputRules } from "@milkdown/prose/inputrules";
 import type { Node as ProseMirrorNode, ResolvedPos } from "@milkdown/prose/model";
 import {
@@ -101,7 +101,8 @@ import {
   normalizeMarkdownForScholium,
   normalizeSelectedText,
 } from "./milkdownSerialization";
-import { loadScholiumMermaid } from "./mermaid";
+import { renderScholiumMermaid } from "./mermaid";
+import { observeReadingDiagrams, retainDiagramTextEditor } from "./mermaidReading";
 import { readMarkdownImageFile } from "./tauriGateway";
 import { parseTextDiagramPreview } from "./textDiagramPreview";
 
@@ -581,8 +582,7 @@ function renderMilkdownMermaidPreview(
   );
 
   const diagramId = `scholium-milkdown-mermaid-${++milkdownMermaidRenderIndex}`;
-  void loadScholiumMermaid()
-    .then((mermaid) => mermaid.render(diagramId, trimmedDefinition))
+  void renderScholiumMermaid(diagramId, definition)
     .then(({ svg }) => {
       applyPreview(
         renderMilkdownMermaidFrame(
@@ -4157,6 +4157,13 @@ export const MilkdownMarkdownEditor = forwardRef<
   function selectAllEditorContents(view: EditorView) {
     const selection = window.getSelection();
     if (!selection) return false;
+    const active = document.activeElement;
+    if (active instanceof HTMLElement && active.closest("[data-diagram-text]") && active.isContentEditable && rootRef.current?.contains(active)) {
+      const editor = CodeMirrorEditorView.findFromDOM(active);
+      if (!editor) return false;
+      editor.dispatch({ selection: { anchor: 0, head: editor.state.doc.length } });
+      return true;
+    }
 
     view.dom.focus({ preventScroll: true });
     const range = document.createRange();
@@ -5899,6 +5906,41 @@ export const MilkdownMarkdownEditor = forwardRef<
     let disposed = false;
     let acceptsMarkdownUpdates = false;
     root.innerHTML = "";
+    function diagramBlock(diagram: HTMLElement) {
+      const view = currentEditorView();
+      if (!view) return null;
+      let found: { position: number; node: ProseMirrorNode } | null = null;
+      view.state.doc.descendants((node, position) => {
+        if (node.type.name !== "code_block") return true;
+        const dom = view.nodeDOM(position);
+        if (dom instanceof HTMLElement && dom.contains(diagram)) found = { position, node };
+        return false;
+      });
+      return found as { position: number; node: ProseMirrorNode } | null;
+    }
+    let lastDiagramField: Element | null = null;
+    const disposeReadingDiagrams = observeReadingDiagrams(root, {
+      canEdit: () => !readOnlyRef.current && !noteModeEnabledRef.current,
+      change: (diagram, previous, next) => {
+        const view = currentEditorView(), block = diagramBlock(diagram);
+        if (!view || !block || block.node.textContent !== previous || readOnlyRef.current || noteModeEnabledRef.current) return false;
+        let from = 0, end = previous.length, nextEnd = next.length;
+        while (from < end && from < nextEnd && previous[from] === next[from]) from++;
+        while (end > from && nextEnd > from && previous[end - 1] === next[nextEnd - 1]) { end--; nextEnd--; }
+        let transaction = view.state.tr;
+        if (lastDiagramField !== document.activeElement) transaction = closeHistory(transaction);
+        lastDiagramField = document.activeElement;
+        view.dispatch(transaction.insertText(next.slice(from, nextEnd), block.position + 1 + from, block.position + 1 + end));
+        return diagramBlock(diagram)?.node.textContent === next;
+      },
+      history: (diagram, shouldRedo) => {
+        const view = currentEditorView();
+        if (!view || readOnlyRef.current || noteModeEnabledRef.current) return undefined;
+        // The caret belongs to the inline diagram editor, not the outer code block.
+        (shouldRedo ? redoNoScroll : undoNoScroll)(view.state, view.dispatch);
+        return diagramBlock(diagram)?.node.textContent;
+      },
+    });
 
     const crepe = new Crepe({
       root,
@@ -5972,6 +6014,7 @@ export const MilkdownMarkdownEditor = forwardRef<
         previewOnlyByDefault: true,
         renderPreview: (language, content, applyPreview) => {
           if (isMermaidLanguage(language)) {
+            if (retainDiagramTextEditor(root, content)) return undefined;
             return renderMilkdownMermaidPreview(content, applyPreview, mermaidLabelsRef.current);
           }
 
@@ -6184,6 +6227,7 @@ export const MilkdownMarkdownEditor = forwardRef<
 
     return () => {
       disposed = true;
+      disposeReadingDiagrams();
       crepeRef.current = null;
       setAnnotationFrames([]);
       void crepe.destroy();

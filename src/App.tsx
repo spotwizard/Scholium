@@ -115,7 +115,8 @@ import {
   loadedNoteForDocument,
   projectLoadedLocalFiles,
 } from "./loadedFileProjection";
-import { loadScholiumMermaid } from "./mermaid";
+import { renderScholiumMermaid } from "./mermaid";
+import { observeReadingDiagrams, retainDiagramTextEditor } from "./mermaidReading";
 import {
   markdownTagDedupeKey as tagDedupeKey,
   markdownHasMalformedFrontmatter,
@@ -2032,21 +2033,28 @@ function MermaidDiagram({
   emptyDefinitionLabel,
   loadingLabel,
   renderErrorLabel,
+  editing,
 }: {
   definition: string;
   emptyDefinitionLabel: string;
   loadingLabel: string;
   renderErrorLabel: string;
+  editing?: { change: (previous: string, next: string) => boolean; history: (redo: boolean) => string | undefined };
 }) {
   const reactId = useId();
   const diagramId = `scholium-mermaid-${reactId.replace(/[^A-Za-z0-9_-]/g, "")}`;
+  const figureRef = useRef<HTMLElement | null>(null);
+  const editingRef = useRef(editing);
+  editingRef.current = editing;
   const [renderState, setRenderState] = useState<
     | { status: "rendering"; svg: ""; error: "" }
     | { status: "rendered"; svg: string; error: "" }
     | { status: "error"; svg: ""; error: string }
   >({ status: "rendering", svg: "", error: "" });
+  const renderedDiagramHtml = useMemo(() => ({ __html: renderState.svg }), [renderState.svg]);
 
   useEffect(() => {
+    if (figureRef.current && retainDiagramTextEditor(figureRef.current, definition)) return;
     const trimmedDefinition = definition.trim();
     let cancelled = false;
 
@@ -2063,8 +2071,7 @@ function MermaidDiagram({
 
     async function renderDiagram() {
       try {
-        const mermaid = await loadScholiumMermaid();
-        const { svg } = await mermaid.render(diagramId, trimmedDefinition);
+        const { svg } = await renderScholiumMermaid(diagramId, definition);
 
         if (!cancelled) {
           setRenderState({ status: "rendered", svg, error: "" });
@@ -2088,12 +2095,20 @@ function MermaidDiagram({
     };
   }, [definition, diagramId, emptyDefinitionLabel, renderErrorLabel]);
 
+  useEffect(() => {
+    if (figureRef.current) return observeReadingDiagrams(figureRef.current, {
+      canEdit: () => Boolean(editingRef.current),
+      change: (_root, previous, next) => editingRef.current?.change(previous, next) ?? false,
+      history: (_root, redo) => editingRef.current?.history(redo),
+    });
+  }, []);
+
   return (
-    <figure className="mermaid-diagram">
+    <figure ref={figureRef} className="mermaid-diagram" contentEditable={false}>
       {renderState.status === "rendered" ? (
         <div
           className="mermaid-diagram__svg"
-          dangerouslySetInnerHTML={{ __html: renderState.svg }}
+          dangerouslySetInnerHTML={renderedDiagramHtml}
         />
       ) : renderState.status === "error" ? (
         <pre className="mermaid-diagram__error">{renderState.error}</pre>
@@ -2818,6 +2833,7 @@ function MarkdownPreviewBlockView({
   mermaidEmptyDefinitionLabel,
   mermaidErrorLabel,
   mermaidLoadingLabel,
+  diagramEditing,
 }: {
   block: MarkdownPreviewBlock;
   markdown: string;
@@ -2825,6 +2841,7 @@ function MarkdownPreviewBlockView({
   mermaidEmptyDefinitionLabel: string;
   mermaidErrorLabel: string;
   mermaidLoadingLabel: string;
+  diagramEditing?: { change: (previous: string, next: string) => boolean; history: (redo: boolean) => string | undefined };
 }) {
   const blockProps = {
     "data-preview-block-key": block.key,
@@ -2881,6 +2898,7 @@ function MarkdownPreviewBlockView({
       return (
         <MermaidDiagram
           definition={block.text}
+          editing={editable ? diagramEditing : undefined}
           emptyDefinitionLabel={mermaidEmptyDefinitionLabel}
           key={block.key}
           loadingLabel={mermaidLoadingLabel}
@@ -2972,6 +2990,7 @@ function MarkdownPreview({
 
   useEffect(() => {
     function handleDocumentKeyDown(event: KeyboardEvent) {
+      if (event.target instanceof Element && event.target.closest("[data-diagram-text]")) return;
       if (readOnly) return;
       const shouldRedo = isRedoKeyboardShortcut(event);
       if (!shouldRedo && !isUndoKeyboardShortcut(event)) return;
@@ -3607,6 +3626,7 @@ function MarkdownPreview({
   }
 
   function handlePreviewBeforeInput(event: FormEvent<HTMLDivElement>) {
+    if (event.target instanceof Element && event.target.closest("[data-diagram-text]")) return;
     if (readOnly) {
       event.preventDefault();
       return;
@@ -4007,6 +4027,7 @@ function MarkdownPreview({
   }
 
   function handlePreviewPaste(event: ReactClipboardEvent<HTMLDivElement>) {
+    if (event.target instanceof Element && event.target.closest("[data-diagram-text]")) return;
     if (readOnly) return;
 
     const selection = window.getSelection();
@@ -4076,6 +4097,7 @@ function MarkdownPreview({
   }
 
   function handlePreviewCut(event: ReactClipboardEvent<HTMLDivElement>) {
+    if (event.target instanceof Element && event.target.closest("[data-diagram-text]")) return;
     if (readOnly || !event.clipboardData) return;
 
     const selection = window.getSelection();
@@ -4100,6 +4122,7 @@ function MarkdownPreview({
   }
 
   function handlePreviewInput(event: FormEvent<HTMLDivElement>) {
+    if (event.target instanceof Element && event.target.closest("[data-diagram-text]")) return;
     if (readOnly) {
       event.preventDefault();
       return;
@@ -4131,6 +4154,7 @@ function MarkdownPreview({
   }
 
   function handlePreviewCompositionEnd(event: CompositionEvent<HTMLDivElement>) {
+    if (event.target instanceof Element && event.target.closest("[data-diagram-text]")) return;
     if (readOnly) return;
 
     previewPointerPointRef.current = null;
@@ -4465,6 +4489,7 @@ function MarkdownPreview({
   }
 
   function handlePreviewBlur(event: FocusEvent<HTMLDivElement>) {
+    if (event.target instanceof Element && event.target.closest("[data-diagram-text]")) return;
     if (readOnly) return;
 
     if (event.relatedTarget instanceof Node && event.currentTarget.contains(event.relatedTarget)) {
@@ -4506,6 +4531,7 @@ function MarkdownPreview({
   }
 
   function handlePreviewKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
+    if (event.target instanceof Element && event.target.closest("[data-diagram-text]")) return;
     if (event.key !== "Enter") {
       previewPointerPointRef.current = null;
     }
@@ -4727,14 +4753,14 @@ function MarkdownPreview({
     return true;
   }
 
-  function commitPreviewChange(nextValue: string, anchorTransform?: BodyAnchorTransform) {
+  function commitPreviewChange(nextValue: string, anchorTransform?: BodyAnchorTransform, input = previewInputCommitRef.current) {
     const previousValue = previewValueRef.current;
     if (nextValue === previousValue) return;
     previewHistoryRef.current = recordNoteEditorChange(
       previewHistoryRef.current,
       previousValue,
       nextValue,
-      { input: previewInputCommitRef.current },
+      { input },
     );
     previewValueRef.current = nextValue;
     onChange(nextValue, "user", anchorTransform);
@@ -4774,6 +4800,26 @@ function MarkdownPreview({
           key={block.key}
           markdown={value}
           editable={!readOnly}
+          diagramEditing={!readOnly && block.kind === "code" ? {
+            change: (previous, next) => {
+              const current = parsePreviewBlocks(previewValueRef.current).find(item => item.key === block.key);
+              if (current?.kind !== "code" || current.text !== previous) return false;
+              const eol = previewValueRef.current.includes("\r\n") ? "\r\n" : "\n";
+              const lines = previewValueRef.current.split(/\r?\n/);
+              lines.splice(current.startLine + 1, current.endLine - current.startLine - 1, ...next.split("\n"));
+              commitPreviewChange(lines.join(eol), undefined, true);
+              return true;
+            },
+            history: (shouldRedo) => {
+              const result = (shouldRedo ? takeNoteEditorRedo : takeNoteEditorUndo)(previewHistoryRef.current, previewValueRef.current);
+              if (!result.snapshot) return undefined;
+              previewHistoryRef.current = result.history;
+              previewValueRef.current = result.snapshot.value;
+              onChange(result.snapshot.value, shouldRedo ? "user" : "undo");
+              const restored = parsePreviewBlocks(result.snapshot.value).find(item => item.key === block.key);
+              return restored?.kind === "code" ? restored.text : undefined;
+            },
+          } : undefined}
           mermaidEmptyDefinitionLabel={mermaidEmptyDefinitionLabel}
           mermaidErrorLabel={mermaidErrorLabel}
           mermaidLoadingLabel={mermaidLoadingLabel}
