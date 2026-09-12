@@ -10,8 +10,33 @@ const previewEditor = readFileSync(
 
 assert.match(
   app,
-  /function toggleEditorMode\([\s\S]*?restoreEditorFocus = false[\s\S]*?const shouldRestoreEditorFocus = Boolean\(event\) \|\| Boolean\(restoreEditorFocus && activeEditor\);[\s\S]*?if \(shouldRestoreEditorFocus\)[\s\S]*?const currentSelection = activeDocumentEditorRef\.current\?\.getSelectionSnapshot\(\);[\s\S]*?setEditorFocusRequest\(\{[\s\S]*?documentId: selectedDocumentIdRef\.current,[\s\S]*?mode: nextEditorMode,[\s\S]*?selection: currentSelection \?\? null,/,
-  "toolbar clicks and focused-editor shortcuts must pass the current cursor to the target editor",
+  /function toggleEditorMode\([\s\S]*?restoreEditorFocus = false[\s\S]*?const shouldRestoreEditorFocus =\s*Boolean\(activeEditor\) && \(Boolean\(event\) \|\| Boolean\(restoreEditorFocus\)\);[\s\S]*?let currentSelection: EditorSelectionSnapshot \| null = null;[\s\S]*?currentSelection = activeDocumentEditorRef\.current\?\.getSelectionSnapshot\(\) \?\? null;[\s\S]*?if \(shouldRestoreEditorFocus && currentSelection\)[\s\S]*?setEditorFocusRequest\(\{[\s\S]*?documentId: selectedDocumentIdRef\.current,[\s\S]*?mode: nextEditorMode,[\s\S]*?selection: currentSelection,/,
+  "toolbar clicks and focused-editor shortcuts must pass a real current cursor to the target editor",
+);
+assert.match(
+  app,
+  /type EditorModeScrollSnapshot = \{[\s\S]*?scrollContainer: Element;[\s\S]*?scrollLeft: number;[\s\S]*?scrollTop: number;[\s\S]*?\};/,
+  "mode switching must have a snapshot for the reading scroll position",
+);
+assert.match(
+  app,
+  /function captureEditorModeScrollSnapshot\(\): EditorModeScrollSnapshot \| null \{[\s\S]*?const scrollContainer = editorModeScrollContainer\(\);[\s\S]*?scrollLeft: scrollContainer\.scrollLeft,[\s\S]*?scrollTop: scrollContainer\.scrollTop,/,
+  "mode switching must capture the current scroll position before swapping editors",
+);
+assert.match(
+  app,
+  /function restoreEditorModeScrollSnapshot\(snapshot: EditorModeScrollSnapshot\) \{[\s\S]*?snapshot\.scrollContainer\.scrollTop = Math\.min\([\s\S]*?window\.requestAnimationFrame\(\(\) => \{[\s\S]*?window\.requestAnimationFrame\(restore\);/,
+  "mode switching must restore the scroll position after the target editor mounts",
+);
+assert.match(
+  app,
+  /if \(!shouldRestoreEditorFocus \|\| !currentSelection\) \{[\s\S]*?const scrollSnapshot = captureEditorModeScrollSnapshot\(\);[\s\S]*?pendingEditorModeScrollSnapshotRef\.current = scrollSnapshot;/,
+  "mode switching without a focused editor must preserve reading position instead of restoring the stale top cursor",
+);
+assert.match(
+  app,
+  /useLayoutEffect\(\(\) => \{[\s\S]*?const snapshot = pendingEditorModeScrollSnapshotRef\.current;[\s\S]*?restoreEditorModeScrollSnapshot\(snapshot\);[\s\S]*?\}, \[editorMode, selectedDocumentId\]\);/,
+  "mode switching must apply the pending scroll snapshot immediately after render",
 );
 assert.match(
   app,

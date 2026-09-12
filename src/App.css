@@ -74,6 +74,8 @@
   --scholium-body-font:
     var(--scholium-english-font), var(--scholium-body-cjk-font), sans-serif;
   --scholium-code-font: var(--scholium-body-font);
+  --scholium-monospace-font: "SFMono-Regular", ui-monospace, Menlo, Monaco,
+    Consolas, "Liberation Mono", monospace;
   color: var(--color-text);
   background: var(--color-surface);
   font-family: var(--scholium-body-font);
@@ -2614,6 +2616,12 @@ button.document-tag-chip__label:focus-visible {
   background: transparent;
 }
 
+.markdown-preview pre.is-commented-file-tree code {
+  font-family: var(--scholium-monospace-font);
+  font-variant-ligatures: none;
+  white-space: pre;
+}
+
 .markdown-preview img,
 .bottom-note-body img {
   display: block;
@@ -3254,6 +3262,14 @@ button.document-tag-chip__label:focus-visible {
   font-family: var(--scholium-code-font);
   font-size: inherit;
   line-height: inherit;
+}
+
+.milkdown-markdown-editor
+  .milkdown
+  .milkdown-code-block.is-commented-file-tree
+  .cm-scroller {
+  font-family: var(--scholium-monospace-font);
+  font-variant-ligatures: none;
 }
 
 .milkdown-markdown-editor .milkdown .milkdown-code-block .cm-content {
@@ -7321,6 +7337,15 @@ button.document-tag-chip__label:focus-visible {
   .milkdown-markdown-editor .milkdown .milkdown-code-block-preview {
     overflow-wrap: anywhere;
     white-space: pre-wrap;
+  }
+
+  .milkdown-markdown-editor
+    .milkdown
+    .milkdown-code-block.is-commented-file-tree
+    .milkdown-code-block-preview,
+  .markdown-preview pre.is-commented-file-tree code {
+    overflow-wrap: normal;
+    white-space: pre;
   }
 
   .milkdown-markdown-editor .milkdown .milkdown-code-block.is-text-diagram {

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { languages as codeMirrorLanguages } from "@codemirror/language-data";
 import {
+  isCommentedFileTreeCodeBlock,
   parseTextDiagramPreview,
   textDiagramPreviewSource,
 } from "../src/textDiagramPreview.ts";
@@ -114,21 +115,49 @@ assert.ok(parsedCompactTree);
 assert.equal(textDiagramPreviewSource(parsedCompactTree), compactTree);
 assert.equal(parsedCompactTree.filter((line) => line.kind === "branch").length, 5);
 
+const commentedFileTree = [
+  "sample-app/",
+  "├── app/",
+  "│   └── Http/Controllers/HealthController.php # 系統健康度端點 (供 CD 檢驗)",
+  "├── database/",
+  "│   └── migrations/                          # 資料庫遷移腳本",
+  "├── routes/",
+  "│   ├── api.php                              # API 路由",
+  "│   └── web.php                              # Web 首頁路由",
+  "├── composer.json                            # 依賴套件設定檔",
+  "├── phpunit.xml                              # SQLite In-memory 測試環境配置",
+  "└── scripts/",
+  "    ├── deploy.sh                            # Linux 伺服器端原子化軟連結部署腳本",
+  "    └── rollback.sh                          # 緊急秒級回滾腳本",
+].join("\n");
+assert.equal(parseTextDiagramPreview("text", commentedFileTree), null);
+assert.equal(parseTextDiagramPreview("text", commentedFileTree.replace(/\n/g, "\r\n")), null);
+assert.equal(isCommentedFileTreeCodeBlock("text", commentedFileTree), true);
+assert.equal(isCommentedFileTreeCodeBlock("typescript", commentedFileTree), false);
+
 const editor = readFileSync(
   new URL("../src/MilkdownMarkdownEditor.tsx", import.meta.url),
   "utf8",
 );
 const styles = readFileSync(new URL("../src/App.css", import.meta.url), "utf8");
+const app = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
 assert.match(editor, /CodeMirrorDecoration\.line\(\{ attributes \}\)/);
 assert.match(editor, /CodeMirrorDecoration\.mark\(\{ class: "text-diagram-label" \}\)/);
 assert.match(editor, /previousLine\?\.kind === "node" \|\| previousLine\?\.kind === "branch"/);
 assert.match(editor, /classes\.push\("has-box-before"\)/);
 assert.match(editor, /codeMirrorTextDiagramPreview/);
+assert.match(editor, /classList\.toggle\(\s*"is-commented-file-tree"/);
+assert.match(editor, /classList\.remove\("is-commented-file-tree"\)/);
+assert.match(app, /isCommentedFileTreeCodeBlock\(block\.language, block\.text\)/);
 assert.match(editor, /classHighlighter as codeMirrorClassHighlighter/);
 assert.match(editor, /codeMirrorSyntaxHighlighting\(codeMirrorClassHighlighter\)/);
 assert.match(editor, /\.\.\.previousConfig,\s*languages: codeMirrorLanguages,\s*extensions:/);
 assert.doesNotMatch(editor, /--text-diagram-label-offset/);
+assert.match(styles, /--scholium-monospace-font:\s*"SFMono-Regular"/);
 assert.match(styles, /\.milkdown-code-block\.is-text-diagram \{/);
+assert.match(styles, /\.milkdown-code-block\.is-commented-file-tree\s+\.cm-scroller \{[\s\S]*?font-family:\s*var\(--scholium-monospace-font\);/);
+assert.match(styles, /\.markdown-preview pre\.is-commented-file-tree code \{[\s\S]*?font-family:\s*var\(--scholium-monospace-font\);/);
+assert.match(styles, /@media \(max-width: 640px\)[\s\S]*?\.milkdown-code-block\.is-commented-file-tree[\s\S]*?white-space: pre;/);
 assert.match(styles, /--code-block-toolbar-reserved-space: 34px/);
 assert.match(styles, /--code-block-content-bottom-space: 14px/);
 assert.match(

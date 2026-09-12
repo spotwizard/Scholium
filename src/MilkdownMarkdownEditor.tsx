@@ -104,7 +104,10 @@ import {
 import { renderScholiumMermaid } from "./mermaid";
 import { observeReadingDiagrams, retainDiagramTextEditor } from "./mermaidReading";
 import { readMarkdownImageFile } from "./tauriGateway";
-import { parseTextDiagramPreview } from "./textDiagramPreview";
+import {
+  isCommentedFileTreeCodeBlock,
+  parseTextDiagramPreview,
+} from "./textDiagramPreview";
 
 type MilkdownMarkdownEditorProps = {
   value: string;
@@ -270,8 +273,14 @@ function codeMirrorBlockLanguage(view: CodeMirrorEditorView) {
 
 function buildCodeMirrorTextDiagramDecorations(view: CodeMirrorEditorView) {
   const codeBlock = view.dom.closest<HTMLElement>(".milkdown-code-block");
-  const lines = parseTextDiagramPreview(codeMirrorBlockLanguage(view), view.state.doc.toString());
+  const language = codeMirrorBlockLanguage(view);
+  const content = view.state.doc.toString();
+  const lines = parseTextDiagramPreview(language, content);
   codeBlock?.classList.toggle("is-text-diagram", Boolean(lines));
+  codeBlock?.classList.toggle(
+    "is-commented-file-tree",
+    isCommentedFileTreeCodeBlock(language, content),
+  );
   if (!lines) return CodeMirrorDecoration.none;
 
   const decorations = lines.flatMap((line, index) => {
@@ -327,6 +336,7 @@ const codeMirrorTextDiagramPreview = CodeMirrorViewPlugin.fromClass(
 
     destroy() {
       this.codeBlock?.classList.remove("is-text-diagram");
+      this.codeBlock?.classList.remove("is-commented-file-tree");
     }
   },
   { decorations: (plugin) => plugin.decorations },

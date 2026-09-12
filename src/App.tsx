@@ -143,6 +143,7 @@ import {
   type NoteMarkdownPreviewBlock,
   type ParsedMarkdownListLine,
 } from "./markdownPreview";
+import { isCommentedFileTreeCodeBlock } from "./textDiagramPreview";
 import {
   createNoteEditorHistory,
   recordNoteEditorChange,
@@ -360,6 +361,12 @@ type EditorFocusRequest = {
   mode: EditorMode;
   requestKey: number;
   selection: EditorSelectionSnapshot | null;
+};
+
+type EditorModeScrollSnapshot = {
+  scrollContainer: Element;
+  scrollLeft: number;
+  scrollTop: number;
 };
 
 type TextRangeRect = {
@@ -2908,7 +2915,15 @@ function MarkdownPreviewBlockView({
     }
 
     return (
-      <pre {...blockProps} className="markdown-preview-editable" key={block.key}>
+      <pre
+        {...blockProps}
+        className={`markdown-preview-editable${
+          isCommentedFileTreeCodeBlock(block.language, block.text)
+            ? " is-commented-file-tree"
+            : ""
+        }`}
+        key={block.key}
+      >
         <code>{getPreviewBlockTextMap(markdown, block).text}</code>
       </pre>
     );
@@ -4921,7 +4936,12 @@ function MarkdownPreviewContentBlock({
     }
 
     return (
-      <pre key={block.key}>
+      <pre
+        className={isCommentedFileTreeCodeBlock(block.language, block.text)
+          ? "is-commented-file-tree"
+          : undefined}
+        key={block.key}
+      >
         <code>{block.text}</code>
       </pre>
     );
@@ -5729,6 +5749,7 @@ function App() {
   const editorModeRef = useRef(editorMode);
   const activeDocumentEditorRef = useRef<EditorSelectionHandle | null>(null);
   const editorFocusRequestSequenceRef = useRef(0);
+  const pendingEditorModeScrollSnapshotRef = useRef<EditorModeScrollSnapshot | null>(null);
   const documentModeStatesRef = useRef(documentModeStates);
   const notePanelHasContentRef = useRef(false);
   const selectionWarningPreserveUntilRef = useRef(0);
@@ -9200,6 +9221,56 @@ function App() {
     );
   }
 
+  function elementCanScrollVertically(element: HTMLElement) {
+    const overflowY = window.getComputedStyle(element).overflowY;
+    return (
+      overflowY !== "visible" &&
+      overflowY !== "clip" &&
+      element.scrollHeight > element.clientHeight + 1
+    );
+  }
+
+  function editorModeScrollContainer() {
+    const editorPane = document.querySelector<HTMLElement>(".editor-pane");
+    if (editorPane && elementCanScrollVertically(editorPane)) {
+      return editorPane;
+    }
+
+    return document.scrollingElement;
+  }
+
+  function captureEditorModeScrollSnapshot(): EditorModeScrollSnapshot | null {
+    const scrollContainer = editorModeScrollContainer();
+    if (!scrollContainer) return null;
+
+    return {
+      scrollContainer,
+      scrollLeft: scrollContainer.scrollLeft,
+      scrollTop: scrollContainer.scrollTop,
+    };
+  }
+
+  function restoreEditorModeScrollSnapshot(snapshot: EditorModeScrollSnapshot) {
+    const restore = () => {
+      if (!snapshot.scrollContainer.isConnected) return;
+
+      snapshot.scrollContainer.scrollLeft = Math.min(
+        snapshot.scrollLeft,
+        Math.max(0, snapshot.scrollContainer.scrollWidth - snapshot.scrollContainer.clientWidth),
+      );
+      snapshot.scrollContainer.scrollTop = Math.min(
+        snapshot.scrollTop,
+        Math.max(0, snapshot.scrollContainer.scrollHeight - snapshot.scrollContainer.clientHeight),
+      );
+    };
+
+    restore();
+    window.requestAnimationFrame(() => {
+      restore();
+      window.requestAnimationFrame(restore);
+    });
+  }
+
   function toggleEditorMode(
     event?: MouseEvent<HTMLButtonElement>,
     restoreEditorFocus = false,
@@ -9217,16 +9288,28 @@ function App() {
             ".editor-content-frame .milkdown-markdown-editor-shell, .editor-content-frame .markdown-editor-host",
           )
         : null;
-    const shouldRestoreEditorFocus = Boolean(event) || Boolean(restoreEditorFocus && activeEditor);
+    const shouldRestoreEditorFocus =
+      Boolean(activeEditor) && (Boolean(event) || Boolean(restoreEditorFocus));
+    let currentSelection: EditorSelectionSnapshot | null = null;
+
     if (shouldRestoreEditorFocus) {
-      const currentSelection = activeDocumentEditorRef.current?.getSelectionSnapshot();
+      currentSelection = activeDocumentEditorRef.current?.getSelectionSnapshot() ?? null;
+    }
+
+    if (shouldRestoreEditorFocus && currentSelection) {
       editorFocusRequestSequenceRef.current += 1;
       setEditorFocusRequest({
         documentId: selectedDocumentIdRef.current,
         mode: nextEditorMode,
         requestKey: editorFocusRequestSequenceRef.current,
-        selection: currentSelection ?? null,
+        selection: currentSelection,
       });
+    }
+    if (!shouldRestoreEditorFocus || !currentSelection) {
+      const scrollSnapshot = captureEditorModeScrollSnapshot();
+      if (scrollSnapshot) {
+        pendingEditorModeScrollSnapshotRef.current = scrollSnapshot;
+      }
     }
     setActiveDocumentModeState({
       editorMode: nextEditorMode,
@@ -15942,6 +16025,15 @@ function App() {
     editorFocusRequest.mode === editorMode
       ? editorFocusRequest
       : null;
+
+  useLayoutEffect(() => {
+    const snapshot = pendingEditorModeScrollSnapshotRef.current;
+    if (!snapshot) return;
+
+    pendingEditorModeScrollSnapshotRef.current = null;
+    restoreEditorModeScrollSnapshot(snapshot);
+  }, [editorMode, selectedDocumentId]);
+
   const documentPaneWidth = estimateDocumentPaneWidth(workspaceTitle, workspaceEntries);
   const shellStyle = {
     "--document-pane-measured-width": `${documentPaneWidth}px`,
