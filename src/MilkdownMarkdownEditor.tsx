@@ -9,7 +9,7 @@ import {
 import { syntaxHighlighting as codeMirrorSyntaxHighlighting } from "@codemirror/language";
 import { languages as codeMirrorLanguages } from "@codemirror/language-data";
 import { classHighlighter as codeMirrorClassHighlighter } from "@lezer/highlight";
-import { codeBlockConfig } from "@milkdown/kit/component/code-block";
+import { CodeMirrorBlock, codeBlockConfig } from "@milkdown/kit/component/code-block";
 import { listItemBlockConfig } from "@milkdown/kit/component/list-item-block";
 import {
   editorViewCtx,
@@ -104,7 +104,10 @@ import {
 import { renderScholiumMermaid } from "./mermaid";
 import { observeReadingDiagrams, retainDiagramTextEditor } from "./mermaidReading";
 import { readMarkdownImageFile } from "./tauriGateway";
-import { parseTextDiagramPreview } from "./textDiagramPreview";
+import {
+  isCommentedFileTreeCodeBlock,
+  parseTextDiagramPreview,
+} from "./textDiagramPreview";
 
 type MilkdownMarkdownEditorProps = {
   value: string;
@@ -256,6 +259,24 @@ const codeMirrorNativePrimarySelection = CodeMirrorViewPlugin.define((view) => {
   };
 });
 
+// Milkdown 的 CodeMirrorBlock 預設使用 IntersectionObserver 觀察離開視區的區塊，
+// 並在離開視區滿 5 秒後執行 teardown（CodeMirrorBlock.TEARDOWN_DELAY = 5000）。
+// 當上方大型圖表（如 Mermaid 流程圖）或程式碼區塊滾出視區上方時，該 teardown 會強制卸載
+// 預覽元件並替換回預設 pre 佔位符，導致元素高度劇烈坍塌（例如從約 1000px 萎縮至 200px），
+// 使得整份文件上方高度縮水數百像素，進而導致下方使用者的閱讀畫面被動大幅下跳（即自動往下滾）。
+// 將 offscreen teardown 關閉，可保證已渲染之圖表與程式碼區塊維持穩定 DOM 幾何尺寸，永不坍塌。
+if (typeof CodeMirrorBlock !== "undefined") {
+  (CodeMirrorBlock as unknown as { TEARDOWN_DELAY: number }).TEARDOWN_DELAY = 2147483647;
+  if (CodeMirrorBlock.prototype) {
+    const proto = CodeMirrorBlock.prototype as unknown as {
+      scheduleTeardown?: () => void;
+      teardownCodeMirror?: () => void;
+    };
+    proto.scheduleTeardown = () => {};
+    proto.teardownCodeMirror = () => {};
+  }
+}
+
 function codeMirrorBlockLanguage(view: CodeMirrorEditorView) {
   const languageButton = view.dom
     .closest<HTMLElement>(".milkdown-code-block")
@@ -270,8 +291,14 @@ function codeMirrorBlockLanguage(view: CodeMirrorEditorView) {
 
 function buildCodeMirrorTextDiagramDecorations(view: CodeMirrorEditorView) {
   const codeBlock = view.dom.closest<HTMLElement>(".milkdown-code-block");
-  const lines = parseTextDiagramPreview(codeMirrorBlockLanguage(view), view.state.doc.toString());
+  const language = codeMirrorBlockLanguage(view);
+  const content = view.state.doc.toString();
+  const lines = parseTextDiagramPreview(language, content);
   codeBlock?.classList.toggle("is-text-diagram", Boolean(lines));
+  codeBlock?.classList.toggle(
+    "is-commented-file-tree",
+    isCommentedFileTreeCodeBlock(language, content),
+  );
   if (!lines) return CodeMirrorDecoration.none;
 
   const decorations = lines.flatMap((line, index) => {
@@ -327,6 +354,7 @@ const codeMirrorTextDiagramPreview = CodeMirrorViewPlugin.fromClass(
 
     destroy() {
       this.codeBlock?.classList.remove("is-text-diagram");
+      this.codeBlock?.classList.remove("is-commented-file-tree");
     }
   },
   { decorations: (plugin) => plugin.decorations },
@@ -559,8 +587,31 @@ function escapeHtml(text: string) {
   return element.innerHTML;
 }
 
-function renderMilkdownMermaidFrame(content: string) {
-  return `<figure class="milkdown-mermaid-diagram">${content}</figure>`;
+function renderMilkdownMermaidFrame(content: string, diagramId?: string) {
+  const idAttribute = diagramId ? ` data-mermaid-id="${escapeHtml(diagramId)}"` : "";
+  return `<figure class="milkdown-mermaid-diagram"${idAttribute}>${content}</figure>`;
+}
+
+function elementCanScrollVertically(element: HTMLElement) {
+  if (typeof window === "undefined" || typeof window.getComputedStyle !== "function") {
+    return false;
+  }
+  const overflowY = window.getComputedStyle(element).overflowY;
+  return (
+    overflowY !== "visible" &&
+    overflowY !== "clip" &&
+    element.scrollHeight > element.clientHeight + 1
+  );
+}
+
+function resolveEditorScrollContainer(target: HTMLElement | null): Element | null {
+  for (let current = target; current; current = current.parentElement) {
+    if (elementCanScrollVertically(current)) {
+      return current;
+    }
+  }
+
+  return typeof document !== "undefined" ? document.scrollingElement : null;
 }
 
 function renderMilkdownMermaidPreview(
@@ -575,18 +626,20 @@ function renderMilkdownMermaidPreview(
     );
   }
 
+  const diagramId = `scholium-milkdown-mermaid-${++milkdownMermaidRenderIndex}`;
   applyPreview(
     renderMilkdownMermaidFrame(
       `<div class="milkdown-mermaid-diagram__loading">${escapeHtml(labels.loading)}</div>`,
+      diagramId,
     ),
   );
 
-  const diagramId = `scholium-milkdown-mermaid-${++milkdownMermaidRenderIndex}`;
   void renderScholiumMermaid(diagramId, definition)
     .then(({ svg }) => {
       applyPreview(
         renderMilkdownMermaidFrame(
           `<div class="milkdown-mermaid-diagram__svg">${svg}</div>`,
+          diagramId,
         ),
       );
     })
@@ -595,6 +648,7 @@ function renderMilkdownMermaidPreview(
       applyPreview(
         renderMilkdownMermaidFrame(
           `<pre class="milkdown-mermaid-diagram__error">${escapeHtml(labels.error)}</pre>`,
+          diagramId,
         ),
       );
     });
@@ -2231,9 +2285,11 @@ export const MilkdownMarkdownEditor = forwardRef<
   const rootRef = useRef<HTMLDivElement | null>(null);
   const crepeRef = useRef<Crepe | null>(null);
   const valueRefreshScrollSnapshotRef = useRef<{
-    scrollContainer: HTMLElement;
+    scrollContainer: Element;
     scrollTop: number;
   } | null>(null);
+  const userHasScrolledRef = useRef(false);
+  const lastUserScrollTimeRef = useRef(0);
   const currentMarkdownRef = useRef(normalizeMarkdownForScholium(value));
   const editorMarkdownRef = useRef(editorMarkdownFromFullSource(currentMarkdownRef.current));
   const annotationsRef = useRef(annotations);
@@ -2598,12 +2654,20 @@ export const MilkdownMarkdownEditor = forwardRef<
       onLinkClickRef.current?.(href);
     };
 
+    const markUserScrolled = () => {
+      userHasScrolledRef.current = true;
+      lastUserScrollTimeRef.current = Date.now();
+      valueRefreshScrollSnapshotRef.current = null;
+    };
+
     container.addEventListener("mousedown", preventFocus, { capture: true });
     container.addEventListener("touchstart", preventFocus, { capture: true, passive: false });
     container.addEventListener("touchend", handleTouchEnd, { capture: true, passive: false });
     container.addEventListener("click", handleLinkClick, true);
     container.addEventListener("click", handleCodeBlockCopyClick, true);
     container.addEventListener("click", handleCodeBlockDeleteClick, true);
+    window.addEventListener("wheel", markUserScrolled, { passive: true, capture: true });
+    window.addEventListener("touchmove", markUserScrolled, { passive: true, capture: true });
 
     return () => {
       container.removeEventListener("mousedown", preventFocus, { capture: true });
@@ -2612,6 +2676,8 @@ export const MilkdownMarkdownEditor = forwardRef<
       container.removeEventListener("click", handleLinkClick, true);
       container.removeEventListener("click", handleCodeBlockCopyClick, true);
       container.removeEventListener("click", handleCodeBlockDeleteClick, true);
+      window.removeEventListener("wheel", markUserScrolled, true);
+      window.removeEventListener("touchmove", markUserScrolled, true);
     };
   }, []);
 
@@ -4107,7 +4173,7 @@ export const MilkdownMarkdownEditor = forwardRef<
     if (normalizedValue === currentMarkdownRef.current) return;
 
     const root = rootRef.current;
-    const scrollContainer = root?.closest<HTMLElement>(".editor-pane");
+    const scrollContainer = resolveEditorScrollContainer(root);
     if (root && scrollContainer) {
       root.style.minHeight = `${root.scrollHeight}px`;
       valueRefreshScrollSnapshotRef.current = {
@@ -4130,6 +4196,11 @@ export const MilkdownMarkdownEditor = forwardRef<
     const snapshot = valueRefreshScrollSnapshotRef.current;
     root.style.minHeight = "";
     if (!snapshot) return;
+
+    if (userHasScrolledRef.current || Date.now() - lastUserScrollTimeRef.current < 4000) {
+      valueRefreshScrollSnapshotRef.current = null;
+      return;
+    }
 
     snapshot.scrollContainer.scrollTop = snapshot.scrollTop;
     valueRefreshScrollSnapshotRef.current = null;

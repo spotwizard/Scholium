@@ -2,6 +2,9 @@ import type { FlowDB } from "mermaid/dist/diagrams/flowchart/flowDb.js";
 import { flowReadingGraph, readingDiagramHtml } from "./mermaidReading.ts";
 import { registerFlowTextParser } from "./mermaidText.ts";
 
+export const scholiumMermaidFontFamily =
+  '-apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", Arial, "PingFang TC", "Noto Sans TC", "Microsoft JhengHei", "Heiti TC", sans-serif';
+
 const mermaidConfig = {
   startOnLoad: false,
   securityLevel: "strict",
@@ -46,8 +49,7 @@ const mermaidConfig = {
     sectionBkgColor2: "#fff4df",
     gridColor: "#e7dcca",
     todayLineColor: "#6e1b2b",
-    fontFamily:
-      'Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang TC", "Noto Sans TC", "Microsoft JhengHei", "Heiti TC", sans-serif',
+    fontFamily: scholiumMermaidFontFamily,
   },
   flowchart: {
     curve: "linear",
