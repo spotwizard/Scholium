@@ -25,9 +25,14 @@ type ReadingEdge = { source: string; target: string; label: string; marker: stri
 export type ReadingGraph = { nodes: ReadingNode[]; groups: ReadingGroup[]; edges: ReadingEdge[] };
 type FlowData = Pick<FlowDB, "getVertices" | "getSubGraphs" | "getEdges">;
 
+export function restoreMermaidLiteralLineBreaks(value: string) {
+  return value.replace(/\\r\\n|\\n|\\r/g, "\n");
+}
+
 function labelText(value: string) {
   // Mermaid has already parsed the label. Decode entities without inserting HTML.
-  const entities = value.replace(/ﬂ°°/g, "&#").replace(/ﬂ°/g, "&").replace(/¶ß/g, ";")
+  const restoredLineBreaks = restoreMermaidLiteralLineBreaks(value);
+  const entities = restoredLineBreaks.replace(/ﬂ°°/g, "&#").replace(/ﬂ°/g, "&").replace(/¶ß/g, ";")
     .replace(/(?<!&)#(\d+|quot|amp|lt|gt);/g, (_match, entity: string) => `&${/^\d+$/.test(entity) ? "#" : ""}${entity};`);
   const document = new DOMParser().parseFromString(entities.replace(/<br\s*\/?\s*>/gi, "\n"), "text/html");
   return document.body.textContent ?? "";

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import mermaid from "mermaid";
 import type { FlowDB } from "mermaid/dist/diagrams/flowchart/flowDb.js";
+import { restoreMermaidLiteralLineBreaks } from "../src/mermaidReading.ts";
 import { flowTextRanges, registerFlowTextParser, replaceDiagramText, restoredFlowText } from "../src/mermaidText.ts";
 
 mermaid.initialize({ startOnLoad: false });
@@ -14,6 +15,13 @@ test("restored metadata text follows Mermaid quoting and escaping without changi
     assert.equal(restoredFlowText(`flowchart TD\nA@{ label: ${label} }`).get("node:A"), expected);
   }
   assert.deepEqual([...(diagram.db as FlowDB).getVertices().keys()], original);
+});
+
+test("reading flowcharts display literal escaped line breaks as label line breaks", () => {
+  assert.equal(
+    restoreMermaidLiteralLineBreaks("Module 1\\n• 第一點\\r\\n• 第二點\\r備註"),
+    "Module 1\n• 第一點\n• 第二點\n備註",
+  );
 });
 
 test("edit the last declared label without rewriting IDs, relationships, comments or other labels", () => {
