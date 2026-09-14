@@ -684,8 +684,18 @@ button:disabled {
   -webkit-user-select: none;
 }
 
+.document-tree-root.is-current {
+  color: var(--color-directory-selected-text);
+  background: var(--color-directory-selected-bg);
+}
+
 .document-tree-root .document-icon {
   color: var(--color-heading);
+}
+
+.document-tree-root.is-current .document-icon,
+.document-tree-root.is-current .document-tree-root__title {
+  color: var(--color-directory-selected-text);
 }
 
 .document-tree-root__title {
@@ -2438,6 +2448,42 @@ button.document-tag-chip__label:focus-visible {
   margin: 0;
   font-size: 0.95rem;
   line-height: 1.6;
+}
+
+.empty-editor-actions {
+  display: grid;
+  width: min(100%, 360px);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 18px;
+}
+
+.empty-editor-actions button {
+  display: grid;
+  min-width: 0;
+  min-height: 38px;
+  grid-template-columns: 20px minmax(0, 1fr);
+  gap: 7px;
+  align-items: center;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 0 10px;
+  color: var(--color-heading);
+  background: var(--color-surface-raised);
+  box-shadow: 0 3px 10px rgba(32, 35, 41, 0.06);
+  text-align: left;
+}
+
+.empty-editor-actions button:hover,
+.empty-editor-actions button:focus-visible {
+  border-color: var(--color-selected-border);
+  background: var(--color-selected-surface);
+  outline: none;
+}
+
+.empty-editor-actions button span {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .markdown-editor-host {

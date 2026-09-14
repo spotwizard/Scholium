@@ -11691,6 +11691,56 @@ function App() {
     }
   }
 
+  async function createLocalMarkdownFile(fileName: string) {
+    if (!nativeStorageAvailable) {
+      setStorageError(t("error.nativeRuntimeRequired"));
+      return false;
+    }
+    if (workspaceSource !== "local" || workspaceRootPath === null) {
+      setStorageError(t("newFolder.noWorkspace"));
+      return false;
+    }
+
+    const trimmedFileName = fileName.trim();
+    if (!trimmedFileName) {
+      setStorageError(t("error.fileNameRequired"));
+      return false;
+    }
+    if (/[\\/]/.test(trimmedFileName)) {
+      setStorageError(t("error.fileNameNoFolders"));
+      return false;
+    }
+
+    const path = filePathInDirectory(workspaceRootPath, ensureMarkdownExtension(trimmedFileName));
+    try {
+      await openMarkdownFile({ path });
+      setStorageError(t("error.fileExists"));
+      return false;
+    } catch {
+      // Opening fails for a new path; save below creates the file.
+    }
+
+    try {
+      const saved = await saveMarkdownFile({
+        path,
+        body: "",
+        notes: [],
+        glossaryTerms: [],
+        glossaryBindings: [],
+      });
+      const loaded = await openMarkdownFile({
+        path: saved.path,
+      });
+      applyLoadedFiles([loaded], { sortEntries: true });
+      setActiveDocumentModeState({ editorMode: "preview" });
+      setStorageError("");
+      return true;
+    } catch (error) {
+      setStorageError(translatedError(error, "error.createFileFailed"));
+      return false;
+    }
+  }
+
   function replaceDraftWithLoadedDocument(
     draftId: string,
     loadedDocument: MarkdownDocument,
@@ -11996,6 +12046,10 @@ function App() {
       setStorageError(t("error.nativeRuntimeRequired"));
       return;
     }
+    if (workspaceSource && workspaceRootPath !== null) {
+      openCreateEntryDialog("file");
+      return;
+    }
 
     createDraftMarkdownDocument(workspaceSource === "dropbox" ? "dropbox" : "local");
   }
@@ -12079,15 +12133,11 @@ function App() {
       setStorageError(kind === "file" ? t("dropbox.error.noWorkspace") : t("newFolder.noWorkspace"));
       return;
     }
-    if (kind === "file") {
-      void newMarkdownFile();
-      return;
-    }
 
     setStorageError("");
     setCreateEntryDialog({
       kind,
-      name: "",
+      name: kind === "file" ? stripMarkdownExtension(t("app.untitledFile")) : "",
       isSubmitting: false,
     });
   }
@@ -12102,7 +12152,9 @@ function App() {
 
     const created =
       createEntryDialog.kind === "file"
-        ? await createDropboxMarkdownFile(createEntryDialog.name)
+        ? workspaceSource === "dropbox"
+          ? await createDropboxMarkdownFile(createEntryDialog.name)
+          : await createLocalMarkdownFile(createEntryDialog.name)
         : await createWorkspaceFolder(createEntryDialog.name);
     if (created) {
       if (createEntryDialog.kind === "file" && isMobileViewport) {
@@ -16318,8 +16370,11 @@ function App() {
             ) : null}
 
             {!isMobileViewport ? (
-              <div className="document-tree-root" title={workspaceTitle}>
-                <DocumentGlyphIcon kind="folder" selected />
+              <div
+                className={`document-tree-root ${hasOpenDocument ? "" : "is-current"}`.trim()}
+                title={workspaceRootPath ?? workspaceTitle}
+              >
+                <DocumentGlyphIcon kind="folder" selected={!hasOpenDocument} />
                 <span className="document-tree-root__title">{workspaceTitle}</span>
               </div>
             ) : null}
@@ -17639,15 +17694,21 @@ function App() {
                   <h2>
                     {workspaceHasMarkdownFileEntries
                       ? t("emptyDocumentSelection.title")
-                      : t("emptyDirectory.title")}
+                      : t("emptyDirectory.title", { title: workspaceTitle })}
                   </h2>
                   <p>
                     {workspaceHasMarkdownFileEntries
                       ? t("emptyDocumentSelection.description")
                       : t("emptyDirectory.description")}
                   </p>
-                  <div className="mobile-empty-actions" aria-label={t("mobileSource.label")}>
-                    {mobileEmptyActions.map((action) => (
+                  <div
+                    className="empty-editor-actions mobile-empty-actions"
+                    aria-label={t("mobileSource.label")}
+                  >
+                    {(workspaceHasMarkdownFileEntries
+                      ? mobileEmptyActions
+                      : mobileFilePanelCreateActions
+                    ).map((action) => (
                       <button key={action.id} onClick={action.onSelect} type="button">
                         {action.icon}
                         <span>{action.label}</span>

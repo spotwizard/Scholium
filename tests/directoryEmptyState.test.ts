@@ -62,4 +62,28 @@ assert.match(
   "an empty workspace root should render its message in the file panel",
 );
 
+assert.match(
+  app,
+  /className=\{`document-tree-root \$\{hasOpenDocument \? "" : "is-current"\}`\.trim\(\)\}/,
+  "the workspace root should only use selected styling when no document is open",
+);
+
+assert.match(
+  app,
+  /<DocumentGlyphIcon kind="folder" selected=\{!hasOpenDocument\} \/>/,
+  "the workspace root icon should only use the selected glyph when the root is selected",
+);
+
+assert.match(
+  app,
+  /t\("emptyDirectory\.title", \{ title: workspaceTitle \}\)/,
+  "the empty editor state should name the opened directory",
+);
+
+assert.match(
+  app,
+  /workspaceHasMarkdownFileEntries[\s\S]*?\? mobileEmptyActions[\s\S]*?: mobileFilePanelCreateActions/,
+  "an empty opened directory should offer create actions in the editor empty state",
+);
+
 console.log("directory empty state regression: PASS");
