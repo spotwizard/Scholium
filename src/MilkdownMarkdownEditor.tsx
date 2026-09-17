@@ -86,6 +86,7 @@ import {
 } from "./markdownInlineTextMap";
 import { escapeListLeadingAsterisksForPreview } from "./markdownListLiteral";
 import {
+  deleteEmptyParagraphAfterList,
   deleteAtListItemStart,
   insertEmptyFirstChildListItem,
   mergeRemovedListMarkerLineBackward,
@@ -3292,14 +3293,20 @@ export const MilkdownMarkdownEditor = forwardRef<
           }
 
           if (event.key === "Backspace" || event.key === "Delete") {
-            if (
-              event.key === "Backspace" &&
-              mergeRemovedListMarkerLineBackward(listItemType)(
-                view.state,
-                (transaction) => view.dispatch(transaction),
-                view,
-              )
-            ) {
+            const handledEmptyLineAfterList =
+              event.key === "Backspace"
+                ? mergeRemovedListMarkerLineBackward(listItemType)(
+                    view.state,
+                    (transaction) => view.dispatch(transaction),
+                    view,
+                  )
+                : deleteEmptyParagraphAfterList(listItemType)(
+                    view.state,
+                    (transaction) => view.dispatch(transaction),
+                    view,
+                  );
+
+            if (handledEmptyLineAfterList) {
               event.preventDefault();
               return true;
             }

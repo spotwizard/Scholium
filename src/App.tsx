@@ -369,6 +369,11 @@ type EditorModeScrollSnapshot = {
   scrollTop: number;
 };
 
+type DocumentScrollPosition = {
+  scrollLeft: number;
+  scrollTop: number;
+};
+
 type TextRangeRect = {
   bottom: number;
   height: number;
@@ -3986,8 +3991,14 @@ function MarkdownPreview({
     const renderedText = previewTextFromNode(blockElement).replace(/\u200b/g, "");
     if (renderedText === "") {
       const blockIndex = blocks.findIndex((block) => block.key === renderedBlock.key);
+      const previousBlock = blocks[blockIndex - 1];
       const neighbor = blocks[blockIndex + (key === "Backspace" ? -1 : 1)];
-      if (!neighbor) return true;
+      if (!neighbor) {
+        if (key === "Delete" && previousBlock && blockIsList(previousBlock)) {
+          focusPreviewBlockEnd(previousBlock.key);
+        }
+        return true;
+      }
       const currentValue = previewValueRef.current;
       const emptyRange = getBlockRange(currentValue, renderedBlock);
       const neighborRange = getBlockRange(currentValue, neighbor);
@@ -3995,7 +4006,11 @@ function MarkdownPreview({
       const to = key === "Backspace" ? emptyRange.end : neighborRange.start;
       const nextValue = currentValue.slice(0, from) + currentValue.slice(to);
       window.getSelection()?.removeAllRanges();
-      focusPreviewSourcePosition(nextValue, from);
+      if (key === "Backspace" && blockIsList(neighbor)) {
+        focusPreviewBlockEnd(neighbor.key);
+      } else {
+        focusPreviewSourcePosition(nextValue, from);
+      }
       commitPreviewChange(nextValue);
       return true;
     }
@@ -5750,6 +5765,8 @@ function App() {
   const activeDocumentEditorRef = useRef<EditorSelectionHandle | null>(null);
   const editorFocusRequestSequenceRef = useRef(0);
   const pendingEditorModeScrollSnapshotRef = useRef<EditorModeScrollSnapshot | null>(null);
+  const documentScrollPositionsRef = useRef<Record<string, DocumentScrollPosition>>({});
+  const pendingDocumentScrollPositionRef = useRef<DocumentScrollPosition | null>(null);
   const documentModeStatesRef = useRef(documentModeStates);
   const notePanelHasContentRef = useRef(false);
   const selectionWarningPreserveUntilRef = useRef(0);
@@ -9271,6 +9288,34 @@ function App() {
     });
   }
 
+  function captureDocumentScrollPosition(): DocumentScrollPosition | null {
+    const snapshot = captureEditorModeScrollSnapshot();
+    if (!snapshot) return null;
+
+    return {
+      scrollLeft: snapshot.scrollLeft,
+      scrollTop: snapshot.scrollTop,
+    };
+  }
+
+  function restoreDocumentScrollPosition(position: DocumentScrollPosition) {
+    const scrollContainer = editorModeScrollContainer();
+    if (!scrollContainer) return;
+
+    restoreEditorModeScrollSnapshot({
+      scrollContainer,
+      scrollLeft: position.scrollLeft,
+      scrollTop: position.scrollTop,
+    });
+  }
+
+  function saveDocumentScrollPosition(documentId: string) {
+    const position = captureDocumentScrollPosition();
+    if (!position) return;
+
+    documentScrollPositionsRef.current[documentId] = position;
+  }
+
   function toggleEditorMode(
     event?: MouseEvent<HTMLButtonElement>,
     restoreEditorFocus = false,
@@ -9358,11 +9403,16 @@ function App() {
 
     if (previousDocumentId && previousDocumentId !== documentId) {
       saveCurrentDocumentModeState(previousDocumentId);
+      saveDocumentScrollPosition(previousDocumentId);
     }
 
     selectedDocumentIdRef.current = documentId;
     setSelectedDocumentId(documentId);
     restoreDocumentModeState(documentId);
+    pendingDocumentScrollPositionRef.current =
+      previousDocumentId && previousDocumentId !== documentId
+        ? (documentScrollPositionsRef.current[documentId] ?? { scrollLeft: 0, scrollTop: 0 })
+        : null;
   }
 
   function resetDocumentTabs(documentId: string) {
@@ -16080,10 +16130,16 @@ function App() {
 
   useLayoutEffect(() => {
     const snapshot = pendingEditorModeScrollSnapshotRef.current;
-    if (!snapshot) return;
+    if (snapshot) {
+      pendingEditorModeScrollSnapshotRef.current = null;
+      restoreEditorModeScrollSnapshot(snapshot);
+    }
 
-    pendingEditorModeScrollSnapshotRef.current = null;
-    restoreEditorModeScrollSnapshot(snapshot);
+    const documentPosition = pendingDocumentScrollPositionRef.current;
+    if (documentPosition) {
+      pendingDocumentScrollPositionRef.current = null;
+      restoreDocumentScrollPosition(documentPosition);
+    }
   }, [editorMode, selectedDocumentId]);
 
   const documentPaneWidth = estimateDocumentPaneWidth(workspaceTitle, workspaceEntries);

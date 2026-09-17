@@ -115,6 +115,14 @@ assert.match(
 );
 assert.match(
   markdownPreviewSource,
+  /function commitPreviewEmptyLineDeletion[\s\S]*?const previousBlock = blocks\[blockIndex - 1\];[\s\S]*?if \(!neighbor\) \{[\s\S]*?key === "Delete" && previousBlock && blockIsList\(previousBlock\)[\s\S]*?focusPreviewBlockEnd\(previousBlock\.key\)[\s\S]*?return true;/,
+);
+assert.match(
+  markdownPreviewSource,
+  /function commitPreviewEmptyLineDeletion[\s\S]*?const neighborRange = getBlockRange\(currentValue, neighbor\);[\s\S]*?if \(key === "Backspace" && blockIsList\(neighbor\)\) \{[\s\S]*?focusPreviewBlockEnd\(neighbor\.key\)[\s\S]*?\} else \{[\s\S]*?focusPreviewSourcePosition\(nextValue, from\);/,
+);
+assert.match(
+  markdownPreviewSource,
   /handlePreviewListDelete\(event\)[\s\S]*?commitPreviewEmptyLineDeletion\(event\.currentTarget, event\.key\)[\s\S]*?event\.preventDefault\(\)/,
 );
 assert.doesNotMatch(markdownPreviewSource, /controlledNextBlock|selectedSoftLine\.text\.split/);

@@ -30,13 +30,33 @@ assert.match(
 );
 assert.match(
   app,
+  /type DocumentScrollPosition = \{[\s\S]*?scrollLeft: number;[\s\S]*?scrollTop: number;[\s\S]*?\};/,
+  "document switching must have a per-document scroll position snapshot",
+);
+assert.match(
+  app,
+  /const documentScrollPositionsRef = useRef<Record<string, DocumentScrollPosition>>\(\{\}\);[\s\S]*?const pendingDocumentScrollPositionRef = useRef<DocumentScrollPosition \| null>\(null\);/,
+  "document switching must store saved scroll positions outside render state",
+);
+assert.match(
+  app,
+  /function saveDocumentScrollPosition\(documentId: string\) \{[\s\S]*?documentScrollPositionsRef\.current\[documentId\] = position;[\s\S]*?\}/,
+  "document switching must save the outgoing document's scroll position",
+);
+assert.match(
+  app,
+  /function setActiveDocumentId\(documentId: string\) \{[\s\S]*?saveCurrentDocumentModeState\(previousDocumentId\);[\s\S]*?saveDocumentScrollPosition\(previousDocumentId\);[\s\S]*?pendingDocumentScrollPositionRef\.current =[\s\S]*?documentScrollPositionsRef\.current\[documentId\] \?\? \{ scrollLeft: 0, scrollTop: 0 \}/,
+  "document switching must restore the incoming document's saved scroll position and start unseen documents at the top",
+);
+assert.match(
+  app,
   /if \(!shouldRestoreEditorFocus \|\| !currentSelection\) \{[\s\S]*?const scrollSnapshot = captureEditorModeScrollSnapshot\(\);[\s\S]*?pendingEditorModeScrollSnapshotRef\.current = scrollSnapshot;/,
   "mode switching without a focused editor must preserve reading position instead of restoring the stale top cursor",
 );
 assert.match(
   app,
-  /useLayoutEffect\(\(\) => \{[\s\S]*?const snapshot = pendingEditorModeScrollSnapshotRef\.current;[\s\S]*?restoreEditorModeScrollSnapshot\(snapshot\);[\s\S]*?\}, \[editorMode, selectedDocumentId\]\);/,
-  "mode switching must apply the pending scroll snapshot immediately after render",
+  /useLayoutEffect\(\(\) => \{[\s\S]*?const snapshot = pendingEditorModeScrollSnapshotRef\.current;[\s\S]*?restoreEditorModeScrollSnapshot\(snapshot\);[\s\S]*?const documentPosition = pendingDocumentScrollPositionRef\.current;[\s\S]*?restoreDocumentScrollPosition\(documentPosition\);[\s\S]*?\}, \[editorMode, selectedDocumentId\]\);/,
+  "mode and document switching must apply pending scroll restoration immediately after render",
 );
 assert.match(
   app,
