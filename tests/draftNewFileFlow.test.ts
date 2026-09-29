@@ -21,11 +21,41 @@ function functionBody(name: string) {
 
 const newMarkdownFileBody = functionBody("newMarkdownFile");
 assert.match(newMarkdownFileBody, /createDraftMarkdownDocument\(/);
-assert.doesNotMatch(newMarkdownFileBody, /await save\(|create_dropbox_markdown_file|openCreateEntryDialog/);
+assert.match(
+  newMarkdownFileBody,
+  /if \(workspaceSource && workspaceRootPath !== null\) \{[\s\S]*?openCreateEntryDialog\("file"\);[\s\S]*?return;/,
+);
+assert.doesNotMatch(newMarkdownFileBody, /window\.prompt/);
+
+const createLocalMarkdownFileBody = functionBody("createLocalMarkdownFile");
+assert.match(createLocalMarkdownFileBody, /workspaceSource !== "local" \|\| workspaceRootPath === null/);
+assert.match(createLocalMarkdownFileBody, /setStorageError\(t\("error\.fileNameNoFolders"\)\)/);
+assert.match(createLocalMarkdownFileBody, /await openMarkdownFile\(\{\s*path\s*\}\);[\s\S]*?setStorageError\(t\("error\.fileExists"\)\);/);
+assert.match(
+  createLocalMarkdownFileBody,
+  /const saved = await saveMarkdownFile\(\{\s*path,\s*body: "",\s*notes: \[\],\s*glossaryTerms: \[\],\s*glossaryBindings: \[\],\s*\}\);/,
+);
+assert.match(createLocalMarkdownFileBody, /applyLoadedFiles\(\[loaded\], \{ sortEntries: true \}\)/);
 
 const createDropboxMarkdownFileBody = functionBody("createDropboxMarkdownFile");
 assert.match(createDropboxMarkdownFileBody, /setActiveDocumentModeState\(\{\s*editorMode:\s*"preview"\s*\}\)/);
 assert.doesNotMatch(createDropboxMarkdownFileBody, /setActiveDocumentModeState\(\{\s*editorMode:\s*"edit"\s*\}\)/);
+
+const openCreateEntryDialogBody = app.match(
+  /function openCreateEntryDialog\([^)]*\) \{([\s\S]*?)\n  \}/,
+)?.[1];
+assert.ok(openCreateEntryDialogBody, "openCreateEntryDialog should exist");
+assert.match(
+  openCreateEntryDialogBody,
+  /setCreateEntryDialog\(\{\s*kind,\s*name: kind === "file" \? stripMarkdownExtension\(t\("app\.untitledFile"\)\) : "",\s*isSubmitting: false,\s*\}\)/,
+);
+assert.doesNotMatch(openCreateEntryDialogBody, /void newMarkdownFile\(\)/);
+
+const submitCreateEntryBody = functionBody("submitCreateEntry");
+assert.match(
+  submitCreateEntryBody,
+  /createEntryDialog\.kind === "file"\s*\?\s*workspaceSource === "dropbox"\s*\?\s*await createDropboxMarkdownFile\(createEntryDialog\.name\)\s*:\s*await createLocalMarkdownFile\(createEntryDialog\.name\)\s*:\s*await createWorkspaceFolder\(createEntryDialog\.name\)/,
+);
 
 const createDraftMarkdownDocumentBody = app.match(
   /function createDraftMarkdownDocument\([^)]*\) \{([\s\S]*?)\n  \}/,
@@ -98,5 +128,7 @@ assert.match(
 );
 assert.match(translations, /"confirm\.saveDraftFile": "這份未命名內容尚未存成檔案，要先存檔嗎？"/);
 assert.match(translations, /"confirm\.discardDraftFile": "要放棄建立這份未命名檔案嗎？/);
+assert.match(translations, /"error\.fileNameNoFolders": "檔名不能包含資料夾位置。"/);
+assert.match(translations, /"error\.fileExists": "已有同名檔案，請換一個檔名。"/);
 
 console.log("draft new file flow regression: PASS");

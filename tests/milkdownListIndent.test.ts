@@ -6,6 +6,7 @@ import { Schema, type Node as ProseMirrorNode } from "@milkdown/prose/model";
 import { bulletList, listItem, orderedList } from "@milkdown/prose/schema-list";
 import { EditorState, NodeSelection, TextSelection } from "@milkdown/prose/state";
 import {
+  deleteEmptyParagraphAfterList,
   deleteAtListItemStart,
   insertEmptyFirstChildListItem,
   mergeRemovedListMarkerLineBackward,
@@ -1097,6 +1098,200 @@ assert.deepEqual(
   topLevelEmptyItemDocument.toJSON(),
 );
 
+const topLevelHardbreakEmptyItemDocument = schema.nodes.doc.create(null, [
+  schema.nodes.bullet_list.create(null, [
+    item("使用者提供地點"),
+    item("根據 search.md 中的規則進行搜尋資料的程序"),
+    schema.nodes.list_item.create(null, [
+      schema.nodes.paragraph.create(null, schema.nodes.hardbreak.create()),
+    ]),
+  ]),
+]);
+let topLevelHardbreakEmptyItemPosition = -1;
+topLevelHardbreakEmptyItemDocument.descendants((node, position) => {
+  if (
+    node.type === schema.nodes.list_item &&
+    node.firstChild?.childCount === 1 &&
+    node.firstChild.firstChild?.type === schema.nodes.hardbreak
+  ) {
+    topLevelHardbreakEmptyItemPosition = position + 3;
+  }
+});
+assert.notEqual(topLevelHardbreakEmptyItemPosition, -1);
+
+let topLevelHardbreakEmptyItemState = EditorState.create({
+  doc: topLevelHardbreakEmptyItemDocument,
+  selection: TextSelection.create(
+    topLevelHardbreakEmptyItemDocument,
+    topLevelHardbreakEmptyItemPosition,
+  ),
+  plugins: [history()],
+});
+assert.equal(
+  deleteAtListItemStart(schema.nodes.list_item, "forward")(
+    topLevelHardbreakEmptyItemState,
+    (transaction) => {
+      topLevelHardbreakEmptyItemState =
+        topLevelHardbreakEmptyItemState.apply(transaction);
+    },
+  ),
+  true,
+);
+assert.deepEqual(topLevelHardbreakEmptyItemState.doc.toJSON(), {
+  type: "doc",
+  content: [
+    {
+      type: "bullet_list",
+      content: [
+        {
+          type: "list_item",
+          content: [
+            {
+              type: "paragraph",
+              content: [{ type: "text", text: "使用者提供地點" }],
+            },
+          ],
+        },
+        {
+          type: "list_item",
+          content: [
+            {
+              type: "paragraph",
+              content: [
+                {
+                  type: "text",
+                  text: "根據 search.md 中的規則進行搜尋資料的程序",
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    },
+    { type: "paragraph", content: [{ type: "hardbreak" }] },
+  ],
+});
+assert.equal(
+  topLevelHardbreakEmptyItemState.selection.$from.parent.type,
+  schema.nodes.paragraph,
+);
+assert.equal(topLevelHardbreakEmptyItemState.selection.$from.parent.textContent, "");
+assert.equal(
+  topLevelHardbreakEmptyItemState.selection.$from.parentOffset,
+  1,
+  "Delete after a list must place the caret on the final editable line below the list",
+);
+assert.equal(
+  undo(topLevelHardbreakEmptyItemState, (transaction) => {
+    topLevelHardbreakEmptyItemState =
+      topLevelHardbreakEmptyItemState.apply(transaction);
+  }),
+  true,
+);
+assert.deepEqual(
+  topLevelHardbreakEmptyItemState.doc.toJSON(),
+  topLevelHardbreakEmptyItemDocument.toJSON(),
+);
+
+const paragraphAfterListDocument = schema.nodes.doc.create(null, [
+  schema.nodes.bullet_list.create(null, [
+    item("使用者提供地點"),
+    item("根據 search.md 中的規則進行搜尋資料的程序"),
+    item("其他合併目標不予執行。"),
+  ]),
+  schema.nodes.paragraph.create(null, schema.nodes.hardbreak.create()),
+]);
+let paragraphAfterListPosition = -1;
+paragraphAfterListDocument.descendants((node, position) => {
+  if (
+    node.type === schema.nodes.paragraph &&
+    node.childCount === 1 &&
+    node.firstChild?.type === schema.nodes.hardbreak
+  ) {
+    paragraphAfterListPosition = position + 2;
+  }
+});
+assert.notEqual(paragraphAfterListPosition, -1);
+
+let paragraphAfterListState = EditorState.create({
+  doc: paragraphAfterListDocument,
+  selection: TextSelection.create(
+    paragraphAfterListDocument,
+    paragraphAfterListPosition,
+  ),
+  plugins: [history()],
+});
+assert.equal(
+  deleteEmptyParagraphAfterList(schema.nodes.list_item)(
+    paragraphAfterListState,
+    (transaction) => {
+      paragraphAfterListState = paragraphAfterListState.apply(transaction);
+    },
+  ),
+  true,
+);
+assert.deepEqual(paragraphAfterListState.doc.toJSON(), {
+  type: "doc",
+  content: [
+    {
+      type: "bullet_list",
+      content: [
+        {
+          type: "list_item",
+          content: [
+            {
+              type: "paragraph",
+              content: [{ type: "text", text: "使用者提供地點" }],
+            },
+          ],
+        },
+        {
+          type: "list_item",
+          content: [
+            {
+              type: "paragraph",
+              content: [
+                {
+                  type: "text",
+                  text: "根據 search.md 中的規則進行搜尋資料的程序",
+                },
+              ],
+            },
+          ],
+        },
+        {
+          type: "list_item",
+          content: [
+            {
+              type: "paragraph",
+              content: [{ type: "text", text: "其他合併目標不予執行。" }],
+            },
+          ],
+        },
+      ],
+    },
+  ],
+});
+assert.equal(
+  paragraphAfterListState.selection.$from.parent.textContent,
+  "其他合併目標不予執行。",
+);
+assert.equal(
+  paragraphAfterListState.selection.$from.parentOffset,
+  "其他合併目標不予執行。".length,
+  "Delete in the blank line after a list must move the caret to the final list row",
+);
+assert.equal(
+  undo(paragraphAfterListState, (transaction) => {
+    paragraphAfterListState = paragraphAfterListState.apply(transaction);
+  }),
+  true,
+);
+assert.deepEqual(
+  paragraphAfterListState.doc.toJSON(),
+  paragraphAfterListDocument.toJSON(),
+);
+
 const orderedTextDeletionDocument = schema.nodes.doc.create(null, [
   schema.nodes.ordered_list.create(null, [
     orderedItem("第一列"),
@@ -1791,7 +1986,10 @@ const editorSource = readFileSync(
   fileURLToPath(new URL("../src/MilkdownMarkdownEditor.tsx", import.meta.url)),
   "utf8",
 );
-assert.match(editorSource, /event\.key\.toLowerCase\(\) !== "z"/);
+assert.match(
+  editorSource,
+  /const key = event\.key\.toLowerCase\(\);[\s\S]*?const shouldRedo =[\s\S]*?key === "z" && event\.shiftKey[\s\S]*?key === "y" && event\.ctrlKey/,
+);
 assert.match(editorSource, /event\.ctrlKey === event\.metaKey/);
 assert.match(editorSource, /const command = shouldRedo \? redo : undo/);
 assert.match(editorSource, /event\.inputType !== "historyUndo"/);
@@ -1800,6 +1998,10 @@ assert.match(editorSource, /createControlHistoryPlugin\(\),/);
 assert.match(
   editorSource,
   /event\.key === "Backspace"[\s\S]*?mergeRemovedListMarkerLineBackward\(listItemType\)/,
+);
+assert.match(
+  editorSource,
+  /event\.key === "Backspace" \|\| event\.key === "Delete"[\s\S]*?deleteEmptyParagraphAfterList\(listItemType\)/,
 );
 assert.match(
   editorSource,

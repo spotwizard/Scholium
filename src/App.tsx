@@ -63,6 +63,7 @@ import type {
   SelectionNote,
 } from "./documentTypes";
 import {
+  documentSearchHistoryAction,
   documentSearchMoveDeltaForKeyDown,
   isDocumentSearchSelectAllShortcut,
   type DocumentSearchState,
@@ -365,6 +366,11 @@ type EditorFocusRequest = {
 
 type EditorModeScrollSnapshot = {
   scrollContainer: Element;
+  scrollLeft: number;
+  scrollTop: number;
+};
+
+type DocumentScrollPosition = {
   scrollLeft: number;
   scrollTop: number;
 };
@@ -2515,11 +2521,11 @@ function isUndoKeyboardShortcut(
 function isRedoKeyboardShortcut(
   event: Pick<KeyboardEvent | ReactKeyboardEvent, "altKey" | "ctrlKey" | "key" | "metaKey" | "shiftKey">,
 ) {
+  const key = event.key.toLowerCase();
   return (
-    event.key.toLowerCase() === "z" &&
-    (event.metaKey || event.ctrlKey) &&
     !event.altKey &&
-    event.shiftKey
+    ((key === "z" && (event.metaKey || event.ctrlKey) && event.shiftKey) ||
+      (key === "y" && event.ctrlKey && !event.metaKey && !event.shiftKey))
   );
 }
 
@@ -2982,6 +2988,7 @@ function MarkdownPreview({
   const inputCommitFrameRef = useRef(0);
   const pendingPreviewTextFocusRef = useRef<{
     blockKey: string;
+    scrollIntoView?: boolean;
     textOffset: number;
   } | null>(null);
   const previewHistoryRef = useRef(createNoteEditorHistory());
@@ -3000,7 +3007,11 @@ function MarkdownPreview({
     if (!pendingFocus) return;
 
     pendingPreviewTextFocusRef.current = null;
-    applyPreviewBlockTextOffset(pendingFocus.blockKey, pendingFocus.textOffset);
+    applyPreviewBlockTextOffset(
+      pendingFocus.blockKey,
+      pendingFocus.textOffset,
+      pendingFocus.scrollIntoView,
+    );
   }, [value]);
 
   useEffect(() => {
@@ -3126,7 +3137,11 @@ function MarkdownPreview({
     });
   }
 
-  function applyPreviewBlockTextOffset(blockKey: string, textOffset: number) {
+  function applyPreviewBlockTextOffset(
+    blockKey: string,
+    textOffset: number,
+    shouldScrollIntoView = false,
+  ) {
     const previewElement = previewRef.current;
     const blockElement = Array.from(
       previewElement?.querySelectorAll<HTMLElement>("[data-preview-block-key]") ?? [],
@@ -3189,13 +3204,24 @@ function MarkdownPreview({
     range.collapse(true);
     selection.removeAllRanges();
     selection.addRange(range);
+    if (shouldScrollIntoView) {
+      blockElement.scrollIntoView({ block: "center", inline: "nearest" });
+    }
   }
 
-  function focusPreviewBlockTextOffset(blockKey: string, textOffset: number) {
-    pendingPreviewTextFocusRef.current = { blockKey, textOffset };
+  function focusPreviewBlockTextOffset(
+    blockKey: string,
+    textOffset: number,
+    scrollIntoView = false,
+  ) {
+    pendingPreviewTextFocusRef.current = { blockKey, scrollIntoView, textOffset };
   }
 
-  function focusPreviewSourcePosition(nextValue: string, sourcePosition: number) {
+  function focusPreviewSourcePosition(
+    nextValue: string,
+    sourcePosition: number,
+    scrollIntoView = false,
+  ) {
     const caretLine = nextValue.slice(0, sourcePosition).split("\n").length - 1;
     const nextBlocks = parsePreviewBlocks(nextValue);
     const focusBlock =
@@ -3216,6 +3242,7 @@ function MarkdownPreview({
         getPreviewBlockTextMap(nextValue, focusBlock),
         sourcePosition,
       ),
+      scrollIntoView,
     );
   }
 
@@ -3986,8 +4013,14 @@ function MarkdownPreview({
     const renderedText = previewTextFromNode(blockElement).replace(/\u200b/g, "");
     if (renderedText === "") {
       const blockIndex = blocks.findIndex((block) => block.key === renderedBlock.key);
+      const previousBlock = blocks[blockIndex - 1];
       const neighbor = blocks[blockIndex + (key === "Backspace" ? -1 : 1)];
-      if (!neighbor) return true;
+      if (!neighbor) {
+        if (key === "Delete" && previousBlock && blockIsList(previousBlock)) {
+          focusPreviewBlockEnd(previousBlock.key);
+        }
+        return true;
+      }
       const currentValue = previewValueRef.current;
       const emptyRange = getBlockRange(currentValue, renderedBlock);
       const neighborRange = getBlockRange(currentValue, neighbor);
@@ -3995,7 +4028,11 @@ function MarkdownPreview({
       const to = key === "Backspace" ? emptyRange.end : neighborRange.start;
       const nextValue = currentValue.slice(0, from) + currentValue.slice(to);
       window.getSelection()?.removeAllRanges();
-      focusPreviewSourcePosition(nextValue, from);
+      if (key === "Backspace" && blockIsList(neighbor)) {
+        focusPreviewBlockEnd(neighbor.key);
+      } else {
+        focusPreviewSourcePosition(nextValue, from);
+      }
       commitPreviewChange(nextValue);
       return true;
     }
@@ -4746,6 +4783,7 @@ function MarkdownPreview({
     focusPreviewSourcePosition(
       undo.snapshot.value,
       undo.snapshot.caretSourcePosition,
+      true,
     );
     onChange(undo.snapshot.value, "undo");
     return true;
@@ -4763,6 +4801,7 @@ function MarkdownPreview({
     focusPreviewSourcePosition(
       redo.snapshot.value,
       redo.snapshot.caretSourcePosition,
+      true,
     );
     onChange(redo.snapshot.value, "user");
     return true;
@@ -5750,6 +5789,8 @@ function App() {
   const activeDocumentEditorRef = useRef<EditorSelectionHandle | null>(null);
   const editorFocusRequestSequenceRef = useRef(0);
   const pendingEditorModeScrollSnapshotRef = useRef<EditorModeScrollSnapshot | null>(null);
+  const documentScrollPositionsRef = useRef<Record<string, DocumentScrollPosition>>({});
+  const pendingDocumentScrollPositionRef = useRef<DocumentScrollPosition | null>(null);
   const documentModeStatesRef = useRef(documentModeStates);
   const notePanelHasContentRef = useRef(false);
   const selectionWarningPreserveUntilRef = useRef(0);
@@ -7835,6 +7876,14 @@ function App() {
   }
 
   function handleDocumentSearchInputKeyDown(event: ReactKeyboardEvent<HTMLInputElement>) {
+    const historyAction = documentSearchHistoryAction(event.nativeEvent);
+    if (historyAction) {
+      event.preventDefault();
+      event.stopPropagation();
+      document.execCommand(historyAction);
+      return;
+    }
+
     if (isDocumentSearchSelectAllShortcut(event.nativeEvent)) {
       event.preventDefault();
       event.stopPropagation();
@@ -9271,6 +9320,34 @@ function App() {
     });
   }
 
+  function captureDocumentScrollPosition(): DocumentScrollPosition | null {
+    const snapshot = captureEditorModeScrollSnapshot();
+    if (!snapshot) return null;
+
+    return {
+      scrollLeft: snapshot.scrollLeft,
+      scrollTop: snapshot.scrollTop,
+    };
+  }
+
+  function restoreDocumentScrollPosition(position: DocumentScrollPosition) {
+    const scrollContainer = editorModeScrollContainer();
+    if (!scrollContainer) return;
+
+    restoreEditorModeScrollSnapshot({
+      scrollContainer,
+      scrollLeft: position.scrollLeft,
+      scrollTop: position.scrollTop,
+    });
+  }
+
+  function saveDocumentScrollPosition(documentId: string) {
+    const position = captureDocumentScrollPosition();
+    if (!position) return;
+
+    documentScrollPositionsRef.current[documentId] = position;
+  }
+
   function toggleEditorMode(
     event?: MouseEvent<HTMLButtonElement>,
     restoreEditorFocus = false,
@@ -9358,11 +9435,16 @@ function App() {
 
     if (previousDocumentId && previousDocumentId !== documentId) {
       saveCurrentDocumentModeState(previousDocumentId);
+      saveDocumentScrollPosition(previousDocumentId);
     }
 
     selectedDocumentIdRef.current = documentId;
     setSelectedDocumentId(documentId);
     restoreDocumentModeState(documentId);
+    pendingDocumentScrollPositionRef.current =
+      previousDocumentId && previousDocumentId !== documentId
+        ? (documentScrollPositionsRef.current[documentId] ?? { scrollLeft: 0, scrollTop: 0 })
+        : null;
   }
 
   function resetDocumentTabs(documentId: string) {
@@ -11691,6 +11773,56 @@ function App() {
     }
   }
 
+  async function createLocalMarkdownFile(fileName: string) {
+    if (!nativeStorageAvailable) {
+      setStorageError(t("error.nativeRuntimeRequired"));
+      return false;
+    }
+    if (workspaceSource !== "local" || workspaceRootPath === null) {
+      setStorageError(t("newFolder.noWorkspace"));
+      return false;
+    }
+
+    const trimmedFileName = fileName.trim();
+    if (!trimmedFileName) {
+      setStorageError(t("error.fileNameRequired"));
+      return false;
+    }
+    if (/[\\/]/.test(trimmedFileName)) {
+      setStorageError(t("error.fileNameNoFolders"));
+      return false;
+    }
+
+    const path = filePathInDirectory(workspaceRootPath, ensureMarkdownExtension(trimmedFileName));
+    try {
+      await openMarkdownFile({ path });
+      setStorageError(t("error.fileExists"));
+      return false;
+    } catch {
+      // Opening fails for a new path; save below creates the file.
+    }
+
+    try {
+      const saved = await saveMarkdownFile({
+        path,
+        body: "",
+        notes: [],
+        glossaryTerms: [],
+        glossaryBindings: [],
+      });
+      const loaded = await openMarkdownFile({
+        path: saved.path,
+      });
+      applyLoadedFiles([loaded], { sortEntries: true });
+      setActiveDocumentModeState({ editorMode: "preview" });
+      setStorageError("");
+      return true;
+    } catch (error) {
+      setStorageError(translatedError(error, "error.createFileFailed"));
+      return false;
+    }
+  }
+
   function replaceDraftWithLoadedDocument(
     draftId: string,
     loadedDocument: MarkdownDocument,
@@ -11996,6 +12128,10 @@ function App() {
       setStorageError(t("error.nativeRuntimeRequired"));
       return;
     }
+    if (workspaceSource && workspaceRootPath !== null) {
+      openCreateEntryDialog("file");
+      return;
+    }
 
     createDraftMarkdownDocument(workspaceSource === "dropbox" ? "dropbox" : "local");
   }
@@ -12079,15 +12215,11 @@ function App() {
       setStorageError(kind === "file" ? t("dropbox.error.noWorkspace") : t("newFolder.noWorkspace"));
       return;
     }
-    if (kind === "file") {
-      void newMarkdownFile();
-      return;
-    }
 
     setStorageError("");
     setCreateEntryDialog({
       kind,
-      name: "",
+      name: kind === "file" ? stripMarkdownExtension(t("app.untitledFile")) : "",
       isSubmitting: false,
     });
   }
@@ -12102,7 +12234,9 @@ function App() {
 
     const created =
       createEntryDialog.kind === "file"
-        ? await createDropboxMarkdownFile(createEntryDialog.name)
+        ? workspaceSource === "dropbox"
+          ? await createDropboxMarkdownFile(createEntryDialog.name)
+          : await createLocalMarkdownFile(createEntryDialog.name)
         : await createWorkspaceFolder(createEntryDialog.name);
     if (created) {
       if (createEntryDialog.kind === "file" && isMobileViewport) {
@@ -16028,10 +16162,16 @@ function App() {
 
   useLayoutEffect(() => {
     const snapshot = pendingEditorModeScrollSnapshotRef.current;
-    if (!snapshot) return;
+    if (snapshot) {
+      pendingEditorModeScrollSnapshotRef.current = null;
+      restoreEditorModeScrollSnapshot(snapshot);
+    }
 
-    pendingEditorModeScrollSnapshotRef.current = null;
-    restoreEditorModeScrollSnapshot(snapshot);
+    const documentPosition = pendingDocumentScrollPositionRef.current;
+    if (documentPosition) {
+      pendingDocumentScrollPositionRef.current = null;
+      restoreDocumentScrollPosition(documentPosition);
+    }
   }, [editorMode, selectedDocumentId]);
 
   const documentPaneWidth = estimateDocumentPaneWidth(workspaceTitle, workspaceEntries);
@@ -16318,8 +16458,11 @@ function App() {
             ) : null}
 
             {!isMobileViewport ? (
-              <div className="document-tree-root" title={workspaceTitle}>
-                <DocumentGlyphIcon kind="folder" selected />
+              <div
+                className={`document-tree-root ${hasOpenDocument ? "" : "is-current"}`.trim()}
+                title={workspaceRootPath ?? workspaceTitle}
+              >
+                <DocumentGlyphIcon kind="folder" selected={!hasOpenDocument} />
                 <span className="document-tree-root__title">{workspaceTitle}</span>
               </div>
             ) : null}
@@ -17639,15 +17782,21 @@ function App() {
                   <h2>
                     {workspaceHasMarkdownFileEntries
                       ? t("emptyDocumentSelection.title")
-                      : t("emptyDirectory.title")}
+                      : t("emptyDirectory.title", { title: workspaceTitle })}
                   </h2>
                   <p>
                     {workspaceHasMarkdownFileEntries
                       ? t("emptyDocumentSelection.description")
                       : t("emptyDirectory.description")}
                   </p>
-                  <div className="mobile-empty-actions" aria-label={t("mobileSource.label")}>
-                    {mobileEmptyActions.map((action) => (
+                  <div
+                    className="empty-editor-actions mobile-empty-actions"
+                    aria-label={t("mobileSource.label")}
+                  >
+                    {(workspaceHasMarkdownFileEntries
+                      ? mobileEmptyActions
+                      : mobileFilePanelCreateActions
+                    ).map((action) => (
                       <button key={action.id} onClick={action.onSelect} type="button">
                         {action.icon}
                         <span>{action.label}</span>

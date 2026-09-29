@@ -173,6 +173,53 @@ export function mergeRemovedListMarkerLineBackward(
   };
 }
 
+export function deleteEmptyParagraphAfterList(itemType: NodeType): Command {
+  return (state, dispatch) => {
+    const { $from } = state.selection;
+    const paragraph = $from.parent;
+    if (
+      !(state.selection instanceof TextSelection) ||
+      !state.selection.empty ||
+      !nodeIsEmptyParagraph(paragraph) ||
+      $from.parentOffset !== paragraph.content.size
+    ) {
+      return false;
+    }
+
+    const containerDepth = $from.depth - 1;
+    const paragraphIndex = $from.index(containerDepth);
+    if (paragraphIndex === 0) return false;
+
+    const previousList = $from.node(containerDepth).child(paragraphIndex - 1);
+    const previousItem = previousList.lastChild;
+    const previousParagraph = previousItem?.firstChild;
+    if (
+      !nodeIsMarkdownList(previousList) ||
+      previousItem?.type !== itemType ||
+      previousParagraph?.type !== paragraph.type
+    ) {
+      return false;
+    }
+    if (!dispatch) return true;
+
+    const paragraphFrom = $from.before($from.depth);
+    const listFrom = paragraphFrom - previousList.nodeSize;
+    let previousParagraphEnd = -1;
+    previousList.descendants((node, position) => {
+      if (node === previousParagraph) {
+        previousParagraphEnd =
+          listFrom + position + 2 + previousParagraph.content.size;
+      }
+    });
+    if (previousParagraphEnd < 0) return false;
+
+    const tr = state.tr.delete(paragraphFrom, paragraphFrom + paragraph.nodeSize);
+    tr.setSelection(TextSelection.create(tr.doc, previousParagraphEnd));
+    dispatch(tr.scrollIntoView());
+    return true;
+  };
+}
+
 export function moveToNextEmptyListItem(itemType: NodeType): Command {
   return (state, dispatch) => {
     const { selection } = state;
@@ -473,7 +520,7 @@ export function deleteAtListItemStart(
 
     const blocks: ProseMirrorNode[] = [];
     item.forEach((block) => blocks.push(block));
-    return replaceItemWithBlocks(blocks, 1);
+    return replaceItemWithBlocks(blocks, paragraph.content.size + 1);
   };
 }
 

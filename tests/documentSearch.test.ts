@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
+  documentSearchHistoryAction,
   documentSearchMoveDeltaForKeyDown,
   isDocumentSearchSelectAllShortcut,
 } from "../src/documentSearch.ts";
@@ -9,6 +10,10 @@ const appCss = readFileSync(new URL("../src/App.css", import.meta.url), "utf8");
 const app = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
 const milkdownEditor = readFileSync(
   new URL("../src/MilkdownMarkdownEditor.tsx", import.meta.url),
+  "utf8",
+);
+const sourceEditor = readFileSync(
+  new URL("../src/MarkdownEditor.tsx", import.meta.url),
   "utf8",
 );
 const milkdownScrollFunction =
@@ -104,6 +109,47 @@ assert.match(
   app,
   /if \(isDocumentSearchSelectAllShortcut\(event\.nativeEvent\)\) \{\s*event\.preventDefault\(\);\s*event\.stopPropagation\(\);\s*event\.currentTarget\.select\(\);/,
 );
+
+const undoShortcut = {
+  altKey: false,
+  code: "KeyZ",
+  ctrlKey: true,
+  key: "z",
+  metaKey: false,
+  shiftKey: false,
+};
+assert.equal(documentSearchHistoryAction(undoShortcut), "undo");
+assert.equal(documentSearchHistoryAction({ ...undoShortcut, shiftKey: true }), "redo");
+assert.equal(
+  documentSearchHistoryAction({ ...undoShortcut, code: "KeyY", key: "y" }),
+  "redo",
+);
+assert.equal(
+  documentSearchHistoryAction({ ...undoShortcut, ctrlKey: false, metaKey: true }),
+  "undo",
+);
+assert.equal(documentSearchHistoryAction({ ...undoShortcut, metaKey: true }), null);
+assert.equal(documentSearchHistoryAction({ ...undoShortcut, altKey: true }), null);
+assert.match(
+  app,
+  /const historyAction = documentSearchHistoryAction\(event\.nativeEvent\);\s*if \(historyAction\) \{\s*event\.preventDefault\(\);\s*event\.stopPropagation\(\);\s*document\.execCommand\(historyAction\);\s*return;/,
+);
+assert.match(
+  sourceEditor,
+  /\{ key: "Mod-Shift-z", run: redo, preventDefault: true \}[\s\S]*?\.\.\.historyKeymap/,
+);
+assert.match(
+  milkdownEditor,
+  /const shouldRedo =[\s\S]*?key === "z" && event\.shiftKey[\s\S]*?key === "y" && event\.ctrlKey && !event\.metaKey && !event\.shiftKey[\s\S]*?runHistoryCommand\(view, shouldRedo\)/,
+);
+assert.match(
+  app,
+  /function undoPreviewChange\(\)[\s\S]*?focusPreviewSourcePosition\([\s\S]*?undo\.snapshot\.caretSourcePosition,[\s\S]*?true,[\s\S]*?function redoPreviewChange\(\)[\s\S]*?focusPreviewSourcePosition\([\s\S]*?redo\.snapshot\.caretSourcePosition,[\s\S]*?true,/,
+);
+assert.match(
+  app,
+  /if \(shouldScrollIntoView\) \{\s*blockElement\.scrollIntoView\(\{ block: "center", inline: "nearest" \}\);/,
+);
 assert.match(
   app,
   /if \(!documentSearchOpen\) return;\s*function handleDocumentPointerDown\(event: globalThis\.PointerEvent\) \{\s*if \(targetIsInsideDocumentSearch\(event\.target\)\) return;\s*documentSearchInputRef\.current\?\.blur\(\);[\s\S]*?document\.addEventListener\("pointerdown", handleDocumentPointerDown, true\);[\s\S]*?document\.removeEventListener\("pointerdown", handleDocumentPointerDown, true\);/,
@@ -156,6 +202,10 @@ assert.match(
 );
 assert.match(
   milkdownScrollFunction,
+  /const activeElement = document\.activeElement;\s*if \(!\(activeElement instanceof Element && activeElement\.closest\("\.document-search"\)\)\) \{\s*return;/,
+);
+assert.match(
+  milkdownScrollFunction,
   /rootRef\.current\?\.querySelector<HTMLElement>\(\s*"\.milkdown-document-search-match\.is-active"/,
 );
 assert.match(
@@ -169,6 +219,10 @@ assert.match(
 assert.doesNotMatch(
   milkdownScrollFunction,
   /domAtPos|coordsAtPos|\.scrollIntoView\(/,
+);
+assert.match(
+  sourceEditor,
+  /function applySearchState[\s\S]*?const activeElement = document\.activeElement;[\s\S]*?!shouldScroll \|\|[\s\S]*?!\(activeElement instanceof Element && activeElement\.closest\("\.document-search"\)\)[\s\S]*?return;[\s\S]*?EditorView\.scrollIntoView/,
 );
 assert.match(
   app,
