@@ -19,6 +19,24 @@ type DocumentSearchShortcutEvent = Pick<
   "altKey" | "code" | "ctrlKey" | "key" | "metaKey" | "shiftKey"
 >;
 
+export function documentSearchHistoryAction(event: DocumentSearchShortcutEvent) {
+  if (event.altKey || event.ctrlKey === event.metaKey) return null;
+
+  const key = event.key.toLowerCase();
+  if (
+    event.ctrlKey &&
+    !event.metaKey &&
+    !event.shiftKey &&
+    (event.code === "KeyY" || key === "y")
+  ) {
+    return "redo";
+  }
+
+  if (event.code !== "KeyZ" && key !== "z") return null;
+
+  return event.shiftKey ? "redo" : "undo";
+}
+
 export function isDocumentSearchSelectAllShortcut(event: DocumentSearchShortcutEvent) {
   return (
     ((event.metaKey && !event.ctrlKey) || (event.ctrlKey && !event.metaKey)) &&

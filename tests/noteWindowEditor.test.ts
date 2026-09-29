@@ -198,7 +198,7 @@ assert.match(
 );
 assert.match(
   appSource,
-  /function isRedoKeyboardShortcut\([\s\S]*?event\.key\.toLowerCase\(\) === "z"[\s\S]*?event\.shiftKey/,
+  /function isRedoKeyboardShortcut\([\s\S]*?const key = event\.key\.toLowerCase\(\);[\s\S]*?key === "z"[\s\S]*?event\.shiftKey[\s\S]*?key === "y"[\s\S]*?event\.ctrlKey/,
 );
 assert.match(
   appSource,
@@ -276,11 +276,11 @@ assert.match(
 );
 assert.match(
   appSource,
-  /useLayoutEffect\(\(\) => \{[\s\S]*?pendingPreviewTextFocusRef\.current[\s\S]*?applyPreviewBlockTextOffset\(pendingFocus\.blockKey, pendingFocus\.textOffset\);[\s\S]*?\}, \[value\]\)/,
+  /useLayoutEffect\(\(\) => \{[\s\S]*?pendingPreviewTextFocusRef\.current[\s\S]*?applyPreviewBlockTextOffset\([\s\S]*?pendingFocus\.blockKey,[\s\S]*?pendingFocus\.textOffset,[\s\S]*?pendingFocus\.scrollIntoView,[\s\S]*?\);[\s\S]*?\}, \[value\]\)/,
 );
 assert.match(
   appSource,
-  /function focusPreviewBlockTextOffset[\s\S]*?pendingPreviewTextFocusRef\.current = \{ blockKey, textOffset \};/,
+  /function focusPreviewBlockTextOffset[\s\S]*?pendingPreviewTextFocusRef\.current = \{ blockKey, scrollIntoView, textOffset \};/,
 );
 assert.match(
   appSource,

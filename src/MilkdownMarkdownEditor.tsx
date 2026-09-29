@@ -3379,8 +3379,12 @@ export const MilkdownMarkdownEditor = forwardRef<
           },
         },
         handleKeyDown(view, event) {
+          const key = event.key.toLowerCase();
+          const shouldRedo =
+            (key === "z" && event.shiftKey) ||
+            (key === "y" && event.ctrlKey && !event.metaKey && !event.shiftKey);
           if (
-            event.key.toLowerCase() !== "z" ||
+            (key !== "z" && !shouldRedo) ||
             event.ctrlKey === event.metaKey ||
             event.altKey ||
             event.isComposing ||
@@ -3391,7 +3395,7 @@ export const MilkdownMarkdownEditor = forwardRef<
             return false;
           }
 
-          const handled = runHistoryCommand(view, event.shiftKey);
+          const handled = runHistoryCommand(view, shouldRedo);
           if (!handled) return false;
 
           event.preventDefault();
@@ -4295,6 +4299,11 @@ export const MilkdownMarkdownEditor = forwardRef<
 
   function scrollActiveSearchMatchIntoView() {
     window.setTimeout(() => {
+      const activeElement = document.activeElement;
+      if (!(activeElement instanceof Element && activeElement.closest(".document-search"))) {
+        return;
+      }
+
       const activeMatch = rootRef.current?.querySelector<HTMLElement>(
         ".milkdown-document-search-match.is-active",
       );

@@ -1986,7 +1986,10 @@ const editorSource = readFileSync(
   fileURLToPath(new URL("../src/MilkdownMarkdownEditor.tsx", import.meta.url)),
   "utf8",
 );
-assert.match(editorSource, /event\.key\.toLowerCase\(\) !== "z"/);
+assert.match(
+  editorSource,
+  /const key = event\.key\.toLowerCase\(\);[\s\S]*?const shouldRedo =[\s\S]*?key === "z" && event\.shiftKey[\s\S]*?key === "y" && event\.ctrlKey/,
+);
 assert.match(editorSource, /event\.ctrlKey === event\.metaKey/);
 assert.match(editorSource, /const command = shouldRedo \? redo : undo/);
 assert.match(editorSource, /event\.inputType !== "historyUndo"/);

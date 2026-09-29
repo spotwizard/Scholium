@@ -63,6 +63,7 @@ import type {
   SelectionNote,
 } from "./documentTypes";
 import {
+  documentSearchHistoryAction,
   documentSearchMoveDeltaForKeyDown,
   isDocumentSearchSelectAllShortcut,
   type DocumentSearchState,
@@ -2520,11 +2521,11 @@ function isUndoKeyboardShortcut(
 function isRedoKeyboardShortcut(
   event: Pick<KeyboardEvent | ReactKeyboardEvent, "altKey" | "ctrlKey" | "key" | "metaKey" | "shiftKey">,
 ) {
+  const key = event.key.toLowerCase();
   return (
-    event.key.toLowerCase() === "z" &&
-    (event.metaKey || event.ctrlKey) &&
     !event.altKey &&
-    event.shiftKey
+    ((key === "z" && (event.metaKey || event.ctrlKey) && event.shiftKey) ||
+      (key === "y" && event.ctrlKey && !event.metaKey && !event.shiftKey))
   );
 }
 
@@ -2987,6 +2988,7 @@ function MarkdownPreview({
   const inputCommitFrameRef = useRef(0);
   const pendingPreviewTextFocusRef = useRef<{
     blockKey: string;
+    scrollIntoView?: boolean;
     textOffset: number;
   } | null>(null);
   const previewHistoryRef = useRef(createNoteEditorHistory());
@@ -3005,7 +3007,11 @@ function MarkdownPreview({
     if (!pendingFocus) return;
 
     pendingPreviewTextFocusRef.current = null;
-    applyPreviewBlockTextOffset(pendingFocus.blockKey, pendingFocus.textOffset);
+    applyPreviewBlockTextOffset(
+      pendingFocus.blockKey,
+      pendingFocus.textOffset,
+      pendingFocus.scrollIntoView,
+    );
   }, [value]);
 
   useEffect(() => {
@@ -3131,7 +3137,11 @@ function MarkdownPreview({
     });
   }
 
-  function applyPreviewBlockTextOffset(blockKey: string, textOffset: number) {
+  function applyPreviewBlockTextOffset(
+    blockKey: string,
+    textOffset: number,
+    shouldScrollIntoView = false,
+  ) {
     const previewElement = previewRef.current;
     const blockElement = Array.from(
       previewElement?.querySelectorAll<HTMLElement>("[data-preview-block-key]") ?? [],
@@ -3194,13 +3204,24 @@ function MarkdownPreview({
     range.collapse(true);
     selection.removeAllRanges();
     selection.addRange(range);
+    if (shouldScrollIntoView) {
+      blockElement.scrollIntoView({ block: "center", inline: "nearest" });
+    }
   }
 
-  function focusPreviewBlockTextOffset(blockKey: string, textOffset: number) {
-    pendingPreviewTextFocusRef.current = { blockKey, textOffset };
+  function focusPreviewBlockTextOffset(
+    blockKey: string,
+    textOffset: number,
+    scrollIntoView = false,
+  ) {
+    pendingPreviewTextFocusRef.current = { blockKey, scrollIntoView, textOffset };
   }
 
-  function focusPreviewSourcePosition(nextValue: string, sourcePosition: number) {
+  function focusPreviewSourcePosition(
+    nextValue: string,
+    sourcePosition: number,
+    scrollIntoView = false,
+  ) {
     const caretLine = nextValue.slice(0, sourcePosition).split("\n").length - 1;
     const nextBlocks = parsePreviewBlocks(nextValue);
     const focusBlock =
@@ -3221,6 +3242,7 @@ function MarkdownPreview({
         getPreviewBlockTextMap(nextValue, focusBlock),
         sourcePosition,
       ),
+      scrollIntoView,
     );
   }
 
@@ -4761,6 +4783,7 @@ function MarkdownPreview({
     focusPreviewSourcePosition(
       undo.snapshot.value,
       undo.snapshot.caretSourcePosition,
+      true,
     );
     onChange(undo.snapshot.value, "undo");
     return true;
@@ -4778,6 +4801,7 @@ function MarkdownPreview({
     focusPreviewSourcePosition(
       redo.snapshot.value,
       redo.snapshot.caretSourcePosition,
+      true,
     );
     onChange(redo.snapshot.value, "user");
     return true;
@@ -7852,6 +7876,14 @@ function App() {
   }
 
   function handleDocumentSearchInputKeyDown(event: ReactKeyboardEvent<HTMLInputElement>) {
+    const historyAction = documentSearchHistoryAction(event.nativeEvent);
+    if (historyAction) {
+      event.preventDefault();
+      event.stopPropagation();
+      document.execCommand(historyAction);
+      return;
+    }
+
     if (isDocumentSearchSelectAllShortcut(event.nativeEvent)) {
       event.preventDefault();
       event.stopPropagation();

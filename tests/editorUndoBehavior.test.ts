@@ -192,12 +192,15 @@ let restoredState = EditorState.create({
   plugins: [history(), historyCaretPlugin],
 });
 restoredState = restoredState.apply(restoredState.tr.deleteSelection());
+let undoScrolledIntoView = false;
 assert.equal(
   undo(restoredState, (transaction) => {
+    undoScrolledIntoView = transaction.scrolledIntoView;
     restoredState = restoredState.applyTransaction(transaction).state;
   }),
   true,
 );
+assert.equal(undoScrolledIntoView, true);
 assert.equal(restoredState.doc.textContent, restoredText);
 assert.equal(restoredState.selection.empty, true);
 assert.equal(restoredState.selection.$from.parentOffset, "前復原文字".length);
@@ -241,12 +244,15 @@ assert.equal(
   true,
 );
 assert.equal(insertedState.doc.textContent, "前後");
+let redoScrolledIntoView = false;
 assert.equal(
   redo(insertedState, (transaction) => {
+    redoScrolledIntoView = transaction.scrolledIntoView;
     insertedState = insertedState.applyTransaction(transaction).state;
   }),
   true,
 );
+assert.equal(redoScrolledIntoView, true);
 assert.equal(insertedState.doc.textContent, "前新增文字後");
 assert.equal(insertedState.selection.empty, true);
 assert.equal(insertedState.selection.$from.parentOffset, "前新增文字".length);

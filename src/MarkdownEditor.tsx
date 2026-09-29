@@ -3,6 +3,7 @@ import {
   defaultKeymap,
   history,
   historyKeymap,
+  redo,
   selectAll as selectAllCodeMirror,
 } from "@codemirror/commands";
 import { markdown } from "@codemirror/lang-markdown";
@@ -157,7 +158,13 @@ function applySearchState(view: EditorView, search: DocumentSearchState, shouldS
     effects: setSearchEffect.of(search),
   });
 
-  if (!shouldScroll) return;
+  const activeElement = document.activeElement;
+  if (
+    !shouldScroll ||
+    !(activeElement instanceof Element && activeElement.closest(".document-search"))
+  ) {
+    return;
+  }
 
   const matches = findDocumentSearchMatches(view.state.doc.toString(), search.query);
   const activeMatch = matches[search.activeIndex];
@@ -259,6 +266,7 @@ export const MarkdownEditor = forwardRef<EditorSelectionHandle, MarkdownEditorPr
               return applyMarkdownInlineMark(view, "*");
             },
           },
+          { key: "Mod-Shift-z", run: redo, preventDefault: true },
           ...defaultKeymap,
           ...historyKeymap,
         ]),
