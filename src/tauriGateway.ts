@@ -159,6 +159,8 @@ export type CreateNewWindowArgs = {
 
 export type ValidateDroppedMarkdownPathArgs = { paths: string[] };
 export type ResolveTypedMarkdownPathArgs = { path: string };
+export type StoreDraftDocumentArgs = { id: string; contents: string };
+export type DeleteStoredDraftDocumentArgs = { id: string };
 export type DroppedMarkdownPathResult = {
   kind: "directory" | "file";
   path: string;
@@ -296,6 +298,18 @@ export function validateDroppedMarkdownPath(args: ValidateDroppedMarkdownPathArg
 
 export function resolveTypedMarkdownPath(args: ResolveTypedMarkdownPathArgs) {
   return invoke<DroppedMarkdownPathResult>("resolve_typed_markdown_path", args);
+}
+
+export function storeDraftDocument(args: StoreDraftDocumentArgs) {
+  return invoke<void>("save_draft_document", args);
+}
+
+export function listStoredDraftDocuments() {
+  return invoke<string[]>("list_draft_documents");
+}
+
+export function deleteStoredDraftDocument(args: DeleteStoredDraftDocumentArgs) {
+  return invoke<void>("delete_draft_document", args);
 }
 
 export function focusAndFullscreenAppWindow() {

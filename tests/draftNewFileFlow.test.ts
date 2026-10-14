@@ -126,7 +126,7 @@ assert.doesNotMatch(app, /confirm\.saveDraftFile|confirm\.discardDraftFile/);
 const prepareDraftBody = functionBody("prepareDraftDocumentForLeaving");
 assert.match(
   prepareDraftBody,
-  /if \(\n      !draftDocumentHasContent\([\s\S]*?removeDocumentsFromWorkspace\(\[documentToLeave\.id\]\);\n      return \{ status: "discarded" \};/,
+  /if \(\n      !draftDocumentHasContent\([\s\S]*?removeDocumentsFromWorkspace\(\[documentToLeave\.id\]\);\n      forgetStoredDraftDocument\(documentToLeave\.id\);\n      return \{ status: "discarded" \};/,
   "an empty unnamed file closes without asking",
 );
 assert.match(prepareDraftBody, /await requestDraftFileDecision\(documentToLeave\.id, "close"\)/);
@@ -156,7 +156,7 @@ const discardDraftDialogBody = app.match(
 assert.ok(discardDraftDialogBody);
 assert.match(
   discardDraftDialogBody,
-  /removeDocumentsFromWorkspace\(\[draftFileDialog\.documentId\]\);\n    finishDraftFileDialog\(\{ action: "discarded" \}\);/,
+  /removeDocumentsFromWorkspace\(\[draftFileDialog\.documentId\]\);\n    forgetStoredDraftDocument\(draftFileDialog\.documentId\);\n    finishDraftFileDialog\(\{ action: "discarded" \}\);/,
 );
 
 const submitDraftDialogBody = functionBody("submitDraftFileDialog");
@@ -190,7 +190,7 @@ assert.match(
   /const hasBackingFile = Boolean\(document\.filePath\) \|\| documentIsFromDropbox\(document\);[\s\S]*?return hasBackingFile && hasDirtyState/,
 );
 assert.match(translations, /"draftFile\.title": "替新檔案命名"/);
-assert.match(translations, /"draftFile\.discard": "不新增"/);
+assert.match(translations, /"draftFile\.discard": "捨棄"/);
 assert.match(translations, /"error\.fileNameNoFolders": "檔名不能包含資料夾位置。"/);
 assert.match(translations, /"error\.fileExists": "已有同名檔案，請換一個檔名。"/);
 
