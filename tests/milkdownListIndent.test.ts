@@ -1430,7 +1430,7 @@ assert.equal(orderedEmptyItemState.doc.child(1).type, schema.nodes.paragraph);
 assert.equal(orderedEmptyItemState.doc.child(1).textContent, "");
 assert.equal(orderedEmptyItemState.doc.child(2).type, schema.nodes.ordered_list);
 assert.equal(orderedEmptyItemState.doc.child(2).textContent, "第三列");
-assert.equal(orderedEmptyItemState.doc.child(2).attrs.order, 3);
+assert.equal(orderedEmptyItemState.doc.child(2).attrs.order, 2);
 assert.equal(
   orderedEmptyItemState.selection.$from.parent.type,
   schema.nodes.paragraph,
@@ -1445,6 +1445,96 @@ assert.equal(
 assert.deepEqual(
   orderedEmptyItemState.doc.toJSON(),
   orderedEmptyItemDocument.toJSON(),
+);
+
+const removedMiddleItemDocument = schema.nodes.doc.create(null, [
+  schema.nodes.ordered_list.create(null, [
+    orderedItem("授權到期日"),
+    orderedItem(""),
+    orderedItem("可否轉移給瀚荃"),
+    orderedItem("第四項"),
+  ]),
+]);
+let removedMiddleItemPosition = -1;
+removedMiddleItemDocument.descendants((node, position) => {
+  if (
+    node.type === schema.nodes.list_item &&
+    node.firstChild?.textContent === ""
+  ) {
+    removedMiddleItemPosition = position + 2;
+  }
+});
+assert.notEqual(removedMiddleItemPosition, -1);
+let removedMiddleItemState = EditorState.create({
+  doc: removedMiddleItemDocument,
+  selection: TextSelection.create(
+    removedMiddleItemDocument,
+    removedMiddleItemPosition,
+  ),
+});
+assert.equal(
+  deleteAtListItemStart(schema.nodes.list_item, "backward")(
+    removedMiddleItemState,
+    (transaction) => {
+      removedMiddleItemState = removedMiddleItemState.apply(transaction);
+    },
+  ),
+  true,
+);
+assert.equal(removedMiddleItemState.doc.child(2).attrs.order, 2);
+const removedMarkerLineState = removedMiddleItemState;
+const expectedJoinedListAfterRemovedItem = schema.nodes.doc
+  .create(null, [
+    schema.nodes.ordered_list.create(null, [
+      orderedItem("授權到期日"),
+      orderedItem("可否轉移給瀚荃"),
+      orderedItem("第四項"),
+    ]),
+  ])
+  .toJSON();
+assert.equal(
+  mergeRemovedListMarkerLineBackward(schema.nodes.list_item)(
+    removedMiddleItemState,
+    (transaction) => {
+      removedMiddleItemState = removedMiddleItemState.apply(transaction);
+    },
+  ),
+  true,
+);
+assert.deepEqual(
+  removedMiddleItemState.doc.toJSON(),
+  expectedJoinedListAfterRemovedItem,
+);
+assert.equal(
+  removedMiddleItemState.selection.$from.parent.textContent,
+  "授權到期日",
+);
+assert.equal(
+  removedMiddleItemState.selection.$from.parentOffset,
+  "授權到期日".length,
+);
+let forwardRemovedMarkerLineState = removedMarkerLineState;
+assert.equal(
+  deleteEmptyParagraphAfterList(schema.nodes.list_item)(
+    forwardRemovedMarkerLineState,
+    (transaction) => {
+      forwardRemovedMarkerLineState =
+        forwardRemovedMarkerLineState.apply(transaction);
+    },
+  ),
+  true,
+);
+assert.deepEqual(
+  forwardRemovedMarkerLineState.doc.toJSON(),
+  expectedJoinedListAfterRemovedItem,
+);
+assert.equal(
+  forwardRemovedMarkerLineState.selection.$from.parent.textContent,
+  "授權到期日",
+);
+assert.equal(
+  forwardRemovedMarkerLineState.selection.$from.parentOffset,
+  "授權到期日".length,
 );
 
 const orderedMarkerDocument = schema.nodes.doc.create(null, [
@@ -1496,13 +1586,12 @@ assert.equal(
   ),
   true,
 );
-assert.equal(orderedMarkerState.doc.childCount, 2);
+assert.equal(orderedMarkerState.doc.childCount, 1);
 assert.equal(orderedMarkerState.doc.child(0).type, schema.nodes.ordered_list);
 assert.equal(orderedMarkerState.doc.child(0).attrs.order, 4);
-assert.equal(orderedMarkerState.doc.child(0).textContent, "第四列第五列");
-assert.equal(orderedMarkerState.doc.child(1).type, schema.nodes.ordered_list);
-assert.equal(orderedMarkerState.doc.child(1).attrs.order, 5);
-assert.equal(orderedMarkerState.doc.child(1).textContent, "第六列");
+assert.equal(orderedMarkerState.doc.child(0).childCount, 2);
+assert.equal(orderedMarkerState.doc.child(0).child(0).textContent, "第四列第五列");
+assert.equal(orderedMarkerState.doc.child(0).child(1).textContent, "第六列");
 assert.equal(
   orderedMarkerState.selection.$from.parent.textContent,
   "第四列第五列",
@@ -1945,14 +2034,15 @@ assert.equal(
 );
 const nestedOrderedOuterItem =
   nestedOrderedMarkerState.doc.firstChild?.firstChild;
-assert.equal(nestedOrderedOuterItem?.childCount, 3);
+assert.equal(nestedOrderedOuterItem?.childCount, 2);
+assert.equal(nestedOrderedOuterItem?.child(1).type, schema.nodes.ordered_list);
+assert.equal(nestedOrderedOuterItem?.child(1).childCount, 2);
 assert.equal(
-  nestedOrderedOuterItem?.child(1).lastChild?.firstChild?.textContent,
+  nestedOrderedOuterItem?.child(1).child(0).firstChild?.textContent,
   "第二層上一項第二層目標",
 );
-assert.equal(nestedOrderedOuterItem?.child(2).attrs.order, 2);
 assert.equal(
-  nestedOrderedOuterItem?.child(2).firstChild?.firstChild?.textContent,
+  nestedOrderedOuterItem?.child(1).child(1).firstChild?.textContent,
   "第二層下一項",
 );
 assert.equal(
@@ -2019,13 +2109,14 @@ assert.equal(
 );
 const secondLevelBulletItem =
   deeplyNestedBulletMarkerState.doc.firstChild?.firstChild?.child(1).firstChild;
-assert.equal(secondLevelBulletItem?.childCount, 3);
+assert.equal(secondLevelBulletItem?.childCount, 2);
+assert.equal(secondLevelBulletItem?.child(1).childCount, 2);
 assert.equal(
-  secondLevelBulletItem?.child(1).lastChild?.firstChild?.textContent,
+  secondLevelBulletItem?.child(1).child(0).firstChild?.textContent,
   "第三層上一項第三層目標",
 );
 assert.equal(
-  secondLevelBulletItem?.child(2).firstChild?.firstChild?.textContent,
+  secondLevelBulletItem?.child(1).child(1).firstChild?.textContent,
   "第三層下一項",
 );
 assert.equal(
