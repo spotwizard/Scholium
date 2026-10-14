@@ -244,6 +244,7 @@ import {
   startDropboxOAuth,
   takeNewWindowDocumentTarget,
   takeOpenedFilePaths,
+  resolveTypedMarkdownPath,
   validateDroppedMarkdownPath,
   focusAndFullscreenAppWindow,
   writePdfFile,
@@ -451,6 +452,19 @@ type DuplicateFileDialogState = FileActionTarget & {
 type RenameDialogState = WorkspaceActionTarget & {
   name: string;
   isSubmitting: boolean;
+};
+
+type OpenPathDialogState = {
+  path: string;
+  isSubmitting: boolean;
+  error: string;
+};
+
+const typedPathErrorTranslationKeys: Record<string, TranslationKey> = {
+  "typed path is empty": "openPath.error.empty",
+  "typed path must be absolute": "openPath.error.notAbsolute",
+  "typed path does not exist": "openPath.error.notFound",
+  "typed file is not a Markdown file": "openPath.error.notMarkdown",
 };
 
 type CreateEntryDialogState = {
@@ -5675,6 +5689,7 @@ function App() {
   const [createEntryDialog, setCreateEntryDialog] =
     useState<CreateEntryDialogState | null>(null);
   const [draftFileDialog, setDraftFileDialog] = useState<DraftFileDialogState | null>(null);
+  const [openPathDialog, setOpenPathDialog] = useState<OpenPathDialogState | null>(null);
   const [dropboxConnected, setDropboxConnected] = useState(false);
   const [dropboxConnectionChecked, setDropboxConnectionChecked] = useState(false);
   const [dropboxConnecting, setDropboxConnecting] = useState(false);
@@ -5696,6 +5711,7 @@ function App() {
   const renameInputRef = useRef<HTMLInputElement | null>(null);
   const createEntryInputRef = useRef<HTMLInputElement | null>(null);
   const draftFileInputRef = useRef<HTMLInputElement | null>(null);
+  const openPathInputRef = useRef<HTMLInputElement | null>(null);
   const draftFileDialogResolverRef = useRef<((decision: DraftFileDecision) => void) | null>(
     null,
   );
@@ -5835,6 +5851,7 @@ function App() {
     (target: OpenLocationEventPayload) => void
   >(() => undefined);
   const openMarkdownFolderHandlerRef = useRef<() => void>(() => undefined);
+  const openPathHandlerRef = useRef<() => void>(() => undefined);
   const openDropboxCloudHandlerRef = useRef<() => void>(() => undefined);
   const completeDropboxOAuthHandlerRef = useRef<
     (payload: DropboxOAuthCallbackPayload) => void
@@ -5873,6 +5890,7 @@ function App() {
   openNewWindowDocumentTargetHandlerRef.current = (target) => {
     void openNativeMenuLocation(target).finally(() => setMobileStartupPhase("hidden"));
   };
+  openPathHandlerRef.current = openOpenPathDialog;
   openMarkdownFolderHandlerRef.current = () => {
     void openMarkdownFolder();
   };
@@ -8138,6 +8156,15 @@ function App() {
   }, [draftFileDialog?.documentId]);
 
   useEffect(() => {
+    if (!openPathDialog) return;
+
+    window.setTimeout(() => {
+      openPathInputRef.current?.focus();
+      openPathInputRef.current?.select();
+    });
+  }, [Boolean(openPathDialog)]);
+
+  useEffect(() => {
     if (!settingsViewOpen) return;
 
     window.setTimeout(() => {
@@ -8679,6 +8706,7 @@ function App() {
     let unlistenOpenSettings: (() => void) | null = null;
     let unlistenOpenFile: (() => void) | null = null;
     let unlistenOpenFolder: (() => void) | null = null;
+    let unlistenOpenPath: (() => void) | null = null;
     let unlistenOpenDropbox: (() => void) | null = null;
     let unlistenOpenLocation: (() => void) | null = null;
     let unlistenSelectAll: (() => void) | null = null;
@@ -8699,6 +8727,9 @@ function App() {
       }),
       appWindow.listen("scholium-open-folder", () => {
         openMarkdownFolderHandlerRef.current();
+      }),
+      appWindow.listen("scholium-open-path", () => {
+        openPathHandlerRef.current();
       }),
       appWindow.listen("scholium-open-dropbox", () => {
         openDropboxCloudHandlerRef.current();
@@ -8746,6 +8777,7 @@ function App() {
         openSettingsListener,
         openFileListener,
         openFolderListener,
+        openPathListener,
         openDropboxListener,
         openLocationListener,
         selectAllListener,
@@ -8755,6 +8787,7 @@ function App() {
         unlistenOpenSettings = openSettingsListener;
         unlistenOpenFile = openFileListener;
         unlistenOpenFolder = openFolderListener;
+        unlistenOpenPath = openPathListener;
         unlistenOpenDropbox = openDropboxListener;
         unlistenOpenLocation = openLocationListener;
         unlistenSelectAll = selectAllListener;
@@ -8767,6 +8800,7 @@ function App() {
       unlistenOpenSettings?.();
       unlistenOpenFile?.();
       unlistenOpenFolder?.();
+      unlistenOpenPath?.();
       unlistenOpenDropbox?.();
       unlistenOpenLocation?.();
       unlistenSelectAll?.();
@@ -8835,6 +8869,7 @@ function App() {
           settingsViewOpen ||
           createEntryDialog ||
           draftFileDialog ||
+          openPathDialog ||
           duplicateFileDialog ||
           dropboxDirectoryPicker
         ) {
@@ -8866,6 +8901,7 @@ function App() {
     documentSearchOpen,
     createEntryDialog,
     draftFileDialog,
+    openPathDialog,
     dropboxDirectoryPicker,
     duplicateFileDialog,
     hasOpenDocument,
@@ -8944,6 +8980,14 @@ function App() {
           event.preventDefault();
           setCreateEntryDialog(null);
           setStorageError("");
+        }
+        return;
+      }
+
+      if (openPathDialog) {
+        if (event.key === "Escape" && !openPathDialog.isSubmitting) {
+          event.preventDefault();
+          setOpenPathDialog(null);
         }
         return;
       }
@@ -9099,6 +9143,7 @@ function App() {
     closeNotePanel,
     createEntryDialog,
     draftFileDialog,
+    openPathDialog,
     duplicateFileDialog,
     dropboxDirectoryPicker,
     glossaryModeEnabled,
@@ -11646,6 +11691,56 @@ function App() {
     } catch (error) {
       setStorageError(translatedError(error, "error.openFolderFailed"));
       return true;
+    }
+  }
+
+  function openOpenPathDialog() {
+    if (!nativeStorageAvailable) {
+      setStorageError(t("error.nativeRuntimeRequired"));
+      return;
+    }
+
+    setOpenPathDialog((currentDialog) =>
+      currentDialog ?? { path: "", isSubmitting: false, error: "" },
+    );
+  }
+
+  function closeOpenPathDialog() {
+    if (openPathDialog?.isSubmitting) return;
+
+    setOpenPathDialog(null);
+  }
+
+  async function submitOpenPathDialog(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!openPathDialog || openPathDialog.isSubmitting) return;
+
+    setOpenPathDialog((currentDialog) =>
+      currentDialog ? { ...currentDialog, isSubmitting: true, error: "" } : currentDialog,
+    );
+
+    let location;
+    try {
+      location = await resolveTypedMarkdownPath({ path: openPathDialog.path });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setOpenPathDialog((currentDialog) =>
+        currentDialog
+          ? {
+              ...currentDialog,
+              isSubmitting: false,
+              error: t(typedPathErrorTranslationKeys[message] ?? "error.openFileFailed"),
+            }
+          : currentDialog,
+      );
+      return;
+    }
+
+    setOpenPathDialog(null);
+    if (location.kind === "directory") {
+      await openDirectoryPath(location.path);
+    } else {
+      await openMarkdownFilePath(location.path);
     }
   }
 
@@ -16287,6 +16382,7 @@ function App() {
       storageError &&
       !createEntryDialog &&
       !draftFileDialog &&
+      !openPathDialog &&
       !duplicateFileDialog &&
       !renameDialog &&
       !dropboxDirectoryPicker,
@@ -17292,6 +17388,81 @@ function App() {
                 {createEntryDialog.isSubmitting
                   ? t("duplicate.submitting")
                   : t("duplicate.submit")}
+              </button>
+            </div>
+          </form>
+        </div>
+      ) : null}
+
+      {openPathDialog ? (
+        <div
+          className="duplicate-file-dialog-backdrop"
+          onMouseDown={closeOpenPathDialog}
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          <form
+            aria-labelledby="open-path-dialog-title"
+            aria-modal="true"
+            className="duplicate-file-dialog"
+            onMouseDown={(event) => event.stopPropagation()}
+            onSubmit={submitOpenPathDialog}
+            role="dialog"
+          >
+            <div className="duplicate-file-dialog__header">
+              <h2 id="open-path-dialog-title">{t("openPath.title")}</h2>
+              <button
+                aria-label={t("dialog.close")}
+                className="duplicate-file-dialog__close"
+                disabled={openPathDialog.isSubmitting}
+                onClick={closeOpenPathDialog}
+                type="button"
+              >
+                ×
+              </button>
+            </div>
+            <label className="duplicate-file-dialog__field">
+              <span>{t("openPath.prompt")}</span>
+              <span className="duplicate-file-dialog__file-name-control">
+                <input
+                  autoCapitalize="off"
+                  autoComplete="off"
+                  disabled={openPathDialog.isSubmitting}
+                  enterKeyHint="go"
+                  placeholder={t("openPath.placeholder")}
+                  ref={openPathInputRef}
+                  spellCheck={false}
+                  type="text"
+                  value={openPathDialog.path}
+                  onChange={(event) => {
+                    const nextPath = event.target.value;
+                    setOpenPathDialog((currentDialog) =>
+                      currentDialog
+                        ? { ...currentDialog, path: nextPath, error: "" }
+                        : currentDialog,
+                    );
+                  }}
+                />
+              </span>
+            </label>
+            {openPathDialog.error ? (
+              <p className="duplicate-file-dialog__message" role="status">
+                {openPathDialog.error}
+              </p>
+            ) : null}
+            <div className="note-actions duplicate-file-dialog__actions">
+              <button
+                disabled={openPathDialog.isSubmitting}
+                onClick={closeOpenPathDialog}
+                type="button"
+              >
+                {t("duplicate.cancel")}
+              </button>
+              <button
+                className="is-primary"
+                disabled={openPathDialog.isSubmitting || !openPathDialog.path.trim()}
+                type="submit"
+              >
+                {t("openPath.submit")}
               </button>
             </div>
           </form>
