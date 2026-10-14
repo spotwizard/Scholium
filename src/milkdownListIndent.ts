@@ -233,6 +233,12 @@ export function moveToNextEmptyListItem(itemType: NodeType): Command {
 
     const item = selection.$from.node(itemDepth);
     if (item.childCount !== 1 || item.firstChild !== selection.$from.parent) return false;
+    if (
+      selection.$from.parentOffset === 0 &&
+      selection.$from.parent.content.size > 0
+    ) {
+      return false;
+    }
 
     const listDepth = itemDepth - 1;
     const list = selection.$from.node(listDepth);
