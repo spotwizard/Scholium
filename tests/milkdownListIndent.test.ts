@@ -3,7 +3,12 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { closeHistory, history, undo } from "@milkdown/prose/history";
 import { Schema, type Node as ProseMirrorNode } from "@milkdown/prose/model";
-import { bulletList, listItem, orderedList } from "@milkdown/prose/schema-list";
+import {
+  bulletList,
+  listItem,
+  orderedList,
+  splitListItem,
+} from "@milkdown/prose/schema-list";
 import { EditorState, NodeSelection, TextSelection } from "@milkdown/prose/state";
 import {
   deleteEmptyParagraphAfterList,
@@ -90,6 +95,64 @@ assert.equal(
 assert.deepEqual(movedToEmptyState.doc.toJSON(), enterBeforeEmptyDocument.toJSON());
 assert.equal(movedToEmptyState.selection.$from.parent.textContent, "");
 assert.equal(movedToEmptyState.selection.$from.parentOffset, 0);
+
+const enterAtFirstItemStartDocument = schema.nodes.doc.create(null, [
+  schema.nodes.ordered_list.create(null, [
+    orderedItem("可否轉移給瀚荃"),
+    orderedItem(""),
+  ]),
+]);
+let enterAtFirstItemStartPosition = -1;
+enterAtFirstItemStartDocument.descendants((node, position) => {
+  if (node.isText && node.text === "可否轉移給瀚荃") {
+    enterAtFirstItemStartPosition = position;
+  }
+});
+assert.notEqual(enterAtFirstItemStartPosition, -1);
+const enterAtFirstItemStartState = EditorState.create({
+  doc: enterAtFirstItemStartDocument,
+  selection: TextSelection.create(
+    enterAtFirstItemStartDocument,
+    enterAtFirstItemStartPosition,
+  ),
+});
+assert.equal(
+  moveToNextEmptyListItem(schema.nodes.list_item)(enterAtFirstItemStartState),
+  false,
+);
+let splitAtFirstItemStartState = enterAtFirstItemStartState;
+assert.equal(
+  splitListItem(schema.nodes.list_item)(
+    enterAtFirstItemStartState,
+    (transaction) => {
+      splitAtFirstItemStartState = enterAtFirstItemStartState.apply(transaction);
+    },
+  ),
+  true,
+);
+assert.deepEqual(
+  splitAtFirstItemStartState.doc.toJSON(),
+  schema.nodes.doc
+    .create(null, [
+      schema.nodes.ordered_list.create(null, [
+        orderedItem(""),
+        orderedItem("可否轉移給瀚荃"),
+        orderedItem(""),
+      ]),
+    ])
+    .toJSON(),
+);
+assert.equal(
+  splitAtFirstItemStartState.selection.$from.parent.textContent,
+  "可否轉移給瀚荃",
+);
+assert.equal(splitAtFirstItemStartState.selection.$from.parentOffset, 0);
+assert.equal(
+  splitAtFirstItemStartState.selection.$from.index(
+    splitAtFirstItemStartState.selection.$from.depth - 2,
+  ),
+  1,
+);
 
 const enterBeforeContentDocument = schema.nodes.doc.create(null, [
   schema.nodes.bullet_list.create(null, [

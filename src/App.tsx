@@ -4310,6 +4310,7 @@ function MarkdownPreview({
     const nextListItem = listItem.nextElementSibling;
     const nextListLine = parseMarkdownListLine(lines[lineIndex + 1] ?? "");
     if (
+      caretOffset !== 0 &&
       nextListItem instanceof HTMLLIElement &&
       Number(nextListItem.dataset.previewListItemIndex) === flatIndex + 1 &&
       nextListLine &&
