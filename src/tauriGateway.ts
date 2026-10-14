@@ -158,6 +158,7 @@ export type CreateNewWindowArgs = {
 };
 
 export type ValidateDroppedMarkdownPathArgs = { paths: string[] };
+export type ResolveTypedMarkdownPathArgs = { path: string };
 export type DroppedMarkdownPathResult = {
   kind: "directory" | "file";
   path: string;
@@ -291,6 +292,10 @@ export function checkDropboxConnection() {
 
 export function validateDroppedMarkdownPath(args: ValidateDroppedMarkdownPathArgs) {
   return invoke<DroppedMarkdownPathResult>("validate_dropped_markdown_path", args);
+}
+
+export function resolveTypedMarkdownPath(args: ResolveTypedMarkdownPathArgs) {
+  return invoke<DroppedMarkdownPathResult>("resolve_typed_markdown_path", args);
 }
 
 export function focusAndFullscreenAppWindow() {

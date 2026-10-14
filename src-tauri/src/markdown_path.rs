@@ -79,9 +79,110 @@ pub(crate) fn dropped_markdown_path(paths: &[String]) -> Result<DroppedMarkdownP
     Ok(DroppedMarkdownPath::File(path))
 }
 
+pub(crate) const TYPED_PATH_EMPTY_ERROR: &str = "typed path is empty";
+pub(crate) const TYPED_PATH_NOT_ABSOLUTE_ERROR: &str = "typed path must be absolute";
+pub(crate) const TYPED_PATH_NOT_FOUND_ERROR: &str = "typed path does not exist";
+pub(crate) const TYPED_PATH_NOT_MARKDOWN_ERROR: &str = "typed file is not a Markdown file";
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum TypedMarkdownLocation {
+    File(PathBuf),
+    Directory(PathBuf),
+}
+
+/// Resolves a path typed by the user, accepting `~` for the home folder and
+/// surrounding quotes left over from copying a path.
+pub(crate) fn typed_markdown_location(
+    input: &str,
+    home_directory: Option<&Path>,
+) -> Result<TypedMarkdownLocation, String> {
+    let trimmed = input.trim();
+    let unquoted = ['"', '\'']
+        .iter()
+        .find_map(|quote| {
+            trimmed
+                .strip_prefix(*quote)
+                .and_then(|rest| rest.strip_suffix(*quote))
+        })
+        .unwrap_or(trimmed)
+        .trim();
+    if unquoted.is_empty() {
+        return Err(TYPED_PATH_EMPTY_ERROR.to_string());
+    }
+
+    let path = match (unquoted.strip_prefix('~'), home_directory) {
+        (Some(""), Some(home)) => home.to_path_buf(),
+        (Some(rest), Some(home)) if rest.starts_with('/') => {
+            home.join(rest.trim_start_matches('/'))
+        }
+        _ => PathBuf::from(unquoted),
+    };
+    if !path.is_absolute() {
+        return Err(TYPED_PATH_NOT_ABSOLUTE_ERROR.to_string());
+    }
+
+    if path.is_dir() {
+        return Ok(TypedMarkdownLocation::Directory(path));
+    }
+    if !path.is_file() {
+        return Err(TYPED_PATH_NOT_FOUND_ERROR.to_string());
+    }
+    if !is_markdown_path(&path) {
+        return Err(TYPED_PATH_NOT_MARKDOWN_ERROR.to_string());
+    }
+
+    Ok(TypedMarkdownLocation::File(path))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn typed_path_resolves_home_quotes_and_kind() {
+        let root = std::env::temp_dir().join(format!("scholium-typed-path-{}", std::process::id()));
+        let notes = root.join("My Notes");
+        std::fs::create_dir_all(&notes).unwrap();
+        let markdown = notes.join("draft.md");
+        let text = notes.join("draft.txt");
+        std::fs::write(&markdown, "").unwrap();
+        std::fs::write(&text, "").unwrap();
+
+        assert_eq!(
+            typed_markdown_location(&format!("  {}  ", notes.display()), None).unwrap(),
+            TypedMarkdownLocation::Directory(notes.clone())
+        );
+        assert_eq!(
+            typed_markdown_location(&format!("'{}'", markdown.display()), None).unwrap(),
+            TypedMarkdownLocation::File(markdown.clone())
+        );
+        assert_eq!(
+            typed_markdown_location("~/My Notes/draft.md", Some(&root)).unwrap(),
+            TypedMarkdownLocation::File(markdown.clone())
+        );
+        assert_eq!(
+            typed_markdown_location("~", Some(&root)).unwrap(),
+            TypedMarkdownLocation::Directory(root.clone())
+        );
+        assert_eq!(
+            typed_markdown_location(" \"\" ", None).unwrap_err(),
+            TYPED_PATH_EMPTY_ERROR
+        );
+        assert_eq!(
+            typed_markdown_location("My Notes/draft.md", Some(&root)).unwrap_err(),
+            TYPED_PATH_NOT_ABSOLUTE_ERROR
+        );
+        assert_eq!(
+            typed_markdown_location(&notes.join("missing.md").to_string_lossy(), None).unwrap_err(),
+            TYPED_PATH_NOT_FOUND_ERROR
+        );
+        assert_eq!(
+            typed_markdown_location(&text.to_string_lossy(), None).unwrap_err(),
+            TYPED_PATH_NOT_MARKDOWN_ERROR
+        );
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn dropped_path_must_be_one_md_file_or_directory() {

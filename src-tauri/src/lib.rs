@@ -45,8 +45,9 @@ use local_save_recovery::{
     LocalDocumentPayload,
 };
 use markdown_path::{
-    dropped_markdown_path, is_markdown_path, validate_existing_markdown_file,
-    validate_markdown_file_name, validate_path_name, DroppedMarkdownPath,
+    dropped_markdown_path, is_markdown_path, typed_markdown_location,
+    validate_existing_markdown_file, validate_markdown_file_name, validate_path_name,
+    DroppedMarkdownPath, TypedMarkdownLocation,
 };
 use pdf_export::{write_pdf_file, write_pdf_file_to_directory};
 
@@ -63,6 +64,8 @@ const MENU_NEW_FOLDER: &str = "file:new-folder";
 const MENU_OPEN_FILE: &str = "file:open-file";
 #[cfg(desktop)]
 const MENU_OPEN_FOLDER: &str = "file:open-folder";
+#[cfg(desktop)]
+const MENU_OPEN_PATH: &str = "file:open-path";
 #[cfg(desktop)]
 const MENU_CLOUD_DROPBOX: &str = "file:cloud:dropbox";
 #[cfg(desktop)]
@@ -1939,6 +1942,7 @@ fn menu_text(language: &str, key: &str) -> &'static str {
         ("en", "newFolder") => "New Folder",
         ("en", "openFile") => "Open File",
         ("en", "openFolder") => "Open Folder",
+        ("en", "openPath") => "Go to Path...",
         ("en", "cloud") => "Cloud",
         ("en", "dropbox") => "Dropbox",
         ("en", "settings") => "Settings...",
@@ -1962,6 +1966,7 @@ fn menu_text(language: &str, key: &str) -> &'static str {
         ("zh-Hans", "newFolder") => "新建文件夹",
         ("zh-Hans", "openFile") => "打开文件",
         ("zh-Hans", "openFolder") => "打开文件夹",
+        ("zh-Hans", "openPath") => "前往路径...",
         ("zh-Hans", "cloud") => "云端",
         ("zh-Hans", "dropbox") => "Dropbox",
         ("zh-Hans", "settings") => "设置...",
@@ -1985,6 +1990,7 @@ fn menu_text(language: &str, key: &str) -> &'static str {
         (_, "newFolder") => "新增資料夾",
         (_, "openFile") => "開啟檔案",
         (_, "openFolder") => "開啟資料夾",
+        (_, "openPath") => "前往路徑...",
         (_, "cloud") => "雲端",
         (_, "dropbox") => "Dropbox",
         (_, "settings") => "設定...",
@@ -4228,6 +4234,7 @@ fn build_app_menu(app_handle: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wr
     let new_folder = menu_item(MENU_NEW_FOLDER, "newFolder", None)?;
     let open_file = menu_item(MENU_OPEN_FILE, "openFile", Some("CmdOrCtrl+O"))?;
     let open_folder = menu_item(MENU_OPEN_FOLDER, "openFolder", Some("CmdOrCtrl+Shift+O"))?;
+    let open_path = menu_item(MENU_OPEN_PATH, "openPath", Some("CmdOrCtrl+Alt+O"))?;
     let open_settings = menu_item(MENU_OPEN_SETTINGS, "settings", Some("CmdOrCtrl+,"))?;
     let select_all = menu_item(MENU_SELECT_ALL, "selectAll", None)?;
     let cloud_dropbox = menu_item(MENU_CLOUD_DROPBOX, "dropbox", None)?;
@@ -4270,6 +4277,7 @@ fn build_app_menu(app_handle: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wr
                     &new_folder,
                     &open_file,
                     &open_folder,
+                    &open_path,
                     &PredefinedMenuItem::separator(app_handle)?,
                     &cloud,
                     &favorite_directories,
@@ -4378,6 +4386,20 @@ fn take_new_window_document_target(
         .lock()
         .map_err(|_| "failed to lock new-window document target state".to_string())
         .map(|mut targets| targets.remove(window.label()))
+}
+
+#[tauri::command]
+fn resolve_typed_markdown_path(path: String) -> Result<DroppedPathPayload, String> {
+    let home_directory = std::env::var_os("HOME").map(PathBuf::from);
+    let (kind, path) = match typed_markdown_location(&path, home_directory.as_deref())? {
+        TypedMarkdownLocation::File(path) => ("file", path),
+        TypedMarkdownLocation::Directory(path) => ("directory", path),
+    };
+
+    Ok(DroppedPathPayload {
+        kind: kind.to_string(),
+        path: path.to_string_lossy().into_owned(),
+    })
 }
 
 #[tauri::command]
@@ -4571,6 +4593,8 @@ pub fn run() {
             let _ = emit_to_target_webview_window(app, "scholium-open-file", ());
         } else if event_id == MENU_OPEN_FOLDER {
             let _ = emit_to_target_webview_window(app, "scholium-open-folder", ());
+        } else if event_id == MENU_OPEN_PATH {
+            let _ = emit_to_target_webview_window(app, "scholium-open-path", ());
         } else if event_id == MENU_CLOUD_DROPBOX {
             let _ = emit_to_target_webview_window(app, "scholium-open-dropbox", ());
         } else if event_id == MENU_ADD_CURRENT_DIRECTORY_TO_FAVORITES {
@@ -4611,6 +4635,7 @@ pub fn run() {
             create_new_window,
             take_new_window_document_target,
             validate_dropped_markdown_path,
+            resolve_typed_markdown_path,
             focus_and_fullscreen_app_window,
             take_opened_file_paths,
             set_native_folder_picker_list_view,
