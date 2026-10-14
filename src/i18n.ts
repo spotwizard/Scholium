@@ -300,8 +300,8 @@ const zhHantTranslations = {
   "confirm.deleteDirectory": "確定要刪除目錄「{title}」嗎？\n\n目錄內的所有檔案、子目錄、筆記與名詞解釋都會一併刪除，且無法復原。",
   "confirm.deleteDropboxDirectory": "確定要刪除 Dropbox 上的目錄「{title}」嗎？\n\n目錄內的所有內容都會從 Dropbox 刪除，且無法復原。",
   "draftFile.title": "替新檔案命名",
-  "draftFile.closeMessage": "這份新檔案還沒有命名。要建立檔案，還是不新增？",
-  "draftFile.discard": "不新增",
+  "draftFile.closeMessage": "這份新檔案還沒有命名。要建立檔案，還是捨棄？",
+  "draftFile.discard": "捨棄",
 } as const;
 
 export type TranslationKey = keyof typeof zhHantTranslations;
@@ -606,8 +606,8 @@ const enTranslations: Record<TranslationKey, string> = {
   "confirm.deleteDirectory": "Delete the folder “{title}”?\n\nAll files, subfolders, notes, and term definitions inside it will be deleted permanently.",
   "confirm.deleteDropboxDirectory": "Delete the folder “{title}” from Dropbox?\n\nEverything inside it will be deleted from Dropbox permanently.",
   "draftFile.title": "Name the new file",
-  "draftFile.closeMessage": "This new file has no name yet. Create the file, or don't add it?",
-  "draftFile.discard": "Don't Add",
+  "draftFile.closeMessage": "This new file has no name yet. Create the file, or discard it?",
+  "draftFile.discard": "Discard",
 };
 
 const zhHansTranslations: Record<TranslationKey, string> = {
@@ -910,8 +910,8 @@ const zhHansTranslations: Record<TranslationKey, string> = {
   "confirm.deleteDirectory": "确定要删除文件夹“{title}”吗？\n\n其中的所有文件、子文件夹、笔记和名词解释都会一并删除，且无法恢复。",
   "confirm.deleteDropboxDirectory": "确定要删除 Dropbox 中的文件夹“{title}”吗？\n\n其中的所有内容都会从 Dropbox 中删除，且无法恢复。",
   "draftFile.title": "为新文件命名",
-  "draftFile.closeMessage": "这份新文件还没有命名。要创建文件，还是不新增？",
-  "draftFile.discard": "不新增",
+  "draftFile.closeMessage": "这份新文件还没有命名。要创建文件，还是舍弃？",
+  "draftFile.discard": "舍弃",
 };
 
 const translations: Record<AppLanguage, Record<TranslationKey, string>> = {

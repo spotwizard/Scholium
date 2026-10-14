@@ -12449,7 +12449,7 @@ function App() {
     });
   }
 
-  // Stored drafts are removed only here: after the user chooses "不新增", closes an
+  // Stored drafts are removed only here: after the user chooses "捨棄", closes an
   // empty unnamed tab, or the content has been created as a real file.
   function forgetStoredDraftDocument(documentId: string) {
     if (!nativeStorageAvailable) return;

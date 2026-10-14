@@ -34,7 +34,7 @@ assert.equal(
 );
 assert.equal(draftDocumentCreatedAt("draft:dropbox:1700000000123:xyz"), 1700000000123);
 
-// Stored drafts are deleted only after "不新增", closing an empty unnamed tab, or creating the file.
+// Stored drafts are deleted only after "捨棄", closing an empty unnamed tab, or creating the file.
 const forgetCalls = [...app.matchAll(/forgetStoredDraftDocument\(([^)]*)\);/g)].map(
   (match) => match[1],
 );

@@ -190,7 +190,7 @@ assert.match(
   /const hasBackingFile = Boolean\(document\.filePath\) \|\| documentIsFromDropbox\(document\);[\s\S]*?return hasBackingFile && hasDirtyState/,
 );
 assert.match(translations, /"draftFile\.title": "替新檔案命名"/);
-assert.match(translations, /"draftFile\.discard": "不新增"/);
+assert.match(translations, /"draftFile\.discard": "捨棄"/);
 assert.match(translations, /"error\.fileNameNoFolders": "檔名不能包含資料夾位置。"/);
 assert.match(translations, /"error\.fileExists": "已有同名檔案，請換一個檔名。"/);
 
