@@ -349,6 +349,14 @@ assert.match(
 );
 assert.match(
   appSource,
+  /async function closeAllDocumentTabs\(\) \{[\s\S]*?prepareDraftDocumentForLeaving\(currentId\);\n      if \(result === "blocked"\) return;[\s\S]*?openDocumentTabIdsRef\.current = \[\];[\s\S]*?setOpenDocumentTabIds\(\[\]\);[\s\S]*?clearActiveDocumentSelection\(\);/,
+);
+assert.match(
+  appSource,
+  /id: "close-other-tabs",[\s\S]*?id: "close-all-tabs",[\s\S]*?label: t\("documentTab\.closeAll"\),[\s\S]*?void closeAllDocumentTabs\(\);[\s\S]*?id: "open-in-new-window",/,
+);
+assert.match(
+  appSource,
   /if \(tabSession\) \{\n      const sessionRestored = await restoreDropboxDocumentTabSession\(tabSession\);[\s\S]*?rememberDocumentTabSession\(null\);/,
 );
 assert.match(

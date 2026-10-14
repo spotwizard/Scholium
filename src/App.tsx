@@ -9565,6 +9565,20 @@ function App() {
     }
   }
 
+  async function closeAllDocumentTabs() {
+    setDocumentTabContextMenu(null);
+    if (openDocumentTabIdsRef.current.length === 0) return;
+
+    for (const currentId of [...openDocumentTabIdsRef.current]) {
+      const result = await prepareDraftDocumentForLeaving(currentId);
+      if (result === "blocked") return;
+    }
+
+    openDocumentTabIdsRef.current = [];
+    setOpenDocumentTabIds([]);
+    clearActiveDocumentSelection();
+  }
+
   async function openDocumentTabInNewWindow(documentId: string) {
     setDocumentTabContextMenu(null);
     let documentIdToOpen = documentId;
@@ -15838,6 +15852,14 @@ function App() {
           icon: <SearchCloseIcon />,
           onSelect: () => {
             void closeOtherDocumentTabs(documentTabContextMenu.documentId);
+          },
+        },
+        {
+          id: "close-all-tabs",
+          label: t("documentTab.closeAll"),
+          icon: <SearchCloseIcon />,
+          onSelect: () => {
+            void closeAllDocumentTabs();
           },
         },
         {
