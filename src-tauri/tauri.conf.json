@@ -1,0 +1,98 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Scholium",
+  "version": "0.1.0",
+  "identifier": "com.spotwizard.scholium",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Scholium",
+        "width": 800,
+        "height": 600,
+        "backgroundColor": "#fffdf8",
+        "visible": false
+      }
+    ],
+    "security": {
+      "csp": {
+        "default-src": ["'self'", "customprotocol:", "asset:"],
+        "script-src": ["'self'"],
+        "connect-src": ["ipc:", "http://ipc.localhost"],
+        "font-src": ["'self'", "data:"],
+        "img-src": [
+          "'self'",
+          "data:",
+          "blob:",
+          "asset:",
+          "http://asset.localhost",
+          "http:",
+          "https:"
+        ],
+        "style-src": ["'self'", "'unsafe-inline'"],
+        "object-src": ["'none'"],
+        "base-uri": ["'none'"],
+        "frame-src": ["'none'"]
+      },
+      "devCsp": {
+        "default-src": [
+          "'self'",
+          "customprotocol:",
+          "asset:",
+          "http:",
+          "ws:"
+        ],
+        "script-src": ["'self'"],
+        "connect-src": [
+          "ipc:",
+          "http://ipc.localhost",
+          "http:",
+          "ws:"
+        ],
+        "font-src": ["'self'", "data:"],
+        "img-src": [
+          "'self'",
+          "data:",
+          "blob:",
+          "asset:",
+          "http://asset.localhost",
+          "http:",
+          "https:"
+        ],
+        "style-src": ["'self'", "'unsafe-inline'"],
+        "object-src": ["'none'"],
+        "base-uri": ["'none'"],
+        "frame-src": ["'none'"]
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "macOS": {
+      "infoPlist": "Info.plist"
+    }
+  },
+  "plugins": {
+    "deep-link": {
+      "mobile": [
+        {
+          "scheme": ["db-bdv6guwbi6ol9mg"],
+          "appLink": false
+        }
+      ]
+    }
+  }
+}
