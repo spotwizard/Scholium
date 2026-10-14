@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
 const appSource = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
+const appCss = readFileSync(new URL("../src/App.css", import.meta.url), "utf8");
 const milkdownSource = readFileSync(
   new URL("../src/MilkdownMarkdownEditor.tsx", import.meta.url),
   "utf8",
@@ -9,23 +10,128 @@ const milkdownSource = readFileSync(
 const componentStart = appSource.indexOf("function NoteMarkdownEditor(");
 const componentEnd = appSource.indexOf("\nfunction App()", componentStart);
 const noteEditorSource = appSource.slice(componentStart, componentEnd);
+const markdownPreviewStart = appSource.indexOf("function MarkdownPreview(");
+const markdownPreviewEnd = appSource.indexOf(
+  "\nfunction MarkdownPreviewContentBlock(",
+  markdownPreviewStart,
+);
+const markdownPreviewSource = appSource.slice(markdownPreviewStart, markdownPreviewEnd);
 const selectionEnterStart = appSource.indexOf("function handleSelectionEnter(");
 const selectionEnterEnd = appSource.indexOf("\n  function showNoteViewer(", selectionEnterStart);
 const selectionEnterSource = appSource.slice(selectionEnterStart, selectionEnterEnd);
+const glossaryEditorAriaLabel = appSource.indexOf('ariaLabel={t("glossary.edit")}');
+const glossaryEditorStart = appSource.lastIndexOf("<NoteMarkdownEditor", glossaryEditorAriaLabel);
+const glossaryEditorEnd = appSource.indexOf(
+  "\n              {!pendingAnchor && activeGlossaryTerm ? (\n                <div\n                  aria-hidden",
+  glossaryEditorStart,
+);
+const glossaryEditorSource = appSource.slice(glossaryEditorStart, glossaryEditorEnd);
 
 assert.ok(componentStart >= 0 && componentEnd > componentStart);
+assert.ok(markdownPreviewStart >= 0 && markdownPreviewEnd > markdownPreviewStart);
 assert.ok(selectionEnterStart >= 0 && selectionEnterEnd > selectionEnterStart);
-assert.match(noteEditorSource, /<MarkdownPreview[\s\S]*?commitOnInput/);
+assert.ok(glossaryEditorStart >= 0 && glossaryEditorEnd > glossaryEditorStart);
+assert.equal(appSource.match(/<MarkdownPreview\b/g)?.length, 1);
+assert.match(
+  noteEditorSource,
+  /<MarkdownPreview[\s\S]*?readOnly=\{!isEditable\}[\s\S]*?value=\{value\}[\s\S]*?onChange=\{\(nextValue\) => onChange\(nextValue\)\}[\s\S]*?\/>/,
+);
 assert.match(noteEditorSource, /readOnly=\{!isEditable\}/);
+assert.match(noteEditorSource, /value\.length === 0 \? "is-empty" : ""/);
+assert.doesNotMatch(
+  markdownPreviewSource,
+  /\b(?:annotations|allowSelectedTextEnterEdit|commitOnInput|enableTabIndent|onAnnotationClick|onSelectionChange|onSelectionEnter)\b/,
+);
+assert.doesNotMatch(
+  appSource,
+  /preview-(?:note-annotation|annotation-frame|annotation-layer)/,
+);
+assert.doesNotMatch(
+  appCss,
+  /preview-(?:note-annotation|annotation-frame|annotation-layer)/,
+);
+assert.match(appSource, /<MilkdownMarkdownEditor[\s\S]*?annotations=\{annotations\}/);
+assert.match(
+  milkdownSource,
+  /className=\{`milkdown-annotation-frame[\s\S]*?className="milkdown-annotation-layer/,
+);
 assert.match(noteEditorSource, /editingSurface === "source" && isEditable[\s\S]*?<textarea/);
+assert.doesNotMatch(
+  appSource,
+  /function MarkdownPreviewContent\([\s\S]*?onClick\?: \(\) => void;/,
+);
 assert.match(
   selectionEnterSource,
-  /if \(!noteModeEnabled\) return false;[\s\S]*?selectionShouldSuppressNewAnnotation\(anchor\)/,
+  /if \(!noteModeEnabled\) return false;[\s\S]*?selectionShouldSuppressNewAnnotation\(selectionAnchor\)/,
 );
 assert.doesNotMatch(selectionEnterSource, /setActiveDocumentModeState/);
 assert.match(
   appSource,
-  /function handlePreviewInput[\s\S]*?const previewElement = event\.currentTarget[\s\S]*?commitPendingPreviewInput\(previewElement\)/,
+  /function handlePreviewInput[\s\S]*?const previewElement = event\.currentTarget[\s\S]*?commitPendingPreviewInput\(previewElement, true\)/,
+);
+assert.match(
+  markdownPreviewSource,
+  /function handlePreviewTabIndent[\s\S]*?event\.key !== "Tab"[\s\S]*?event\.shiftKey[\s\S]*?commitPreviewListOutdent\(blockElement\) \|\| commitPreviewLineOutdent\(blockElement\)[\s\S]*?commitPreviewListIndent\(blockElement\)[\s\S]*?insertPlainPreviewText\("  "\)/,
+);
+assert.match(
+  markdownPreviewSource,
+  /function handlePreviewBeforeInput[\s\S]*?nativeEvent\.inputType === "insertLineBreak" && !nativeEvent\.isComposing[\s\S]*?commitPreviewSoftBreak\(\)/,
+);
+assert.doesNotMatch(
+  markdownPreviewSource,
+  /nativeEvent\.inputType\??\.startsWith\("delete"\)/,
+);
+assert.match(
+  markdownPreviewSource,
+  /function clonedPreviewSelection[\s\S]*?previewNodePath\(previewElement, range\.startContainer\)[\s\S]*?previewElement\.cloneNode\(true\)[\s\S]*?clonedRange\.setStart[\s\S]*?clonedRange\.setEnd/,
+);
+assert.match(
+  markdownPreviewSource,
+  /function commitPreviewSelectionDeletion[\s\S]*?commitPendingPreviewInput\(previewElement, true\)[\s\S]*?clonedSelection\.range\.deleteContents\(\)[\s\S]*?markdownFromEditedPreviewBlockElements[\s\S]*?replaceMarkdownBlock[\s\S]*?focusPreviewSourcePosition\(nextValue, caretSourcePosition\)[\s\S]*?commitPreviewChange\(nextValue\)/,
+);
+assert.match(
+  markdownPreviewSource,
+  /function commitPreviewSelectionDeletion[\s\S]*?const clonedSelection = clonedPreviewSelection\(previewElement, selection\);[\s\S]*?commitPendingPreviewInput\(previewElement, true\)/,
+);
+assert.match(
+  markdownPreviewSource,
+  /startPointRange\.collapse\(true\)[\s\S]*?endPointRange\.collapse\(false\)[\s\S]*?const crossesBlocks = Boolean[\s\S]*?sourceFrom[\s\S]*?sourceTo[\s\S]*?currentValue\.slice\(0, sourceFrom\) \+ currentValue\.slice\(sourceTo\)[\s\S]*?commitPreviewChange\(nextValue\)/,
+);
+assert.match(
+  markdownPreviewSource,
+  /removeSelectedPreviewSoftLine[\s\S]*?selectedSoftLine\.caretOffset[\s\S]*?currentValue\.slice\(0, sourceFrom\) \+ currentValue\.slice\(sourceTo\)[\s\S]*?focusPreviewBlockTextOffset\(nextRenderedBlock\.key, selectedSoftLine\.caretOffset\)/,
+);
+assert.match(
+  markdownPreviewSource,
+  /const isSelectionDelete =[\s\S]*?event\.key === "Backspace"[\s\S]*?event\.key === "Delete"[\s\S]*?commitPreviewSelectionDeletion\(event\.currentTarget\)[\s\S]*?event\.preventDefault\(\)/,
+);
+assert.match(
+  markdownPreviewSource,
+  /function commitPreviewEmptyLineDeletion[\s\S]*?selection\.isCollapsed[\s\S]*?transientPreviewElementFromSelection\(\)[\s\S]*?clearTransientPreviewNodes/,
+);
+assert.match(
+  markdownPreviewSource,
+  /function commitPreviewEmptyLineDeletion[\s\S]*?selectionOffsetsWithInlineBreaksInElement[\s\S]*?sourcePositionForPreviewTextOffset[\s\S]*?isInlineBreakToken[\s\S]*?commitPreviewChange/,
+);
+assert.match(
+  markdownPreviewSource,
+  /function commitPreviewEmptyLineDeletion[\s\S]*?const previousBlock = blocks\[blockIndex - 1\];[\s\S]*?if \(!neighbor\) \{[\s\S]*?key === "Delete" && previousBlock && blockIsList\(previousBlock\)[\s\S]*?focusPreviewBlockEnd\(previousBlock\.key\)[\s\S]*?return true;/,
+);
+assert.match(
+  markdownPreviewSource,
+  /function commitPreviewEmptyLineDeletion[\s\S]*?const neighborRange = getBlockRange\(currentValue, neighbor\);[\s\S]*?if \(key === "Backspace" && blockIsList\(neighbor\)\) \{[\s\S]*?focusPreviewBlockEnd\(neighbor\.key\)[\s\S]*?\} else \{[\s\S]*?focusPreviewSourcePosition\(nextValue, from\);/,
+);
+assert.match(
+  markdownPreviewSource,
+  /handlePreviewListDelete\(event\)[\s\S]*?commitPreviewEmptyLineDeletion\(event\.currentTarget, event\.key\)[\s\S]*?event\.preventDefault\(\)/,
+);
+assert.doesNotMatch(markdownPreviewSource, /controlledNextBlock|selectedSoftLine\.text\.split/);
+assert.match(markdownPreviewSource, /preserveEmptyParagraphs: !readOnly/);
+assert.match(markdownPreviewSource, /replaceMarkdownBlock\(currentValue, block, nextBlock\)/);
+assert.doesNotMatch(appSource, /key=\{`\$\{block\.key\}-\$\{textMap\.text/);
+assert.match(
+  markdownPreviewSource,
+  /if \(readOnly\) \{\s*if \(\s*event\.key === "Tab" &&[\s\S]*?\) \{\s*return;\s*\}\s*event\.preventDefault\(\);\s*event\.stopPropagation\(\);/,
 );
 assert.match(
   appSource,
@@ -52,6 +158,65 @@ assert.match(
   appSource,
   /function handlePreviewPaste[\s\S]*?event\.clipboardData[\s\S]*?getData\("text\/plain"\)[\s\S]*?commitPreviewChange\(nextValue\)/,
 );
+assert.match(
+  appSource,
+  /function handlePreviewPaste[\s\S]*?if \(!selectedRange && selection\.isCollapsed && previewValueRef\.current\.length === 0\)[\s\S]*?selectedRange = \{ from: 0, to: 0 \};/,
+);
+assert.match(
+  appSource,
+  /function handlePreviewPaste[\s\S]*?sourceRangeForPreviewTextOffsets\([\s\S]*?getPreviewBlockTextMap\(previewValueRef\.current, block\),[\s\S]*?offsets\.from,[\s\S]*?offsets\.to,/,
+);
+assert.match(
+  appSource,
+  /function handlePlainTextCopy[\s\S]*?clipboardData\.setData\("text\/plain", selectedText\)/,
+);
+assert.doesNotMatch(appSource, /function markdownPreviewCopyTextFromSelection/);
+assert.match(
+  appSource,
+  /function previewTextOffsetForSourcePosition\([\s\S]*?sourceOffset !== null && sourceOffset >= sourcePosition[\s\S]*?return textMap\.text\.length;/,
+);
+assert.match(
+  appSource,
+  /function handlePreviewPaste[\s\S]*?const caretSourcePosition = selectedRange\.from \+ pastedText\.length;[\s\S]*?focusPreviewSourcePosition\(nextValue, caretSourcePosition\);[\s\S]*?commitPreviewChange\(nextValue\)/,
+);
+assert.match(
+  markdownPreviewSource,
+  /function handlePreviewCut[\s\S]*?const selectedText = selection\.toString\(\);[\s\S]*?commitPreviewSelectionDeletion\(previewElement\)[\s\S]*?event\.preventDefault\(\);[\s\S]*?clipboardData\.setData\("text\/plain", selectedText\)/,
+);
+assert.match(markdownPreviewSource, /onCut=\{handlePreviewCut\}/);
+assert.doesNotMatch(
+  appSource,
+  /function handlePreviewPaste[\s\S]*?focusPreviewBlockEnd\(focusBlock\.key\)/,
+);
+assert.match(
+  appSource,
+  /function undoPreviewChange\(\)[\s\S]*?takeNoteEditorUndo\([\s\S]*?previewValueRef\.current[\s\S]*?focusPreviewSourcePosition\([\s\S]*?caretSourcePosition/,
+);
+assert.match(
+  appSource,
+  /function redoPreviewChange\(\)[\s\S]*?takeNoteEditorRedo\([\s\S]*?previewValueRef\.current[\s\S]*?focusPreviewSourcePosition\([\s\S]*?caretSourcePosition[\s\S]*?onChange\(redo\.snapshot\.value, "user"\)/,
+);
+assert.match(
+  appSource,
+  /function isRedoKeyboardShortcut\([\s\S]*?const key = event\.key\.toLowerCase\(\);[\s\S]*?key === "z"[\s\S]*?event\.shiftKey[\s\S]*?key === "y"[\s\S]*?event\.ctrlKey/,
+);
+assert.match(
+  appSource,
+  /function flushPendingPreviewHistoryInput\(\)[\s\S]*?cancelAnimationFrame\(inputCommitFrameRef\.current\)[\s\S]*?commitPendingPreviewInput\(previewElement, true\)/,
+);
+assert.match(
+  markdownPreviewSource,
+  /function flushPendingPreviewHistoryInput[\s\S]*?emptyTransientNodes[\s\S]*?clearTransientPreviewNodes\(emptyTransientNodes\)/,
+);
+assert.match(
+  appSource,
+  /const shouldRedo = isRedoKeyboardShortcut\(event\);[\s\S]*?flushPendingPreviewHistoryInput\(\);[\s\S]*?shouldRedo \? redoPreviewChange\(\) : undoPreviewChange\(\)/,
+);
+assert.match(
+  appSource,
+  /function commitPreviewChange\([^)]*input = previewInputCommitRef\.current\)[\s\S]*?recordNoteEditorChange\([\s\S]*?\{ input \}/,
+);
+assert.match(appSource, /commitPreviewChange\(lines\.join\(eol\), undefined, true\)/);
 assert.match(appSource, /onPaste=\{handlePreviewPaste\}/);
 assert.match(
   appSource,
@@ -63,15 +228,15 @@ assert.match(
 );
 assert.match(
   appSource,
-  /function handlePreviewInput[\s\S]*?window\.cancelAnimationFrame\(inputCommitFrameRef\.current\);[\s\S]*?inputCommitFrameRef\.current = window\.requestAnimationFrame\(\(\) => \{[\s\S]*?commitPendingPreviewInput\(previewElement\)/,
+  /function handlePreviewInput[\s\S]*?window\.cancelAnimationFrame\(inputCommitFrameRef\.current\);[\s\S]*?inputCommitFrameRef\.current = window\.requestAnimationFrame\(\(\) => \{[\s\S]*?commitPendingPreviewInput\(previewElement, true\)/,
 );
 assert.match(
   appSource,
-  /function handlePreviewCompositionEnd[\s\S]*?const previewElement = event\.currentTarget[\s\S]*?commitPendingPreviewInput\(previewElement\)/,
+  /function handlePreviewCompositionEnd[\s\S]*?const previewElement = event\.currentTarget[\s\S]*?commitPendingPreviewInput\(previewElement, true\)/,
 );
 assert.match(
   appSource,
-  /function commitPreviewSoftBreak[\s\S]*?commitPendingPreviewInput\(previewElement\)[\s\S]*?selectionOffsetsWithInlineBreaksInElement[\s\S]*?const currentValue = previewValueRef\.current[\s\S]*?block\.kind === "code" \? "\\n" : "<br>"[\s\S]*?focusPreviewBlockTextOffset/,
+  /function commitPreviewSoftBreak[\s\S]*?commitPendingPreviewInput\(previewElement, true\)[\s\S]*?selectionOffsetsWithInlineBreaksInElement[\s\S]*?const currentValue = previewValueRef\.current[\s\S]*?block\.kind === "code" \? "\\n" : "<br>"[\s\S]*?focusPreviewBlockTextOffset/,
 );
 assert.match(
   appSource,
@@ -82,8 +247,20 @@ assert.match(
   /function selectionOffsetsWithInlineBreaksInElement[\s\S]*?replace\(\/\\u200b\/g, ""\)[\s\S]*?function previewTextFocusFromSelection[\s\S]*?precedingTextLength[\s\S]*?textOffset: precedingTextLength \+ offsets\.to/,
 );
 assert.match(
+  markdownPreviewSource,
+  /function previewRangeFromSelection\(selection: Selection\)[\s\S]*?previewPointerPointRef\.current[\s\S]*?caretRangeFromPoint\(pointerPoint\.clientX, pointerPoint\.clientY\)[\s\S]*?selection\.focusNode !== previewElement[\s\S]*?boundaryRange\.selectNodeContents\(boundaryBlock\)/,
+);
+assert.match(
+  markdownPreviewSource,
+  /function commitPreviewSoftBreak\(\)[\s\S]*?const selectedRange = previewRangeFromSelection\(selection\);[\s\S]*?selectionOffsetsWithInlineBreaksInElement\([\s\S]*?selectedRange/,
+);
+assert.match(
+  markdownPreviewSource,
+  /onPointerDownCapture=\{\(event\) => \{[\s\S]*?previewPointerPointRef\.current = \{[\s\S]*?clientX: event\.clientX,[\s\S]*?clientY: event\.clientY/,
+);
+assert.match(
   appSource,
-  /function handlePreviewInput[\s\S]*?previewTextFocusFromSelection\(blockElement\)[\s\S]*?pendingPreviewTextFocusRef\.current = pendingFocus[\s\S]*?commitPendingPreviewInput\(previewElement\)/,
+  /function handlePreviewInput[\s\S]*?previewTextFocusFromSelection\(blockElement\)[\s\S]*?pendingPreviewTextFocusRef\.current = pendingFocus[\s\S]*?commitPendingPreviewInput\(previewElement, true\)/,
 );
 assert.match(
   appSource,
@@ -99,15 +276,19 @@ assert.match(
 );
 assert.match(
   appSource,
-  /useLayoutEffect\(\(\) => \{[\s\S]*?pendingPreviewTextFocusRef\.current[\s\S]*?applyPreviewBlockTextOffset\(pendingFocus\.blockKey, pendingFocus\.textOffset\);[\s\S]*?\}, \[value\]\)/,
+  /useLayoutEffect\(\(\) => \{[\s\S]*?pendingPreviewTextFocusRef\.current[\s\S]*?applyPreviewBlockTextOffset\([\s\S]*?pendingFocus\.blockKey,[\s\S]*?pendingFocus\.textOffset,[\s\S]*?pendingFocus\.scrollIntoView,[\s\S]*?\);[\s\S]*?\}, \[value\]\)/,
 );
 assert.match(
   appSource,
-  /function focusPreviewBlockTextOffset[\s\S]*?pendingPreviewTextFocusRef\.current = \{ blockKey, textOffset \};/,
+  /function focusPreviewBlockTextOffset[\s\S]*?pendingPreviewTextFocusRef\.current = \{ blockKey, scrollIntoView, textOffset \};/,
 );
 assert.match(
   appSource,
   /textMap\.text\.endsWith\("\\n"\)[\s\S]*?data-preview-trailing-caret="true"[\s\S]*?"\\u200b"/,
+);
+assert.match(
+  markdownPreviewSource,
+  /textMap\.text === "\\n"[\s\S]*?\? 0[\s\S]*?key === "Delete"/,
 );
 assert.match(
   appSource,
@@ -115,7 +296,19 @@ assert.match(
 );
 assert.match(
   appSource,
-  /const isSoftEnter =[\s\S]*?event\.shiftKey;[\s\S]*?isSoftEnter && commitOnInput && !event\.nativeEvent\.isComposing[\s\S]*?if \(!commitPreviewSoftBreak\(\)\)[\s\S]*?transientElement\.dataset\.previewSoftBreaks = "true";[\s\S]*?return;[\s\S]*?event\.preventDefault\(\)/,
+  /const isSoftEnter =[\s\S]*?event\.shiftKey;[\s\S]*?isSoftEnter && !event\.nativeEvent\.isComposing[\s\S]*?if \(!commitPreviewSoftBreak\(\)\)[\s\S]*?transientElement\.dataset\.previewSoftBreaks = "true";[\s\S]*?return;[\s\S]*?event\.preventDefault\(\)/,
+);
+assert.match(
+  markdownPreviewSource,
+  /blockForPreviewElement\(blockElement\)\?\.kind === "paragraph" &&[\s\S]*?commitPreviewSoftBreak\(\)[\s\S]*?event\.preventDefault\(\);[\s\S]*?event\.stopPropagation\(\);[\s\S]*?if \(transientPreviewElementFromSelection\(\)\) return;/,
+);
+assert.match(
+  markdownPreviewSource,
+  /if \(!selection \|\| selection\.isCollapsed \|\| !selectedText\.trim\(\)\) \{[\s\S]*?\n    \}\n\n    event\.preventDefault\(\);\n    event\.stopPropagation\(\);\n  \}/,
+);
+assert.match(
+  appSource,
+  /function commitPreviewListEnter[\s\S]*?const nextListItem = listItem\.nextElementSibling;[\s\S]*?!nextListLine\.text\.trim\(\)[\s\S]*?focusPreviewListItem\(block\.key, itemIndex \+ 1\);[\s\S]*?return true;/,
 );
 assert.match(
   appSource,
@@ -131,15 +324,53 @@ assert.match(
 );
 assert.match(
   appSource,
+  /function handleDocumentPointerDown[\s\S]*?\.floating-note-panel-toggle-button[\s\S]*?return;[\s\S]*?activeElement\.blur\(\)/,
+);
+assert.match(
+  appSource,
+  /className=\{`floating-note-panel-toggle-button[\s\S]*?onPointerDown=\{\(event\) => event\.preventDefault\(\)\}[\s\S]*?onClick=\{toggleFloatingNotePanelExpanded\}/,
+);
+assert.match(
+  appSource,
   /function flushActiveNoteMarkdownEditor[\s\S]*?document\.activeElement !== editableElement[\s\S]*?editableElement\.blur\(\);[\s\S]*?function closeNotePanel\(\) \{[\s\S]*?flushActiveNoteMarkdownEditor\(\)/,
 );
 assert.match(
   appSource,
   /className="floating-note-close-button"[\s\S]*?onPointerDown=\{flushActiveNoteMarkdownEditor\}[\s\S]*?onClick=\{closeNotePanel\}/,
 );
+assert.doesNotMatch(glossaryEditorSource, /editingSurface="source"/);
+assert.match(glossaryEditorSource, /<NoteMarkdownEditor/);
+assert.match(
+  glossaryEditorSource,
+  /className="floating-note-card__editor floating-note-card__editor--glossary"[\s\S]*?editing=\{activeGlossaryIsEditing\}[\s\S]*?onRequestEdit=\{\(\) => openGlossaryEditor\(activeGlossaryTerm\.id\)\}/,
+);
+assert.doesNotMatch(
+  appSource,
+  /activeGlossaryTerm && !activeGlossaryIsEditing[\s\S]*?<MarkdownPreviewContent/,
+);
 assert.match(
   appSource,
-  /ariaLabel=\{t\("glossary\.edit"\)\}[\s\S]*?editingSurface="source"/,
+  /aria-hidden=\{activeGlossaryIsEditing \|\| undefined\}[\s\S]*?activeGlossaryIsEditing \? "is-layout-placeholder" : ""/,
+);
+assert.match(
+  appCss,
+  /\.floating-note-card \.note-markdown-editor\.floating-note-card__editor--glossary\s*\{[\s\S]*?--note-edit-focus-ring-inline-padding: 0px;/,
+);
+assert.match(
+  appCss,
+  /\.floating-note-card__editor--glossary \.markdown-preview > :last-child\s*\{\s*margin-bottom: 0;/,
+);
+assert.match(
+  appCss,
+  /\.bottom-note-actions\.is-layout-placeholder\s*\{[\s\S]*?visibility: hidden;[\s\S]*?pointer-events: none;/,
+);
+assert.match(
+  appCss,
+  /\.floating-note-panel\.is-expanded-sidebar \.floating-note-card__editor\.is-empty,[\s\S]*?\.floating-note-card__editor\.is-empty[\s\S]*?\.markdown-preview\s*\{[\s\S]*?min-height: 100%;/,
+);
+assert.match(
+  appCss,
+  /\.floating-note-panel\.is-expanded-sidebar \.floating-note-card__body-measure\s*\{[\s\S]*?height: 100%;[\s\S]*?min-height: 100%;/,
 );
 assert.match(
   milkdownSource,

@@ -1,13 +1,50 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { anchoredFloatingNoteGeometry } from "../src/floatingNotePosition.ts";
+import {
+  anchoredFloatingNoteGeometry,
+  floatingNoteViewportRectWithinHorizontalBounds,
+} from "../src/floatingNotePosition.ts";
 
 const viewportRect = {
   bottom: 615,
+  height: 615,
   left: 0,
   right: 820,
   top: 0,
+  width: 820,
 };
+
+assert.deepEqual(
+  floatingNoteViewportRectWithinHorizontalBounds({
+    contentRect: { left: 220, right: 660 },
+    viewportRect,
+  }),
+  { ...viewportRect, left: 220, right: 660 },
+);
+assert.equal(
+  floatingNoteViewportRectWithinHorizontalBounds({
+    contentRect: { left: 900, right: 1000 },
+    viewportRect,
+  }),
+  viewportRect,
+);
+
+const contentBoundedNearLeft = anchoredFloatingNoteGeometry({
+  anchorRect: {
+    bottom: 250,
+    top: 220,
+    targetBottom: 250,
+    targetX: 300,
+  },
+  cardHeight: 100,
+  cardWidth: 360,
+  viewportMargin: 12,
+  viewportRect: { ...viewportRect, left: 220, right: 660 },
+});
+
+assert.equal(contentBoundedNearLeft.left, 232);
+assert.ok(contentBoundedNearLeft.left >= 220 + 12);
+assert.ok(contentBoundedNearLeft.left + 360 <= 660 - 12);
 
 const centered = anchoredFloatingNoteGeometry({
   anchorRect: {
@@ -195,9 +232,48 @@ assert.equal(mobileLockedPastViewport.top, 718);
 assert.ok(mobileLockedPastViewport.top > 543);
 
 const appSource = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
+const appCss = readFileSync(new URL("../src/App.css", import.meta.url), "utf8");
+assert.match(appCss, /\.editor-toolbar \{\s*position: absolute;/);
+assert.doesNotMatch(appCss, /\.editor-toolbar \{\s*position: fixed;/);
+const expandedShellRule = appCss.match(
+  /\.scholium-shell\.is-note-panel-expanded \{([^}]*)\}/,
+)?.[1];
+assert.ok(expandedShellRule, "expanded floating panel shell rule must exist");
+assert.doesNotMatch(expandedShellRule, /height|overflow/);
+assert.doesNotMatch(appCss, /\.scholium-shell\.is-note-panel-expanded \.editor-pane/);
+const floatingPanelToggle = appSource.match(
+  /function toggleFloatingNotePanelExpanded\(\) \{([\s\S]*?)\n  \}/,
+)?.[1];
+assert.ok(floatingPanelToggle, "floating panel toggle must exist");
+assert.doesNotMatch(floatingPanelToggle, /scroll|overflow|editorPane/);
+assert.doesNotMatch(appSource, /floatingNotePanelScrollPositionRef/);
+assert.doesNotMatch(appSource, /expandedNotePanelScrollLocked/);
+assert.match(
+  appSource,
+  /const expandedNotePanelActive =\s*floatingNotePanelExpanded \|\| libraryNotePanelExpanded;/,
+);
+assert.match(
+  appSource,
+  /useEffect\(\(\) => \{\s*if \(!libraryNotePanelExpanded\) return undefined;[\s\S]*?document\.body\.style\.overflow = "hidden";[\s\S]*?\}, \[libraryNotePanelExpanded\]\);/,
+);
+assert.doesNotMatch(appSource, /document\.body\.style\.position = "fixed";/);
+assert.doesNotMatch(appSource, /ensureTextAnnotationVisible/);
+assert.doesNotMatch(appSource, /previousFloatingNotePanelExpandedRef/);
 assert.match(
   appSource,
   /function currentFloatingNoteViewportRect\(\)[\s\S]*?querySelector<HTMLElement>\("\.mobile-command-bar"\)[\s\S]*?height: Math\.max\(0, bottom - viewportRect\.top\)/,
+);
+assert.match(
+  appSource,
+  /function currentFloatingNoteBoundsRect\(\)[\s\S]*?\.editor-content-frame > \.milkdown-markdown-editor-shell, \.editor-content-frame > \.markdown-editor-host[\s\S]*?floatingNoteViewportRectWithinHorizontalBounds/,
+);
+assert.ok(
+  (appSource.match(/const viewportRect = currentFloatingNoteBoundsRect\(\);/g) ?? []).length >= 2,
+  "anchored and detached floating note panels must share the editor-body bounds",
+);
+assert.match(
+  appSource,
+  /left: floatingNotePanelPosition\.left,\s*maxWidth: floatingNotePanelPosition\.maxWidth,\s*top: floatingNotePanelPosition\.top/,
 );
 assert.match(
   appSource,
@@ -226,7 +302,35 @@ assert.match(
 );
 assert.match(
   appSource,
-  /const cardSize = \{[\s\S]*?height: card\.offsetHeight \|\| cardRect\.height,[\s\S]*?width: card\.offsetWidth \|\| cardRect\.width,[\s\S]*?\};/,
+  /const cardRect = card\?\.getBoundingClientRect\(\);\s*const cardSize = \{\s*height: card\?\.offsetHeight \|\| cardRect\?\.height \|\| 0,\s*width: card\?\.offsetWidth \|\| cardRect\?\.width \|\| 0,\s*\};/,
+);
+assert.doesNotMatch(
+  appSource,
+  /if \(!card\) \{\s*setFloatingNotePanelPosition\(null\);\s*return;\s*\}/,
+);
+assert.match(
+  appSource,
+  /function updateFloatingNotePanelPosition\(\) \{\s*window\.cancelAnimationFrame\(floatingNotePanelPositionFrameRef\.current\);\s*floatingNotePanelPositionFrameRef\.current = window\.requestAnimationFrame\(\s*measureFloatingNotePanelPosition,\s*\);\s*\}\s*measureFloatingNotePanelPosition\(\);\s*window\.addEventListener\("resize", updateFloatingNotePanelPosition\);/,
+);
+assert.match(
+  appSource,
+  /function floatingNoteEditableFromTarget[\s\S]*?\.floating-note-panel:not\(\.is-expanded-sidebar\)/,
+);
+assert.match(
+  appSource,
+  /function captureFloatingNoteScrollPosition[\s\S]*?event\.type === "focusin" && floatingNoteScrollLock[\s\S]*?top: editorPane\.scrollTop/,
+);
+assert.match(
+  appSource,
+  /function restoreFloatingNoteScrollPosition[\s\S]*?lock\.editorPane\.scrollTop = lock\.top[\s\S]*?window\.scrollTo\(lock\.windowX, lock\.windowY\)/,
+);
+assert.match(
+  appSource,
+  /if \(floatingNoteScrollLock\) \{[\s\S]*?keepFloatingNoteScrollPosition\(\)/,
+);
+assert.match(
+  appSource,
+  /document\.addEventListener\("pointerdown", captureFloatingNoteScrollPosition, true\)[\s\S]*?document\.addEventListener\("focusin", captureFloatingNoteScrollPosition, true\)/,
 );
 
 console.log("floating note anchor position regression: PASS");

@@ -1,6 +1,6 @@
-import { isAppLanguage, type AppLanguage, type TranslationKey } from "./i18n";
+import { isAppLanguage, type AppLanguage, type TranslationKey } from "./i18n.ts";
 
-export type SettingCategory = "app" | "editor" | "cloud" | "project" | "ai" | "privacy";
+export type SettingCategory = "app" | "editor" | "cloud";
 
 export type SettingsValueMap = {
   "app.language": AppLanguage;
@@ -31,8 +31,7 @@ type BaseSettingDefinition<Key extends SettingKey> = {
   key: Key;
   category: SettingCategory;
   labelKey: TranslationKey;
-  descriptionKey?: TranslationKey;
-  requiresRestart: boolean;
+  descriptionKey: TranslationKey;
 };
 
 export type BooleanSettingDefinition = BaseSettingDefinition<BooleanSettingKey> & {
@@ -67,19 +66,9 @@ export const settingCategoryLabelKeys: Record<SettingCategory, TranslationKey> =
   app: "settings.category.app",
   editor: "settings.category.editor",
   cloud: "settings.category.cloud",
-  project: "settings.category.project",
-  ai: "settings.category.ai",
-  privacy: "settings.category.privacy",
 };
 
-export const settingCategoryOrder: SettingCategory[] = [
-  "app",
-  "editor",
-  "cloud",
-  "project",
-  "ai",
-  "privacy",
-];
+export const settingCategoryOrder: SettingCategory[] = ["app", "editor", "cloud"];
 
 export const settingsDefinitions: SettingDefinition[] = [
   {
@@ -94,7 +83,6 @@ export const settingsDefinitions: SettingDefinition[] = [
       { labelKey: "settings.app.language.option.traditionalChinese", value: "zh-Hant" },
       { labelKey: "settings.app.language.option.simplifiedChinese", value: "zh-Hans" },
     ],
-    requiresRestart: false,
   },
   {
     key: "app.interfaceFontSize",
@@ -107,7 +95,6 @@ export const settingsDefinitions: SettingDefinition[] = [
     max: 22,
     step: 1,
     unit: "px",
-    requiresRestart: false,
   },
   {
     key: "app.theme",
@@ -121,7 +108,6 @@ export const settingsDefinitions: SettingDefinition[] = [
       { labelKey: "settings.app.theme.option.light", value: "light" },
       { labelKey: "settings.app.theme.option.dark", value: "dark" },
     ],
-    requiresRestart: false,
   },
   {
     key: "app.restoreLastOpenedFile",
@@ -130,7 +116,6 @@ export const settingsDefinitions: SettingDefinition[] = [
     labelKey: "settings.app.restoreLastOpenedFile.label",
     descriptionKey: "settings.app.restoreLastOpenedFile.description",
     defaultValue: true,
-    requiresRestart: false,
   },
   {
     key: "app.directoryPaneOpen",
@@ -139,7 +124,6 @@ export const settingsDefinitions: SettingDefinition[] = [
     labelKey: "settings.app.directoryPaneOpen.label",
     descriptionKey: "settings.app.directoryPaneOpen.description",
     defaultValue: false,
-    requiresRestart: false,
   },
   {
     key: "app.noteModeEnabledByDefault",
@@ -148,7 +132,6 @@ export const settingsDefinitions: SettingDefinition[] = [
     labelKey: "settings.app.noteModeEnabledByDefault.label",
     descriptionKey: "settings.app.noteModeEnabledByDefault.description",
     defaultValue: false,
-    requiresRestart: false,
   },
   {
     key: "editor.fontSize",
@@ -161,7 +144,6 @@ export const settingsDefinitions: SettingDefinition[] = [
     max: 28,
     step: 1,
     unit: "px",
-    requiresRestart: false,
   },
   {
     key: "editor.lineHeight",
@@ -173,7 +155,6 @@ export const settingsDefinitions: SettingDefinition[] = [
     min: 1.3,
     max: 2.2,
     step: 0.05,
-    requiresRestart: false,
   },
 ];
 

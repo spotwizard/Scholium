@@ -6,7 +6,51 @@ export type DocumentSearchMatch = {
 export type DocumentSearchState = {
   activeIndex: number;
   query: string;
+  scrollRequestKey?: number;
 };
+
+type DocumentSearchKeyEvent = Pick<
+  KeyboardEvent,
+  "isComposing" | "key" | "keyCode" | "shiftKey"
+>;
+
+type DocumentSearchShortcutEvent = Pick<
+  KeyboardEvent,
+  "altKey" | "code" | "ctrlKey" | "key" | "metaKey" | "shiftKey"
+>;
+
+export function documentSearchHistoryAction(event: DocumentSearchShortcutEvent) {
+  if (event.altKey || event.ctrlKey === event.metaKey) return null;
+
+  const key = event.key.toLowerCase();
+  if (
+    event.ctrlKey &&
+    !event.metaKey &&
+    !event.shiftKey &&
+    (event.code === "KeyY" || key === "y")
+  ) {
+    return "redo";
+  }
+
+  if (event.code !== "KeyZ" && key !== "z") return null;
+
+  return event.shiftKey ? "redo" : "undo";
+}
+
+export function isDocumentSearchSelectAllShortcut(event: DocumentSearchShortcutEvent) {
+  return (
+    ((event.metaKey && !event.ctrlKey) || (event.ctrlKey && !event.metaKey)) &&
+    !event.altKey &&
+    !event.shiftKey &&
+    (event.code === "KeyA" || event.key.toLowerCase() === "a")
+  );
+}
+
+export function documentSearchMoveDeltaForKeyDown(event: DocumentSearchKeyEvent) {
+  if (event.key !== "Enter" || event.isComposing || event.keyCode === 229) return 0;
+
+  return event.shiftKey ? -1 : 1;
+}
 
 export function normalizeDocumentSearchQuery(query: string) {
   return query.replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim().toLocaleLowerCase();

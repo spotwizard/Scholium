@@ -1,0 +1,47 @@
+[
+  {
+    "name": "inline tags",
+    "markdown": "---\ntags: [旅行, \"日本 行程\"]\n---\n內容",
+    "tags": ["旅行", "日本 行程"]
+  },
+  {
+    "name": "space before the key separator",
+    "markdown": "---\ntags : [旅行, 台北]\n---\n內容",
+    "tags": ["旅行", "台北"]
+  },
+  {
+    "name": "block tags",
+    "markdown": "---\ntags:\n  - 旅行\n  - '日本 行程'\n---\n內容",
+    "tags": ["旅行", "日本 行程"]
+  },
+  {
+    "name": "block tags separated by a comment",
+    "markdown": "---\ntags:\n  - 旅行\n# 說明\n  - 日本\n---\n內容",
+    "tags": ["旅行", "日本"]
+  },
+  {
+    "name": "comments and quoted commas",
+    "markdown": "---\ntags: [旅行, \"東京, 大阪\", \"保留 # 符號\"] # 說明\n---\n內容",
+    "tags": ["旅行", "東京, 大阪", "保留 # 符號"]
+  },
+  {
+    "name": "case-insensitive deduplication",
+    "markdown": "---\ntags: [Travel, travel, TRAVEL, Other]\n---\n內容",
+    "tags": ["Travel", "Other"]
+  },
+  {
+    "name": "crlf frontmatter",
+    "markdown": "---\r\ntags: [中文, emoji 😀]\r\n---\r\n內容",
+    "tags": ["中文", "emoji 😀"]
+  },
+  {
+    "name": "missing tags",
+    "markdown": "---\ntitle: 旅行\n---\n內容",
+    "tags": []
+  },
+  {
+    "name": "unclosed frontmatter",
+    "markdown": "---\ntags: [旅行]\n內容",
+    "tags": []
+  }
+]

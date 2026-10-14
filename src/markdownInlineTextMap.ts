@@ -14,6 +14,41 @@ export function appendTextMap(
   }
 }
 
+export function closestTextIndex(indices: number[], approximateIndex: number) {
+  if (indices.length === 0) return -1;
+
+  return indices.reduce((closestIndex, index) =>
+    Math.abs(index - approximateIndex) < Math.abs(closestIndex - approximateIndex)
+      ? index
+      : closestIndex,
+  );
+}
+
+export function findNonOverlappingTextIndices(text: string, query: string) {
+  const indices: number[] = [];
+  if (!query) return indices;
+
+  let index = text.indexOf(query);
+  while (index >= 0) {
+    indices.push(index);
+    index = text.indexOf(query, index + query.length);
+  }
+
+  return indices;
+}
+
+export function markdownLineStartOffsets(markdown: string) {
+  const offsets = [0];
+
+  for (let index = 0; index < markdown.length; index += 1) {
+    if (markdown[index] === "\n") {
+      offsets.push(index + 1);
+    }
+  }
+
+  return offsets;
+}
+
 export function markdownListItemContentStartOffset(line: string) {
   return line.match(/^[ \t]*(?:[-*+]|\d+[.)])[ \t]+/)?.[0].length ?? 0;
 }

@@ -71,8 +71,3 @@ export function parseMarkdownTableAt(
     },
   };
 }
-
-export function markdownHasTable(markdown: string) {
-  const lines = markdown.replace(/\r\n/g, "\n").split("\n");
-  return lines.some((_line, index) => parseMarkdownTableAt(lines, index) !== null);
-}

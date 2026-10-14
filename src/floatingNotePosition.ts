@@ -7,9 +7,11 @@ export type FloatingNoteAnchorRect = {
 
 export type FloatingNoteViewportRect = {
   bottom: number;
+  height: number;
   left: number;
   right: number;
   top: number;
+  width: number;
 };
 
 export type AnchoredFloatingNoteGeometry = {
@@ -26,6 +28,26 @@ export type AnchoredFloatingNoteGeometry = {
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max);
+}
+
+export function floatingNoteViewportRectWithinHorizontalBounds({
+  contentRect,
+  viewportRect,
+}: {
+  contentRect: Pick<FloatingNoteViewportRect, "left" | "right"> | null;
+  viewportRect: FloatingNoteViewportRect;
+}): FloatingNoteViewportRect {
+  if (!contentRect) return viewportRect;
+
+  const left = Math.max(viewportRect.left, contentRect.left);
+  const right = Math.min(viewportRect.right, contentRect.right);
+  if (right <= left) return viewportRect;
+
+  return {
+    ...viewportRect,
+    left,
+    right,
+  };
 }
 
 export function anchoredFloatingNoteGeometry({

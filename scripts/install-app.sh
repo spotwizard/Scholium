@@ -51,11 +51,6 @@ FRONTMOST_BUNDLE_IDENTIFIER="$(
   /usr/bin/swift -e 'import AppKit; print(NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "")' 2>/dev/null || true
 )"
 
-if [[ -z "${FRONTMOST_BUNDLE_IDENTIFIER}" ]]; then
-  echo "Unable to determine the frontmost app; built app is ready, installation skipped." >&2
-  exit 2
-fi
-
 if [[ "${FRONTMOST_BUNDLE_IDENTIFIER}" == "${APP_BUNDLE_IDENTIFIER}" ]]; then
   echo "Scholium is currently in use; built app is ready, installation skipped." >&2
   exit 2
@@ -73,11 +68,16 @@ unregister_noninstalled_scholium_apps
 
 rm -rf "${INSTALLED_APP}"
 ditto "${BUILT_APP}" "${INSTALLED_APP}"
-codesign --force --deep --sign - "${INSTALLED_APP}"
+if ! codesign --verify --deep --strict "${INSTALLED_APP}" >/dev/null 2>&1; then
+  codesign --force --deep --sign - "${INSTALLED_APP}"
+fi
 unregister_noninstalled_scholium_apps
 "${LSREGISTER}" -f "${INSTALLED_APP}"
 touch "${INSTALLED_APP}"
 open -g "${INSTALLED_APP}"
 sleep 1
 
-pgrep -fl "${INSTALLED_BINARY}" || pgrep -fl scholium || true
+if ! pgrep -fl "${INSTALLED_BINARY}"; then
+  echo "Installed Scholium did not start from the expected path: ${INSTALLED_BINARY}" >&2
+  exit 1
+fi
