@@ -179,6 +179,15 @@ import {
   workspacePathIsInsideDirectory,
 } from "./workspacePaths";
 import {
+  lastOpenedFileAmong,
+  lastOpenedFileInDirectory,
+  parseRecentOpenedFiles,
+  recentOpenedFilesAfterOpening,
+  recentOpenedFilesStorageKey,
+  recentOpenedFilesWithout,
+  type RecentOpenedFileSource,
+} from "./recentOpenedFiles";
+import {
   collapseWorkspaceDirectory,
   collectVisibleDescendantDirectoryKeys,
   directoryTreeKey,
@@ -1397,6 +1406,35 @@ function forgetLastOpenedMarkdownPath() {
   } catch {
     // Remembering the last file is best-effort only.
   }
+}
+
+// Shared by all windows, so opening a folder anywhere shows the file last opened in it.
+function readRecentOpenedFiles() {
+  try {
+    return parseRecentOpenedFiles(window.localStorage.getItem(recentOpenedFilesStorageKey));
+  } catch {
+    return [];
+  }
+}
+
+function writeRecentOpenedFiles(files: ReturnType<typeof readRecentOpenedFiles>) {
+  try {
+    window.localStorage.setItem(recentOpenedFilesStorageKey, JSON.stringify(files));
+  } catch {
+    // Remembering recently opened files is best-effort only.
+  }
+}
+
+function rememberRecentOpenedFile(source: RecentOpenedFileSource, path: string) {
+  writeRecentOpenedFiles(recentOpenedFilesAfterOpening(readRecentOpenedFiles(), source, path));
+}
+
+function forgetRecentOpenedFile(source: RecentOpenedFileSource, path: string) {
+  writeRecentOpenedFiles(recentOpenedFilesWithout(readRecentOpenedFiles(), source, path));
+}
+
+function readLastOpenedFileInDirectory(source: RecentOpenedFileSource, directoryPath: string) {
+  return lastOpenedFileInDirectory(readRecentOpenedFiles(), source, directoryPath);
 }
 
 function isSafeLink(href: string) {
@@ -5725,6 +5763,8 @@ function App() {
   const storedDraftSnapshotsRef = useRef(new Map<string, string>());
   const draftStoreQueueRef = useRef<Promise<void>>(Promise.resolve());
   const storedDraftsRestoredRef = useRef(false);
+  // Set when launch opens a file or folder the person chose, so restored drafts stay in the background.
+  const startupOpenRequestedRef = useRef(false);
   const draftStoreTimerRef = useRef(0);
   const documentSearchInputRef = useRef<HTMLInputElement | null>(null);
   const desktopSourceModeButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -8452,6 +8492,11 @@ function App() {
         return;
       }
 
+      const restoreSelectionRevision = manualDocumentSelectionRevisionRef.current;
+      // True once the person opened another file or folder while this was loading.
+      const restoreWasInterrupted = () =>
+        manualDocumentSelectionRevisionRef.current !== restoreSelectionRevision;
+
       setStorageError(t("status.openingLastFile"));
 
       function restoreFromSelectedFileParent() {
@@ -8467,12 +8512,16 @@ function App() {
           path: lastOpenedPath,
         })
           .then((context) => {
+            if (restoreWasInterrupted()) return;
+
             applyOpenedDirectory(directoryWithSelectedFile(context), context.selectedFile.path, {
               rememberRecent: false,
             });
             setStorageError("");
           })
           .catch((error) => {
+            if (restoreWasInterrupted()) return;
+
             forgetLastOpenedMarkdownPath();
             forgetLastOpenedMarkdownRootDirectoryPath();
             console.error(error);
@@ -8490,12 +8539,18 @@ function App() {
           lastOpenedPath,
           localTabSession,
         )
-          .then(() => {
-            setStorageError("");
+          .then((restored) => {
+            if (restored) setStorageError("");
             if (!disposed) setMobileStartupPhase("hidden");
             completeDocumentTabSessionRestore();
           })
           .catch(() => {
+            if (restoreWasInterrupted()) {
+              if (!disposed) setMobileStartupPhase("hidden");
+              completeDocumentTabSessionRestore();
+              return;
+            }
+
             forgetLastOpenedMarkdownRootDirectoryPath();
             restoreFromSelectedFileParent();
           });
@@ -8507,6 +8562,7 @@ function App() {
 
     void listen<string[]>("scholium-open-file-paths", (event) => {
       if (!disposed) {
+        if (!storedDraftsRestoredRef.current) startupOpenRequestedRef.current = true;
         openDroppedMarkdownPathsHandlerRef.current(event.payload);
       }
     }).then(async (listener) => {
@@ -8522,6 +8578,7 @@ function App() {
         const newWindowTarget = await takeNewWindowDocumentTarget();
         if (disposed) return;
         if (newWindowTarget) {
+          startupOpenRequestedRef.current = true;
           openNewWindowDocumentTargetHandlerRef.current(newWindowTarget);
           completeDocumentTabSessionRestore();
           return;
@@ -8534,6 +8591,7 @@ function App() {
         const openedFilePaths = await takeOpenedFilePaths();
         if (disposed) return;
         if (openedFilePaths.length > 0) {
+          startupOpenRequestedRef.current = true;
           openDroppedMarkdownPathsHandlerRef.current(openedFilePaths);
           completeDocumentTabSessionRestore();
           return;
@@ -8680,6 +8738,22 @@ function App() {
       selectedDocument.path,
     );
   }, [nativeStorageAvailable, selectedDocument.id, selectedDocument.path, workspaceRootPath]);
+
+  useEffect(() => {
+    if (!nativeStorageAvailable || !documentTabSessionRestoreCompleted) return;
+
+    if (documentIsFromDropbox(selectedDocument)) {
+      rememberRecentOpenedFile("dropbox", selectedDocument.path);
+    } else if (selectedDocument.filePath) {
+      rememberRecentOpenedFile("local", selectedDocument.filePath);
+    }
+  }, [
+    documentTabSessionRestoreCompleted,
+    nativeStorageAvailable,
+    selectedDocument.filePath,
+    selectedDocument.id,
+    selectedDocument.path,
+  ]);
 
   useEffect(() => {
     if (
@@ -10423,17 +10497,27 @@ function App() {
     return true;
   }
 
+  /**
+   * Resolves to false when the person opened another file or folder before the
+   * restore finished, so the restore never replaces what they asked for.
+   */
   async function restoreLastOpenedMarkdownWorkspace(
     rootDirectoryPath: string,
     selectedPath: string,
     tabSession: DocumentTabSessionState | null = null,
+    options: { rememberRecent?: boolean } = {},
   ) {
+    const restoreSelectionRevision = manualDocumentSelectionRevisionRef.current;
+    const restoreWasInterrupted = () =>
+      manualDocumentSelectionRevisionRef.current !== restoreSelectionRevision;
+
     const openedDirectory = await openMarkdownDirectory({
       path: rootDirectoryPath,
     });
     const loadedTabSession = tabSession
       ? await loadAvailableLocalDocumentTabSession(tabSession)
       : null;
+    if (restoreWasInterrupted()) return false;
     const restoredSelectedPath = loadedTabSession
       ? loadedTabSession.restoredSession.activeDocumentPath
       : selectedPath;
@@ -10452,27 +10536,6 @@ function App() {
       throw new Error("last opened file is outside the saved root directory");
     }
 
-    applyOpenedDirectory(openedDirectory, selectedIsRootEntry ? restoredSelectedPath : undefined, {
-      rememberRecent: false,
-      rememberSelection: false,
-      selectFallback:
-        loadedTabSession === null && (!restoredSelectedPath || selectedIsRootEntry),
-    });
-
-    if (!restoredSelectedPath) {
-      forgetLastOpenedMarkdownPath();
-      rememberDocumentTabSession(null);
-      return;
-    }
-
-    if (selectedIsRootEntry) {
-      rememberLastOpenedMarkdownPath(restoredSelectedPath);
-      if (loadedTabSession) {
-        applyLocalDocumentTabSession(loadedTabSession);
-      }
-      return;
-    }
-
     let nextEntries = workspaceEntriesFromOpenedDirectory(openedDirectory, 1);
     const nextExpandedDirectoryKeys = new Set<string>();
     const loadedDescendantFiles: OpenMarkdownFileResult[] = [];
@@ -10489,6 +10552,7 @@ function App() {
       const openedAncestorDirectory = await openMarkdownDirectory({
         path: ancestorEntry.path,
       });
+      if (restoreWasInterrupted()) return false;
       const childDepth = (ancestorEntry.depth ?? 1) + 1;
       const childEntries = workspaceEntriesFromOpenedDirectory(
         openedAncestorDirectory,
@@ -10507,9 +10571,32 @@ function App() {
     const selectedFile = loadedDescendantFiles.find((file) =>
       localPathsMatch(file.path, restoredSelectedPath),
     );
-    if (!selectedFile) {
+    if (restoredSelectedPath && !selectedIsRootEntry && !selectedFile) {
       throw new Error("last opened file was not found in the restored directory tree");
     }
+
+    applyOpenedDirectory(openedDirectory, selectedIsRootEntry ? restoredSelectedPath : undefined, {
+      rememberRecent: options.rememberRecent ?? false,
+      rememberSelection: false,
+      selectFallback:
+        loadedTabSession === null && (!restoredSelectedPath || selectedIsRootEntry),
+    });
+
+    if (!restoredSelectedPath) {
+      forgetLastOpenedMarkdownPath();
+      rememberDocumentTabSession(null);
+      return true;
+    }
+
+    if (selectedIsRootEntry) {
+      rememberLastOpenedMarkdownPath(restoredSelectedPath);
+      if (loadedTabSession) {
+        applyLocalDocumentTabSession(loadedTabSession);
+      }
+      return true;
+    }
+
+    if (!selectedFile) return true;
 
     mergeLoadedFilesIntoDocumentState(loadedDescendantFiles);
     setWorkspaceEntries(
@@ -10522,6 +10609,7 @@ function App() {
     if (loadedTabSession) {
       applyLocalDocumentTabSession(loadedTabSession);
     }
+    return true;
   }
 
   function dropboxErrorIsConnectionTimeout(message: string) {
@@ -10756,15 +10844,38 @@ function App() {
       return false;
     }
 
+    // Opening a folder stops any unfinished restore or earlier open from replacing it.
+    const openSelectionRevision = ++manualDocumentSelectionRevisionRef.current;
     setStorageError(t("status.openingFolder"));
+
+    const lastOpenedFilePath = readLastOpenedFileInDirectory("local", path);
+    if (lastOpenedFilePath) {
+      try {
+        const restored = await restoreLastOpenedMarkdownWorkspace(
+          path,
+          lastOpenedFilePath,
+          null,
+          { rememberRecent: true },
+        );
+        if (restored) setStorageError("");
+        return restored;
+      } catch {
+        // The file was moved or deleted, so the folder opens at its first file instead.
+        forgetRecentOpenedFile("local", lastOpenedFilePath);
+      }
+    }
 
     try {
       const openedDirectory = await openMarkdownDirectory({
         path,
       });
+      if (openSelectionRevision !== manualDocumentSelectionRevisionRef.current) return false;
+
       applyOpenedDirectory(openedDirectory);
       return true;
     } catch (error) {
+      if (openSelectionRevision !== manualDocumentSelectionRevisionRef.current) return false;
+
       setStorageError(translatedError(error, "error.openFolderFailed"));
       return false;
     }
@@ -11618,16 +11729,21 @@ function App() {
       return false;
     }
 
+    // The chosen file always wins over a restore or an earlier open that is still loading.
+    const openSelectionRevision = ++manualDocumentSelectionRevisionRef.current;
     setStorageError(t("status.openingFile"));
 
     try {
       const context = await openMarkdownFileContext({
         path,
       });
+      if (openSelectionRevision !== manualDocumentSelectionRevisionRef.current) return false;
 
       applyOpenedDirectory(directoryWithSelectedFile(context), context.selectedFile.path);
       return true;
     } catch (error) {
+      if (openSelectionRevision !== manualDocumentSelectionRevisionRef.current) return false;
+
       setStorageError(translatedError(error, "error.openFileFailed"));
       return false;
     }
@@ -11673,10 +11789,17 @@ function App() {
           : dropboxParentDirectoryPath(location.path);
       const openedDirectory = await listDropboxMarkdownDirectory({ path: directoryPath });
 
+      // A folder opens at the file last opened in it; only a never-opened folder starts at its first file.
       const filePath =
         location.kind === "file"
           ? location.path
-          : firstDropboxMarkdownFileEntry(openedDirectory)?.path;
+          : lastOpenedFileAmong(
+              readRecentOpenedFiles(),
+              "dropbox",
+              openedDirectory.entries.flatMap((entry) =>
+                entry.kind === "file" ? [entry.path] : [],
+              ),
+            ) || firstDropboxMarkdownFileEntry(openedDirectory)?.path;
       if (filePath) {
         await openDropboxMarkdownFilePath(filePath, {
           allowPendingConnection: connected,
@@ -12460,6 +12583,7 @@ function App() {
   }
 
   async function restoreStoredDraftDocuments() {
+    const restoreSelectionRevision = manualDocumentSelectionRevisionRef.current;
     let storedContents: string[];
     try {
       storedContents = await listStoredDraftDocuments();
@@ -12536,11 +12660,17 @@ function App() {
       savedDocumentBodiesRef.current = nextBodies;
       return nextBodies;
     });
-    // Show the most recent unnamed file so the recovered content is visible right away.
-    selectDocument(restoredDocuments[restoredDocuments.length - 1].id, {
-      tabBehavior: "none",
-      userInitiated: false,
-    });
+    // Show the most recent unnamed file so the recovered content is visible right away,
+    // unless the person opened a specific file or folder, which then stays in front.
+    if (
+      !startupOpenRequestedRef.current &&
+      manualDocumentSelectionRevisionRef.current === restoreSelectionRevision
+    ) {
+      selectDocument(restoredDocuments[restoredDocuments.length - 1].id, {
+        tabBehavior: "none",
+        userInitiated: false,
+      });
+    }
   }
 
   // Keeps unnamed files (and their notes) open when another folder replaces the
