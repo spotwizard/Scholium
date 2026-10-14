@@ -8351,10 +8351,12 @@ function App() {
     };
   }, []);
 
+  const renameIsSubmitting = Boolean(renameDialog?.isSubmitting);
   useEffect(() => {
     window.clearTimeout(autosaveTimerRef.current);
 
-    if (!nativeStorageAvailable) return;
+    // Saving while a file is being moved would write to its old path; the rename reschedules this.
+    if (!nativeStorageAvailable || renameIsSubmitting) return;
 
     const hasDirtyBackedDocument = documents.some((document) => {
       const hasBackingFile = Boolean(document.filePath) || documentIsFromDropbox(document);
@@ -8369,7 +8371,15 @@ function App() {
     return () => {
       window.clearTimeout(autosaveTimerRef.current);
     };
-  }, [dirtyDocumentStates, documents, glossaryBindings, glossaryTerms, nativeStorageAvailable, notes]);
+  }, [
+    dirtyDocumentStates,
+    documents,
+    glossaryBindings,
+    glossaryTerms,
+    nativeStorageAvailable,
+    notes,
+    renameIsSubmitting,
+  ]);
 
   useEffect(() => {
     if (!nativeStorageAvailable) return;
@@ -14125,7 +14135,13 @@ function App() {
               ? renamed.notesPath ?? document.notesPath
               : document.notesPath,
           modifiedAt: nextPath === newPath && "modifiedAt" in renamed ? renamed.modifiedAt ?? null : document.modifiedAt,
-          dropboxRev: nextPath === newPath && "rev" in renamed ? renamed.rev ?? null : document.dropboxRev,
+          dropboxRev:
+            nextPath === newPath && "rev" in renamed
+              ? renamed.rev ?? null
+              : source === "dropbox"
+                ? // Moving a Dropbox folder gives its files new revs, so the old ones would conflict.
+                  null
+                : document.dropboxRev,
         };
       });
       documentsRef.current = nextDocuments;
@@ -14199,6 +14215,13 @@ function App() {
   async function performRenameWorkspaceEntry(target: WorkspaceActionTarget, nextName: string) {
     if (!nextName.trim()) {
       setStorageError(t("error.renameNameRequired"));
+      return false;
+    }
+    for (let attempts = 0; autosaveInFlightRef.current && attempts < 300; attempts += 1) {
+      await new Promise((resolve) => window.setTimeout(resolve, 50));
+    }
+    if (autosaveInFlightRef.current) {
+      setStorageError(t("error.waitForAutosaveBeforeRename"));
       return false;
     }
 

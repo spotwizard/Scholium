@@ -347,6 +347,9 @@ struct RenamedPath {
     path: String,
     title: String,
     notes_path: Option<String>,
+    // Omitted when the rename leaves the Dropbox rev unchanged; null when the new rev is unknown.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rev: Option<Option<String>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -437,6 +440,11 @@ struct DropboxDownloadMetadata {
     rev: Option<String>,
     #[serde(default)]
     server_modified: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DropboxRelocationResult {
+    metadata: DropboxWriteMetadata,
 }
 
 #[derive(Debug, Deserialize)]
@@ -3266,6 +3274,7 @@ fn rename_markdown_directory(
             title: directory_title(&target_path),
             path: target_path.to_string_lossy().to_string(),
             notes_path: None,
+            rev: None,
         });
     }
     if local_path_entry_exists(&target_path)? {
@@ -3293,6 +3302,7 @@ fn rename_markdown_directory(
         title: directory_title(&target_path),
         path: target_path.to_string_lossy().to_string(),
         notes_path: None,
+        rev: None,
     })
 }
 
@@ -3325,6 +3335,7 @@ fn create_markdown_directory(
         title: directory_title(&target_path),
         path: target_path.to_string_lossy().to_string(),
         notes_path: None,
+        rev: None,
     })
 }
 
@@ -3872,6 +3883,7 @@ async fn create_dropbox_markdown_directory(
         title: dropbox_path_title(&target_path),
         path: target_path,
         notes_path: None,
+        rev: None,
     })
 }
 
@@ -4049,7 +4061,7 @@ async fn move_dropbox_path(
     app: &tauri::AppHandle,
     from_path: String,
     to_path: String,
-) -> Result<(), String> {
+) -> Result<Option<DropboxWriteMetadata>, String> {
     let access_token = dropbox_access_token(app).await?;
     let response = reqwest::Client::new()
         .post(DROPBOX_MOVE_URL)
@@ -4072,7 +4084,12 @@ async fn move_dropbox_path(
         return Err(dropbox_response_error(response, "failed to rename Dropbox item").await);
     }
 
-    Ok(())
+    // The move already happened, so an unreadable response only loses the new rev.
+    Ok(response
+        .json::<DropboxRelocationResult>()
+        .await
+        .ok()
+        .map(|result| result.metadata))
 }
 
 #[tauri::command]
@@ -4089,6 +4106,7 @@ async fn rename_dropbox_markdown_file(
     let target_file_name = normalized_markdown_file_name(&name)?;
     let parent_path = dropbox_parent_path(&source_path).unwrap_or_default();
     let target_path = dropbox_child_path(&parent_path, &target_file_name);
+    let mut rev = None;
     if source_path != target_path {
         let source_notes_markdown_path = dropbox_notes_markdown_path(&source_path);
         let source_notes_file = match download_dropbox_notes_file(&app, &source_path).await? {
@@ -4096,7 +4114,9 @@ async fn rename_dropbox_markdown_file(
             None => read_notes_file(&app, &source_notes_markdown_path)?,
         };
 
-        move_dropbox_path(&app, source_path.clone(), target_path.clone()).await?;
+        let moved = move_dropbox_path(&app, source_path.clone(), target_path.clone()).await?;
+        // Dropbox gives the moved file a new rev; saving with the old one is rejected as a conflict.
+        rev = Some(moved.and_then(|metadata| metadata.rev));
 
         if let Some(notes_file) = source_notes_file {
             let target_notes_markdown_path = dropbox_notes_markdown_path(&target_path);
@@ -4114,9 +4134,10 @@ async fn rename_dropbox_markdown_file(
         .to_string_lossy()
         .to_string();
     Ok(RenamedPath {
-        title: dropbox_path_title(&target_path),
+        title: document_title(Path::new(&target_path)),
         path: target_path,
         notes_path: Some(notes_path),
+        rev,
     })
 }
 
@@ -4143,6 +4164,7 @@ async fn rename_dropbox_markdown_directory(
             title: dropbox_path_title(&target_path),
             path: target_path,
             notes_path: None,
+            rev: None,
         });
     }
 
@@ -4152,6 +4174,7 @@ async fn rename_dropbox_markdown_directory(
         title: dropbox_path_title(&target_path),
         path: target_path,
         notes_path: None,
+        rev: None,
     })
 }
 
@@ -4763,6 +4786,52 @@ mod tests {
             Some(Duration::from_millis(1_000))
         );
         assert_eq!(dropbox_token_refresh_retry_delay(3), None);
+    }
+
+    #[test]
+    fn dropbox_move_result_exposes_the_new_rev() {
+        let result: DropboxRelocationResult = serde_json::from_value(serde_json::json!({
+            "metadata": {
+                ".tag": "file",
+                "name": "renamed.md",
+                "path_display": "/Notes/renamed.md",
+                "path_lower": "/notes/renamed.md",
+                "id": "id:a4ayc_80_OEAAAAAAAAAXw",
+                "rev": "a1c10ce0dd78",
+                "server_modified": "2026-10-15T04:02:58Z",
+                "size": 12
+            }
+        }))
+        .unwrap();
+
+        assert_eq!(result.metadata.rev.as_deref(), Some("a1c10ce0dd78"));
+    }
+
+    #[test]
+    fn renamed_path_serializes_rev_only_when_the_rename_reports_one() {
+        let renamed = |rev| RenamedPath {
+            path: "/Notes/renamed.md".to_string(),
+            title: document_title(Path::new("/Notes/renamed.md")),
+            notes_path: None,
+            rev,
+        };
+
+        assert_eq!(
+            serde_json::to_value(renamed(None)).unwrap(),
+            serde_json::json!({
+                "path": "/Notes/renamed.md",
+                "title": "renamed",
+                "notesPath": null
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(renamed(Some(None))).unwrap()["rev"],
+            serde_json::Value::Null
+        );
+        assert_eq!(
+            serde_json::to_value(renamed(Some(Some("a1c10ce0dd78".to_string())))).unwrap()["rev"],
+            "a1c10ce0dd78"
+        );
     }
 
     #[test]

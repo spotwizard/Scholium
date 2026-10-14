@@ -90,6 +90,7 @@ export type RenamePathResult = {
   path: string;
   title: string;
   notesPath?: string | null;
+  rev?: string | null;
 };
 
 export type WritePdfFileResult = {
