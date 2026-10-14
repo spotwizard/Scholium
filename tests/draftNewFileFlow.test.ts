@@ -126,7 +126,7 @@ assert.doesNotMatch(app, /confirm\.saveDraftFile|confirm\.discardDraftFile/);
 const prepareDraftBody = functionBody("prepareDraftDocumentForLeaving");
 assert.match(
   prepareDraftBody,
-  /if \(\n      !draftDocumentHasContent\([\s\S]*?removeDocumentsFromWorkspace\(\[documentToLeave\.id\]\);\n      return \{ status: "discarded" \};/,
+  /if \(\n      !draftDocumentHasContent\([\s\S]*?removeDocumentsFromWorkspace\(\[documentToLeave\.id\]\);\n      forgetStoredDraftDocument\(documentToLeave\.id\);\n      return \{ status: "discarded" \};/,
   "an empty unnamed file closes without asking",
 );
 assert.match(prepareDraftBody, /await requestDraftFileDecision\(documentToLeave\.id, "close"\)/);
@@ -156,7 +156,7 @@ const discardDraftDialogBody = app.match(
 assert.ok(discardDraftDialogBody);
 assert.match(
   discardDraftDialogBody,
-  /removeDocumentsFromWorkspace\(\[draftFileDialog\.documentId\]\);\n    finishDraftFileDialog\(\{ action: "discarded" \}\);/,
+  /removeDocumentsFromWorkspace\(\[draftFileDialog\.documentId\]\);\n    forgetStoredDraftDocument\(draftFileDialog\.documentId\);\n    finishDraftFileDialog\(\{ action: "discarded" \}\);/,
 );
 
 const submitDraftDialogBody = functionBody("submitDraftFileDialog");

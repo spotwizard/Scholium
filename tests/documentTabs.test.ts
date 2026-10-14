@@ -344,7 +344,7 @@ assert.match(
 );
 assert.match(
   appSource,
-  /documentsRef\.current = loadedDocuments;\n    setDocuments\(loadedDocuments\);/,
+  /const nextDocuments = \[\.\.\.loadedDocuments, \.\.\.draftState\.documents\];\n\n    documentsRef\.current = nextDocuments;\n    setDocuments\(nextDocuments\);/,
   "workspace documents must be available before the restored tab session is merged",
 );
 assert.match(

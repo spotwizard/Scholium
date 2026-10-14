@@ -24,6 +24,7 @@ use tauri_plugin_deep_link::DeepLinkExt;
 use url::Url;
 
 mod atomic_file;
+mod draft_store;
 mod dropbox_token_state;
 mod frontmatter_tags;
 mod local_image;
@@ -93,6 +94,7 @@ const MAX_FILE_SEARCH_RESULTS: usize = 200;
 const MAX_LOCAL_SYMLINK_DEPTH: usize = 40;
 const NOTES_STORE_DIRECTORY: &str = "notes";
 const LOCAL_RECOVERY_DIRECTORY: &str = "recovery/local";
+const DRAFT_STORE_DIRECTORY: &str = "drafts";
 const DEFAULT_APP_LANGUAGE: &str = "zh-Hant";
 #[cfg(not(mobile))]
 const DROPBOX_OAUTH_REDIRECT_PORT: u16 = 53682;
@@ -544,6 +546,34 @@ fn local_recovery_directory(app: &AppHandle) -> Result<PathBuf, String> {
         .map_err(|error| format!("failed to resolve app data directory: {error}"))?;
 
     Ok(app_data_directory.join(LOCAL_RECOVERY_DIRECTORY))
+}
+
+fn draft_store_directory(app: &AppHandle) -> Result<PathBuf, String> {
+    let app_data_directory = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("failed to resolve app data directory: {error}"))?;
+    fs::create_dir_all(&app_data_directory)
+        .map_err(|error| format!("failed to create app data directory: {error}"))?;
+    let app_data_directory = fs::canonicalize(&app_data_directory)
+        .map_err(|error| format!("failed to resolve app data directory: {error}"))?;
+
+    Ok(app_data_directory.join(DRAFT_STORE_DIRECTORY))
+}
+
+#[tauri::command]
+fn save_draft_document(app: AppHandle, id: String, contents: String) -> Result<(), String> {
+    draft_store::save_draft(&draft_store_directory(&app)?, &id, &contents)
+}
+
+#[tauri::command]
+fn list_draft_documents(app: AppHandle) -> Result<Vec<String>, String> {
+    draft_store::list_drafts(&draft_store_directory(&app)?)
+}
+
+#[tauri::command]
+fn delete_draft_document(app: AppHandle, id: String) -> Result<(), String> {
+    draft_store::delete_draft(&draft_store_directory(&app)?, &id)
 }
 
 fn lock_local_document_store(app: &AppHandle) -> Result<(PathBuf, LocalDocumentGuard), String> {
@@ -4654,6 +4684,9 @@ pub fn run() {
             take_new_window_document_target,
             validate_dropped_markdown_path,
             resolve_typed_markdown_path,
+            save_draft_document,
+            list_draft_documents,
+            delete_draft_document,
             focus_and_fullscreen_app_window,
             take_opened_file_paths,
             set_native_folder_picker_list_view,

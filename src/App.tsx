@@ -69,10 +69,13 @@ import {
   type DocumentSearchState,
 } from "./documentSearch";
 import {
+  draftDocumentCreatedAt,
   draftDocumentHasContent,
   draftDocumentId,
   draftDocumentSource,
   isDraftDocumentId,
+  parseStoredDraftDocument,
+  serializeStoredDraftDocument,
 } from "./draftDocuments";
 import {
   availableDocumentTabIds,
@@ -245,6 +248,9 @@ import {
   takeNewWindowDocumentTarget,
   takeOpenedFilePaths,
   resolveTypedMarkdownPath,
+  storeDraftDocument,
+  listStoredDraftDocuments,
+  deleteStoredDraftDocument,
   validateDroppedMarkdownPath,
   focusAndFullscreenAppWindow,
   writePdfFile,
@@ -5715,6 +5721,10 @@ function App() {
   const draftFileDialogResolverRef = useRef<((decision: DraftFileDecision) => void) | null>(
     null,
   );
+  const storedDraftSnapshotsRef = useRef(new Map<string, string>());
+  const draftStoreQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const storedDraftsRestoredRef = useRef(false);
+  const draftStoreTimerRef = useRef(0);
   const documentSearchInputRef = useRef<HTMLInputElement | null>(null);
   const desktopSourceModeButtonRef = useRef<HTMLButtonElement | null>(null);
   const mobileSourceModeButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -8634,6 +8644,32 @@ function App() {
   }, [nativeStorageAvailable]);
 
   useEffect(() => {
+    if (!nativeStorageAvailable || draftStoreTimerRef.current) return;
+    if (!documents.some((document) => isDraftDocumentId(document.id))) return;
+
+    // Throttled rather than debounced, so continuous typing is still written every 300 ms.
+    draftStoreTimerRef.current = window.setTimeout(() => {
+      draftStoreTimerRef.current = 0;
+      storeChangedDraftDocuments();
+    }, 300);
+  }, [documents, glossaryBindings, glossaryTerms, nativeStorageAvailable, notes]);
+
+  useEffect(() => {
+    if (
+      !nativeStorageAvailable ||
+      !documentTabSessionRestoreCompleted ||
+      storedDraftsRestoredRef.current
+    ) {
+      return;
+    }
+
+    storedDraftsRestoredRef.current = true;
+    // Only the first window reopens unnamed files, so they never appear twice.
+    if (getCurrentWindow().label !== "main") return;
+    void restoreStoredDraftDocuments();
+  }, [documentTabSessionRestoreCompleted, nativeStorageAvailable]);
+
+  useEffect(() => {
     if (!nativeStorageAvailable || !documentIsFromDropbox(selectedDocument)) return;
 
     rememberLastOpenedDropboxWorkspace(
@@ -8659,7 +8695,7 @@ function App() {
 
     const openDocumentPaths = openDocumentTabIds.flatMap((documentId) => {
       const document = documents.find((candidate) => candidate.id === documentId);
-      if (!document) return [];
+      if (!document || isDraftDocumentId(document.id)) return [];
 
       const fromDropbox = documentIsFromDropbox(document);
       if (
@@ -9580,7 +9616,12 @@ function App() {
   }
 
   function resetDocumentTabs(documentId: string) {
-    setOpenDocumentTabIds(documentId ? [documentId] : []);
+    setOpenDocumentTabIds((currentIds) => [
+      ...(documentId ? [documentId] : []),
+      ...currentIds.filter(
+        (currentId) => currentId !== documentId && isDraftDocumentId(currentId),
+      ),
+    ]);
   }
 
   function addDocumentTab(documentId: string) {
@@ -9970,11 +10011,13 @@ function App() {
       workspaceSortModeRef.current,
     );
     const tagIndexRequestId = ++dropboxTagIndexRequestRef.current;
+    const draftState = currentDraftDocumentState();
 
-    setDocuments([]);
-    setNotes([]);
-    setGlossaryBindings([]);
-    setGlossaryTerms([]);
+    documentsRef.current = draftState.documents;
+    setDocuments(draftState.documents);
+    setNotes(draftState.notes);
+    setGlossaryBindings(draftState.glossaryBindings);
+    setGlossaryTerms(draftState.glossaryTerms);
     setWorkspaceTitle(dropboxWorkspaceTitle(openedDirectory));
     setWorkspaceEntries(nextEntries);
     setWorkspaceRootPath(openedDirectory.path);
@@ -9997,7 +10040,7 @@ function App() {
     setActiveNoteMode("view");
     setActiveGlossaryMode("view");
     setDirtyDocumentStates({});
-    setSavedDocumentBodies({});
+    setSavedDocumentBodies(draftState.savedBodies);
     setDropboxIndexedDocumentTags([]);
     setDropboxTagIndexLoading(true);
     void loadDropboxTagIndex(nextEntries, tagIndexRequestId, true);
@@ -10042,7 +10085,7 @@ function App() {
     );
     const loadedGlossaryTerms = loadedFile.glossaryTerms ?? [];
     const nextDocuments = options.replaceDocuments
-      ? [loadedDocument]
+      ? [loadedDocument, ...currentDraftDocumentState().documents]
       : [
           loadedDocument,
           ...documentsRef.current.filter((document) => document.id !== documentId),
@@ -10287,12 +10330,14 @@ function App() {
       : firstDocument;
     const documentToSelect =
       selectedDocument ?? (options.selectFallback === false ? null : firstDocument);
+    const draftState = currentDraftDocumentState();
+    const nextDocuments = [...loadedDocuments, ...draftState.documents];
 
-    documentsRef.current = loadedDocuments;
-    setDocuments(loadedDocuments);
-    setNotes(loadedNotes);
-    setGlossaryBindings(loadedGlossaryBindings);
-    setGlossaryTerms(mergeGlossaryTerms(loadedGlossaryTerms, []));
+    documentsRef.current = nextDocuments;
+    setDocuments(nextDocuments);
+    setNotes([...loadedNotes, ...draftState.notes]);
+    setGlossaryBindings([...loadedGlossaryBindings, ...draftState.glossaryBindings]);
+    setGlossaryTerms(mergeGlossaryTerms(loadedGlossaryTerms, draftState.glossaryTerms));
     setWorkspaceTitle(openedDirectory.title);
     setWorkspaceEntries(nextEntries);
     setWorkspaceRootPath(openedDirectory.path);
@@ -12214,6 +12259,7 @@ function App() {
           glossaryBindings: glossaryBindingsToSave,
         });
         replaceDraftWithLoadedDropboxFile(documentToSave.id, saved);
+        forgetStoredDraftDocument(documentToSave.id);
         setStorageError("");
         return { status: "saved", documentId: documentFromDropboxFile(saved).id };
       }
@@ -12247,6 +12293,7 @@ function App() {
         path: saved.path,
       });
       replaceDraftWithLoadedLocalFile(documentToSave.id, loaded);
+      forgetStoredDraftDocument(documentToSave.id);
       setStorageError("");
       return { status: "saved", documentId: documentFromLoadedFileResult(loaded).id };
     } catch (error) {
@@ -12289,6 +12336,7 @@ function App() {
     if (!draftFileDialog || draftFileDialog.isSubmitting) return;
 
     removeDocumentsFromWorkspace([draftFileDialog.documentId]);
+    forgetStoredDraftDocument(draftFileDialog.documentId);
     finishDraftFileDialog({ action: "discarded" });
   }
 
@@ -12342,6 +12390,7 @@ function App() {
       )
     ) {
       removeDocumentsFromWorkspace([documentToLeave.id]);
+      forgetStoredDraftDocument(documentToLeave.id);
       return { status: "discarded" };
     }
 
@@ -12365,6 +12414,157 @@ function App() {
       if (result.status === "blocked") return false;
     }
     return true;
+  }
+
+  function enqueueDraftStoreOperation(operation: () => Promise<void>) {
+    draftStoreQueueRef.current = draftStoreQueueRef.current
+      .then(operation)
+      .catch((error: unknown) => {
+        console.error(error);
+      });
+  }
+
+  function serializedDraftDocument(documentToStore: MarkdownDocument) {
+    return serializeStoredDraftDocument({
+      id: documentToStore.id,
+      title: documentToStore.title,
+      body: documentToStore.body,
+      notes: notesForDocument(documentToStore.id),
+      glossaryTerms: glossaryTermsForDocument(documentToStore.id),
+      glossaryBindings: glossaryBindingsForDocument(documentToStore.id),
+    });
+  }
+
+  // Unnamed files are written to the app's draft folder whenever they change, so
+  // their content survives a forced quit, crash or power loss.
+  function storeChangedDraftDocuments() {
+    documentsRef.current.forEach((document) => {
+      if (!isDraftDocumentId(document.id)) return;
+
+      const contents = serializedDraftDocument(document);
+      if (storedDraftSnapshotsRef.current.get(document.id) === contents) return;
+
+      storedDraftSnapshotsRef.current.set(document.id, contents);
+      enqueueDraftStoreOperation(() => storeDraftDocument({ id: document.id, contents }));
+    });
+  }
+
+  // Stored drafts are removed only here: after the user chooses "不新增", closes an
+  // empty unnamed tab, or the content has been created as a real file.
+  function forgetStoredDraftDocument(documentId: string) {
+    if (!nativeStorageAvailable) return;
+
+    storedDraftSnapshotsRef.current.delete(documentId);
+    enqueueDraftStoreOperation(() => deleteStoredDraftDocument({ id: documentId }));
+  }
+
+  async function restoreStoredDraftDocuments() {
+    let storedContents: string[];
+    try {
+      storedContents = await listStoredDraftDocuments();
+    } catch (error) {
+      console.error(error);
+      return;
+    }
+
+    const openDocumentIds = new Set(documentsRef.current.map((document) => document.id));
+    const storedDrafts = storedContents
+      .map((contents) =>
+        parseStoredDraftDocument<SelectionNote, GlossaryTerm, GlossaryBinding>(contents),
+      )
+      .filter((draft): draft is NonNullable<typeof draft> =>
+        Boolean(draft && !openDocumentIds.has(draft.id)),
+      )
+      .sort(
+        (first, second) =>
+          draftDocumentCreatedAt(first.id) - draftDocumentCreatedAt(second.id),
+      );
+    if (storedDrafts.length === 0) return;
+
+    const restoredDocuments: MarkdownDocument[] = storedDrafts.map((draft) => ({
+      id: draft.id,
+      title: draft.title,
+      path: "",
+      filePath: null,
+      notesPath: null,
+      updatedAt: "",
+      modifiedAt: null,
+      body: draft.body,
+    }));
+    const restoredIds = new Set(restoredDocuments.map((document) => document.id));
+    const nextDocuments = [
+      ...documentsRef.current.filter((document) => !restoredIds.has(document.id)),
+      ...restoredDocuments,
+    ];
+    const nextNotes = [
+      ...notesRef.current.filter((note) => !restoredIds.has(note.documentId)),
+      ...storedDrafts.flatMap((draft) => draft.notes),
+    ];
+    const nextGlossaryBindings = [
+      ...glossaryBindingsRef.current.filter((binding) => !restoredIds.has(binding.documentId)),
+      ...storedDrafts.flatMap((draft) => draft.glossaryBindings),
+    ];
+    const nextGlossaryTerms = mergeGlossaryTerms(
+      storedDrafts.flatMap((draft) => draft.glossaryTerms),
+      glossaryTermsRef.current,
+    );
+    const nextOpenDocumentTabIds = [
+      ...openDocumentTabIdsRef.current.filter((documentId) => !restoredIds.has(documentId)),
+      ...restoredDocuments.map((document) => document.id),
+    ];
+
+    documentsRef.current = nextDocuments;
+    notesRef.current = nextNotes;
+    glossaryBindingsRef.current = nextGlossaryBindings;
+    glossaryTermsRef.current = nextGlossaryTerms;
+    openDocumentTabIdsRef.current = nextOpenDocumentTabIds;
+    restoredDocuments.forEach((document) => {
+      storedDraftSnapshotsRef.current.set(document.id, serializedDraftDocument(document));
+    });
+
+    setDocuments(nextDocuments);
+    setNotes(nextNotes);
+    setGlossaryBindings(nextGlossaryBindings);
+    setGlossaryTerms(nextGlossaryTerms);
+    setOpenDocumentTabIds(nextOpenDocumentTabIds);
+    setSavedDocumentBodies((currentBodies) => {
+      const nextBodies = { ...currentBodies };
+      restoredDocuments.forEach((document) => {
+        nextBodies[document.id] = "";
+      });
+      savedDocumentBodiesRef.current = nextBodies;
+      return nextBodies;
+    });
+    // Show the most recent unnamed file so the recovered content is visible right away.
+    selectDocument(restoredDocuments[restoredDocuments.length - 1].id, {
+      tabBehavior: "none",
+      userInitiated: false,
+    });
+  }
+
+  // Keeps unnamed files (and their notes) open when another folder replaces the
+  // documents of the current workspace.
+  function currentDraftDocumentState() {
+    const documents = documentsRef.current.filter((document) =>
+      isDraftDocumentId(document.id),
+    );
+    const draftIds = new Set(documents.map((document) => document.id));
+    const glossaryBindings = glossaryBindingsRef.current.filter((binding) =>
+      draftIds.has(binding.documentId),
+    );
+    const termIds = new Set(glossaryBindings.map((binding) => binding.termId));
+
+    return {
+      documents,
+      notes: notesRef.current.filter((note) => draftIds.has(note.documentId)),
+      glossaryBindings,
+      glossaryTerms: glossaryTermsRef.current.filter((term) => termIds.has(term.id)),
+      savedBodies: Object.fromEntries(
+        Object.entries(savedDocumentBodiesRef.current).filter(([documentId]) =>
+          draftIds.has(documentId),
+        ),
+      ),
+    };
   }
 
   function createDraftMarkdownDocument(source: WorkspaceSource | null) {
@@ -13112,10 +13312,12 @@ function App() {
     forgetLastOpenedDropboxWorkspace();
     if (workspaceSource !== "dropbox") return;
 
-    setDocuments(documentsSeed);
-    setNotes(notesSeed);
-    setGlossaryTerms(glossaryTermsSeed);
-    setGlossaryBindings(glossaryBindingsSeed);
+    const draftState = currentDraftDocumentState();
+    documentsRef.current = [...documentsSeed, ...draftState.documents];
+    setDocuments(documentsRef.current);
+    setNotes([...notesSeed, ...draftState.notes]);
+    setGlossaryTerms(mergeGlossaryTerms(glossaryTermsSeed, draftState.glossaryTerms));
+    setGlossaryBindings([...glossaryBindingsSeed, ...draftState.glossaryBindings]);
     setWorkspaceTitle("Scholium");
     setWorkspaceEntries(
       sortWorkspaceEntriesForDirectory(
@@ -13142,7 +13344,10 @@ function App() {
     setActiveNoteMode("view");
     setActiveGlossaryMode("view");
     setDirtyDocumentStates({});
-    setSavedDocumentBodies(savedBodiesFromDocuments(documentsSeed));
+    setSavedDocumentBodies({
+      ...savedBodiesFromDocuments(documentsSeed),
+      ...draftState.savedBodies,
+    });
     forgetLastOpenedMarkdownPath();
     forgetLastOpenedMarkdownRootDirectoryPath();
   }
