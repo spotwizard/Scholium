@@ -349,7 +349,7 @@ assert.match(
 );
 assert.match(
   appSource,
-  /async function closeAllDocumentTabs\(\) \{[\s\S]*?prepareDraftDocumentForLeaving\(currentId\);\n      if \(result === "blocked"\) return;[\s\S]*?openDocumentTabIdsRef\.current = \[\];[\s\S]*?setOpenDocumentTabIds\(\[\]\);[\s\S]*?clearActiveDocumentSelection\(\);/,
+  /async function closeAllDocumentTabs\(\) \{[\s\S]*?prepareDraftDocumentForLeaving\(currentId\);\n      if \(result\.status === "blocked"\) return;[\s\S]*?openDocumentTabIdsRef\.current = \[\];[\s\S]*?setOpenDocumentTabIds\(\[\]\);[\s\S]*?clearActiveDocumentSelection\(\);/,
 );
 assert.match(
   appSource,

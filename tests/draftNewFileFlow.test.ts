@@ -23,7 +23,8 @@ const newMarkdownFileBody = functionBody("newMarkdownFile");
 assert.match(newMarkdownFileBody, /createDraftMarkdownDocument\(/);
 assert.match(
   newMarkdownFileBody,
-  /if \(workspaceSource && workspaceRootPath !== null\) \{[\s\S]*?openCreateEntryDialog\("file"\);[\s\S]*?return;/,
+  /if \(isMobileViewport && workspaceSource && workspaceRootPath !== null\) \{[\s\S]*?openCreateEntryDialog\("file"\);[\s\S]*?return;/,
+  "desktop new files open as unnamed tabs; only mobile asks for a name first",
 );
 assert.doesNotMatch(newMarkdownFileBody, /window\.prompt/);
 
@@ -71,11 +72,19 @@ assert.doesNotMatch(
 );
 
 const saveDraftDocumentBody = functionBody("saveDraftDocument");
-assert.match(app, /Promise<"saved" \| "cancelled" \| "failed">/);
-assert.match(saveDraftDocumentBody, /await save\(/);
-assert.match(saveDraftDocumentBody, /window\.prompt\(\s*t\("newFile\.namePrompt"\)/);
-assert.match(saveDraftDocumentBody, /if \(fileName === null\) return "cancelled"/);
-assert.match(saveDraftDocumentBody, /if \(!selectedPath\) return "cancelled"/);
+assert.match(app, /type DraftDocumentSaveResult =/);
+assert.doesNotMatch(saveDraftDocumentBody, /window\.prompt/);
+assert.match(saveDraftDocumentBody, /return \{ status: "failed", message: t\("error\.fileNameRequired"\) \}/);
+assert.match(saveDraftDocumentBody, /return \{ status: "failed", message: t\("error\.fileNameNoFolders"\) \}/);
+assert.match(
+  saveDraftDocumentBody,
+  /if \(workspaceSource === "local" && workspaceRootPath !== null\) \{\n        path = filePathInDirectory\(workspaceRootPath, markdownFileName\);[\s\S]*?await openMarkdownFile\(\{ path \}\);\n          return \{ status: "failed", message: t\("error\.fileExists"\) \};/,
+  "a named draft in an open local folder is created there without overwriting an existing file",
+);
+assert.match(
+  saveDraftDocumentBody,
+  /const selectedPath = await save\(\{\n          defaultPath: markdownFileName,[\s\S]*?if \(!selectedPath\) return \{ status: "cancelled" \};/,
+);
 assert.match(
   saveDraftDocumentBody,
   /const created = await createDropboxMarkdownFileRequest\(\{\s*parentPath: workspaceRootPath,\s*fileName: trimmedFileName,\s*\}\);/,
@@ -101,10 +110,6 @@ assert.match(
   /export function saveMarkdownFile\(args: SaveMarkdownFileArgs\) \{\n  return invoke<SaveMarkdownFileResult>\("save_markdown_file", args\);\n\}/,
 );
 
-assert.match(
-  app,
-  /function confirmDiscardDraftDocument[\s\S]*?window\.confirm\(t\("confirm\.discardDraftFile"\)\)[\s\S]*?removeDocumentsFromWorkspace\(\[documentId\]\)/,
-);
 const localDraftId = draftDocumentId(null);
 const dropboxDraftId = draftDocumentId("dropbox");
 assert.equal(isDraftDocumentId(localDraftId), true);
@@ -116,18 +121,76 @@ assert.equal(draftDocumentHasContent("   ", 0, 0), false);
 assert.equal(draftDocumentHasContent("content", 0, 0), true);
 assert.equal(draftDocumentHasContent("", 1, 0), true);
 assert.equal(draftDocumentHasContent("", 0, 1), true);
-assert.match(app, /window\.confirm\(t\("confirm\.saveDraftFile"\)\)/);
+assert.doesNotMatch(app, /confirm\.saveDraftFile|confirm\.discardDraftFile/);
+
+const prepareDraftBody = functionBody("prepareDraftDocumentForLeaving");
+assert.match(
+  prepareDraftBody,
+  /if \(\n      !draftDocumentHasContent\([\s\S]*?removeDocumentsFromWorkspace\(\[documentToLeave\.id\]\);\n      return \{ status: "discarded" \};/,
+  "an empty unnamed file closes without asking",
+);
+assert.match(prepareDraftBody, /await requestDraftFileDecision\(documentToLeave\.id, "close"\)/);
+assert.match(
+  prepareDraftBody,
+  /decision\.action === "created"\) \{\n      return \{ status: "saved", documentId: decision\.documentId \};/,
+);
+assert.match(
+  prepareDraftBody,
+  /return \{ status: decision\.action === "discarded" \? "discarded" : "blocked" \};/,
+);
+
 assert.match(
   app,
-  /if \(saveResult === "cancelled"\) \{[\s\S]*?confirmDiscardDraftDocument\(documentToLeave\.id\)/,
+  /event\.key\.toLowerCase\(\) === "s"[\s\S]*?if \(documentToSave && isDraftDocumentId\(documentToSave\.id\)\) \{[\s\S]*?void requestDraftFileDecision\(documentToSave\.id, "save"\);/,
+  "the save shortcut asks for a name instead of saving an unnamed file directly",
 );
-assert.match(app, /event\.key\.toLowerCase\(\) === "s"[\s\S]*?saveDraftDocument\(documentToSave\)/);
+
+const cancelDraftDialogBody = app.match(/function cancelDraftFileDialog\(\) \{([\s\S]*?)\n  \}/)?.[1];
+assert.ok(cancelDraftDialogBody);
+assert.match(cancelDraftDialogBody, /finishDraftFileDialog\(\{ action: "cancelled" \}\)/);
+assert.doesNotMatch(cancelDraftDialogBody, /removeDocumentsFromWorkspace/);
+
+const discardDraftDialogBody = app.match(
+  /function discardDraftFileDialogDocument\(\) \{([\s\S]*?)\n  \}/,
+)?.[1];
+assert.ok(discardDraftDialogBody);
+assert.match(
+  discardDraftDialogBody,
+  /removeDocumentsFromWorkspace\(\[draftFileDialog\.documentId\]\);\n    finishDraftFileDialog\(\{ action: "discarded" \}\);/,
+);
+
+const submitDraftDialogBody = functionBody("submitDraftFileDialog");
+assert.match(
+  submitDraftDialogBody,
+  /const result = await saveDraftDocument\(documentToSave, draftFileDialog\.name\);\n    if \(result\.status === "saved"\) \{\n      finishDraftFileDialog\(\{ action: "created", documentId: result\.documentId \}\);/,
+);
+assert.match(
+  app,
+  /onClick=\{cancelDraftFileDialog\}[\s\S]*?\{t\("duplicate\.cancel"\)\}[\s\S]*?onClick=\{discardDraftFileDialogDocument\}[\s\S]*?\{t\("draftFile\.discard"\)\}[\s\S]*?type="submit"[\s\S]*?t\("duplicate\.submit"\)/,
+  "the naming dialog offers cancel, don't add and create",
+);
+
+assert.match(
+  app,
+  /getCurrentWindow\(\)\n      \.onCloseRequested\(async \(event\) => \{[\s\S]*?await windowCloseRequestHandlerRef\.current\(\);[\s\S]*?if \(!canClose\) \{\n          event\.preventDefault\(\);/,
+  "closing the window asks about unnamed files first",
+);
+const windowCloseBody = functionBody("resolveDraftDocumentsBeforeWindowClose");
+assert.match(
+  windowCloseBody,
+  /const result = await prepareDraftDocumentForLeaving\(documentId\);\n      if \(result\.status === "blocked"\) return false;/,
+);
+assert.match(
+  app,
+  /isDraftDocumentId\(selectedDocumentIdRef\.current\) \? "add" : "replace"/,
+  "opening another file keeps the unnamed file's tab",
+);
 assert.match(
   app,
   /const hasBackingFile = Boolean\(document\.filePath\) \|\| documentIsFromDropbox\(document\);[\s\S]*?return hasBackingFile && hasDirtyState/,
 );
-assert.match(translations, /"confirm\.saveDraftFile": "這份未命名內容尚未存成檔案，要先存檔嗎？"/);
-assert.match(translations, /"confirm\.discardDraftFile": "要放棄建立這份未命名檔案嗎？/);
+assert.match(translations, /"draftFile\.title": "替新檔案命名"/);
+assert.match(translations, /"draftFile\.discard": "不新增"/);
 assert.match(translations, /"error\.fileNameNoFolders": "檔名不能包含資料夾位置。"/);
 assert.match(translations, /"error\.fileExists": "已有同名檔案，請換一個檔名。"/);
 

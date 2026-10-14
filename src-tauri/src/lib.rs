@@ -55,6 +55,8 @@ use pdf_export::{write_pdf_file, write_pdf_file_to_directory};
 use objc2_foundation::{NSString, NSUserDefaults};
 
 #[cfg(desktop)]
+const MENU_QUIT: &str = "app:quit";
+#[cfg(desktop)]
 const MENU_NEW_WINDOW: &str = "file:new-window";
 #[cfg(desktop)]
 const MENU_NEW_FILE: &str = "file:new-file";
@@ -1952,6 +1954,7 @@ fn menu_text(language: &str, key: &str) -> &'static str {
         ("en", "viewMenu") => "View",
         ("en", "windowMenu") => "Window",
         ("en", "helpMenu") => "Help",
+        ("en", "quit") => "Quit Scholium",
         ("zh-Hans", "directoryFallback") => "文件夹",
         ("zh-Hans", "markdownFileFallback") => "Markdown 文件",
         ("zh-Hans", "favoriteDirectories") => "收藏的文件夹",
@@ -1976,6 +1979,7 @@ fn menu_text(language: &str, key: &str) -> &'static str {
         ("zh-Hans", "viewMenu") => "视图",
         ("zh-Hans", "windowMenu") => "窗口",
         ("zh-Hans", "helpMenu") => "帮助",
+        ("zh-Hans", "quit") => "退出 Scholium",
         (_, "directoryFallback") => "資料夾",
         (_, "markdownFileFallback") => "Markdown 檔案",
         (_, "favoriteDirectories") => "常用資料夾",
@@ -2000,7 +2004,18 @@ fn menu_text(language: &str, key: &str) -> &'static str {
         (_, "viewMenu") => "檢視",
         (_, "windowMenu") => "視窗",
         (_, "helpMenu") => "說明",
+        (_, "quit") => "結束 Scholium",
         _ => "",
+    }
+}
+
+/// Closes windows through their close request so each window can ask about unnamed new files.
+#[cfg(desktop)]
+fn request_close_all_windows(app_handle: &tauri::AppHandle) {
+    for window in app_handle.webview_windows().values() {
+        if let Err(error) = window.close() {
+            eprintln!("failed to request window close: {error}");
+        }
     }
 }
 
@@ -4236,6 +4251,7 @@ fn build_app_menu(app_handle: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wr
     let open_folder = menu_item(MENU_OPEN_FOLDER, "openFolder", Some("CmdOrCtrl+Shift+O"))?;
     let open_path = menu_item(MENU_OPEN_PATH, "openPath", Some("CmdOrCtrl+Alt+O"))?;
     let open_settings = menu_item(MENU_OPEN_SETTINGS, "settings", Some("CmdOrCtrl+,"))?;
+    let quit = menu_item(MENU_QUIT, "quit", Some("CmdOrCtrl+Q"))?;
     let select_all = menu_item(MENU_SELECT_ALL, "selectAll", None)?;
     let cloud_dropbox = menu_item(MENU_CLOUD_DROPBOX, "dropbox", None)?;
     let cloud = Submenu::with_items(
@@ -4264,7 +4280,7 @@ fn build_app_menu(app_handle: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wr
                     &PredefinedMenuItem::hide(app_handle, None)?,
                     &PredefinedMenuItem::hide_others(app_handle, None)?,
                     &PredefinedMenuItem::separator(app_handle)?,
-                    &PredefinedMenuItem::quit(app_handle, None)?,
+                    &quit,
                 ],
             )?,
             &Submenu::with_items(
@@ -4572,7 +4588,9 @@ pub fn run() {
     let builder = builder.menu(build_app_menu).on_menu_event(|app, event| {
         let event_id = event.id().as_ref();
 
-        if event_id == MENU_NEW_WINDOW {
+        if event_id == MENU_QUIT {
+            request_close_all_windows(app);
+        } else if event_id == MENU_NEW_WINDOW {
             let app_handle = app.clone();
             let start_fullscreen = target_window_is_fullscreen(app);
             std::thread::spawn(move || {

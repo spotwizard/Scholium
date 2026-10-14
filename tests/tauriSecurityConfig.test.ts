@@ -103,6 +103,7 @@ assert.deepEqual(capability.windows, ["main", "scholium-window-*"]);
 assert.deepEqual(capability.permissions, [
   "core:event:allow-listen",
   "core:event:allow-unlisten",
+  "core:window:allow-destroy",
   "core:window:allow-is-fullscreen",
   "core:window:allow-scene-identifier",
   "dialog:allow-open",

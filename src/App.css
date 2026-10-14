@@ -1103,6 +1103,13 @@ button:disabled {
   line-height: 1.25;
 }
 
+.duplicate-file-dialog__description {
+  margin: 0;
+  color: var(--color-muted);
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
 .duplicate-file-dialog__close {
   display: inline-flex;
   width: 32px;
