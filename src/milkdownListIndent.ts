@@ -116,11 +116,18 @@ export function mergeRemovedListMarkerLineBackward(
           itemBlocks,
           previousItem.marks,
         );
+        const nextList =
+          paragraphIndex + 1 < container.childCount
+            ? container.child(paragraphIndex + 1)
+            : null;
+        const joinedNextList =
+          nextList?.type === previousList.type ? nextList : null;
         const listItems: ProseMirrorNode[] = [];
         for (let index = 0; index < previousList.childCount - 1; index += 1) {
           listItems.push(previousList.child(index));
         }
         listItems.push(mergedItem);
+        joinedNextList?.forEach((nextItem) => listItems.push(nextItem));
         const mergedList = previousList.type.create(
           previousList.attrs,
           listItems,
@@ -130,7 +137,7 @@ export function mergeRemovedListMarkerLineBackward(
         const listFrom = paragraphFrom - previousList.nodeSize;
         const tr = state.tr.replaceWith(
           listFrom,
-          paragraphFrom + paragraph.nodeSize,
+          paragraphFrom + paragraph.nodeSize + (joinedNextList?.nodeSize ?? 0),
           mergedList,
         );
         let mergedParagraphPosition = -1;
@@ -214,6 +221,9 @@ export function deleteEmptyParagraphAfterList(itemType: NodeType): Command {
     if (previousParagraphEnd < 0) return false;
 
     const tr = state.tr.delete(paragraphFrom, paragraphFrom + paragraph.nodeSize);
+    if (tr.doc.resolve(paragraphFrom).nodeAfter?.type === previousList.type) {
+      tr.join(paragraphFrom);
+    }
     tr.setSelection(TextSelection.create(tr.doc, previousParagraphEnd));
     dispatch(tr.scrollIntoView());
     return true;
@@ -526,7 +536,7 @@ export function deleteAtListItemStart(
 
     const blocks: ProseMirrorNode[] = [];
     item.forEach((block) => blocks.push(block));
-    return replaceItemWithBlocks(blocks, paragraph.content.size + 1);
+    return replaceItemWithBlocks(blocks, paragraph.content.size + 1, -1);
   };
 }
 
