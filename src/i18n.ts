@@ -291,8 +291,9 @@ const zhHantTranslations = {
   "confirm.deleteDropboxFiles": "確定要刪除 Dropbox 上的 {count} 個檔案嗎？\n\n這些檔案也會從 Dropbox 刪除。",
   "confirm.deleteDirectory": "確定要刪除目錄「{title}」嗎？\n\n目錄內的所有檔案、子目錄、筆記與名詞解釋都會一併刪除，且無法復原。",
   "confirm.deleteDropboxDirectory": "確定要刪除 Dropbox 上的目錄「{title}」嗎？\n\n目錄內的所有內容都會從 Dropbox 刪除，且無法復原。",
-  "confirm.saveDraftFile": "這份未命名內容尚未存成檔案，要先存檔嗎？",
-  "confirm.discardDraftFile": "要放棄建立這份未命名檔案嗎？\n\n放棄後，這份未命名內容不會存成檔案。",
+  "draftFile.title": "替新檔案命名",
+  "draftFile.closeMessage": "這份新檔案還沒有命名。要建立檔案，還是不新增？",
+  "draftFile.discard": "不新增",
 } as const;
 
 export type TranslationKey = keyof typeof zhHantTranslations;
@@ -588,8 +589,9 @@ const enTranslations: Record<TranslationKey, string> = {
   "confirm.deleteDropboxFiles": "Delete {count} files from Dropbox?\n\nThe files will also be deleted from Dropbox.",
   "confirm.deleteDirectory": "Delete the folder “{title}”?\n\nAll files, subfolders, notes, and term definitions inside it will be deleted permanently.",
   "confirm.deleteDropboxDirectory": "Delete the folder “{title}” from Dropbox?\n\nEverything inside it will be deleted from Dropbox permanently.",
-  "confirm.saveDraftFile": "This untitled content has not been saved as a file yet. Save it first?",
-  "confirm.discardDraftFile": "Discard this untitled file?\n\nIf you discard it, this untitled content will not be saved as a file.",
+  "draftFile.title": "Name the new file",
+  "draftFile.closeMessage": "This new file has no name yet. Create the file, or don't add it?",
+  "draftFile.discard": "Don't Add",
 };
 
 const zhHansTranslations: Record<TranslationKey, string> = {
@@ -883,8 +885,9 @@ const zhHansTranslations: Record<TranslationKey, string> = {
   "confirm.deleteDropboxFiles": "确定要删除 Dropbox 中的 {count} 个文件吗？\n\n这些文件也会从 Dropbox 中删除。",
   "confirm.deleteDirectory": "确定要删除文件夹“{title}”吗？\n\n其中的所有文件、子文件夹、笔记和名词解释都会一并删除，且无法恢复。",
   "confirm.deleteDropboxDirectory": "确定要删除 Dropbox 中的文件夹“{title}”吗？\n\n其中的所有内容都会从 Dropbox 中删除，且无法恢复。",
-  "confirm.saveDraftFile": "这份未命名内容尚未保存为文件，要先保存吗？",
-  "confirm.discardDraftFile": "要放弃建立这份未命名文件吗？\n\n放弃后，这份未命名内容不会保存为文件。",
+  "draftFile.title": "为新文件命名",
+  "draftFile.closeMessage": "这份新文件还没有命名。要创建文件，还是不新增？",
+  "draftFile.discard": "不新增",
 };
 
 const translations: Record<AppLanguage, Record<TranslationKey, string>> = {

@@ -459,6 +459,24 @@ type CreateEntryDialogState = {
   isSubmitting: boolean;
 };
 
+type DraftFileDialogState = {
+  documentId: string;
+  reason: "save" | "close";
+  name: string;
+  isSubmitting: boolean;
+  error: string;
+};
+
+type DraftFileDecision =
+  | { action: "created"; documentId: string }
+  | { action: "discarded" }
+  | { action: "cancelled" };
+
+type DraftDocumentSaveResult =
+  | { status: "saved"; documentId: string }
+  | { status: "cancelled" }
+  | { status: "failed"; message: string };
+
 function DocumentGlyphIcon({ kind, selected = false }: { kind: "file" | "folder"; selected?: boolean }) {
   if (kind === "file") {
     const maskImage = `url("${selected ? fileSelectedGlyphUrl : fileGlyphUrl}")`;
@@ -5656,6 +5674,7 @@ function App() {
   const [renameDialog, setRenameDialog] = useState<RenameDialogState | null>(null);
   const [createEntryDialog, setCreateEntryDialog] =
     useState<CreateEntryDialogState | null>(null);
+  const [draftFileDialog, setDraftFileDialog] = useState<DraftFileDialogState | null>(null);
   const [dropboxConnected, setDropboxConnected] = useState(false);
   const [dropboxConnectionChecked, setDropboxConnectionChecked] = useState(false);
   const [dropboxConnecting, setDropboxConnecting] = useState(false);
@@ -5676,6 +5695,10 @@ function App() {
   const duplicateFileInputRef = useRef<HTMLInputElement | null>(null);
   const renameInputRef = useRef<HTMLInputElement | null>(null);
   const createEntryInputRef = useRef<HTMLInputElement | null>(null);
+  const draftFileInputRef = useRef<HTMLInputElement | null>(null);
+  const draftFileDialogResolverRef = useRef<((decision: DraftFileDecision) => void) | null>(
+    null,
+  );
   const documentSearchInputRef = useRef<HTMLInputElement | null>(null);
   const desktopSourceModeButtonRef = useRef<HTMLButtonElement | null>(null);
   const mobileSourceModeButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -5807,6 +5830,7 @@ function App() {
   const newMarkdownFolderHandlerRef = useRef<() => void>(() => undefined);
   const openMarkdownFileHandlerRef = useRef<() => void>(() => undefined);
   const openDroppedMarkdownPathsHandlerRef = useRef<(paths: string[]) => void>(() => undefined);
+  const windowCloseRequestHandlerRef = useRef<() => Promise<boolean>>(async () => true);
   const openNewWindowDocumentTargetHandlerRef = useRef<
     (target: OpenLocationEventPayload) => void
   >(() => undefined);
@@ -5845,6 +5869,7 @@ function App() {
   openDroppedMarkdownPathsHandlerRef.current = (paths) => {
     void openDroppedMarkdownPaths(paths);
   };
+  windowCloseRequestHandlerRef.current = resolveDraftDocumentsBeforeWindowClose;
   openNewWindowDocumentTargetHandlerRef.current = (target) => {
     void openNativeMenuLocation(target).finally(() => setMobileStartupPhase("hidden"));
   };
@@ -8104,6 +8129,15 @@ function App() {
   }, [createEntryDialog?.kind]);
 
   useEffect(() => {
+    if (!draftFileDialog) return;
+
+    window.setTimeout(() => {
+      draftFileInputRef.current?.focus();
+      draftFileInputRef.current?.select();
+    });
+  }, [draftFileDialog?.documentId]);
+
+  useEffect(() => {
     if (!settingsViewOpen) return;
 
     window.setTimeout(() => {
@@ -8538,6 +8572,41 @@ function App() {
   }, [nativeStorageAvailable]);
 
   useEffect(() => {
+    if (!nativeStorageAvailable) return;
+
+    let disposed = false;
+    let unlistenCloseRequested: (() => void) | null = null;
+
+    void getCurrentWindow()
+      .onCloseRequested(async (event) => {
+        let canClose = true;
+        try {
+          canClose = await windowCloseRequestHandlerRef.current();
+        } catch (error) {
+          console.error(error);
+        }
+        if (!canClose) {
+          event.preventDefault();
+        }
+      })
+      .then((listener) => {
+        if (disposed) {
+          listener();
+          return;
+        }
+        unlistenCloseRequested = listener;
+      })
+      .catch((error: unknown) => {
+        console.error(error);
+      });
+
+    return () => {
+      disposed = true;
+      unlistenCloseRequested?.();
+    };
+  }, [nativeStorageAvailable]);
+
+  useEffect(() => {
     if (!nativeStorageAvailable || !documentIsFromDropbox(selectedDocument)) return;
 
     rememberLastOpenedDropboxWorkspace(
@@ -8765,6 +8834,7 @@ function App() {
           !hasOpenDocument ||
           settingsViewOpen ||
           createEntryDialog ||
+          draftFileDialog ||
           duplicateFileDialog ||
           dropboxDirectoryPicker
         ) {
@@ -8795,6 +8865,7 @@ function App() {
   }, [
     documentSearchOpen,
     createEntryDialog,
+    draftFileDialog,
     dropboxDirectoryPicker,
     duplicateFileDialog,
     hasOpenDocument,
@@ -8877,6 +8948,19 @@ function App() {
         return;
       }
 
+      if (draftFileDialog) {
+        if (event.key === "Escape" && !draftFileDialog.isSubmitting) {
+          event.preventDefault();
+          cancelDraftFileDialog();
+        } else if (
+          event.key.toLowerCase() === "s" &&
+          (event.metaKey || event.ctrlKey)
+        ) {
+          event.preventDefault();
+        }
+        return;
+      }
+
       if (duplicateFileDialog) {
         if (event.key === "Escape" && !duplicateFileDialog.isSubmitting) {
           event.preventDefault();
@@ -8913,7 +8997,9 @@ function App() {
         if (documentToSave && isDraftDocumentId(documentToSave.id)) {
           event.preventDefault();
           event.stopPropagation();
-          void saveDraftDocument(documentToSave);
+          if (!draftFileDialogResolverRef.current) {
+            void requestDraftFileDecision(documentToSave.id, "save");
+          }
         }
         return;
       }
@@ -9012,6 +9098,7 @@ function App() {
     annotationToolsAvailable,
     closeNotePanel,
     createEntryDialog,
+    draftFileDialog,
     duplicateFileDialog,
     dropboxDirectoryPicker,
     glossaryModeEnabled,
@@ -9469,7 +9556,8 @@ function App() {
         currentIds,
         selectedDocumentIdRef.current,
         documentId,
-        "replace",
+        // Unnamed new files keep their tab so their content stays available.
+        isDraftDocumentId(selectedDocumentIdRef.current) ? "add" : "replace",
         documentsRef.current.map((document) => document.id),
       ),
     );
@@ -9514,9 +9602,9 @@ function App() {
     let documentIdToClose = documentId;
     if (isDraftDocumentId(documentId)) {
       const result = await prepareDraftDocumentForLeaving(documentId);
-      if (result === "blocked" || result === "discarded") return;
-      if (result === "saved") {
-        documentIdToClose = selectedDocumentIdRef.current;
+      if (result.status === "blocked" || result.status === "discarded") return;
+      if (result.status === "saved") {
+        documentIdToClose = result.documentId;
       }
     }
 
@@ -9547,7 +9635,7 @@ function App() {
     );
     for (const currentId of documentIdsToClose) {
       const result = await prepareDraftDocumentForLeaving(currentId);
-      if (result === "blocked") return;
+      if (result.status === "blocked") return;
     }
 
     const currentIds = openDocumentTabIdsRef.current;
@@ -9571,7 +9659,7 @@ function App() {
 
     for (const currentId of [...openDocumentTabIdsRef.current]) {
       const result = await prepareDraftDocumentForLeaving(currentId);
-      if (result === "blocked") return;
+      if (result.status === "blocked") return;
     }
 
     openDocumentTabIdsRef.current = [];
@@ -9584,8 +9672,8 @@ function App() {
     let documentIdToOpen = documentId;
     if (isDraftDocumentId(documentIdToOpen)) {
       const result = await prepareDraftDocumentForLeaving(documentIdToOpen);
-      if (result !== "saved") return;
-      documentIdToOpen = selectedDocumentIdRef.current;
+      if (result.status !== "saved") return;
+      documentIdToOpen = result.documentId;
     }
 
     window.clearTimeout(autosaveTimerRef.current);
@@ -11989,37 +12077,33 @@ function App() {
 
   async function saveDraftDocument(
     documentToSave: MarkdownDocument,
-  ): Promise<"saved" | "cancelled" | "failed"> {
+    fileName: string,
+  ): Promise<DraftDocumentSaveResult> {
     if (!nativeStorageAvailable) {
-      setStorageError(t("error.nativeRuntimeRequired"));
-      return "failed";
+      return { status: "failed", message: t("error.nativeRuntimeRequired") };
     }
-    if (!isDraftDocumentId(documentToSave.id)) return "saved";
+    if (!isDraftDocumentId(documentToSave.id)) {
+      return { status: "saved", documentId: documentToSave.id };
+    }
+
+    const trimmedFileName = stripMarkdownExtension(fileName.trim()).trim();
+    if (!trimmedFileName) {
+      return { status: "failed", message: t("error.fileNameRequired") };
+    }
+    if (/[\\/]/.test(trimmedFileName)) {
+      return { status: "failed", message: t("error.fileNameNoFolders") };
+    }
 
     const notesToSave = notesForDocument(documentToSave.id);
     const glossaryBindingsToSave = glossaryBindingsForDocument(documentToSave.id);
     const glossaryTermsToSave = glossaryTermsForDocument(documentToSave.id);
     const source = draftDocumentSource(documentToSave.id);
-    const defaultFileName = ensureMarkdownExtension(
-      documentToSave.title || t("app.untitledFile"),
-    );
+    const markdownFileName = ensureMarkdownExtension(trimmedFileName);
 
     try {
       if (source === "dropbox") {
         if (workspaceRootPath === null) {
-          setStorageError(t("dropbox.error.noWorkspace"));
-          return "failed";
-        }
-
-        const fileName = window.prompt(
-          t("newFile.namePrompt"),
-          stripMarkdownExtension(defaultFileName),
-        );
-        if (fileName === null) return "cancelled";
-        const trimmedFileName = fileName.trim();
-        if (!trimmedFileName) {
-          setStorageError(t("error.fileNameRequired"));
-          return "failed";
+          return { status: "failed", message: t("dropbox.error.noWorkspace") };
         }
 
         const created = await createDropboxMarkdownFileRequest({
@@ -12036,19 +12120,27 @@ function App() {
         });
         replaceDraftWithLoadedDropboxFile(documentToSave.id, saved);
         setStorageError("");
-        return "saved";
+        return { status: "saved", documentId: documentFromDropboxFile(saved).id };
       }
 
-      const selectedPath = await save({
-        defaultPath:
-          workspaceSource === "local" && workspaceRootPath
-            ? filePathInDirectory(workspaceRootPath, defaultFileName)
-            : defaultFileName,
-        filters: markdownFilters,
-      });
-      if (!selectedPath) return "cancelled";
+      let path: string;
+      if (workspaceSource === "local" && workspaceRootPath !== null) {
+        path = filePathInDirectory(workspaceRootPath, markdownFileName);
+        try {
+          await openMarkdownFile({ path });
+          return { status: "failed", message: t("error.fileExists") };
+        } catch {
+          // Opening fails for a new path; save below creates the file.
+        }
+      } else {
+        const selectedPath = await save({
+          defaultPath: markdownFileName,
+          filters: markdownFilters,
+        });
+        if (!selectedPath) return { status: "cancelled" };
+        path = ensureMarkdownExtension(selectedPath);
+      }
 
-      const path = ensureMarkdownExtension(selectedPath);
       const saved = await saveMarkdownFile({
         path,
         body: documentToSave.body,
@@ -12061,26 +12153,92 @@ function App() {
       });
       replaceDraftWithLoadedLocalFile(documentToSave.id, loaded);
       setStorageError("");
-      return "saved";
+      return { status: "saved", documentId: documentFromLoadedFileResult(loaded).id };
     } catch (error) {
-      setStorageError(translatedError(error, "error.saveFailed"));
-      return "failed";
+      return { status: "failed", message: translatedError(error, "error.createFileFailed") };
     }
   }
 
-  function confirmDiscardDraftDocument(documentId: string) {
-    const shouldDiscard = window.confirm(t("confirm.discardDraftFile"));
-    if (!shouldDiscard) return false;
+  function requestDraftFileDecision(
+    documentId: string,
+    reason: DraftFileDialogState["reason"],
+  ) {
+    draftFileDialogResolverRef.current?.({ action: "cancelled" });
 
-    removeDocumentsFromWorkspace([documentId]);
-    return true;
+    return new Promise<DraftFileDecision>((resolve) => {
+      draftFileDialogResolverRef.current = resolve;
+      setDraftFileDialog({
+        documentId,
+        reason,
+        name: stripMarkdownExtension(t("app.untitledFile")),
+        isSubmitting: false,
+        error: "",
+      });
+    });
+  }
+
+  function finishDraftFileDialog(decision: DraftFileDecision) {
+    const resolve = draftFileDialogResolverRef.current;
+    draftFileDialogResolverRef.current = null;
+    setDraftFileDialog(null);
+    resolve?.(decision);
+  }
+
+  function cancelDraftFileDialog() {
+    if (draftFileDialog?.isSubmitting) return;
+
+    finishDraftFileDialog({ action: "cancelled" });
+  }
+
+  function discardDraftFileDialogDocument() {
+    if (!draftFileDialog || draftFileDialog.isSubmitting) return;
+
+    removeDocumentsFromWorkspace([draftFileDialog.documentId]);
+    finishDraftFileDialog({ action: "discarded" });
+  }
+
+  async function submitDraftFileDialog(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!draftFileDialog || draftFileDialog.isSubmitting) return;
+
+    const documentToSave = documentsRef.current.find(
+      (document) => document.id === draftFileDialog.documentId,
+    );
+    if (!documentToSave) {
+      finishDraftFileDialog({ action: "cancelled" });
+      return;
+    }
+
+    setDraftFileDialog((currentDialog) =>
+      currentDialog ? { ...currentDialog, isSubmitting: true, error: "" } : currentDialog,
+    );
+    const result = await saveDraftDocument(documentToSave, draftFileDialog.name);
+    if (result.status === "saved") {
+      finishDraftFileDialog({ action: "created", documentId: result.documentId });
+      return;
+    }
+
+    setDraftFileDialog((currentDialog) =>
+      currentDialog
+        ? {
+            ...currentDialog,
+            isSubmitting: false,
+            error: result.status === "failed" ? result.message : "",
+          }
+        : currentDialog,
+    );
   }
 
   async function prepareDraftDocumentForLeaving(
     documentId: string,
-  ): Promise<"unchanged" | "saved" | "discarded" | "blocked"> {
+  ): Promise<
+    | { status: "unchanged" | "discarded" | "blocked" }
+    | { status: "saved"; documentId: string }
+  > {
     const documentToLeave = documentsRef.current.find((document) => document.id === documentId);
-    if (!documentToLeave || !isDraftDocumentId(documentToLeave.id)) return "unchanged";
+    if (!documentToLeave || !isDraftDocumentId(documentToLeave.id)) {
+      return { status: "unchanged" };
+    }
     if (
       !draftDocumentHasContent(
         documentToLeave.body,
@@ -12089,20 +12247,29 @@ function App() {
       )
     ) {
       removeDocumentsFromWorkspace([documentToLeave.id]);
-      return "discarded";
+      return { status: "discarded" };
     }
 
-    const shouldSave = window.confirm(t("confirm.saveDraftFile"));
-    if (!shouldSave) {
-      return confirmDiscardDraftDocument(documentToLeave.id) ? "discarded" : "blocked";
+    if (selectedDocumentIdRef.current !== documentToLeave.id) {
+      selectDocument(documentToLeave.id, { tabBehavior: "none", userInitiated: false });
     }
 
-    const saveResult = await saveDraftDocument(documentToLeave);
-    if (saveResult === "saved") return "saved";
-    if (saveResult === "cancelled") {
-      return confirmDiscardDraftDocument(documentToLeave.id) ? "discarded" : "blocked";
+    const decision = await requestDraftFileDecision(documentToLeave.id, "close");
+    if (decision.action === "created") {
+      return { status: "saved", documentId: decision.documentId };
     }
-    return "blocked";
+    return { status: decision.action === "discarded" ? "discarded" : "blocked" };
+  }
+
+  async function resolveDraftDocumentsBeforeWindowClose() {
+    const draftDocumentIds = documentsRef.current
+      .map((document) => document.id)
+      .filter(isDraftDocumentId);
+    for (const documentId of draftDocumentIds) {
+      const result = await prepareDraftDocumentForLeaving(documentId);
+      if (result.status === "blocked") return false;
+    }
+    return true;
   }
 
   function createDraftMarkdownDocument(source: WorkspaceSource | null) {
@@ -12142,7 +12309,8 @@ function App() {
       setStorageError(t("error.nativeRuntimeRequired"));
       return;
     }
-    if (workspaceSource && workspaceRootPath !== null) {
+    // Mobile has no tabs or save shortcut, so it names the file before creating it.
+    if (isMobileViewport && workspaceSource && workspaceRootPath !== null) {
       openCreateEntryDialog("file");
       return;
     }
@@ -13832,13 +14000,15 @@ function App() {
 
     const currentDocumentId = selectedDocumentIdRef.current;
     if (
+      isMobileViewport &&
       options.userInitiated !== false &&
       currentDocumentId &&
       currentDocumentId !== documentId &&
       isDraftDocumentId(currentDocumentId)
     ) {
+      // Mobile shows one document at a time, so leaving an unnamed file asks about it first.
       void prepareDraftDocumentForLeaving(currentDocumentId).then((result) => {
-        if (result === "blocked") return;
+        if (result.status === "blocked") return;
         selectDocument(documentId, { ...options, userInitiated: false });
       });
       return;
@@ -16116,6 +16286,7 @@ function App() {
     !settingsViewOpen &&
       storageError &&
       !createEntryDialog &&
+      !draftFileDialog &&
       !duplicateFileDialog &&
       !renameDialog &&
       !dropboxDirectoryPicker,
@@ -17119,6 +17290,100 @@ function App() {
                 type="submit"
               >
                 {createEntryDialog.isSubmitting
+                  ? t("duplicate.submitting")
+                  : t("duplicate.submit")}
+              </button>
+            </div>
+          </form>
+        </div>
+      ) : null}
+
+      {draftFileDialog ? (
+        <div
+          className="duplicate-file-dialog-backdrop"
+          onMouseDown={cancelDraftFileDialog}
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          <form
+            aria-describedby={
+              draftFileDialog.reason === "close" ? "draft-file-dialog-message" : undefined
+            }
+            aria-labelledby="draft-file-dialog-title"
+            aria-modal="true"
+            className="duplicate-file-dialog"
+            onMouseDown={(event) => event.stopPropagation()}
+            onSubmit={submitDraftFileDialog}
+            role="dialog"
+          >
+            <div className="duplicate-file-dialog__header">
+              <h2 id="draft-file-dialog-title">{t("draftFile.title")}</h2>
+              <button
+                aria-label={t("dialog.close")}
+                className="duplicate-file-dialog__close"
+                disabled={draftFileDialog.isSubmitting}
+                onClick={cancelDraftFileDialog}
+                type="button"
+              >
+                ×
+              </button>
+            </div>
+            {draftFileDialog.reason === "close" ? (
+              <p className="duplicate-file-dialog__description" id="draft-file-dialog-message">
+                {t("draftFile.closeMessage")}
+              </p>
+            ) : null}
+            <label className="duplicate-file-dialog__field">
+              <span>{t("newFile.namePrompt")}</span>
+              <span className="duplicate-file-dialog__file-name-control">
+                <input
+                  aria-describedby="draft-file-dialog-extension"
+                  disabled={draftFileDialog.isSubmitting}
+                  enterKeyHint="done"
+                  ref={draftFileInputRef}
+                  spellCheck={false}
+                  type="text"
+                  value={draftFileDialog.name}
+                  onChange={(event) => {
+                    const nextName = stripMarkdownExtension(event.target.value);
+                    setDraftFileDialog((currentDialog) =>
+                      currentDialog ? { ...currentDialog, name: nextName } : currentDialog,
+                    );
+                  }}
+                />
+                <span
+                  className="duplicate-file-dialog__extension"
+                  id="draft-file-dialog-extension"
+                >
+                  .md
+                </span>
+              </span>
+            </label>
+            {draftFileDialog.error ? (
+              <p className="duplicate-file-dialog__message" role="status">
+                {draftFileDialog.error}
+              </p>
+            ) : null}
+            <div className="note-actions duplicate-file-dialog__actions">
+              <button
+                disabled={draftFileDialog.isSubmitting}
+                onClick={cancelDraftFileDialog}
+                type="button"
+              >
+                {t("duplicate.cancel")}
+              </button>
+              <button
+                disabled={draftFileDialog.isSubmitting}
+                onClick={discardDraftFileDialogDocument}
+                type="button"
+              >
+                {t("draftFile.discard")}
+              </button>
+              <button
+                className="is-primary"
+                disabled={draftFileDialog.isSubmitting}
+                type="submit"
+              >
+                {draftFileDialog.isSubmitting
                   ? t("duplicate.submitting")
                   : t("duplicate.submit")}
               </button>
