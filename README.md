@@ -16,6 +16,7 @@ Scholium 是 local-first desktop app。Markdown 內容會存回原始 `.md` 檔�
 - 筆記庫集中瀏覽所有 notes，卡片未聚焦時顯示前兩行，聚焦後滑順展開全文
 - 筆記庫卡片以圖釘 badge 標示，編輯與刪除操作會在卡片展開後出現在右下角
 - 清單項目的圈選底色會覆蓋 bullet 與縮排範圍
+- 編輯區在文件尾端下方保留空白，最後一行可捲到畫面中段；輸入時游標維持在畫面下方三分之一以上
 - 自動儲存 Markdown 內容與 notes
 - 重新啟動 app 時還原上次開啟的 Markdown 檔案
 - 從 macOS File menu 開啟常用目錄與最近開啟項目

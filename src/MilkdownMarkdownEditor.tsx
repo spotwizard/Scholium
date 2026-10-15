@@ -97,6 +97,7 @@ import {
 import { createListItemInlineStrongSyntaxPlugin } from "./milkdownInlineMarkdownSyntax";
 import { createPastedInlineMarkBoundaryPlugin } from "./milkdownPastedInlineMarkBoundary";
 import { correctHistoryCaretAfterRestoredText } from "./milkdownHistory";
+import { currentTypingLineBottomMargin } from "./editorTypingLine";
 import {
   encodeEmptyParagraphsForMilkdown,
   normalizeMarkdownForScholium,
@@ -6058,8 +6059,23 @@ export const MilkdownMarkdownEditor = forwardRef<
           serializeMarkedTextClipboardSlice(slice, view, ctx.get(serializerCtx)) ??
           prev.clipboardTextSerializer?.(slice, view) ??
           "",
-        scrollThreshold: { top: 120, right: 0, bottom: 40, left: 0 },
-        scrollMargin: { top: 120, right: 0, bottom: 40, left: 0 },
+        // ProseMirror reads these on every scroll, so the getters follow window resizes.
+        scrollThreshold: {
+          top: 120,
+          right: 0,
+          get bottom() {
+            return currentTypingLineBottomMargin();
+          },
+          left: 0,
+        },
+        scrollMargin: {
+          top: 120,
+          right: 0,
+          get bottom() {
+            return currentTypingLineBottomMargin();
+          },
+          left: 0,
+        },
       }));
 
       ctx.update(hardbreakSchema.key, (previousSchema) => (schemaCtx) => {

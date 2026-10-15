@@ -194,6 +194,7 @@ button:disabled {
   --document-tab-bar-occupied-height: var(--document-tab-bar-height);
   --editor-content-gutter: 56px;
   --editor-content-top-gutter: 20px;
+  --editor-end-scroll-room: 50vh;
   --editor-content-inline-start-gutter: clamp(96px, 7vw, 120px);
   --editor-content-inline-end-gutter: var(--editor-content-gutter);
   --editor-content-offset: var(--side-panel-reserved-width);
@@ -2539,6 +2540,14 @@ button.document-tag-chip__label:focus-visible {
 
 .cm-line {
   padding: 0;
+}
+
+/* Blank space after the document, inside the editor so it never becomes part
+   of the Markdown text. The editor's min-height already covers short documents,
+   so the room only adds scrolling once the text reaches the lower half. */
+.editor-content-frame > .markdown-editor-host > .cm-editor .cm-content,
+.editor-content-frame > .milkdown-markdown-editor-shell .milkdown .ProseMirror {
+  padding-bottom: var(--editor-end-scroll-room);
 }
 
 .markdown-editor-host > .cm-editor .cm-selectionBackground {

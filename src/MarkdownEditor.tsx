@@ -26,6 +26,7 @@ import type {
   EditorSelectionHandle,
   EditorSelectionSnapshot,
 } from "./editorTypes";
+import { currentTypingLineBottomMargin } from "./editorTypingLine";
 import { scheduleEditorViewportRestore } from "./editorViewport";
 
 type MarkdownEditorProps = {
@@ -253,6 +254,7 @@ export const MarkdownEditor = forwardRef<EditorSelectionHandle, MarkdownEditorPr
         searchField,
         updateListener,
         EditorView.lineWrapping,
+        EditorView.scrollMargins.of(() => ({ bottom: currentTypingLineBottomMargin() })),
         keymap.of([
           {
             key: "Mod-b",
