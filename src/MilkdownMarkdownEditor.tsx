@@ -17,7 +17,11 @@ import {
   editorViewOptionsCtx,
   serializerCtx,
 } from "@milkdown/kit/core";
-import { hardbreakAttr, hardbreakSchema } from "@milkdown/kit/preset/commonmark";
+import {
+  hardbreakAttr,
+  hardbreakSchema,
+  inlineCodeSchema,
+} from "@milkdown/kit/preset/commonmark";
 import { splitBlock } from "@milkdown/prose/commands";
 import { closeHistory, redo, redoNoScroll, undo, undoNoScroll } from "@milkdown/prose/history";
 import { InputRule, inputRules } from "@milkdown/prose/inputrules";
@@ -6093,6 +6097,15 @@ export const MilkdownMarkdownEditor = forwardRef<
           toDOM: (node) => ["br", schemaCtx.get(hardbreakAttr.key)(node)],
         };
       });
+
+      // Text typed right after inline code is plain text. With the default
+      // inclusive mark, a caret at the end of inline code (including after the
+      // closing backtick in a heading, whose id sync drops the stored marks)
+      // kept extending the code span with no way out except source mode.
+      ctx.update(inlineCodeSchema.key, (previousSchema) => (schemaCtx) => ({
+        ...previousSchema(schemaCtx),
+        inclusive: false,
+      }));
 
       ctx.update(codeBlockConfig.key, (previousConfig) => ({
         ...previousConfig,
