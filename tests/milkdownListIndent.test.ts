@@ -71,7 +71,7 @@ const enterBeforeEmptyDocument = schema.nodes.doc.create(null, [
 let enterBeforeEmptyPosition = -1;
 enterBeforeEmptyDocument.descendants((node, position) => {
   if (node.isText && node.text === "保留這一項") {
-    enterBeforeEmptyPosition = position + 2;
+    enterBeforeEmptyPosition = position + node.nodeSize;
   }
 });
 assert.notEqual(enterBeforeEmptyPosition, -1);
@@ -95,6 +95,51 @@ assert.equal(
 assert.deepEqual(movedToEmptyState.doc.toJSON(), enterBeforeEmptyDocument.toJSON());
 assert.equal(movedToEmptyState.selection.$from.parent.textContent, "");
 assert.equal(movedToEmptyState.selection.$from.parentOffset, 0);
+
+// Enter in the middle of the item text splits it even when the next item is empty.
+const enterMidTextBeforeEmptyDocument = schema.nodes.doc.create(null, [
+  schema.nodes.bullet_list.create(null, [
+    item("執行方式：", [item("修改完程式後，用英文編撰 commit message"), item("")]),
+  ]),
+]);
+let enterMidTextBeforeEmptyPosition = -1;
+enterMidTextBeforeEmptyDocument.descendants((node, position) => {
+  if (node.isText && node.text?.startsWith("修改完")) {
+    enterMidTextBeforeEmptyPosition = position + "修改完".length;
+  }
+});
+assert.notEqual(enterMidTextBeforeEmptyPosition, -1);
+const enterMidTextBeforeEmptyState = EditorState.create({
+  doc: enterMidTextBeforeEmptyDocument,
+  selection: TextSelection.create(
+    enterMidTextBeforeEmptyDocument,
+    enterMidTextBeforeEmptyPosition,
+  ),
+});
+assert.equal(
+  moveToNextEmptyListItem(schema.nodes.list_item)(enterMidTextBeforeEmptyState),
+  false,
+);
+let splitMidTextBeforeEmptyState = enterMidTextBeforeEmptyState;
+assert.equal(
+  splitListItem(schema.nodes.list_item)(
+    enterMidTextBeforeEmptyState,
+    (transaction) => {
+      splitMidTextBeforeEmptyState = enterMidTextBeforeEmptyState.apply(transaction);
+    },
+  ),
+  true,
+);
+const splitChildItems: string[] = [];
+splitMidTextBeforeEmptyState.doc.firstChild!.firstChild!.child(1).forEach((childItem) => {
+  splitChildItems.push(childItem.textContent);
+});
+assert.deepEqual(splitChildItems, ["修改完", "程式後，用英文編撰 commit message", ""]);
+assert.equal(
+  splitMidTextBeforeEmptyState.selection.$from.parent.textContent,
+  "程式後，用英文編撰 commit message",
+);
+assert.equal(splitMidTextBeforeEmptyState.selection.$from.parentOffset, 0);
 
 const enterAtFirstItemStartDocument = schema.nodes.doc.create(null, [
   schema.nodes.ordered_list.create(null, [
