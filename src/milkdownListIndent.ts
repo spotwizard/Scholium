@@ -243,10 +243,9 @@ export function moveToNextEmptyListItem(itemType: NodeType): Command {
 
     const item = selection.$from.node(itemDepth);
     if (item.childCount !== 1 || item.firstChild !== selection.$from.parent) return false;
-    if (
-      selection.$from.parentOffset === 0 &&
-      selection.$from.parent.content.size > 0
-    ) {
+    // Only Enter at the end of the item text reuses the empty item below; with
+    // text after the caret, Enter has to split the item.
+    if (selection.$from.parentOffset !== selection.$from.parent.content.size) {
       return false;
     }
 
