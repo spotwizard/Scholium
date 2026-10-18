@@ -102,6 +102,7 @@ import { createListItemInlineStrongSyntaxPlugin } from "./milkdownInlineMarkdown
 import { createPastedInlineMarkBoundaryPlugin } from "./milkdownPastedInlineMarkBoundary";
 import { correctHistoryCaretAfterRestoredText } from "./milkdownHistory";
 import { currentTypingLineBottomMargin } from "./editorTypingLine";
+import { installImeCompositionScrollGuard } from "./imeCompositionScroll";
 import {
   encodeEmptyParagraphsForMilkdown,
   normalizeMarkdownForScholium,
@@ -5989,6 +5990,13 @@ export const MilkdownMarkdownEditor = forwardRef<
       window.removeEventListener("mouseup", handleSelectionPointerUp, true);
       window.removeEventListener("pointerup", handleSelectionPointerUp, true);
     };
+  }, [editorRevision]);
+
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root) return;
+
+    return installImeCompositionScrollGuard(root);
   }, [editorRevision]);
 
   useEffect(() => {
