@@ -102,7 +102,7 @@ import { createListItemInlineStrongSyntaxPlugin } from "./milkdownInlineMarkdown
 import { createPastedInlineMarkBoundaryPlugin } from "./milkdownPastedInlineMarkBoundary";
 import { correctHistoryCaretAfterRestoredText } from "./milkdownHistory";
 import { currentTypingLineBottomMargin } from "./editorTypingLine";
-import { installImeCompositionScrollGuard } from "./imeCompositionScroll";
+import { scrollSelectionIntoViewWithWholePixels } from "./wholePixelScroll";
 import {
   encodeEmptyParagraphsForMilkdown,
   normalizeMarkdownForScholium,
@@ -5996,13 +5996,6 @@ export const MilkdownMarkdownEditor = forwardRef<
     const root = rootRef.current;
     if (!root) return;
 
-    return installImeCompositionScrollGuard(root);
-  }, [editorRevision]);
-
-  useEffect(() => {
-    const root = rootRef.current;
-    if (!root) return;
-
     let disposed = false;
     let acceptsMarkdownUpdates = false;
     root.innerHTML = "";
@@ -6088,6 +6081,7 @@ export const MilkdownMarkdownEditor = forwardRef<
           },
           left: 0,
         },
+        handleScrollToSelection: scrollSelectionIntoViewWithWholePixels,
       }));
 
       ctx.update(hardbreakSchema.key, (previousSchema) => (schemaCtx) => {
