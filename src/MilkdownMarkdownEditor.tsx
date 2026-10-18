@@ -102,6 +102,7 @@ import { createListItemInlineStrongSyntaxPlugin } from "./milkdownInlineMarkdown
 import { createPastedInlineMarkBoundaryPlugin } from "./milkdownPastedInlineMarkBoundary";
 import { correctHistoryCaretAfterRestoredText } from "./milkdownHistory";
 import { currentTypingLineBottomMargin } from "./editorTypingLine";
+import { scrollSelectionIntoViewWithWholePixels } from "./wholePixelScroll";
 import {
   encodeEmptyParagraphsForMilkdown,
   normalizeMarkdownForScholium,
@@ -6080,6 +6081,7 @@ export const MilkdownMarkdownEditor = forwardRef<
           },
           left: 0,
         },
+        handleScrollToSelection: scrollSelectionIntoViewWithWholePixels,
       }));
 
       ctx.update(hardbreakSchema.key, (previousSchema) => (schemaCtx) => {
