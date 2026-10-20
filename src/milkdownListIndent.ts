@@ -1,8 +1,10 @@
 import type { Node as ProseMirrorNode, NodeType } from "@milkdown/prose/model";
 import { liftListItem, sinkListItem } from "@milkdown/prose/schema-list";
+import { canJoin } from "@milkdown/prose/transform";
 import {
   TextSelection,
   type Command,
+  type EditorState,
   type Transaction,
 } from "@milkdown/prose/state";
 
@@ -71,6 +73,18 @@ export function preserveSerializedEmptyParagraphListBoundaries(
   );
 }
 
+function lastTextblockInside(node: ProseMirrorNode, nodeFrom: number) {
+  let current = node;
+  let currentFrom = nodeFrom;
+  while (!current.isTextblock) {
+    const lastChild = current.lastChild;
+    if (!lastChild) return null;
+    currentFrom += current.nodeSize - 1 - lastChild.nodeSize;
+    current = lastChild;
+  }
+  return { node: current, contentEnd: currentFrom + 1 + current.content.size };
+}
+
 export function mergeRemovedListMarkerLineBackward(
   itemType: NodeType,
 ): Command {
@@ -94,61 +108,29 @@ export function mergeRemovedListMarkerLineBackward(
     const container = $from.node(containerDepth);
     if (paragraphIndex > 0) {
       const previousList = container.child(paragraphIndex - 1);
-      const previousItem = previousList.lastChild;
-      const previousParagraph = previousItem?.firstChild;
-      if (
-        previousItem?.type === itemType &&
-        previousParagraph?.type === paragraph.type
-      ) {
+      const paragraphFrom = $from.before($from.depth);
+      const target =
+        previousList.lastChild?.type === itemType
+          ? lastTextblockInside(previousList, paragraphFrom - previousList.nodeSize)
+          : null;
+      if (target?.node.type === paragraph.type) {
         if (!dispatch) return true;
 
-        const mergedParagraph = previousParagraph.copy(
-          nodeIsEmptyParagraph(paragraph)
-            ? previousParagraph.content
-            : previousParagraph.content.append(paragraph.content),
-        );
-        const itemBlocks: ProseMirrorNode[] = [mergedParagraph];
-        for (let index = 1; index < previousItem.childCount; index += 1) {
-          itemBlocks.push(previousItem.child(index));
-        }
-        const mergedItem = previousItem.type.create(
-          previousItem.attrs,
-          itemBlocks,
-          previousItem.marks,
-        );
+        // The line joins the last line shown in the list above it, which can sit
+        // in a nested list, not the first line of the list's last item.
+        const insertedSize = nodeIsEmptyParagraph(paragraph) ? 0 : paragraph.content.size;
+        const tr = state.tr.delete(paragraphFrom, paragraphFrom + paragraph.nodeSize);
+        if (insertedSize > 0) tr.insert(target.contentEnd, paragraph.content);
+
         const nextList =
           paragraphIndex + 1 < container.childCount
             ? container.child(paragraphIndex + 1)
             : null;
-        const joinedNextList =
-          nextList?.type === previousList.type ? nextList : null;
-        const listItems: ProseMirrorNode[] = [];
-        for (let index = 0; index < previousList.childCount - 1; index += 1) {
-          listItems.push(previousList.child(index));
+        const listBoundary = paragraphFrom + insertedSize;
+        if (nextList?.type === previousList.type && canJoin(tr.doc, listBoundary)) {
+          tr.join(listBoundary);
         }
-        listItems.push(mergedItem);
-        joinedNextList?.forEach((nextItem) => listItems.push(nextItem));
-        const mergedList = previousList.type.create(
-          previousList.attrs,
-          listItems,
-          previousList.marks,
-        );
-        const paragraphFrom = $from.before($from.depth);
-        const listFrom = paragraphFrom - previousList.nodeSize;
-        const tr = state.tr.replaceWith(
-          listFrom,
-          paragraphFrom + paragraph.nodeSize + (joinedNextList?.nodeSize ?? 0),
-          mergedList,
-        );
-        let mergedParagraphPosition = -1;
-        mergedList.descendants((node, position) => {
-          if (node === mergedParagraph) {
-            mergedParagraphPosition =
-              listFrom + position + 2 + previousParagraph.content.size;
-          }
-        });
-        if (mergedParagraphPosition < 0) return false;
-        tr.setSelection(TextSelection.create(tr.doc, mergedParagraphPosition));
+        tr.setSelection(TextSelection.create(tr.doc, target.contentEnd));
         dispatch(tr.scrollIntoView());
         return true;
       }
@@ -539,6 +521,33 @@ export function deleteAtListItemStart(
   };
 }
 
+// Tab only joins a sub-list of the same kind as the item's own list, so an
+// item tabbed under one that already has a sub-list of the other kind (bullets
+// under a numbered item, or the reverse) started a second sub-list of its own.
+// It joins the existing sub-list and follows its kind instead.
+function joinSunkItemIntoPreviousSubList(tr: Transaction, itemType: NodeType) {
+  const { $from } = tr.selection;
+  let itemDepth = $from.depth;
+  while (itemDepth > 0 && $from.node(itemDepth).type !== itemType) {
+    itemDepth -= 1;
+  }
+  if (itemDepth < 3) return;
+
+  const listDepth = itemDepth - 1;
+  const parentItemDepth = listDepth - 1;
+  if ($from.node(parentItemDepth).type !== itemType || $from.index(listDepth) !== 0) return;
+
+  const listIndex = $from.index(parentItemDepth);
+  if (listIndex === 0) return;
+  const list = $from.node(listDepth);
+  const previousList = $from.node(parentItemDepth).child(listIndex - 1);
+  if (!nodeIsMarkdownList(previousList) || previousList.type === list.type) return;
+
+  const listPosition = $from.before(listDepth);
+  tr.setNodeMarkup(listPosition, previousList.type, previousList.attrs);
+  if (canJoin(tr.doc, listPosition)) tr.join(listPosition);
+}
+
 export function sinkSingleListItem(itemType: NodeType): Command {
   return (state, dispatch, view) => {
     if (!state.selection.empty) return false;
@@ -569,6 +578,7 @@ export function sinkSingleListItem(itemType: NodeType): Command {
     const selectedItem = itemDepth > 0 ? $from.node(itemDepth) : null;
     const childList = selectedItem?.lastChild;
     if (!childList || childList.firstChild?.type !== itemType) {
+      joinSunkItemIntoPreviousSubList(combinedTransaction, itemType);
       dispatch(combinedTransaction.scrollIntoView());
       return true;
     }
@@ -597,6 +607,7 @@ export function sinkSingleListItem(itemType: NodeType): Command {
       ) ||
       !liftTransaction
     ) {
+      joinSunkItemIntoPreviousSubList(combinedTransaction, itemType);
       dispatch(combinedTransaction.scrollIntoView());
       return true;
     }
@@ -612,7 +623,37 @@ export function sinkSingleListItem(itemType: NodeType): Command {
         originalSelection.to,
       ),
     );
-    dispatch(combinedTransaction.scrollIntoView());
+    joinSunkItemIntoPreviousSubList(combinedTransaction, itemType);
+      dispatch(combinedTransaction.scrollIntoView());
     return true;
   };
+}
+
+// Milkdown draws each list item's marker from the item's own listType/label,
+// so an item lifted out of a numbered sub-list into a bullet list (Shift+Tab)
+// kept showing its old number. Items in a bullet list follow the list's first
+// item; when that first item is numbered, Milkdown turns the whole list into a
+// numbered list itself.
+export function bulletListItemMarkerFix(
+  state: EditorState,
+  itemType: NodeType,
+  bulletListType: NodeType,
+): Transaction | null {
+  let tr: Transaction | null = null;
+  state.doc.descendants((node, position) => {
+    if (node.type !== bulletListType) return true;
+    if (node.firstChild?.attrs.listType === "ordered") return true;
+
+    node.forEach((item, offset) => {
+      if (item.type !== itemType || item.attrs.listType !== "ordered") return;
+      tr ??= state.tr;
+      tr.setNodeMarkup(position + 1 + offset, undefined, {
+        ...item.attrs,
+        listType: "bullet",
+        label: "•",
+      });
+    });
+    return true;
+  });
+  return tr;
 }
