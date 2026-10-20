@@ -73,6 +73,18 @@ export function preserveSerializedEmptyParagraphListBoundaries(
   );
 }
 
+function lastTextblockInside(node: ProseMirrorNode, nodeFrom: number) {
+  let current = node;
+  let currentFrom = nodeFrom;
+  while (!current.isTextblock) {
+    const lastChild = current.lastChild;
+    if (!lastChild) return null;
+    currentFrom += current.nodeSize - 1 - lastChild.nodeSize;
+    current = lastChild;
+  }
+  return { node: current, contentEnd: currentFrom + 1 + current.content.size };
+}
+
 export function mergeRemovedListMarkerLineBackward(
   itemType: NodeType,
 ): Command {
@@ -96,61 +108,29 @@ export function mergeRemovedListMarkerLineBackward(
     const container = $from.node(containerDepth);
     if (paragraphIndex > 0) {
       const previousList = container.child(paragraphIndex - 1);
-      const previousItem = previousList.lastChild;
-      const previousParagraph = previousItem?.firstChild;
-      if (
-        previousItem?.type === itemType &&
-        previousParagraph?.type === paragraph.type
-      ) {
+      const paragraphFrom = $from.before($from.depth);
+      const target =
+        previousList.lastChild?.type === itemType
+          ? lastTextblockInside(previousList, paragraphFrom - previousList.nodeSize)
+          : null;
+      if (target?.node.type === paragraph.type) {
         if (!dispatch) return true;
 
-        const mergedParagraph = previousParagraph.copy(
-          nodeIsEmptyParagraph(paragraph)
-            ? previousParagraph.content
-            : previousParagraph.content.append(paragraph.content),
-        );
-        const itemBlocks: ProseMirrorNode[] = [mergedParagraph];
-        for (let index = 1; index < previousItem.childCount; index += 1) {
-          itemBlocks.push(previousItem.child(index));
-        }
-        const mergedItem = previousItem.type.create(
-          previousItem.attrs,
-          itemBlocks,
-          previousItem.marks,
-        );
+        // The line joins the last line shown in the list above it, which can sit
+        // in a nested list, not the first line of the list's last item.
+        const insertedSize = nodeIsEmptyParagraph(paragraph) ? 0 : paragraph.content.size;
+        const tr = state.tr.delete(paragraphFrom, paragraphFrom + paragraph.nodeSize);
+        if (insertedSize > 0) tr.insert(target.contentEnd, paragraph.content);
+
         const nextList =
           paragraphIndex + 1 < container.childCount
             ? container.child(paragraphIndex + 1)
             : null;
-        const joinedNextList =
-          nextList?.type === previousList.type ? nextList : null;
-        const listItems: ProseMirrorNode[] = [];
-        for (let index = 0; index < previousList.childCount - 1; index += 1) {
-          listItems.push(previousList.child(index));
+        const listBoundary = paragraphFrom + insertedSize;
+        if (nextList?.type === previousList.type && canJoin(tr.doc, listBoundary)) {
+          tr.join(listBoundary);
         }
-        listItems.push(mergedItem);
-        joinedNextList?.forEach((nextItem) => listItems.push(nextItem));
-        const mergedList = previousList.type.create(
-          previousList.attrs,
-          listItems,
-          previousList.marks,
-        );
-        const paragraphFrom = $from.before($from.depth);
-        const listFrom = paragraphFrom - previousList.nodeSize;
-        const tr = state.tr.replaceWith(
-          listFrom,
-          paragraphFrom + paragraph.nodeSize + (joinedNextList?.nodeSize ?? 0),
-          mergedList,
-        );
-        let mergedParagraphPosition = -1;
-        mergedList.descendants((node, position) => {
-          if (node === mergedParagraph) {
-            mergedParagraphPosition =
-              listFrom + position + 2 + previousParagraph.content.size;
-          }
-        });
-        if (mergedParagraphPosition < 0) return false;
-        tr.setSelection(TextSelection.create(tr.doc, mergedParagraphPosition));
+        tr.setSelection(TextSelection.create(tr.doc, target.contentEnd));
         dispatch(tr.scrollIntoView());
         return true;
       }
