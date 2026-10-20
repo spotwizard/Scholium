@@ -2240,3 +2240,56 @@ assert.ok(
 );
 
 console.log("milkdown list indentation and deletion regression: PASS");
+
+const lineAfterNestedListDocument = schema.nodes.doc.create(null, [
+  schema.nodes.bullet_list.create(null, [
+    schema.nodes.list_item.create(null, [
+      paragraph("用流程圖建立尾牙抽獎發放流程"),
+      schema.nodes.ordered_list.create(null, [orderedItem("取得中獎名單")]),
+    ]),
+  ]),
+  paragraph("登錄中獎名單的獨立發放資料"),
+  schema.nodes.ordered_list.create(null, [orderedItem("建立應付單據")]),
+]);
+let lineAfterNestedListPosition = -1;
+lineAfterNestedListDocument.descendants((node, position) => {
+  if (node.isText && node.text === "登錄中獎名單的獨立發放資料") {
+    lineAfterNestedListPosition = position;
+  }
+});
+assert.notEqual(lineAfterNestedListPosition, -1);
+let lineAfterNestedListState = EditorState.create({
+  doc: lineAfterNestedListDocument,
+  selection: TextSelection.create(lineAfterNestedListDocument, lineAfterNestedListPosition),
+  plugins: [history()],
+});
+assert.equal(
+  mergeRemovedListMarkerLineBackward(schema.nodes.list_item)(
+    lineAfterNestedListState,
+    (transaction) => {
+      lineAfterNestedListState = lineAfterNestedListState.apply(transaction);
+    },
+  ),
+  true,
+);
+assert.equal(lineAfterNestedListState.doc.childCount, 2);
+const bulletAfterNestedMerge = lineAfterNestedListState.doc.child(0).child(0);
+assert.equal(bulletAfterNestedMerge.child(0).textContent, "用流程圖建立尾牙抽獎發放流程");
+assert.equal(
+  bulletAfterNestedMerge.child(1).child(0).textContent,
+  "取得中獎名單登錄中獎名單的獨立發放資料",
+);
+assert.equal(lineAfterNestedListState.doc.child(1).type, schema.nodes.ordered_list);
+assert.equal(lineAfterNestedListState.doc.child(1).textContent, "建立應付單據");
+assert.equal(
+  lineAfterNestedListState.selection.$from.parent.textContent,
+  "取得中獎名單登錄中獎名單的獨立發放資料",
+);
+assert.equal(lineAfterNestedListState.selection.$from.parentOffset, "取得中獎名單".length);
+assert.equal(
+  undo(lineAfterNestedListState, (transaction) => {
+    lineAfterNestedListState = lineAfterNestedListState.apply(transaction);
+  }),
+  true,
+);
+assert.deepEqual(lineAfterNestedListState.doc.toJSON(), lineAfterNestedListDocument.toJSON());
