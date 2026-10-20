@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { closeHistory, history, undo } from "@milkdown/prose/history";
+import { closeHistory, history, redo, undo } from "@milkdown/prose/history";
 import { Schema, type Node as ProseMirrorNode } from "@milkdown/prose/model";
 import {
   bulletList,
@@ -14,6 +14,7 @@ import {
   deleteEmptyParagraphAfterList,
   deleteAtListItemStart,
   insertEmptyFirstChildListItem,
+  liftSingleListItem,
   mergeRemovedListMarkerLineBackward,
   moveToNextEmptyListItem,
   normalizeAdjacentSerializedListItems,
@@ -52,6 +53,164 @@ const orderedItem = (
       ? [paragraph(text), schema.nodes.ordered_list.create(null, children)]
       : [paragraph(text)],
   );
+
+const markerSchema = new Schema({
+  nodes: {
+    doc: { content: "block+" },
+    paragraph: { content: "inline*", group: "block" },
+    text: { group: "inline" },
+    bullet_list: { ...bulletList, content: "list_item+", group: "block" },
+    ordered_list: { ...orderedList, content: "list_item+", group: "block" },
+    list_item: {
+      ...listItem,
+      attrs: {
+        label: { default: "•" },
+        listType: { default: "bullet" },
+        spread: { default: true },
+      },
+      content: "paragraph block*",
+    },
+  },
+});
+
+const markerParagraph = (text: string) =>
+  markerSchema.nodes.paragraph.create(
+    null,
+    text ? markerSchema.text(text) : null,
+  );
+const markerItem = (text: string, listType: "bullet" | "ordered", label: string) =>
+  markerSchema.nodes.list_item.create(
+    { label, listType, spread: true },
+    [markerParagraph(text)],
+  );
+
+const mixedListDocument = markerSchema.nodes.doc.create(null, [
+  markerSchema.nodes.bullet_list.create(null, [
+    markerSchema.nodes.list_item.create(
+      { label: "•", listType: "bullet", spread: true },
+      [
+        markerParagraph("用流程圖建立尾牙抽獎發放流程"),
+        markerSchema.nodes.ordered_list.create(
+          { order: 1 },
+          Array.from({ length: 8 }, (_, index) =>
+            markerItem(index === 7 ? "" : String(index + 1), "ordered", `${index + 1}.`),
+          ),
+        ),
+      ],
+    ),
+  ]),
+]);
+const mixedListCursorPosition = TextSelection.atEnd(mixedListDocument).from;
+let mixedListState = EditorState.create({
+  doc: mixedListDocument,
+  selection: TextSelection.create(mixedListDocument, mixedListCursorPosition),
+  plugins: [history()],
+});
+assert.equal(
+  liftSingleListItem(markerSchema.nodes.list_item)(
+    mixedListState,
+    (transaction) => {
+      mixedListState = mixedListState.apply(transaction);
+    },
+  ),
+  true,
+);
+const liftedMarkerItem = mixedListState.doc.firstChild?.lastChild;
+assert.equal(mixedListState.doc.firstChild?.type, markerSchema.nodes.bullet_list);
+assert.equal(
+  mixedListState.doc.firstChild?.firstChild?.lastChild?.type,
+  markerSchema.nodes.ordered_list,
+);
+assert.equal(
+  mixedListState.doc.firstChild?.firstChild?.lastChild?.childCount,
+  7,
+);
+assert.equal(liftedMarkerItem?.attrs.listType, "bullet");
+assert.equal(liftedMarkerItem?.attrs.label, "•");
+assert.equal(liftedMarkerItem?.firstChild?.textContent, "");
+assert.equal(mixedListState.selection.$from.parent.textContent, "");
+assert.equal(mixedListState.selection.$from.parentOffset, 0);
+assert.equal(
+  undo(mixedListState, (transaction) => {
+    mixedListState = mixedListState.apply(transaction);
+  }),
+  true,
+);
+assert.deepEqual(mixedListState.doc.toJSON(), mixedListDocument.toJSON());
+assert.equal(
+  redo(mixedListState, (transaction) => {
+    mixedListState = mixedListState.apply(transaction);
+  }),
+  true,
+);
+assert.equal(mixedListState.doc.firstChild?.lastChild?.attrs.listType, "bullet");
+assert.equal(mixedListState.doc.firstChild?.lastChild?.attrs.label, "•");
+
+const bulletIntoBulletDocument = markerSchema.nodes.doc.create(null, [
+  markerSchema.nodes.bullet_list.create(null, [
+    markerSchema.nodes.list_item.create(
+      { label: "•", listType: "bullet", spread: true },
+      [
+        markerParagraph("外層 bullet"),
+        markerSchema.nodes.bullet_list.create(null, [
+          markerItem("內層 bullet", "bullet", "•"),
+        ]),
+      ],
+    ),
+  ]),
+]);
+let bulletIntoBulletPosition = -1;
+bulletIntoBulletDocument.descendants((node, position) => {
+  if (node.isText && node.text === "內層 bullet") bulletIntoBulletPosition = position;
+});
+let bulletIntoBulletState = EditorState.create({
+  doc: bulletIntoBulletDocument,
+  selection: TextSelection.create(bulletIntoBulletDocument, bulletIntoBulletPosition),
+});
+assert.equal(
+  liftSingleListItem(markerSchema.nodes.list_item)(
+    bulletIntoBulletState,
+    (transaction) => {
+      bulletIntoBulletState = bulletIntoBulletState.apply(transaction);
+    },
+  ),
+  true,
+);
+assert.equal(bulletIntoBulletState.doc.firstChild?.lastChild?.attrs.listType, "bullet");
+assert.equal(bulletIntoBulletState.doc.firstChild?.lastChild?.attrs.label, "•");
+
+const bulletIntoOrderedDocument = markerSchema.nodes.doc.create(null, [
+  markerSchema.nodes.ordered_list.create({ order: 1 }, [
+    markerSchema.nodes.list_item.create(
+      { label: "1.", listType: "ordered", spread: true },
+      [
+        markerParagraph("外層 numbered"),
+        markerSchema.nodes.bullet_list.create(null, [
+          markerItem("內層 bullet", "bullet", "•"),
+        ]),
+      ],
+    ),
+  ]),
+]);
+let bulletIntoOrderedPosition = -1;
+bulletIntoOrderedDocument.descendants((node, position) => {
+  if (node.isText && node.text === "內層 bullet") bulletIntoOrderedPosition = position;
+});
+let bulletIntoOrderedState = EditorState.create({
+  doc: bulletIntoOrderedDocument,
+  selection: TextSelection.create(bulletIntoOrderedDocument, bulletIntoOrderedPosition),
+});
+assert.equal(
+  liftSingleListItem(markerSchema.nodes.list_item)(
+    bulletIntoOrderedState,
+    (transaction) => {
+      bulletIntoOrderedState = bulletIntoOrderedState.apply(transaction);
+    },
+  ),
+  true,
+);
+assert.equal(bulletIntoOrderedState.doc.firstChild?.lastChild?.attrs.listType, "ordered");
+assert.equal(bulletIntoOrderedState.doc.firstChild?.lastChild?.attrs.label, "2.");
 
 assert.equal(
   normalizeAdjacentSerializedListItems("- 第一項\n\n- 第二項"),
@@ -2228,6 +2387,10 @@ const singleListItemIndentPluginSource = editorSource.slice(
 assert.match(
   singleListItemIndentPluginSource,
   /event\.key === "Enter"[\s\S]*?!noteModeEnabledRef\.current[\s\S]*?moveToNextEmptyListItem\(listItemType\)/,
+);
+assert.match(
+  singleListItemIndentPluginSource,
+  /event\.key !== "Tab"[\s\S]*?event\.shiftKey[\s\S]*?liftSingleListItem\(listItemType\)[\s\S]*?sinkSingleListItem\(listItemType\)/,
 );
 assert.ok(
   singleListItemIndentPluginSource.indexOf(

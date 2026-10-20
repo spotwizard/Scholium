@@ -79,6 +79,8 @@ import {
 import { serializeMarkedTextClipboardSlice } from "./markdownClipboard";
 import { localMarkdownImageNeedsHydration } from "./markdownLinkTarget";
 import { linkTooltipPositionWithinBounds } from "./linkTooltipPosition";
+import { fileInsertionRange, previewFileInsertion, sourceFileInsertion } from "./fileInsertion";
+import { configureLinkBoundary } from "./milkdownLinkBoundary";
 import {
   appendInlineMarkdownTextMap,
   appendTextMap,
@@ -93,6 +95,7 @@ import {
   deleteEmptyParagraphAfterList,
   deleteAtListItemStart,
   insertEmptyFirstChildListItem,
+  liftSingleListItem,
   mergeRemovedListMarkerLineBackward,
   moveToNextEmptyListItem,
   preserveSerializedEmptyParagraphListBoundaries,
@@ -2377,6 +2380,44 @@ export const MilkdownMarkdownEditor = forwardRef<
   );
 
   useImperativeHandle(ref, () => ({
+    prepareFileInsertion(target, x, y) {
+      const root = rootRef.current;
+      if (!root?.contains(target) || readOnlyRef.current || noteModeEnabledRef.current) return null;
+      const codeElement = target.closest<HTMLElement>(".cm-editor");
+      const codeView = codeElement ? CodeMirrorEditorView.findFromDOM(codeElement) : null;
+      if (codeView) {
+        const position = codeView.posAtCoords({ x, y });
+        if (position === null) return null;
+        const range = fileInsertionRange(codeView.state.selection.main, position);
+        const snapshot = codeView.state;
+        return (file) => {
+          if (!root.contains(codeView.dom) || !codeView.state.doc.eq(snapshot.doc) || !codeView.state.selection.eq(snapshot.selection) || readOnlyRef.current || noteModeEnabledRef.current) return false;
+          codeView.dispatch(sourceFileInsertion(codeView.state, file, range));
+          codeView.focus();
+          return true;
+        };
+      }
+      const view = currentEditorView();
+      if (!view || !target.closest(".ProseMirror") || target.closest("input, textarea, button, [contenteditable='false']")) return null;
+      const position = view.posAtCoords({ left: x, top: y })?.pos;
+      if (position === undefined) return null;
+      const range = fileInsertionRange(view.state.selection, position);
+      const insertionSelection = range.from === range.to
+        ? TextSelection.near(view.state.doc.resolve(position))
+        : view.state.selection;
+      if (!insertionSelection.$from.parent.type.allowsMarkType(view.state.schema.marks.link)) return null;
+      const snapshot = view.state.doc;
+      const selection = view.state.selection;
+      return (file) => {
+        if (currentEditorView() !== view || !view.state.doc.eq(snapshot) || !view.state.selection.eq(selection) || readOnlyRef.current || noteModeEnabledRef.current) return false;
+        const transaction = previewFileInsertion(view.state, file, insertionSelection);
+        if (!transaction) return false;
+        view.dispatch(transaction);
+        view.dispatch(closeHistory(view.state.tr));
+        view.focus();
+        return true;
+      };
+    },
     getSelectionSnapshot() {
       const root = rootRef.current;
       const activeElement = document.activeElement;
@@ -3332,9 +3373,11 @@ export const MilkdownMarkdownEditor = forwardRef<
           }
 
           if (noteModeEnabledRef.current) return false;
-          if (event.key !== "Tab" || event.shiftKey) return false;
+          if (event.key !== "Tab") return false;
 
-          const handled = sinkSingleListItem(listItemType)(
+          const handled = (event.shiftKey
+            ? liftSingleListItem(listItemType)
+            : sinkSingleListItem(listItemType))(
             view.state,
             (transaction) => view.dispatch(transaction),
             view,
@@ -6108,6 +6151,7 @@ export const MilkdownMarkdownEditor = forwardRef<
         ...previousSchema(schemaCtx),
         inclusive: false,
       }));
+      configureLinkBoundary(ctx);
 
       ctx.update(codeBlockConfig.key, (previousConfig) => ({
         ...previousConfig,

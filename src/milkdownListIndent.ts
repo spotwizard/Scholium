@@ -616,3 +616,64 @@ export function sinkSingleListItem(itemType: NodeType): Command {
     return true;
   };
 }
+
+export function liftSingleListItem(itemType: NodeType): Command {
+  return (state, dispatch, view) => {
+    if (!state.selection.empty) return false;
+
+    let liftTransaction: Transaction | null = null;
+    if (
+      !liftListItem(itemType)(
+        state,
+        (transaction) => {
+          liftTransaction = transaction;
+        },
+        view,
+      )
+    ) {
+      return false;
+    }
+
+    if (!dispatch || !liftTransaction) return true;
+
+    const transaction = liftTransaction as Transaction;
+    const liftedState = state.apply(transaction);
+    const { $from } = liftedState.selection;
+    let itemDepth = $from.depth;
+    while (itemDepth > 0 && $from.node(itemDepth).type !== itemType) {
+      itemDepth -= 1;
+    }
+
+    const listDepth = itemDepth - 1;
+    const parentList = listDepth > 0 ? $from.node(listDepth) : null;
+    const parentListType = parentList?.type.name;
+    const markerType =
+      parentListType === "bullet_list" || parentListType === "bulletList"
+        ? "bullet"
+        : parentListType === "ordered_list" || parentListType === "orderedList"
+          ? "ordered"
+          : null;
+    const supportsMarkerAttrs =
+      itemType.spec.attrs?.listType && itemType.spec.attrs.label;
+
+    if (itemDepth > 0 && parentList && markerType && supportsMarkerAttrs) {
+      const item = $from.node(itemDepth);
+      const itemIndex = $from.index(listDepth);
+      const order =
+        markerType === "ordered" && typeof parentList.attrs.order === "number"
+          ? parentList.attrs.order
+          : 1;
+      const label = markerType === "bullet" ? "•" : `${order + itemIndex}.`;
+      if (item.attrs.listType !== markerType || item.attrs.label !== label) {
+        transaction.setNodeMarkup($from.before(itemDepth), undefined, {
+          ...item.attrs,
+          label,
+          listType: markerType,
+        });
+      }
+    }
+
+    dispatch(transaction.scrollIntoView());
+    return true;
+  };
+}

@@ -222,6 +222,8 @@ import {
 } from "./settings";
 import {
   checkDropboxConnection,
+  listFileLinkTargets,
+  openLinkedFile,
   completeDropboxOAuth as requestDropboxOAuthCompletion,
   createDropboxMarkdownDirectory,
   createDropboxMarkdownFile as createDropboxMarkdownFileRequest,
@@ -278,6 +280,8 @@ import {
   type WorkspaceSource,
   type WritePdfFileResult,
 } from "./tauriGateway";
+import { createTextContextMenu } from "./textContextMenu";
+import { preserveEditorContextMenuSelection } from "./contextMenuSelection";
 import { clearTouchButtonFocus } from "./touchPointer";
 
 const inlineBreakPattern = /<br\s*\/?>/gi;
@@ -5922,6 +5926,27 @@ function App() {
   glossaryModeEnabledRef.current = glossaryModeEnabled;
   editorModeRef.current = editorMode;
   documentModeStatesRef.current = documentModeStates;
+  useEffect(() => {
+    const menu = createTextContextMenu(
+      () => {
+        const current = documentsRef.current.find((entry) => entry.id === selectedDocumentIdRef.current);
+        return current ? {
+          id: current.id,
+          path: isDraftDocumentId(current.id) ? null : current.filePath ?? current.path,
+          source: documentIsFromDropbox(current) ? "dropbox" : "local",
+        } : null;
+      },
+      () => activeDocumentEditorRef.current,
+      (current) => listFileLinkTargets({ path: current.path!, source: current.source }),
+      setStorageError,
+    );
+    window.__scholiumTextMenu = menu;
+    const restoreContextMenuSelection = preserveEditorContextMenuSelection(document);
+    return () => {
+      restoreContextMenuSelection();
+      if (window.__scholiumTextMenu === menu) delete window.__scholiumTextMenu;
+    };
+  }, []);
   noteDraftRef.current = noteDraft;
   glossaryDraftRef.current = glossaryDraft;
   openSettingsHandlerRef.current = openSettingsView;
@@ -14507,6 +14532,16 @@ function App() {
       return;
     }
     if (target.kind !== "document") return;
+
+    if (!/\.(md|markdown|mdown)$/i.test(target.path)) {
+      try {
+        await openLinkedFile({ path: target.path, source });
+        setStorageError("");
+      } catch (error) {
+        setStorageError(translatedError(error, "error.openFileFailed"));
+      }
+      return;
+    }
 
     const loadedDocument = documentsRef.current.find((document) =>
       source === "dropbox"

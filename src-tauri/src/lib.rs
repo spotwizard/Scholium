@@ -26,6 +26,7 @@ use url::Url;
 mod atomic_file;
 mod draft_store;
 mod dropbox_token_state;
+mod file_link;
 mod frontmatter_tags;
 mod local_image;
 mod local_save_recovery;
@@ -2948,6 +2949,92 @@ fn open_markdown_directory(app: AppHandle, path: String) -> Result<OpenMarkdownD
 }
 
 #[tauri::command]
+async fn list_file_link_targets(
+    app: AppHandle,
+    path: String,
+    source: String,
+) -> Result<Vec<String>, String> {
+    if source == "local" {
+        return file_link::local_sibling_names(Path::new(&path));
+    }
+    if source != "dropbox" {
+        return Err("不支援的檔案來源。".into());
+    }
+    let path = normalize_dropbox_path(&path);
+    let parent = dropbox_parent_path(&path).unwrap_or_default();
+    let token = dropbox_access_token(&app).await?;
+    let client = reqwest::Client::new();
+    let mut page = read_dropbox_list_page(&client, &token, &parent).await?;
+    let mut names = Vec::new();
+    loop {
+        for entry in page.entries {
+            if let DropboxMetadata::File {
+                name,
+                path_display,
+                path_lower,
+                is_downloadable,
+                ..
+            } = entry
+            {
+                let candidate = dropbox_metadata_path(path_display, path_lower, &name);
+                if !candidate.eq_ignore_ascii_case(&path)
+                    && is_downloadable != Some(false)
+                    && file_link::is_linkable_name(&name)
+                {
+                    names.push(name);
+                }
+            }
+        }
+        if !page.has_more {
+            break;
+        }
+        page = read_dropbox_list_continue_page(&client, &token, &page.cursor).await?;
+    }
+    names.sort_by_key(|name| name.to_lowercase());
+    Ok(names)
+}
+
+#[tauri::command]
+async fn open_linked_file(app: AppHandle, path: String, source: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    if source == "local" {
+        let target = Path::new(&path);
+        if !target.is_absolute() || !target.is_file() {
+            return Err("連結的檔案不存在。".into());
+        }
+        return app
+            .opener()
+            .open_path(path, None::<&str>)
+            .map_err(|error| error.to_string());
+    }
+    if source != "dropbox" {
+        return Err("不支援的檔案來源。".into());
+    }
+    let token = dropbox_access_token(&app).await?;
+    let response = reqwest::Client::new()
+        .post("https://api.dropboxapi.com/2/files/get_temporary_link")
+        .bearer_auth(token)
+        .json(&serde_json::json!({ "path": normalize_dropbox_path(&path) }))
+        .send()
+        .await
+        .map_err(|error| error.to_string())?;
+    if !response.status().is_success() {
+        return Err(dropbox_response_error(response, "無法開啟連結檔案").await);
+    }
+    let payload: serde_json::Value = response.json().await.map_err(|error| error.to_string())?;
+    let link = payload
+        .get("link")
+        .and_then(|value| value.as_str())
+        .ok_or("Dropbox 未提供檔案連結。")?;
+    if !link.starts_with("https://") {
+        return Err("Dropbox 傳回無效的檔案連結。".into());
+    }
+    app.opener()
+        .open_url(link, None::<&str>)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 fn search_markdown_files(
     app: AppHandle,
     root_path: String,
@@ -4569,6 +4656,18 @@ pub fn run() {
         })
         .on_page_load(|webview, payload| {
             if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
+                #[cfg(target_os = "macos")]
+                if let Err(error) = webview.with_webview(|platform| {
+                    extern "C" {
+                        fn scholium_install_text_context_menu(view: *mut std::ffi::c_void);
+                    }
+                    // The callback runs on the main thread and supplies this window's WKWebView.
+                    unsafe {
+                        scholium_install_text_context_menu(platform.inner());
+                    }
+                }) {
+                    eprintln!("failed to configure text context menu: {error}");
+                }
                 if let Err(error) = webview.window().show() {
                     eprintln!("failed to show ready window: {error}");
                 }
@@ -4691,6 +4790,8 @@ pub fn run() {
             take_opened_file_paths,
             set_native_folder_picker_list_view,
             open_markdown_directory,
+            list_file_link_targets,
+            open_linked_file,
             open_markdown_file,
             open_markdown_file_context,
             read_markdown_image_file,

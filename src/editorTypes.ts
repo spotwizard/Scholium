@@ -49,4 +49,6 @@ export type EditorSelectionSnapshot = {
 
 export type EditorSelectionHandle = {
   getSelectionSnapshot: () => EditorSelectionSnapshot | null;
+  prepareFileInsertion?: (target: Element, x: number, y: number) =>
+    ((file: import("./fileInsertion").InsertableFile) => boolean) | null;
 };

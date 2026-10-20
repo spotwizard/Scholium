@@ -3135,6 +3135,7 @@ name = "scholium"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "cc",
  "getrandom 0.2.17",
  "libc",
  "objc2-foundation",

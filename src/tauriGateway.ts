@@ -1,6 +1,14 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { GlossaryBinding, GlossaryTerm, SelectionNote } from "./documentTypes";
 
+export function listFileLinkTargets(args: { path: string; source: "local" | "dropbox" }) {
+  return invoke<string[]>("list_file_link_targets", args);
+}
+
+export function openLinkedFile(args: { path: string; source: "local" | "dropbox" }) {
+  return invoke<void>("open_linked_file", args);
+}
+
 export type MarkdownImageFileResult = {
   path: string;
   mimeType: string;

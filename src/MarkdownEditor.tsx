@@ -28,6 +28,7 @@ import type {
 } from "./editorTypes";
 import { currentTypingLineBottomMargin } from "./editorTypingLine";
 import { scheduleEditorViewportRestore } from "./editorViewport";
+import { fileInsertionRange, sourceFileInsertion } from "./fileInsertion";
 
 type MarkdownEditorProps = {
   value: string;
@@ -203,6 +204,20 @@ export const MarkdownEditor = forwardRef<EditorSelectionHandle, MarkdownEditorPr
   const searchSignature = `${search.query}\n${search.activeIndex}\n${searchMatchCount}\n${search.scrollRequestKey ?? 0}`;
 
   useImperativeHandle(ref, () => ({
+    prepareFileInsertion(target, x, y) {
+      const view = viewRef.current;
+      if (!view || !view.dom.contains(target)) return null;
+      const position = view.posAtCoords({ x, y });
+      if (position === null) return null;
+      const range = fileInsertionRange(view.state.selection.main, position);
+      const snapshot = view.state;
+      return (file) => {
+        if (viewRef.current !== view || !view.state.doc.eq(snapshot.doc) || !view.state.selection.eq(snapshot.selection)) return false;
+        view.dispatch(sourceFileInsertion(view.state, file, range));
+        view.focus();
+        return true;
+      };
+    },
     getSelectionSnapshot() {
       const view = viewRef.current;
       const selection = view?.state.selection.main;
