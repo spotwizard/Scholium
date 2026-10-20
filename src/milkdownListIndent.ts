@@ -3,6 +3,7 @@ import { liftListItem, sinkListItem } from "@milkdown/prose/schema-list";
 import {
   TextSelection,
   type Command,
+  type EditorState,
   type Transaction,
 } from "@milkdown/prose/state";
 
@@ -615,4 +616,33 @@ export function sinkSingleListItem(itemType: NodeType): Command {
     dispatch(combinedTransaction.scrollIntoView());
     return true;
   };
+}
+
+// Milkdown draws each list item's marker from the item's own listType/label,
+// so an item lifted out of a numbered sub-list into a bullet list (Shift+Tab)
+// kept showing its old number. Items in a bullet list follow the list's first
+// item; when that first item is numbered, Milkdown turns the whole list into a
+// numbered list itself.
+export function bulletListItemMarkerFix(
+  state: EditorState,
+  itemType: NodeType,
+  bulletListType: NodeType,
+): Transaction | null {
+  let tr: Transaction | null = null;
+  state.doc.descendants((node, position) => {
+    if (node.type !== bulletListType) return true;
+    if (node.firstChild?.attrs.listType === "ordered") return true;
+
+    node.forEach((item, offset) => {
+      if (item.type !== itemType || item.attrs.listType !== "ordered") return;
+      tr ??= state.tr;
+      tr.setNodeMarkup(position + 1 + offset, undefined, {
+        ...item.attrs,
+        listType: "bullet",
+        label: "•",
+      });
+    });
+    return true;
+  });
+  return tr;
 }

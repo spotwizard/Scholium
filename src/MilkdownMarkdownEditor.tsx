@@ -90,6 +90,7 @@ import {
 } from "./markdownInlineTextMap";
 import { escapeListLeadingAsterisksForPreview } from "./markdownListLiteral";
 import {
+  bulletListItemMarkerFix,
   deleteEmptyParagraphAfterList,
   deleteAtListItemStart,
   insertEmptyFirstChildListItem,
@@ -3250,6 +3251,18 @@ export const MilkdownMarkdownEditor = forwardRef<
     });
   }
 
+  function createBulletListItemMarkerPlugin() {
+    return new Plugin({
+      appendTransaction(transactions, _oldState, newState) {
+        if (!transactions.some((transaction) => transaction.docChanged)) return null;
+
+        const { bullet_list: bulletListType, list_item: itemType } = newState.schema.nodes;
+        if (!bulletListType || !itemType) return null;
+        return bulletListItemMarkerFix(newState, itemType, bulletListType);
+      },
+    });
+  }
+
   function createSingleListItemIndentPlugin() {
     return new Plugin({
       key: milkdownSingleListItemIndentPluginKey,
@@ -6167,6 +6180,8 @@ export const MilkdownMarkdownEditor = forwardRef<
         createShiftEnterParagraphSplitPlugin(),
         createReadonlyGuardPlugin(),
         ...plugins,
+        // After Milkdown's own list-number sync, which skips appended transactions.
+        createBulletListItemMarkerPlugin(),
         createAnnotationPlugin({
           allowClickWithSelection: () => mobileBlockSelectionEnabledRef.current,
           getAnnotations: () => editorAnnotationsRef.current,
