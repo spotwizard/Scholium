@@ -1,5 +1,6 @@
 import type { Node as ProseMirrorNode, NodeType } from "@milkdown/prose/model";
 import { liftListItem, sinkListItem } from "@milkdown/prose/schema-list";
+import { canJoin } from "@milkdown/prose/transform";
 import {
   TextSelection,
   type Command,
@@ -540,6 +541,33 @@ export function deleteAtListItemStart(
   };
 }
 
+// Tab only joins a sub-list of the same kind as the item's own list, so an
+// item tabbed under one that already has a sub-list of the other kind (bullets
+// under a numbered item, or the reverse) started a second sub-list of its own.
+// It joins the existing sub-list and follows its kind instead.
+function joinSunkItemIntoPreviousSubList(tr: Transaction, itemType: NodeType) {
+  const { $from } = tr.selection;
+  let itemDepth = $from.depth;
+  while (itemDepth > 0 && $from.node(itemDepth).type !== itemType) {
+    itemDepth -= 1;
+  }
+  if (itemDepth < 3) return;
+
+  const listDepth = itemDepth - 1;
+  const parentItemDepth = listDepth - 1;
+  if ($from.node(parentItemDepth).type !== itemType || $from.index(listDepth) !== 0) return;
+
+  const listIndex = $from.index(parentItemDepth);
+  if (listIndex === 0) return;
+  const list = $from.node(listDepth);
+  const previousList = $from.node(parentItemDepth).child(listIndex - 1);
+  if (!nodeIsMarkdownList(previousList) || previousList.type === list.type) return;
+
+  const listPosition = $from.before(listDepth);
+  tr.setNodeMarkup(listPosition, previousList.type, previousList.attrs);
+  if (canJoin(tr.doc, listPosition)) tr.join(listPosition);
+}
+
 export function sinkSingleListItem(itemType: NodeType): Command {
   return (state, dispatch, view) => {
     if (!state.selection.empty) return false;
@@ -570,6 +598,7 @@ export function sinkSingleListItem(itemType: NodeType): Command {
     const selectedItem = itemDepth > 0 ? $from.node(itemDepth) : null;
     const childList = selectedItem?.lastChild;
     if (!childList || childList.firstChild?.type !== itemType) {
+      joinSunkItemIntoPreviousSubList(combinedTransaction, itemType);
       dispatch(combinedTransaction.scrollIntoView());
       return true;
     }
@@ -598,6 +627,7 @@ export function sinkSingleListItem(itemType: NodeType): Command {
       ) ||
       !liftTransaction
     ) {
+      joinSunkItemIntoPreviousSubList(combinedTransaction, itemType);
       dispatch(combinedTransaction.scrollIntoView());
       return true;
     }
@@ -613,7 +643,8 @@ export function sinkSingleListItem(itemType: NodeType): Command {
         originalSelection.to,
       ),
     );
-    dispatch(combinedTransaction.scrollIntoView());
+    joinSunkItemIntoPreviousSubList(combinedTransaction, itemType);
+      dispatch(combinedTransaction.scrollIntoView());
     return true;
   };
 }

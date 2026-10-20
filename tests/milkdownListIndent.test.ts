@@ -2240,3 +2240,38 @@ assert.ok(
 );
 
 console.log("milkdown list indentation and deletion regression: PASS");
+
+const tabUnderOtherKindSubListDocument = schema.nodes.doc.create(null, [
+  schema.nodes.bullet_list.create(null, [
+    schema.nodes.list_item.create(null, [
+      paragraph("用流程圖建立尾牙抽獎發放流程"),
+      schema.nodes.ordered_list.create(null, [
+        orderedItem("取得中獎名單"),
+        orderedItem("登錄中獎名單的獨立發放資料"),
+      ]),
+    ]),
+    item("交付銀行"),
+  ]),
+]);
+let tabUnderOtherKindPosition = -1;
+tabUnderOtherKindSubListDocument.descendants((node, position) => {
+  if (node.isText && node.text === "交付銀行") tabUnderOtherKindPosition = position;
+});
+assert.notEqual(tabUnderOtherKindPosition, -1);
+let tabUnderOtherKindState = EditorState.create({
+  doc: tabUnderOtherKindSubListDocument,
+  selection: TextSelection.create(tabUnderOtherKindSubListDocument, tabUnderOtherKindPosition),
+});
+assert.equal(
+  sinkSingleListItem(schema.nodes.list_item)(tabUnderOtherKindState, (transaction) => {
+    tabUnderOtherKindState = tabUnderOtherKindState.apply(transaction);
+  }),
+  true,
+);
+const tabbedParentItem = tabUnderOtherKindState.doc.child(0).child(0);
+assert.equal(tabUnderOtherKindState.doc.child(0).childCount, 1);
+assert.equal(tabbedParentItem.childCount, 2);
+assert.equal(tabbedParentItem.child(1).type, schema.nodes.ordered_list);
+assert.equal(tabbedParentItem.child(1).childCount, 3);
+assert.equal(tabbedParentItem.child(1).child(2).textContent, "交付銀行");
+assert.equal(tabUnderOtherKindState.selection.$from.parent.textContent, "交付銀行");
