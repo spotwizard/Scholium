@@ -12,3 +12,10 @@ test("text typed right after inline code is not added to the code span", () => {
     /ctx\.update\(inlineCodeSchema\.key, \(previousSchema\) => \(schemaCtx\) => \(\{\s*\.\.\.previousSchema\(schemaCtx\),\s*inclusive: false,\s*\}\)\);/,
   );
 });
+
+test("text typed right after a link is not added to the link", () => {
+  assert.match(
+    editor,
+    /ctx\.update\(linkSchema\.key, \(previousSchema\) => \(schemaCtx\) => \(\{\s*\.\.\.previousSchema\(schemaCtx\),\s*inclusive: false,\s*\}\)\);/,
+  );
+});

@@ -11951,7 +11951,7 @@ function App() {
     sourceDocument: MarkdownDocument,
   ): Promise<FileLinkCandidate[] | null> {
     if (!documentIsFromDropbox(sourceDocument)) {
-      if (!sourceDocument.filePath) return Array.from({ length: 30 }, (_, i) => ({ fileName: `檔案${String(i).padStart(2, "0")}.pdf`, path: `/n/${i}.pdf`, title: `檔案${String(i).padStart(2, "0")}.pdf` }));
+      if (!sourceDocument.filePath) return null;
       return listSiblingFiles({ path: sourceDocument.filePath });
     }
 

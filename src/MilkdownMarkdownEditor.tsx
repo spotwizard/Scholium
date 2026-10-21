@@ -21,6 +21,7 @@ import {
   hardbreakAttr,
   hardbreakSchema,
   inlineCodeSchema,
+  linkSchema,
 } from "@milkdown/kit/preset/commonmark";
 import { splitBlock } from "@milkdown/prose/commands";
 import { closeHistory, redo, redoNoScroll, undo, undoNoScroll } from "@milkdown/prose/history";
@@ -6239,6 +6240,13 @@ export const MilkdownMarkdownEditor = forwardRef<
       // closing backtick in a heading, whose id sync drops the stored marks)
       // kept extending the code span with no way out except source mode.
       ctx.update(inlineCodeSchema.key, (previousSchema) => (schemaCtx) => ({
+        ...previousSchema(schemaCtx),
+        inclusive: false,
+      }));
+
+      // Same for links: once the caret returns to a link's end (a click, an
+      // arrow key, IME input), typed text joined the link and could not leave it.
+      ctx.update(linkSchema.key, (previousSchema) => (schemaCtx) => ({
         ...previousSchema(schemaCtx),
         inclusive: false,
       }));
