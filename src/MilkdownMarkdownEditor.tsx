@@ -93,6 +93,7 @@ import {
   bulletListItemMarkerFix,
   deleteEmptyParagraphAfterList,
   deleteAtListItemStart,
+  emptyListItemLineWithCaret,
   insertEmptyFirstChildListItem,
   mergeRemovedListMarkerLineBackward,
   moveToNextEmptyListItem,
@@ -3267,6 +3268,21 @@ export const MilkdownMarkdownEditor = forwardRef<
     return new Plugin({
       key: milkdownSingleListItemIndentPluginKey,
       props: {
+        decorations(state) {
+          const listItemType = state.schema.nodes.list_item;
+          const linePosition = listItemType
+            ? emptyListItemLineWithCaret(state, listItemType)
+            : null;
+          if (linePosition === null) return null;
+
+          const line = state.doc.nodeAt(linePosition);
+          if (!line) return null;
+          return DecorationSet.create(state.doc, [
+            Decoration.node(linePosition, linePosition + line.nodeSize, {
+              class: "is-empty-list-line-with-caret",
+            }),
+          ]);
+        },
         handleKeyDown(view, event) {
           if (
             event.metaKey ||

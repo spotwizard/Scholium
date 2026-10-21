@@ -48,7 +48,20 @@ function normalizeSerializedEmptyParagraphBreaks(markdown: string) {
         /^(\s*(?:[-+*]|\d+[.)]))\s+<br\s*\/?>\s*$/i,
       );
       if (emptyListItemBreak) {
-        normalizedLines.push(emptyListItemBreak[1] ?? line);
+        const marker = emptyListItemBreak[1] ?? line;
+        normalizedLines.push(marker);
+
+        // An item starts with at most one blank line, so a blank line after a
+        // bare marker ends the item and its nested list loses its parent.
+        let nextContentIndex = index + 1;
+        while (nextContentIndex < lines.length && !(lines[nextContentIndex] ?? "").trim()) {
+          nextContentIndex += 1;
+        }
+        const nextContentIndent =
+          (lines[nextContentIndex] ?? "").match(/^\s*/)?.[0].length ?? 0;
+        if (nextContentIndex < lines.length && nextContentIndent > marker.search(/\S/)) {
+          index = nextContentIndex - 1;
+        }
         continue;
       }
     }

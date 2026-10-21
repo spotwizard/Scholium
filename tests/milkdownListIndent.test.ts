@@ -5,6 +5,7 @@ import { closeHistory, history, undo } from "@milkdown/prose/history";
 import { Schema, type Node as ProseMirrorNode } from "@milkdown/prose/model";
 import {
   bulletList,
+  liftListItem,
   listItem,
   orderedList,
   splitListItem,
@@ -13,6 +14,7 @@ import { EditorState, NodeSelection, TextSelection } from "@milkdown/prose/state
 import {
   deleteEmptyParagraphAfterList,
   deleteAtListItemStart,
+  emptyListItemLineWithCaret,
   insertEmptyFirstChildListItem,
   mergeRemovedListMarkerLineBackward,
   moveToNextEmptyListItem,
@@ -2328,3 +2330,51 @@ assert.equal(
   true,
 );
 assert.deepEqual(lineAfterNestedListState.doc.toJSON(), lineAfterNestedListDocument.toJSON());
+
+// Shift+Tab on an empty item lifts it above the items that followed it, which
+// gives the empty line a nested list. The caret line stays shown.
+const liftEmptyItemDocument = schema.nodes.doc.create(null, [
+  schema.nodes.bullet_list.create(null, [
+    item("蒐集旅遊補助申請單", [
+      item("員工繳交旅遊補助申請單給福委會"),
+      item(""),
+      item("須符合以下條件：", [item("在職滿一年")]),
+    ]),
+  ]),
+]);
+let liftEmptyItemPosition = -1;
+liftEmptyItemDocument.descendants((node, position) => {
+  if (node.type === schema.nodes.paragraph && node.content.size === 0) {
+    liftEmptyItemPosition = position + 1;
+  }
+});
+let liftEmptyItemState = EditorState.create({
+  doc: liftEmptyItemDocument,
+  selection: TextSelection.create(liftEmptyItemDocument, liftEmptyItemPosition),
+});
+assert.equal(emptyListItemLineWithCaret(liftEmptyItemState, schema.nodes.list_item), null);
+assert.equal(
+  liftListItem(schema.nodes.list_item)(liftEmptyItemState, (transaction) => {
+    liftEmptyItemState = liftEmptyItemState.apply(transaction);
+  }),
+  true,
+);
+const liftedEmptyItem = liftEmptyItemState.doc.child(0).child(1);
+assert.equal(liftedEmptyItem.child(0).content.size, 0);
+assert.equal(liftedEmptyItem.child(1).textContent, "須符合以下條件：在職滿一年");
+const liftedEmptyLinePosition = emptyListItemLineWithCaret(
+  liftEmptyItemState,
+  schema.nodes.list_item,
+);
+assert.equal(liftedEmptyLinePosition, liftEmptyItemState.selection.$from.before());
+assert.equal(
+  emptyListItemLineWithCaret(
+    liftEmptyItemState.apply(
+      liftEmptyItemState.tr.setSelection(
+        TextSelection.create(liftEmptyItemState.doc, 3),
+      ),
+    ),
+    schema.nodes.list_item,
+  ),
+  null,
+);

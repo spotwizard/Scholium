@@ -26,6 +26,14 @@ const fencedMarkdown = [
 assert.equal(normalizeMarkdownForScholium(fencedMarkdown), fencedMarkdown);
 
 assert.equal(normalizeMarkdownForScholium("- <br />\n1. <br>"), "-\n1.");
+assert.equal(
+  normalizeMarkdownForScholium("* 蒐集\n\n* <br />\n\n  * 須符合\n\n  * 主管\n"),
+  "- 蒐集\n\n-\n  - 須符合\n  - 主管\n",
+);
+assert.equal(
+  normalizeMarkdownForScholium("* 蒐集\n\n  * <br />\n\n* 主管\n"),
+  "- 蒐集\n\n  -\n\n- 主管\n",
+);
 assert.equal(normalizeMarkdownForScholium("first\\\nsecond"), "first\nsecond");
 assert.equal(
   normalizeMarkdownForScholium(`first${"\\".repeat(3)}\nsecond`),

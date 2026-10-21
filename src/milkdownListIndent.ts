@@ -629,6 +629,32 @@ export function sinkSingleListItem(itemType: NodeType): Command {
   };
 }
 
+// The stylesheet hides an empty first line in a list item that holds a nested
+// list, so an item that only wraps a sub-list does not show a bullet of its own.
+// An empty item lifted with Shift+Tab above the items that followed it has the
+// same shape, which hid the line holding the caret. Returns the position of
+// that line while the caret is on it, so the editor can keep it shown.
+export function emptyListItemLineWithCaret(
+  state: EditorState,
+  itemType: NodeType,
+): number | null {
+  const { selection } = state;
+  if (!(selection instanceof TextSelection) || !selection.empty) return null;
+
+  const { $from } = selection;
+  if ($from.depth < 2 || !nodeIsEmptyParagraph($from.parent)) return null;
+
+  const item = $from.node($from.depth - 1);
+  if (
+    item.type !== itemType ||
+    item.firstChild !== $from.parent ||
+    item.childCount < 2
+  ) {
+    return null;
+  }
+  return $from.before($from.depth);
+}
+
 // Milkdown draws each list item's marker from the item's own listType/label,
 // so an item lifted out of a numbered sub-list into a bullet list (Shift+Tab)
 // kept showing its old number. Items in a bullet list follow the list's first
