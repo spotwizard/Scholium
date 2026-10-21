@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import {
   fileLinkTriggerHasBoundary,
   filterFileLinkCandidates,
+  isMarkdownFilePath,
   siblingFileLinkHref,
   sourceMarkdownFileLink,
 } from "../src/fileLinkInsertion.ts";
@@ -36,3 +37,7 @@ const files = [
 assert.deepEqual(filterFileLinkCandidates(files, ""), files);
 assert.deepEqual(filterFileLinkCandidates(files, " bud "), [files[0]]);
 assert.deepEqual(filterFileLinkCandidates(files, "會議"), [files[1]]);
+
+assert.equal(isMarkdownFilePath("/n/會議.MD"), true);
+assert.equal(isMarkdownFilePath("/n/report.pdf"), false);
+assert.equal(isMarkdownFilePath("/n/a.md.notes.json"), false);

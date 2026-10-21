@@ -26,6 +26,7 @@ struct InsertFileMenuTarget {
 static APP_HANDLE: OnceLock<AppHandle> = OnceLock::new();
 static MENU_TARGET: Mutex<Option<InsertFileMenuTarget>> = Mutex::new(None);
 static ORIGINAL_WILL_OPEN_MENU: OnceLock<Option<Imp>> = OnceLock::new();
+static HOOK_INSTALLED: OnceLock<()> = OnceLock::new();
 
 type WillOpenMenuFn = unsafe extern "C-unwind" fn(&AnyObject, Sel, &NSMenu, &NSEvent);
 
@@ -156,15 +157,32 @@ unsafe extern "C-unwind" fn will_open_menu(
     append_insert_file_item(this, menu);
 }
 
-/// Installs `willOpenMenu:withEvent:` on wry's WKWebView subclass. WryWebView does not
-/// override it, so the inherited WKWebView implementation is kept and called first.
-pub(crate) fn install(app: &AppHandle) {
+pub(crate) fn remember_app(app: &AppHandle) {
     let _ = APP_HANDLE.set(app.clone());
+}
 
-    let Some(class) = AnyClass::get(c"WryWebView") else {
-        eprintln!("failed to find WryWebView class for the editor context menu");
+/// Installs `willOpenMenu:withEvent:` on the class of the webview's WKWebView (wry's
+/// WryWebView subclass, whose runtime name carries a module path and version). WryWebView does
+/// not override it, so the inherited WKWebView implementation is kept and called first.
+pub(crate) fn install_on_webview<R: tauri::Runtime>(webview: &tauri::Webview<R>) {
+    if HOOK_INSTALLED.get().is_some() {
         return;
-    };
+    }
+
+    let result = webview.with_webview(|platform_webview| {
+        let webview = platform_webview.inner() as *const AnyObject;
+        if webview.is_null() {
+            return;
+        }
+        let class = unsafe { (*webview).class() };
+        let _ = HOOK_INSTALLED.get_or_init(|| install_on_class(class));
+    });
+    if let Err(error) = result {
+        eprintln!("failed to reach the webview for the editor context menu: {error}");
+    }
+}
+
+fn install_on_class(class: &AnyClass) {
     let selector = sel!(willOpenMenu:withEvent:);
 
     unsafe {
@@ -183,7 +201,10 @@ pub(crate) fn install(app: &AppHandle) {
             c"v@:@@".as_ptr(),
         );
         if !added.as_bool() {
-            eprintln!("failed to add the editor context menu hook to WryWebView");
+            eprintln!(
+                "failed to add the editor context menu hook to {}",
+                class.name().to_string_lossy()
+            );
         }
     }
 }

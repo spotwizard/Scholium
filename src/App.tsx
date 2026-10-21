@@ -236,7 +236,9 @@ import {
   duplicateDropboxMarkdownFile,
   duplicateMarkdownFile,
   listDropboxMarkdownDirectory,
-  listSiblingMarkdownFiles,
+  listDropboxDirectoryFiles,
+  listSiblingFiles,
+  openLinkedFile,
   openDropboxMarkdownFile,
   openMarkdownDirectory,
   openMarkdownFile,
@@ -283,6 +285,7 @@ import {
 import { clearTouchButtonFocus } from "./touchPointer";
 import {
   filterFileLinkCandidates,
+  isMarkdownFilePath,
   siblingFileLinkHref,
   type FileLinkCandidate,
 } from "./fileLinkInsertion";
@@ -9162,7 +9165,15 @@ function App() {
       }
 
       if (fileLinkPicker) {
-        if (event.key === "Escape") {
+        // Shift on an empty search keeps a typed "@" as plain text, like Escape.
+        const isBareShift =
+          event.key === "Shift" &&
+          !event.repeat &&
+          !event.metaKey &&
+          !event.ctrlKey &&
+          !event.altKey &&
+          !fileLinkPicker.query;
+        if (event.key === "Escape" || isBareShift) {
           event.preventDefault();
           closeFileLinkPicker();
         }
@@ -11935,11 +11946,11 @@ function App() {
   ): Promise<FileLinkCandidate[] | null> {
     if (!documentIsFromDropbox(sourceDocument)) {
       if (!sourceDocument.filePath) return null;
-      return listSiblingMarkdownFiles({ path: sourceDocument.filePath });
+      return listSiblingFiles({ path: sourceDocument.filePath });
     }
 
     const documentPath = sourceDocument.path;
-    const directory = await listDropboxMarkdownDirectory({
+    const directory = await listDropboxDirectoryFiles({
       path: dropboxParentDirectoryPath(documentPath),
     });
     return directory.entries
@@ -14786,6 +14797,16 @@ function App() {
     }
     if (!nativeStorageAvailable) {
       setStorageError(t("error.nativeRuntimeRequired"));
+      return;
+    }
+
+    if (!isMarkdownFilePath(target.path)) {
+      try {
+        await openLinkedFile({ path: target.path });
+        setStorageError("");
+      } catch (error) {
+        setStorageError(translatedError(error, "error.openFileFailed"));
+      }
       return;
     }
 

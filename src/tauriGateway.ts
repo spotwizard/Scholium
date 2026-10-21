@@ -150,9 +150,11 @@ export type ReadDropboxMarkdownBodyArgs = { path: string };
 
 export type SetAppLanguageArgs = { language: string };
 export type SetEditorInsertFileMenuArgs = { enabled: boolean; title: string };
-export type ListSiblingMarkdownFilesArgs = { path: string };
+export type ListSiblingFilesArgs = { path: string };
+export type ListDropboxDirectoryFilesArgs = { path: string };
+export type OpenLinkedFileArgs = { path: string };
 
-export type SiblingMarkdownFileResult = {
+export type SiblingFileResult = {
   path: string;
   title: string;
   fileName: string;
@@ -276,8 +278,16 @@ export function setEditorInsertFileMenu(args: SetEditorInsertFileMenuArgs) {
   return invoke<void>("set_editor_insert_file_menu", args);
 }
 
-export function listSiblingMarkdownFiles(args: ListSiblingMarkdownFilesArgs) {
-  return invoke<SiblingMarkdownFileResult[]>("list_sibling_markdown_files", args);
+export function listSiblingFiles(args: ListSiblingFilesArgs) {
+  return invoke<SiblingFileResult[]>("list_sibling_files", args);
+}
+
+export function listDropboxDirectoryFiles(args: ListDropboxDirectoryFilesArgs) {
+  return invoke<OpenDropboxMarkdownDirectoryResult>("list_dropbox_directory_files", args);
+}
+
+export function openLinkedFile(args: OpenLinkedFileArgs) {
+  return invoke<void>("open_linked_file", args);
 }
 
 export function takeNewWindowDocumentTarget() {

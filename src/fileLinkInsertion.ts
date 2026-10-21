@@ -26,6 +26,10 @@ export function siblingFileLinkHref(fileName: string) {
   );
 }
 
+export function isMarkdownFilePath(path: string) {
+  return /\.(md|markdown|mdown)$/i.test(path);
+}
+
 export function sourceMarkdownFileLink(label: string, href: string) {
   return `[${label.replace(/([\\[\]])/g, "\\$1")}](${href})`;
 }
