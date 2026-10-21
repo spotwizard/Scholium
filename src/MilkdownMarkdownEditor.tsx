@@ -2336,7 +2336,7 @@ export const MilkdownMarkdownEditor = forwardRef<
   const handledSelectAllRequestKeyRef = useRef(selectAllRequestKey);
   const onLinkClickRef = useRef(onLinkClick);
   const onFileLinkTriggerRef = useRef(onFileLinkTrigger);
-  const fileLinkTriggerRef = useRef<{ from: number; to: number } | null>(null);
+  const fileLinkTriggerRef = useRef<{ position: number; character: string } | null>(null);
   const onAnnotationClickRef = useRef(onAnnotationClick);
   const onAnnotationDoubleClickRef = useRef(onAnnotationDoubleClick);
   const onFocusTargetAnnotationPressRef = useRef(onFocusTargetAnnotationPress);
@@ -2449,19 +2449,17 @@ export const MilkdownMarkdownEditor = forwardRef<
       const linkMarkType = state.schema.marks.link;
       if (!linkMarkType || !(state.selection instanceof TextSelection)) return false;
 
-      const triggerIsIntact =
-        trigger !== null &&
-        trigger.to <= state.doc.content.size &&
-        fileLinkTriggerCharacters.has(state.doc.textBetween(trigger.from, trigger.to));
-      let from = triggerIsIntact ? trigger.from : state.selection.from;
-      let to = triggerIsIntact ? trigger.to : state.selection.to;
-      if (!triggerIsIntact && !state.selection.$from.sameParent(state.selection.$to)) {
+      const triggerPosition =
+        trigger !== null && trigger.position <= state.doc.content.size ? trigger.position : null;
+      let from = triggerPosition ?? state.selection.from;
+      let to = triggerPosition ?? state.selection.to;
+      if (triggerPosition === null && !state.selection.$from.sameParent(state.selection.$to)) {
         from = to;
       }
       const $from = state.doc.resolve(from);
       if (!$from.parent.inlineContent || $from.parent.type.spec.code) return false;
 
-      const selectedText = triggerIsIntact ? "" : state.doc.textBetween(from, to);
+      const selectedText = state.doc.textBetween(from, to);
       const text = selectedText.trim() ? selectedText : label;
       const tr = state.tr.insertText(text, from, to);
       tr.addMark(from, from + text.length, linkMarkType.create({ href, title: null }));
@@ -2471,9 +2469,26 @@ export const MilkdownMarkdownEditor = forwardRef<
       view.focus();
       return true;
     },
-    cancelFileLinkTrigger() {
+    cancelFileLinkTrigger({ keepTrigger = false } = {}) {
+      const view = currentEditorView();
+      const trigger = fileLinkTriggerRef.current;
       fileLinkTriggerRef.current = null;
-      currentEditorView()?.focus();
+      if (!view) return;
+
+      if (
+        keepTrigger &&
+        trigger &&
+        !readOnlyRef.current &&
+        trigger.position <= view.state.doc.content.size &&
+        view.state.doc.resolve(trigger.position).parent.inlineContent
+      ) {
+        const tr = view.state.tr.insertText(trigger.character, trigger.position);
+        tr.setSelection(
+          TextSelection.create(tr.doc, trigger.position + trigger.character.length),
+        );
+        view.dispatch(tr.scrollIntoView());
+      }
+      view.focus();
     },
   }));
 
@@ -3125,7 +3140,10 @@ export const MilkdownMarkdownEditor = forwardRef<
       return;
     }
 
-    fileLinkTriggerRef.current = { from: selection.from - trigger.length, to: selection.from };
+    // The picker replaces the "@"; Shift in the picker puts it back.
+    const triggerFrom = selection.from - trigger.length;
+    view.dispatch(view.state.tr.delete(triggerFrom, selection.from));
+    fileLinkTriggerRef.current = { position: triggerFrom, character: trigger };
     onFileLinkTriggerRef.current?.();
   }
 

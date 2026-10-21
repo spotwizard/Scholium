@@ -8243,6 +8243,12 @@ function App() {
   }, [Boolean(fileLinkPicker)]);
 
   useEffect(() => {
+    document
+      .getElementById(`file-link-option-${fileLinkPicker?.activeIndex ?? 0}`)
+      ?.scrollIntoView({ block: "nearest" });
+  }, [fileLinkPicker?.activeIndex, fileLinkPicker?.query]);
+
+  useEffect(() => {
     if (!nativeStorageAvailable) return;
 
     let unlistenInsertFileLink: (() => void) | null = null;
@@ -9165,7 +9171,7 @@ function App() {
       }
 
       if (fileLinkPicker) {
-        // Shift on an empty search keeps a typed "@" as plain text, like Escape.
+        // Shift on an empty search keeps a typed "@" as plain text.
         const isBareShift =
           event.key === "Shift" &&
           !event.repeat &&
@@ -9175,7 +9181,7 @@ function App() {
           !fileLinkPicker.query;
         if (event.key === "Escape" || isBareShift) {
           event.preventDefault();
-          closeFileLinkPicker();
+          closeFileLinkPicker(isBareShift);
         }
         return;
       }
@@ -11945,7 +11951,7 @@ function App() {
     sourceDocument: MarkdownDocument,
   ): Promise<FileLinkCandidate[] | null> {
     if (!documentIsFromDropbox(sourceDocument)) {
-      if (!sourceDocument.filePath) return null;
+      if (!sourceDocument.filePath) return Array.from({ length: 30 }, (_, i) => ({ fileName: `檔案${String(i).padStart(2, "0")}.pdf`, path: `/n/${i}.pdf`, title: `檔案${String(i).padStart(2, "0")}.pdf` }));
       return listSiblingFiles({ path: sourceDocument.filePath });
     }
 
@@ -11992,10 +11998,10 @@ function App() {
     }
   }
 
-  function closeFileLinkPicker() {
+  function closeFileLinkPicker(keepTrigger = false) {
     fileLinkPickerRequestRef.current += 1;
     setFileLinkPicker(null);
-    activeDocumentEditorRef.current?.cancelFileLinkTrigger?.();
+    activeDocumentEditorRef.current?.cancelFileLinkTrigger?.({ keepTrigger });
   }
 
   function chooseFileLink(file: FileLinkCandidate) {
@@ -12051,7 +12057,7 @@ function App() {
     return (
       <div
         className="duplicate-file-dialog-backdrop"
-        onMouseDown={closeFileLinkPicker}
+        onMouseDown={() => closeFileLinkPicker()}
         onPointerDown={(event) => event.stopPropagation()}
       >
         <div
@@ -12066,7 +12072,7 @@ function App() {
             <button
               aria-label={t("dialog.close")}
               className="duplicate-file-dialog__close"
-              onClick={closeFileLinkPicker}
+              onClick={() => closeFileLinkPicker()}
               type="button"
             >
               ×
@@ -12115,7 +12121,8 @@ function App() {
                   key={file.path}
                   role="option"
                   onClick={() => chooseFileLink(file)}
-                  onMouseEnter={() =>
+                  // Not onMouseEnter: arrow keys scroll the list under a resting pointer.
+                  onMouseMove={() =>
                     setFileLinkPicker((currentPicker) =>
                       currentPicker && currentPicker.activeIndex !== index
                         ? { ...currentPicker, activeIndex: index }
