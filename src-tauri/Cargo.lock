@@ -3137,6 +3137,8 @@ dependencies = [
  "base64 0.22.1",
  "getrandom 0.2.17",
  "libc",
+ "objc2",
+ "objc2-app-kit",
  "objc2-foundation",
  "reqwest",
  "serde",

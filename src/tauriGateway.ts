@@ -149,6 +149,14 @@ export type OpenDropboxMarkdownFileArgs = { path: string };
 export type ReadDropboxMarkdownBodyArgs = { path: string };
 
 export type SetAppLanguageArgs = { language: string };
+export type SetEditorInsertFileMenuArgs = { enabled: boolean; title: string };
+export type ListSiblingMarkdownFilesArgs = { path: string };
+
+export type SiblingMarkdownFileResult = {
+  path: string;
+  title: string;
+  fileName: string;
+};
 export type RememberRecentLocationArgs = NativeLocation;
 export type SetCurrentDirectoryLocationArgs = Pick<NativeLocation, "path" | "title" | "source">;
 
@@ -262,6 +270,14 @@ export function dropboxOAuthStatus() {
 
 export function setAppLanguage(args: SetAppLanguageArgs) {
   return invoke<void>("set_app_language", args);
+}
+
+export function setEditorInsertFileMenu(args: SetEditorInsertFileMenuArgs) {
+  return invoke<void>("set_editor_insert_file_menu", args);
+}
+
+export function listSiblingMarkdownFiles(args: ListSiblingMarkdownFilesArgs) {
+  return invoke<SiblingMarkdownFileResult[]>("list_sibling_markdown_files", args);
 }
 
 export function takeNewWindowDocumentTarget() {

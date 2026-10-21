@@ -26,6 +26,11 @@ import type {
   EditorSelectionHandle,
   EditorSelectionSnapshot,
 } from "./editorTypes";
+import {
+  fileLinkTriggerCharacters,
+  fileLinkTriggerHasBoundary,
+  sourceMarkdownFileLink,
+} from "./fileLinkInsertion";
 import { currentTypingLineBottomMargin } from "./editorTypingLine";
 import { scheduleEditorViewportRestore } from "./editorViewport";
 
@@ -38,6 +43,7 @@ type MarkdownEditorProps = {
   onFocusRequestHandled?: (requestKey: number) => void;
   onSearchMatchCountChange?: (count: number) => void;
   onChange: (value: string, source: EditorChangeSource) => void;
+  onFileLinkTrigger?: () => void;
 };
 
 const setSearchEffect = StateEffect.define<DocumentSearchState>();
@@ -187,6 +193,7 @@ export const MarkdownEditor = forwardRef<EditorSelectionHandle, MarkdownEditorPr
       onFocusRequestHandled,
       onSearchMatchCountChange,
       onChange,
+      onFileLinkTrigger,
     },
     ref,
   ) {
@@ -194,6 +201,8 @@ export const MarkdownEditor = forwardRef<EditorSelectionHandle, MarkdownEditorPr
   const viewRef = useRef<EditorView | null>(null);
   const onChangeRef = useRef(onChange);
   const onSearchMatchCountChangeRef = useRef(onSearchMatchCountChange);
+  const onFileLinkTriggerRef = useRef(onFileLinkTrigger);
+  const fileLinkTriggerRef = useRef<{ from: number; to: number } | null>(null);
   const suppressNextChangeRef = useRef(false);
   const handledSelectAllRequestKeyRef = useRef(selectAllRequestKey);
   const searchMatchCount = useMemo(
@@ -215,6 +224,34 @@ export const MarkdownEditor = forwardRef<EditorSelectionHandle, MarkdownEditorPr
           }
         : null;
     },
+    insertFileLink({ href, label }) {
+      const view = viewRef.current;
+      if (!view) return false;
+
+      const trigger = fileLinkTriggerRef.current;
+      fileLinkTriggerRef.current = null;
+      const selection = view.state.selection.main;
+      const triggerIsIntact =
+        trigger !== null &&
+        trigger.to <= view.state.doc.length &&
+        fileLinkTriggerCharacters.has(view.state.sliceDoc(trigger.from, trigger.to));
+      const range = triggerIsIntact ? trigger : selection;
+      const selectedText = triggerIsIntact ? "" : view.state.sliceDoc(range.from, range.to);
+      const insert = sourceMarkdownFileLink(selectedText.trim() ? selectedText : label, href);
+
+      view.dispatch({
+        changes: { from: range.from, to: range.to, insert },
+        selection: { anchor: range.from + insert.length },
+        scrollIntoView: true,
+        userEvent: "input",
+      });
+      view.focus();
+      return true;
+    },
+    cancelFileLinkTrigger() {
+      fileLinkTriggerRef.current = null;
+      viewRef.current?.focus();
+    },
   }));
 
   useEffect(() => {
@@ -224,6 +261,10 @@ export const MarkdownEditor = forwardRef<EditorSelectionHandle, MarkdownEditorPr
   useEffect(() => {
     onSearchMatchCountChangeRef.current = onSearchMatchCountChange;
   }, [onSearchMatchCountChange]);
+
+  useEffect(() => {
+    onFileLinkTriggerRef.current = onFileLinkTrigger;
+  }, [onFileLinkTrigger]);
 
   useEffect(() => {
     if (!containerRef.current || viewRef.current) return;
@@ -243,6 +284,26 @@ export const MarkdownEditor = forwardRef<EditorSelectionHandle, MarkdownEditorPr
         : "user";
 
       onChangeRef.current(update.state.doc.toString(), source);
+
+      if (
+        onFileLinkTriggerRef.current &&
+        update.transactions.some((transaction) => transaction.isUserEvent("input.type"))
+      ) {
+        let trigger: { from: number; to: number } | null = null;
+        update.changes.iterChanges((_fromA, _toA, fromB, toB, inserted) => {
+          const text = inserted.toString();
+          if (!fileLinkTriggerCharacters.has(text)) return;
+
+          const line = update.state.doc.lineAt(fromB);
+          if (fileLinkTriggerHasBoundary(update.state.sliceDoc(line.from, fromB))) {
+            trigger = { from: fromB, to: toB };
+          }
+        });
+        if (trigger) {
+          fileLinkTriggerRef.current = trigger;
+          onFileLinkTriggerRef.current();
+        }
+      }
     });
 
     const state = EditorState.create({

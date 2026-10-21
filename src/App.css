@@ -7867,3 +7867,42 @@ button.document-tag-chip__label:focus-visible {
   display: none !important;
   content: none !important;
 }
+
+.file-link-picker__list {
+  display: grid;
+  max-height: min(320px, 50vh);
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.file-link-picker__option {
+  display: grid;
+  gap: 2px;
+  border-radius: 6px;
+  padding: 7px 10px;
+  color: var(--color-text);
+  cursor: pointer;
+}
+
+.file-link-picker__option.is-active {
+  background: var(--color-surface-soft);
+}
+
+.file-link-picker__title {
+  overflow: hidden;
+  font-size: 0.92rem;
+  font-weight: 620;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-link-picker__file-name {
+  overflow: hidden;
+  color: var(--color-muted);
+  font-size: 0.8rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

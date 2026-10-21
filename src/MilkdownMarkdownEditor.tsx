@@ -78,6 +78,7 @@ import {
 } from "./fencedCodeBlockSelection";
 import { serializeMarkedTextClipboardSlice } from "./markdownClipboard";
 import { localMarkdownImageNeedsHydration } from "./markdownLinkTarget";
+import { fileLinkTriggerCharacters, fileLinkTriggerHasBoundary } from "./fileLinkInsertion";
 import { linkTooltipPositionWithinBounds } from "./linkTooltipPosition";
 import {
   appendInlineMarkdownTextMap,
@@ -149,6 +150,7 @@ type MilkdownMarkdownEditorProps = {
     context?: TextSelectionEnterContext,
   ) => boolean;
   onLinkClick?: (href: string) => void;
+  onFileLinkTrigger?: () => void;
   onAnnotationClick: (noteId: string) => void;
   onAnnotationDoubleClick: (noteId: string) => void;
   onFocusTargetAnnotationPress?: (noteId: string) => void;
@@ -169,6 +171,9 @@ const milkdownShiftEnterParagraphSplitPluginKey = new PluginKey(
 );
 const milkdownSoftLineBlockInputRulePluginKey = new PluginKey(
   "scholium-milkdown-soft-line-block-input-rule",
+);
+const milkdownFileLinkTriggerPluginKey = new PluginKey(
+  "scholium-milkdown-file-link-trigger",
 );
 const milkdownPairedSymbolPluginKey = new PluginKey(
   "scholium-milkdown-paired-symbols",
@@ -2283,6 +2288,7 @@ export const MilkdownMarkdownEditor = forwardRef<
     onSelectionChange,
     onSelectionEnter,
     onLinkClick,
+    onFileLinkTrigger,
     onAnnotationClick,
     onAnnotationDoubleClick,
     onFocusTargetAnnotationPress,
@@ -2329,6 +2335,8 @@ export const MilkdownMarkdownEditor = forwardRef<
   const onSelectionEnterRef = useRef(onSelectionEnter);
   const handledSelectAllRequestKeyRef = useRef(selectAllRequestKey);
   const onLinkClickRef = useRef(onLinkClick);
+  const onFileLinkTriggerRef = useRef(onFileLinkTrigger);
+  const fileLinkTriggerRef = useRef<{ from: number; to: number } | null>(null);
   const onAnnotationClickRef = useRef(onAnnotationClick);
   const onAnnotationDoubleClickRef = useRef(onAnnotationDoubleClick);
   const onFocusTargetAnnotationPressRef = useRef(onFocusTargetAnnotationPress);
@@ -2430,6 +2438,42 @@ export const MilkdownMarkdownEditor = forwardRef<
         ...selection,
         viewportY: view.coordsAtPos(view.state.selection.head).top,
       };
+    },
+    insertFileLink({ href, label }) {
+      const view = currentEditorView();
+      const trigger = fileLinkTriggerRef.current;
+      fileLinkTriggerRef.current = null;
+      if (!view || readOnlyRef.current) return false;
+
+      const { state } = view;
+      const linkMarkType = state.schema.marks.link;
+      if (!linkMarkType || !(state.selection instanceof TextSelection)) return false;
+
+      const triggerIsIntact =
+        trigger !== null &&
+        trigger.to <= state.doc.content.size &&
+        fileLinkTriggerCharacters.has(state.doc.textBetween(trigger.from, trigger.to));
+      let from = triggerIsIntact ? trigger.from : state.selection.from;
+      let to = triggerIsIntact ? trigger.to : state.selection.to;
+      if (!triggerIsIntact && !state.selection.$from.sameParent(state.selection.$to)) {
+        from = to;
+      }
+      const $from = state.doc.resolve(from);
+      if (!$from.parent.inlineContent || $from.parent.type.spec.code) return false;
+
+      const selectedText = triggerIsIntact ? "" : state.doc.textBetween(from, to);
+      const text = selectedText.trim() ? selectedText : label;
+      const tr = state.tr.insertText(text, from, to);
+      tr.addMark(from, from + text.length, linkMarkType.create({ href, title: null }));
+      tr.setSelection(TextSelection.create(tr.doc, from + text.length));
+      tr.removeStoredMark(linkMarkType);
+      view.dispatch(tr.scrollIntoView());
+      view.focus();
+      return true;
+    },
+    cancelFileLinkTrigger() {
+      fileLinkTriggerRef.current = null;
+      currentEditorView()?.focus();
     },
   }));
 
@@ -3056,6 +3100,61 @@ export const MilkdownMarkdownEditor = forwardRef<
       match,
       start,
     };
+  }
+
+  function publishFileLinkTriggerBeforeCursor(view: EditorView) {
+    const { selection } = view.state;
+    if (!selection.empty || readOnlyRef.current || noteModeEnabledRef.current) return;
+
+    const { $from } = selection;
+    if ($from.parent.type.spec.code) return;
+    const inlineCodeMarkType = view.state.schema.marks.inlineCode;
+    if (inlineCodeMarkType?.isInSet($from.marks())) return;
+
+    const textBeforeCursor = $from.parent.textBetween(
+      0,
+      $from.parentOffset,
+      undefined,
+      "\uFFFC",
+    );
+    const trigger = textBeforeCursor.slice(-1);
+    if (
+      !fileLinkTriggerCharacters.has(trigger) ||
+      !fileLinkTriggerHasBoundary(textBeforeCursor.slice(0, -1))
+    ) {
+      return;
+    }
+
+    fileLinkTriggerRef.current = { from: selection.from - trigger.length, to: selection.from };
+    onFileLinkTriggerRef.current?.();
+  }
+
+  function createFileLinkTriggerPlugin() {
+    // Let the "@" land in the document first, then offer the file picker for it.
+    function scheduleTriggerCheck(view: EditorView, text: string | null | undefined) {
+      if (!onFileLinkTriggerRef.current || !text || !fileLinkTriggerCharacters.has(text)) {
+        return;
+      }
+      window.setTimeout(() => {
+        if (!view.isDestroyed && !view.composing) publishFileLinkTriggerBeforeCursor(view);
+      }, 0);
+    }
+
+    return new Plugin({
+      key: milkdownFileLinkTriggerPluginKey,
+      props: {
+        handleTextInput(view, _from, _to, text) {
+          if (!view.composing) scheduleTriggerCheck(view, text);
+          return false;
+        },
+        handleDOMEvents: {
+          compositionend(view, event) {
+            scheduleTriggerCheck(view, event.data);
+            return false;
+          },
+        },
+      },
+    });
   }
 
   function createPairedSymbolPlugin() {
@@ -3922,6 +4021,10 @@ export const MilkdownMarkdownEditor = forwardRef<
   useEffect(() => {
     onLinkClickRef.current = onLinkClick;
   }, [onLinkClick]);
+
+  useEffect(() => {
+    onFileLinkTriggerRef.current = onFileLinkTrigger;
+  }, [onFileLinkTrigger]);
 
   useEffect(() => {
     onAnnotationClickRef.current = onAnnotationClick;
@@ -6179,6 +6282,7 @@ export const MilkdownMarkdownEditor = forwardRef<
         createControlHistoryPlugin(),
         createShiftEnterParagraphSplitPlugin(),
         createReadonlyGuardPlugin(),
+        createFileLinkTriggerPlugin(),
         ...plugins,
         // After Milkdown's own list-number sync, which skips appended transactions.
         createBulletListItemMarkerPlugin(),

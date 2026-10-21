@@ -26,6 +26,8 @@ use url::Url;
 mod atomic_file;
 mod draft_store;
 mod dropbox_token_state;
+#[cfg(target_os = "macos")]
+mod editor_context_menu;
 mod frontmatter_tags;
 mod local_image;
 mod local_save_recovery;
@@ -53,7 +55,7 @@ use markdown_path::{
 use pdf_export::{write_pdf_file, write_pdf_file_to_directory};
 
 #[cfg(target_os = "macos")]
-use objc2_foundation::{NSString, NSUserDefaults};
+use objc2_foundation::{NSArray, NSString, NSUserDefaults};
 
 #[cfg(desktop)]
 const MENU_QUIT: &str = "app:quit";
@@ -3378,9 +3380,78 @@ fn set_current_directory_location(
     refresh_app_menu(&app)
 }
 
+/// System-provided UI such as WKWebView's context menu follows `AppleLanguages`, which macOS
+/// reads when the app launches, so a language change reaches that UI after the next launch.
+#[cfg(target_os = "macos")]
+fn remember_native_ui_language(language: &str) {
+    let apple_language = match language {
+        "en" => "en",
+        "zh-Hans" => "zh-Hans-CN",
+        _ => "zh-Hant-TW",
+    };
+    let defaults = NSUserDefaults::standardUserDefaults();
+    let languages = NSArray::from_retained_slice(&[NSString::from_str(apple_language)]);
+    unsafe {
+        defaults.setObject_forKey(Some(&languages), &NSString::from_str("AppleLanguages"));
+    }
+}
+
+#[tauri::command]
+fn set_editor_insert_file_menu(window: tauri::WebviewWindow, enabled: bool, title: String) {
+    #[cfg(target_os = "macos")]
+    editor_context_menu::set_target(window.label(), enabled, title);
+
+    #[cfg(not(target_os = "macos"))]
+    let _ = (window, enabled, title);
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SiblingMarkdownFile {
+    path: String,
+    title: String,
+    file_name: String,
+}
+
+#[tauri::command]
+fn list_sibling_markdown_files(path: String) -> Result<Vec<SiblingMarkdownFile>, String> {
+    let document_path = PathBuf::from(path);
+    let Some(directory) = document_path.parent().filter(|parent| parent.is_dir()) else {
+        return Err("document folder is not available".to_string());
+    };
+
+    let mut files = Vec::new();
+    for entry in fs::read_dir(directory)
+        .map_err(|error| format!("failed to read Markdown directory: {error}"))?
+    {
+        let entry = entry.map_err(|error| format!("failed to read directory entry: {error}"))?;
+        let path = entry.path();
+        if is_hidden_path(&path) || !path.is_file() || !is_markdown_path(&path) {
+            continue;
+        }
+        if path.file_name() == document_path.file_name() {
+            continue;
+        }
+
+        files.push(SiblingMarkdownFile {
+            title: document_title(&path),
+            file_name: path
+                .file_name()
+                .map(|name| name.to_string_lossy().to_string())
+                .unwrap_or_default(),
+            path: path.to_string_lossy().to_string(),
+        });
+    }
+
+    files.sort_by_key(|file| file.file_name.to_lowercase());
+    Ok(files)
+}
+
 #[tauri::command]
 fn set_app_language(app: tauri::AppHandle, language: String) -> Result<(), String> {
     let normalized_language = normalize_app_language(&language).to_string();
+    #[cfg(target_os = "macos")]
+    remember_native_ui_language(&normalized_language);
     let state = app.state::<LocationMenuState>();
 
     {
@@ -4606,6 +4677,9 @@ pub fn run() {
                 eprintln!("{error}");
             }
 
+            #[cfg(target_os = "macos")]
+            editor_context_menu::install(app.handle());
+
             let dropbox_tokens = read_dropbox_tokens_from_disk(app.handle());
             if let Err(error) = load_dropbox_tokens(app.handle(), dropbox_tokens) {
                 eprintln!("{error}");
@@ -4708,6 +4782,8 @@ pub fn run() {
             saved_locations,
             set_current_directory_location,
             set_app_language,
+            set_editor_insert_file_menu,
+            list_sibling_markdown_files,
             dropbox_oauth_status,
             start_dropbox_oauth,
             complete_dropbox_oauth,
@@ -4763,6 +4839,32 @@ mod tests {
             Some(Duration::from_millis(1_000))
         );
         assert_eq!(dropbox_token_refresh_retry_delay(3), None);
+    }
+
+    #[test]
+    fn sibling_markdown_files_skip_current_hidden_and_non_markdown_files() {
+        let directory = test_directory("sibling-markdown-files");
+        fs::create_dir_all(directory.join("nested.md")).unwrap();
+        for name in [
+            "current.md",
+            "b.md",
+            "A.markdown",
+            ".hidden.md",
+            "image.png",
+        ] {
+            fs::write(directory.join(name), "").unwrap();
+        }
+
+        let files =
+            list_sibling_markdown_files(directory.join("current.md").to_string_lossy().to_string())
+                .unwrap();
+        let _ = fs::remove_dir_all(&directory);
+
+        let names = files
+            .iter()
+            .map(|file| (file.file_name.as_str(), file.title.as_str()))
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec![("A.markdown", "A"), ("b.md", "b")]);
     }
 
     #[test]
