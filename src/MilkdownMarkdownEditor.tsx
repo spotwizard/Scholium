@@ -57,6 +57,10 @@ import type {
   TextSelectionViewportRect,
 } from "./editorTypes";
 import { makeAnchorFromRange } from "./annotationAnchor";
+import {
+  createDeleteKeepsBlockPlugin,
+  deleteSelectionKeepingBlock,
+} from "./milkdownDeleteKeepsBlock";
 import { createInlineCodeVerticalMovePlugin } from "./milkdownInlineCodeVerticalMove";
 import {
   findNormalizedSearchMatchIndexes,
@@ -6074,6 +6078,21 @@ export const MilkdownMarkdownEditor = forwardRef<
     crepe.editor.config((ctx) => {
       ctx.update(editorViewOptionsCtx, (prev) => ({
         ...prev,
+        // ProseMirror deletes the selection itself after a cut; keep the block
+        // the selection started in, as Backspace does.
+        dispatchTransaction(this: EditorView, transaction) {
+          const replacement =
+            transaction.getMeta("uiEvent") === "cut"
+              ? deleteSelectionKeepingBlock(this.state)
+              : null;
+          this.updateState(
+            this.state.apply(
+              replacement
+                ? replacement.setMeta("uiEvent", "cut").scrollIntoView()
+                : transaction,
+            ),
+          );
+        },
         clipboardTextSerializer: (slice, view) =>
           serializeMarkedTextClipboardSlice(slice, view, ctx.get(serializerCtx)) ??
           prev.clipboardTextSerializer?.(slice, view) ??
@@ -6180,6 +6199,9 @@ export const MilkdownMarkdownEditor = forwardRef<
         createControlHistoryPlugin(),
         createShiftEnterParagraphSplitPlugin(),
         createReadonlyGuardPlugin(),
+        createDeleteKeepsBlockPlugin(
+          () => imeCompositionActiveRef.current || readOnlyRef.current,
+        ),
         createInlineCodeVerticalMovePlugin(
           () => imeCompositionActiveRef.current || readOnlyRef.current,
         ),
