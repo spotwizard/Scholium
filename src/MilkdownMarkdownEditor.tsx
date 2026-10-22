@@ -57,6 +57,7 @@ import type {
   TextSelectionViewportRect,
 } from "./editorTypes";
 import { makeAnchorFromRange } from "./annotationAnchor";
+import { createInlineCodeVerticalMovePlugin } from "./milkdownInlineCodeVerticalMove";
 import {
   findNormalizedSearchMatchIndexes,
   normalizeDocumentSearchQuery,
@@ -6179,6 +6180,9 @@ export const MilkdownMarkdownEditor = forwardRef<
         createControlHistoryPlugin(),
         createShiftEnterParagraphSplitPlugin(),
         createReadonlyGuardPlugin(),
+        createInlineCodeVerticalMovePlugin(
+          () => imeCompositionActiveRef.current || readOnlyRef.current,
+        ),
         ...plugins,
         // After Milkdown's own list-number sync, which skips appended transactions.
         createBulletListItemMarkerPlugin(),
