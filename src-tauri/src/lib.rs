@@ -26,6 +26,8 @@ use url::Url;
 mod atomic_file;
 mod draft_store;
 mod dropbox_token_state;
+#[cfg(target_os = "macos")]
+mod editor_context_menu;
 mod frontmatter_tags;
 mod local_image;
 mod local_save_recovery;
@@ -53,7 +55,7 @@ use markdown_path::{
 use pdf_export::{write_pdf_file, write_pdf_file_to_directory};
 
 #[cfg(target_os = "macos")]
-use objc2_foundation::{NSString, NSUserDefaults};
+use objc2_foundation::{NSArray, NSString, NSUserDefaults};
 
 #[cfg(desktop)]
 const MENU_QUIT: &str = "app:quit";
@@ -3378,9 +3380,162 @@ fn set_current_directory_location(
     refresh_app_menu(&app)
 }
 
+/// System-provided UI such as WKWebView's context menu follows `AppleLanguages`, which macOS
+/// reads when the app launches, so a language change reaches that UI after the next launch.
+#[cfg(target_os = "macos")]
+fn remember_native_ui_language(language: &str) {
+    let apple_language = match language {
+        "en" => "en",
+        "zh-Hans" => "zh-Hans-CN",
+        _ => "zh-Hant-TW",
+    };
+    let defaults = NSUserDefaults::standardUserDefaults();
+    let languages = NSArray::from_retained_slice(&[NSString::from_str(apple_language)]);
+    unsafe {
+        defaults.setObject_forKey(Some(&languages), &NSString::from_str("AppleLanguages"));
+    }
+}
+
+#[tauri::command]
+fn set_editor_insert_file_menu(window: tauri::WebviewWindow, enabled: bool, title: String) {
+    #[cfg(target_os = "macos")]
+    editor_context_menu::set_target(window.label(), enabled, title);
+
+    #[cfg(not(target_os = "macos"))]
+    let _ = (window, enabled, title);
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SiblingFile {
+    path: String,
+    title: String,
+    file_name: String,
+}
+
+/// Markdown files keep the extension-less title the file panel shows; other files keep their
+/// full name so `report.pdf` and `report.docx` stay distinguishable.
+fn sibling_file_title(path: &Path) -> String {
+    if is_markdown_path(path) {
+        document_title(path)
+    } else {
+        path.file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_default()
+    }
+}
+
+/// `article.md.notes.json` belongs to `article.md` and is not something to link to.
+fn is_notes_sidecar_name(file_name: &str) -> bool {
+    file_name
+        .strip_suffix(".notes.json")
+        .is_some_and(|markdown_name| is_markdown_path(Path::new(markdown_name)))
+}
+
+#[tauri::command]
+fn list_sibling_files(path: String) -> Result<Vec<SiblingFile>, String> {
+    let document_path = PathBuf::from(path);
+    let Some(directory) = document_path.parent().filter(|parent| parent.is_dir()) else {
+        return Err("document folder is not available".to_string());
+    };
+
+    let mut files = Vec::new();
+    for entry in
+        fs::read_dir(directory).map_err(|error| format!("failed to read directory: {error}"))?
+    {
+        let entry = entry.map_err(|error| format!("failed to read directory entry: {error}"))?;
+        let path = entry.path();
+        if is_hidden_path(&path) || !path.is_file() || path.file_name() == document_path.file_name()
+        {
+            continue;
+        }
+        let file_name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_default();
+        if is_notes_sidecar_name(&file_name) {
+            continue;
+        }
+
+        files.push(SiblingFile {
+            title: sibling_file_title(&path),
+            file_name,
+            path: path.to_string_lossy().to_string(),
+        });
+    }
+
+    files.sort_by_key(|file| file.file_name.to_lowercase());
+    Ok(files)
+}
+
+/// Extensions macOS would run instead of showing, so a link click never launches them.
+const LAUNCHABLE_FILE_EXTENSIONS: &[&str] = &[
+    "action",
+    "app",
+    "applescript",
+    "bash",
+    "command",
+    "csh",
+    "dmg",
+    "fish",
+    "jar",
+    "ksh",
+    "mpkg",
+    "pkg",
+    "py",
+    "rb",
+    "pl",
+    "scpt",
+    "scptd",
+    "sh",
+    "terminal",
+    "tool",
+    "workflow",
+    "zsh",
+];
+
+fn is_launchable_file(path: &Path) -> bool {
+    let has_launchable_extension = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            LAUNCHABLE_FILE_EXTENSIONS.contains(&extension.to_lowercase().as_str())
+        });
+    #[cfg(unix)]
+    let is_executable = {
+        use std::os::unix::fs::PermissionsExt;
+        path.metadata()
+            .map(|metadata| metadata.permissions().mode() & 0o111 != 0)
+            .unwrap_or(true)
+    };
+    #[cfg(not(unix))]
+    let is_executable = false;
+
+    has_launchable_extension || is_executable
+}
+
+#[tauri::command]
+fn open_linked_file(app: AppHandle, path: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+
+    let path = PathBuf::from(path);
+    if !path.is_file() {
+        return Err("linked file was not found".to_string());
+    }
+    if is_launchable_file(&path) {
+        return Err("linked file is a program and was not opened".to_string());
+    }
+
+    app.opener()
+        .open_path(path.to_string_lossy().to_string(), None::<String>)
+        .map_err(|error| format!("failed to open linked file: {error}"))
+}
+
 #[tauri::command]
 fn set_app_language(app: tauri::AppHandle, language: String) -> Result<(), String> {
     let normalized_language = normalize_app_language(&language).to_string();
+    #[cfg(target_os = "macos")]
+    remember_native_ui_language(&normalized_language);
     let state = app.state::<LocationMenuState>();
 
     {
@@ -3603,8 +3758,24 @@ async fn list_dropbox_markdown_directory(
     app: tauri::AppHandle,
     path: String,
 ) -> Result<DropboxMarkdownDirectory, String> {
-    let normalized_path = normalize_dropbox_path(&path);
-    let access_token = dropbox_access_token(&app).await?;
+    list_dropbox_directory(&app, &path, true).await
+}
+
+#[tauri::command]
+async fn list_dropbox_directory_files(
+    app: tauri::AppHandle,
+    path: String,
+) -> Result<DropboxMarkdownDirectory, String> {
+    list_dropbox_directory(&app, &path, false).await
+}
+
+async fn list_dropbox_directory(
+    app: &tauri::AppHandle,
+    path: &str,
+    markdown_only: bool,
+) -> Result<DropboxMarkdownDirectory, String> {
+    let normalized_path = normalize_dropbox_path(path);
+    let access_token = dropbox_access_token(app).await?;
     let client = reqwest::Client::new();
     let mut page = read_dropbox_list_page(&client, &access_token, &normalized_path).await?;
     let mut entries = Vec::new();
@@ -3642,14 +3813,19 @@ async fn list_dropbox_markdown_directory(
                     }
 
                     let path = dropbox_metadata_path(path_display, path_lower, &name);
-                    if is_downloadable == Some(false) || !is_markdown_path(Path::new(&path)) {
+                    if markdown_only
+                        && (is_downloadable == Some(false) || !is_markdown_path(Path::new(&path)))
+                    {
+                        continue;
+                    }
+                    if !markdown_only && is_notes_sidecar_name(&name) {
                         continue;
                     }
 
                     entries.push(DropboxDirectoryEntry {
                         kind: "file".to_string(),
+                        title: sibling_file_title(Path::new(&path)),
                         path,
-                        title: document_title(Path::new(&name)),
                         size,
                         server_modified,
                     });
@@ -4569,6 +4745,8 @@ pub fn run() {
         })
         .on_page_load(|webview, payload| {
             if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
+                #[cfg(target_os = "macos")]
+                editor_context_menu::install_on_webview(webview);
                 if let Err(error) = webview.window().show() {
                     eprintln!("failed to show ready window: {error}");
                 }
@@ -4605,6 +4783,9 @@ pub fn run() {
             {
                 eprintln!("{error}");
             }
+
+            #[cfg(target_os = "macos")]
+            editor_context_menu::remember_app(app.handle());
 
             let dropbox_tokens = read_dropbox_tokens_from_disk(app.handle());
             if let Err(error) = load_dropbox_tokens(app.handle(), dropbox_tokens) {
@@ -4708,6 +4889,10 @@ pub fn run() {
             saved_locations,
             set_current_directory_location,
             set_app_language,
+            set_editor_insert_file_menu,
+            list_sibling_files,
+            list_dropbox_directory_files,
+            open_linked_file,
             dropbox_oauth_status,
             start_dropbox_oauth,
             complete_dropbox_oauth,
@@ -4763,6 +4948,54 @@ mod tests {
             Some(Duration::from_millis(1_000))
         );
         assert_eq!(dropbox_token_refresh_retry_delay(3), None);
+    }
+
+    #[test]
+    fn sibling_files_skip_current_hidden_folders_and_notes_sidecars() {
+        let directory = test_directory("sibling-files");
+        fs::create_dir_all(directory.join("nested.md")).unwrap();
+        for name in [
+            "current.md",
+            "current.md.notes.json",
+            "b.md",
+            "A.markdown",
+            ".hidden.md",
+            "image.png",
+            "data.notes.json",
+        ] {
+            fs::write(directory.join(name), "").unwrap();
+        }
+
+        let files =
+            list_sibling_files(directory.join("current.md").to_string_lossy().to_string()).unwrap();
+        let _ = fs::remove_dir_all(&directory);
+
+        let names = files
+            .iter()
+            .map(|file| (file.file_name.as_str(), file.title.as_str()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            vec![
+                ("A.markdown", "A"),
+                ("b.md", "b"),
+                ("data.notes.json", "data.notes.json"),
+                ("image.png", "image.png"),
+            ]
+        );
+    }
+
+    #[test]
+    fn launchable_files_are_not_opened_from_links() {
+        let directory = test_directory("launchable-files");
+        fs::create_dir_all(&directory).unwrap();
+        for name in ["run.command", "report.pdf"] {
+            fs::write(directory.join(name), "").unwrap();
+        }
+
+        assert!(is_launchable_file(&directory.join("run.command")));
+        assert!(!is_launchable_file(&directory.join("report.pdf")));
+        let _ = fs::remove_dir_all(&directory);
     }
 
     #[test]

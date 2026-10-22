@@ -26,6 +26,11 @@ import type {
   EditorSelectionHandle,
   EditorSelectionSnapshot,
 } from "./editorTypes";
+import {
+  fileLinkTriggerCharacters,
+  fileLinkTriggerHasBoundary,
+  sourceMarkdownFileLink,
+} from "./fileLinkInsertion";
 import { currentTypingLineBottomMargin } from "./editorTypingLine";
 import { scheduleEditorViewportRestore } from "./editorViewport";
 
@@ -38,6 +43,7 @@ type MarkdownEditorProps = {
   onFocusRequestHandled?: (requestKey: number) => void;
   onSearchMatchCountChange?: (count: number) => void;
   onChange: (value: string, source: EditorChangeSource) => void;
+  onFileLinkTrigger?: () => void;
 };
 
 const setSearchEffect = StateEffect.define<DocumentSearchState>();
@@ -187,6 +193,7 @@ export const MarkdownEditor = forwardRef<EditorSelectionHandle, MarkdownEditorPr
       onFocusRequestHandled,
       onSearchMatchCountChange,
       onChange,
+      onFileLinkTrigger,
     },
     ref,
   ) {
@@ -194,6 +201,8 @@ export const MarkdownEditor = forwardRef<EditorSelectionHandle, MarkdownEditorPr
   const viewRef = useRef<EditorView | null>(null);
   const onChangeRef = useRef(onChange);
   const onSearchMatchCountChangeRef = useRef(onSearchMatchCountChange);
+  const onFileLinkTriggerRef = useRef(onFileLinkTrigger);
+  const fileLinkTriggerRef = useRef<{ position: number; character: string } | null>(null);
   const suppressNextChangeRef = useRef(false);
   const handledSelectAllRequestKeyRef = useRef(selectAllRequestKey);
   const searchMatchCount = useMemo(
@@ -215,6 +224,44 @@ export const MarkdownEditor = forwardRef<EditorSelectionHandle, MarkdownEditorPr
           }
         : null;
     },
+    insertFileLink({ href, label }) {
+      const view = viewRef.current;
+      if (!view) return false;
+
+      const trigger = fileLinkTriggerRef.current;
+      fileLinkTriggerRef.current = null;
+      const selection = view.state.selection.main;
+      const triggerPosition =
+        trigger !== null && trigger.position <= view.state.doc.length ? trigger.position : null;
+      const range =
+        triggerPosition !== null ? { from: triggerPosition, to: triggerPosition } : selection;
+      const selectedText = view.state.sliceDoc(range.from, range.to);
+      const insert = sourceMarkdownFileLink(selectedText.trim() ? selectedText : label, href);
+
+      view.dispatch({
+        changes: { from: range.from, to: range.to, insert },
+        selection: { anchor: range.from + insert.length },
+        scrollIntoView: true,
+        userEvent: "input",
+      });
+      view.focus();
+      return true;
+    },
+    cancelFileLinkTrigger({ keepTrigger = false } = {}) {
+      const view = viewRef.current;
+      const trigger = fileLinkTriggerRef.current;
+      fileLinkTriggerRef.current = null;
+      if (!view) return;
+
+      if (keepTrigger && trigger && trigger.position <= view.state.doc.length) {
+        view.dispatch({
+          changes: { from: trigger.position, insert: trigger.character },
+          selection: { anchor: trigger.position + trigger.character.length },
+          userEvent: "input",
+        });
+      }
+      view.focus();
+    },
   }));
 
   useEffect(() => {
@@ -224,6 +271,10 @@ export const MarkdownEditor = forwardRef<EditorSelectionHandle, MarkdownEditorPr
   useEffect(() => {
     onSearchMatchCountChangeRef.current = onSearchMatchCountChange;
   }, [onSearchMatchCountChange]);
+
+  useEffect(() => {
+    onFileLinkTriggerRef.current = onFileLinkTrigger;
+  }, [onFileLinkTrigger]);
 
   useEffect(() => {
     if (!containerRef.current || viewRef.current) return;
@@ -243,6 +294,33 @@ export const MarkdownEditor = forwardRef<EditorSelectionHandle, MarkdownEditorPr
         : "user";
 
       onChangeRef.current(update.state.doc.toString(), source);
+
+      if (
+        onFileLinkTriggerRef.current &&
+        update.transactions.some((transaction) => transaction.isUserEvent("input.type"))
+      ) {
+        let trigger: { from: number; to: number; character: string } | null = null;
+        update.changes.iterChanges((_fromA, _toA, fromB, toB, inserted) => {
+          const text = inserted.toString();
+          if (!fileLinkTriggerCharacters.has(text)) return;
+
+          const line = update.state.doc.lineAt(fromB);
+          if (fileLinkTriggerHasBoundary(update.state.sliceDoc(line.from, fromB))) {
+            trigger = { from: fromB, to: toB, character: text };
+          }
+        });
+        if (trigger) {
+          const { from, to, character } = trigger;
+          const view = update.view;
+          fileLinkTriggerRef.current = { position: from, character };
+          onFileLinkTriggerRef.current();
+          // The picker replaces the "@"; CodeMirror rejects dispatches during an update.
+          queueMicrotask(() => {
+            if (view.state.sliceDoc(from, to) !== character) return;
+            view.dispatch({ changes: { from, to }, userEvent: "delete" });
+          });
+        }
+      }
     });
 
     const state = EditorState.create({

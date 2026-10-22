@@ -21,6 +21,7 @@ import {
   hardbreakAttr,
   hardbreakSchema,
   inlineCodeSchema,
+  linkSchema,
 } from "@milkdown/kit/preset/commonmark";
 import { splitBlock } from "@milkdown/prose/commands";
 import { closeHistory, redo, redoNoScroll, undo, undoNoScroll } from "@milkdown/prose/history";
@@ -83,6 +84,7 @@ import {
 } from "./fencedCodeBlockSelection";
 import { serializeMarkedTextClipboardSlice } from "./markdownClipboard";
 import { localMarkdownImageNeedsHydration } from "./markdownLinkTarget";
+import { fileLinkTriggerCharacters, fileLinkTriggerHasBoundary } from "./fileLinkInsertion";
 import { linkTooltipPositionWithinBounds } from "./linkTooltipPosition";
 import {
   appendInlineMarkdownTextMap,
@@ -154,6 +156,7 @@ type MilkdownMarkdownEditorProps = {
     context?: TextSelectionEnterContext,
   ) => boolean;
   onLinkClick?: (href: string) => void;
+  onFileLinkTrigger?: () => void;
   onAnnotationClick: (noteId: string) => void;
   onAnnotationDoubleClick: (noteId: string) => void;
   onFocusTargetAnnotationPress?: (noteId: string) => void;
@@ -174,6 +177,9 @@ const milkdownShiftEnterParagraphSplitPluginKey = new PluginKey(
 );
 const milkdownSoftLineBlockInputRulePluginKey = new PluginKey(
   "scholium-milkdown-soft-line-block-input-rule",
+);
+const milkdownFileLinkTriggerPluginKey = new PluginKey(
+  "scholium-milkdown-file-link-trigger",
 );
 const milkdownPairedSymbolPluginKey = new PluginKey(
   "scholium-milkdown-paired-symbols",
@@ -2288,6 +2294,7 @@ export const MilkdownMarkdownEditor = forwardRef<
     onSelectionChange,
     onSelectionEnter,
     onLinkClick,
+    onFileLinkTrigger,
     onAnnotationClick,
     onAnnotationDoubleClick,
     onFocusTargetAnnotationPress,
@@ -2334,6 +2341,8 @@ export const MilkdownMarkdownEditor = forwardRef<
   const onSelectionEnterRef = useRef(onSelectionEnter);
   const handledSelectAllRequestKeyRef = useRef(selectAllRequestKey);
   const onLinkClickRef = useRef(onLinkClick);
+  const onFileLinkTriggerRef = useRef(onFileLinkTrigger);
+  const fileLinkTriggerRef = useRef<{ position: number; character: string } | null>(null);
   const onAnnotationClickRef = useRef(onAnnotationClick);
   const onAnnotationDoubleClickRef = useRef(onAnnotationDoubleClick);
   const onFocusTargetAnnotationPressRef = useRef(onFocusTargetAnnotationPress);
@@ -2435,6 +2444,57 @@ export const MilkdownMarkdownEditor = forwardRef<
         ...selection,
         viewportY: view.coordsAtPos(view.state.selection.head).top,
       };
+    },
+    insertFileLink({ href, label }) {
+      const view = currentEditorView();
+      const trigger = fileLinkTriggerRef.current;
+      fileLinkTriggerRef.current = null;
+      if (!view || readOnlyRef.current) return false;
+
+      const { state } = view;
+      const linkMarkType = state.schema.marks.link;
+      if (!linkMarkType || !(state.selection instanceof TextSelection)) return false;
+
+      const triggerPosition =
+        trigger !== null && trigger.position <= state.doc.content.size ? trigger.position : null;
+      let from = triggerPosition ?? state.selection.from;
+      let to = triggerPosition ?? state.selection.to;
+      if (triggerPosition === null && !state.selection.$from.sameParent(state.selection.$to)) {
+        from = to;
+      }
+      const $from = state.doc.resolve(from);
+      if (!$from.parent.inlineContent || $from.parent.type.spec.code) return false;
+
+      const selectedText = state.doc.textBetween(from, to);
+      const text = selectedText.trim() ? selectedText : label;
+      const tr = state.tr.insertText(text, from, to);
+      tr.addMark(from, from + text.length, linkMarkType.create({ href, title: null }));
+      tr.setSelection(TextSelection.create(tr.doc, from + text.length));
+      tr.removeStoredMark(linkMarkType);
+      view.dispatch(tr.scrollIntoView());
+      view.focus();
+      return true;
+    },
+    cancelFileLinkTrigger({ keepTrigger = false } = {}) {
+      const view = currentEditorView();
+      const trigger = fileLinkTriggerRef.current;
+      fileLinkTriggerRef.current = null;
+      if (!view) return;
+
+      if (
+        keepTrigger &&
+        trigger &&
+        !readOnlyRef.current &&
+        trigger.position <= view.state.doc.content.size &&
+        view.state.doc.resolve(trigger.position).parent.inlineContent
+      ) {
+        const tr = view.state.tr.insertText(trigger.character, trigger.position);
+        tr.setSelection(
+          TextSelection.create(tr.doc, trigger.position + trigger.character.length),
+        );
+        view.dispatch(tr.scrollIntoView());
+      }
+      view.focus();
     },
   }));
 
@@ -3061,6 +3121,64 @@ export const MilkdownMarkdownEditor = forwardRef<
       match,
       start,
     };
+  }
+
+  function publishFileLinkTriggerBeforeCursor(view: EditorView) {
+    const { selection } = view.state;
+    if (!selection.empty || readOnlyRef.current || noteModeEnabledRef.current) return;
+
+    const { $from } = selection;
+    if ($from.parent.type.spec.code) return;
+    const inlineCodeMarkType = view.state.schema.marks.inlineCode;
+    if (inlineCodeMarkType?.isInSet($from.marks())) return;
+
+    const textBeforeCursor = $from.parent.textBetween(
+      0,
+      $from.parentOffset,
+      undefined,
+      "\uFFFC",
+    );
+    const trigger = textBeforeCursor.slice(-1);
+    if (
+      !fileLinkTriggerCharacters.has(trigger) ||
+      !fileLinkTriggerHasBoundary(textBeforeCursor.slice(0, -1))
+    ) {
+      return;
+    }
+
+    // The picker replaces the "@"; Shift in the picker puts it back.
+    const triggerFrom = selection.from - trigger.length;
+    view.dispatch(view.state.tr.delete(triggerFrom, selection.from));
+    fileLinkTriggerRef.current = { position: triggerFrom, character: trigger };
+    onFileLinkTriggerRef.current?.();
+  }
+
+  function createFileLinkTriggerPlugin() {
+    // Let the "@" land in the document first, then offer the file picker for it.
+    function scheduleTriggerCheck(view: EditorView, text: string | null | undefined) {
+      if (!onFileLinkTriggerRef.current || !text || !fileLinkTriggerCharacters.has(text)) {
+        return;
+      }
+      window.setTimeout(() => {
+        if (!view.isDestroyed && !view.composing) publishFileLinkTriggerBeforeCursor(view);
+      }, 0);
+    }
+
+    return new Plugin({
+      key: milkdownFileLinkTriggerPluginKey,
+      props: {
+        handleTextInput(view, _from, _to, text) {
+          if (!view.composing) scheduleTriggerCheck(view, text);
+          return false;
+        },
+        handleDOMEvents: {
+          compositionend(view, event) {
+            scheduleTriggerCheck(view, event.data);
+            return false;
+          },
+        },
+      },
+    });
   }
 
   function createPairedSymbolPlugin() {
@@ -3927,6 +4045,10 @@ export const MilkdownMarkdownEditor = forwardRef<
   useEffect(() => {
     onLinkClickRef.current = onLinkClick;
   }, [onLinkClick]);
+
+  useEffect(() => {
+    onFileLinkTriggerRef.current = onFileLinkTrigger;
+  }, [onFileLinkTrigger]);
 
   useEffect(() => {
     onAnnotationClickRef.current = onAnnotationClick;
@@ -6142,6 +6264,13 @@ export const MilkdownMarkdownEditor = forwardRef<
         inclusive: false,
       }));
 
+      // Same for links: once the caret returns to a link's end (a click, an
+      // arrow key, IME input), typed text joined the link and could not leave it.
+      ctx.update(linkSchema.key, (previousSchema) => (schemaCtx) => ({
+        ...previousSchema(schemaCtx),
+        inclusive: false,
+      }));
+
       ctx.update(codeBlockConfig.key, (previousConfig) => ({
         ...previousConfig,
         languages: codeMirrorLanguages,
@@ -6205,6 +6334,7 @@ export const MilkdownMarkdownEditor = forwardRef<
         createInlineCodeVerticalMovePlugin(
           () => imeCompositionActiveRef.current || readOnlyRef.current,
         ),
+        createFileLinkTriggerPlugin(),
         ...plugins,
         // After Milkdown's own list-number sync, which skips appended transactions.
         createBulletListItemMarkerPlugin(),

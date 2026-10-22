@@ -139,11 +139,13 @@ src/
   autosave.ts                   # dirty-state、snapshot reconciliation 與 autosave coordinator
   localRecoveryError.ts         # local recovery backend error 的穩定 i18n mapping
   pdfExport.ts                  # 僅在匯出 PDF 時載入的轉換邏輯
+  fileLinkInsertion.ts          # 插入檔案連結的 href 編碼、`@` 觸發與篩選純邏輯
   App.css                       # 其餘 App layout 與 interaction styles
   SettingsView.css              # Settings 畫面樣式
 src-tauri/
   src/lib.rs                    # Tauri commands 與尚未拆分的 file／Dropbox／menu 整合
   src/atomic_file.rs            # app-private 原子取代與共用 no-follow／identity-safe readers
+  src/editor_context_menu.rs    # macOS WKWebView 右鍵選單加入「插入檔案…」
   src/dropbox_token_state.rs    # Dropbox token 連線代數與競態保護
   src/frontmatter_tags.rs       # Frontmatter tag parse／normalize 純邏輯
   src/local_save_recovery.rs    # Local 文件／notes／sidecar redo manifest 與 replay

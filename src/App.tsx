@@ -236,6 +236,9 @@ import {
   duplicateDropboxMarkdownFile,
   duplicateMarkdownFile,
   listDropboxMarkdownDirectory,
+  listDropboxDirectoryFiles,
+  listSiblingFiles,
+  openLinkedFile,
   openDropboxMarkdownFile,
   openMarkdownDirectory,
   openMarkdownFile,
@@ -252,6 +255,7 @@ import {
   searchMarkdownFiles,
   setAppLanguage,
   setCurrentDirectoryLocation,
+  setEditorInsertFileMenu,
   setNativeFolderPickerListView,
   startDropboxOAuth,
   takeNewWindowDocumentTarget,
@@ -279,6 +283,12 @@ import {
   type WritePdfFileResult,
 } from "./tauriGateway";
 import { clearTouchButtonFocus } from "./touchPointer";
+import {
+  filterFileLinkCandidates,
+  isMarkdownFilePath,
+  siblingFileLinkHref,
+  type FileLinkCandidate,
+} from "./fileLinkInsertion";
 
 const inlineBreakPattern = /<br\s*\/?>/gi;
 const annotationClickDelayMs = 500;
@@ -468,6 +478,16 @@ type RenameDialogState = WorkspaceActionTarget & {
   name: string;
   isSubmitting: boolean;
 };
+
+type FileLinkPickerState = {
+  status: "loading" | "ready" | "error" | "unsaved";
+  files: FileLinkCandidate[];
+  query: string;
+  activeIndex: number;
+};
+
+const editorSurfaceSelector =
+  ".editor-content-frame .milkdown-markdown-editor, .editor-content-frame .markdown-editor-host";
 
 type OpenPathDialogState = {
   path: string;
@@ -5757,6 +5777,10 @@ function App() {
   const createEntryInputRef = useRef<HTMLInputElement | null>(null);
   const draftFileInputRef = useRef<HTMLInputElement | null>(null);
   const openPathInputRef = useRef<HTMLInputElement | null>(null);
+  const [fileLinkPicker, setFileLinkPicker] = useState<FileLinkPickerState | null>(null);
+  const fileLinkPickerInputRef = useRef<HTMLInputElement | null>(null);
+  const fileLinkPickerRequestRef = useRef(0);
+  const fileLinkInsertionAvailableRef = useRef(false);
   const draftFileDialogResolverRef = useRef<((decision: DraftFileDecision) => void) | null>(
     null,
   );
@@ -5903,6 +5927,7 @@ function App() {
   >(() => undefined);
   const openMarkdownFolderHandlerRef = useRef<() => void>(() => undefined);
   const openPathHandlerRef = useRef<() => void>(() => undefined);
+  const insertFileLinkHandlerRef = useRef<() => void>(() => undefined);
   const openDropboxCloudHandlerRef = useRef<() => void>(() => undefined);
   const completeDropboxOAuthHandlerRef = useRef<
     (payload: DropboxOAuthCallbackPayload) => void
@@ -5942,6 +5967,9 @@ function App() {
     void openNativeMenuLocation(target).finally(() => setMobileStartupPhase("hidden"));
   };
   openPathHandlerRef.current = openOpenPathDialog;
+  insertFileLinkHandlerRef.current = () => {
+    void openFileLinkPicker();
+  };
   openMarkdownFolderHandlerRef.current = () => {
     void openMarkdownFolder();
   };
@@ -8207,6 +8235,43 @@ function App() {
   }, [draftFileDialog?.documentId]);
 
   useEffect(() => {
+    if (!fileLinkPicker) return;
+
+    window.setTimeout(() => {
+      fileLinkPickerInputRef.current?.focus();
+    });
+  }, [Boolean(fileLinkPicker)]);
+
+  useEffect(() => {
+    document
+      .getElementById(`file-link-option-${fileLinkPicker?.activeIndex ?? 0}`)
+      ?.scrollIntoView({ block: "nearest" });
+  }, [fileLinkPicker?.activeIndex, fileLinkPicker?.query]);
+
+  useEffect(() => {
+    if (!nativeStorageAvailable) return;
+
+    let unlistenInsertFileLink: (() => void) | null = null;
+    let disposed = false;
+    void getCurrentWindow()
+      .listen("scholium-insert-file-link", () => {
+        insertFileLinkHandlerRef.current();
+      })
+      .then((unlisten) => {
+        if (disposed) {
+          unlisten();
+        } else {
+          unlistenInsertFileLink = unlisten;
+        }
+      });
+
+    return () => {
+      disposed = true;
+      unlistenInsertFileLink?.();
+    };
+  }, [nativeStorageAvailable]);
+
+  useEffect(() => {
     if (!openPathDialog) return;
 
     window.setTimeout(() => {
@@ -8981,6 +9046,7 @@ function App() {
           createEntryDialog ||
           draftFileDialog ||
           openPathDialog ||
+          fileLinkPicker ||
           duplicateFileDialog ||
           dropboxDirectoryPicker
         ) {
@@ -9013,6 +9079,7 @@ function App() {
     createEntryDialog,
     draftFileDialog,
     openPathDialog,
+    fileLinkPicker,
     dropboxDirectoryPicker,
     duplicateFileDialog,
     hasOpenDocument,
@@ -9099,6 +9166,22 @@ function App() {
         if (event.key === "Escape" && !openPathDialog.isSubmitting) {
           event.preventDefault();
           setOpenPathDialog(null);
+        }
+        return;
+      }
+
+      if (fileLinkPicker) {
+        // Shift on an empty search keeps a typed "@" as plain text.
+        const isBareShift =
+          event.key === "Shift" &&
+          !event.repeat &&
+          !event.metaKey &&
+          !event.ctrlKey &&
+          !event.altKey &&
+          !fileLinkPicker.query;
+        if (event.key === "Escape" || isBareShift) {
+          event.preventDefault();
+          closeFileLinkPicker(isBareShift);
         }
         return;
       }
@@ -9255,6 +9338,7 @@ function App() {
     createEntryDialog,
     draftFileDialog,
     openPathDialog,
+    fileLinkPicker,
     duplicateFileDialog,
     dropboxDirectoryPicker,
     glossaryModeEnabled,
@@ -11861,6 +11945,202 @@ function App() {
       setStorageError(translatedError(error, "error.openFolderFailed"));
       return true;
     }
+  }
+
+  async function listFileLinkCandidates(
+    sourceDocument: MarkdownDocument,
+  ): Promise<FileLinkCandidate[] | null> {
+    if (!documentIsFromDropbox(sourceDocument)) {
+      if (!sourceDocument.filePath) return null;
+      return listSiblingFiles({ path: sourceDocument.filePath });
+    }
+
+    const documentPath = sourceDocument.path;
+    const directory = await listDropboxDirectoryFiles({
+      path: dropboxParentDirectoryPath(documentPath),
+    });
+    return directory.entries
+      .filter(
+        (entry) =>
+          entry.kind === "file" && entry.path.toLowerCase() !== documentPath.toLowerCase(),
+      )
+      .map((entry) => ({
+        fileName: fileNameFromPath(entry.path),
+        path: entry.path,
+        title: entry.title,
+      }));
+  }
+
+  async function openFileLinkPicker() {
+    const sourceDocument = documentsRef.current.find(
+      (document) => document.id === selectedDocumentIdRef.current,
+    );
+    if (!sourceDocument || !fileLinkInsertionAvailableRef.current) return;
+
+    const requestId = fileLinkPickerRequestRef.current + 1;
+    fileLinkPickerRequestRef.current = requestId;
+    setFileLinkPicker({ status: "loading", files: [], query: "", activeIndex: 0 });
+
+    try {
+      const files = await listFileLinkCandidates(sourceDocument);
+      if (fileLinkPickerRequestRef.current !== requestId) return;
+      setFileLinkPicker((currentPicker) =>
+        currentPicker
+          ? { ...currentPicker, status: files ? "ready" : "unsaved", files: files ?? [] }
+          : currentPicker,
+      );
+    } catch (error) {
+      console.error(error);
+      if (fileLinkPickerRequestRef.current !== requestId) return;
+      setFileLinkPicker((currentPicker) =>
+        currentPicker ? { ...currentPicker, status: "error" } : currentPicker,
+      );
+    }
+  }
+
+  function closeFileLinkPicker(keepTrigger = false) {
+    fileLinkPickerRequestRef.current += 1;
+    setFileLinkPicker(null);
+    activeDocumentEditorRef.current?.cancelFileLinkTrigger?.({ keepTrigger });
+  }
+
+  function chooseFileLink(file: FileLinkCandidate) {
+    fileLinkPickerRequestRef.current += 1;
+    setFileLinkPicker(null);
+    activeDocumentEditorRef.current?.insertFileLink?.({
+      href: siblingFileLinkHref(file.fileName),
+      label: file.title,
+    });
+  }
+
+  function handleFileLinkPickerKeyDown(
+    event: ReactKeyboardEvent<HTMLInputElement>,
+    matchingFiles: FileLinkCandidate[],
+  ) {
+    if (!fileLinkPicker || event.nativeEvent.isComposing) return;
+
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      if (matchingFiles.length === 0) return;
+      const step = event.key === "ArrowDown" ? 1 : -1;
+      const nextIndex =
+        (fileLinkPicker.activeIndex + step + matchingFiles.length) % matchingFiles.length;
+      setFileLinkPicker({ ...fileLinkPicker, activeIndex: nextIndex });
+      return;
+    }
+
+    if (event.key === "Enter") {
+      event.preventDefault();
+      const file = matchingFiles[fileLinkPicker.activeIndex];
+      if (file) chooseFileLink(file);
+    }
+  }
+
+  function renderFileLinkPicker() {
+    if (!fileLinkPicker) return null;
+
+    const matchingFiles = filterFileLinkCandidates(fileLinkPicker.files, fileLinkPicker.query);
+    const activeIndex = Math.min(fileLinkPicker.activeIndex, Math.max(matchingFiles.length - 1, 0));
+    const message =
+      fileLinkPicker.status === "loading"
+        ? t("insertFileLink.loading")
+        : fileLinkPicker.status === "unsaved"
+          ? t("insertFileLink.unsaved")
+          : fileLinkPicker.status === "error"
+            ? t("insertFileLink.loadFailed")
+            : fileLinkPicker.files.length === 0
+              ? t("insertFileLink.empty")
+              : matchingFiles.length === 0
+                ? t("insertFileLink.noMatch")
+                : "";
+
+    return (
+      <div
+        className="duplicate-file-dialog-backdrop"
+        onMouseDown={() => closeFileLinkPicker()}
+        onPointerDown={(event) => event.stopPropagation()}
+      >
+        <div
+          aria-labelledby="file-link-picker-title"
+          aria-modal="true"
+          className="duplicate-file-dialog file-link-picker"
+          onMouseDown={(event) => event.stopPropagation()}
+          role="dialog"
+        >
+          <div className="duplicate-file-dialog__header">
+            <h2 id="file-link-picker-title">{t("insertFileLink.title")}</h2>
+            <button
+              aria-label={t("dialog.close")}
+              className="duplicate-file-dialog__close"
+              onClick={() => closeFileLinkPicker()}
+              type="button"
+            >
+              ×
+            </button>
+          </div>
+          <label className="duplicate-file-dialog__field">
+            <span className="duplicate-file-dialog__file-name-control">
+              <input
+                aria-activedescendant={
+                  matchingFiles[activeIndex] ? `file-link-option-${activeIndex}` : undefined
+                }
+                aria-controls="file-link-picker-list"
+                aria-label={t("insertFileLink.searchPlaceholder")}
+                autoCapitalize="off"
+                autoComplete="off"
+                placeholder={t("insertFileLink.searchPlaceholder")}
+                ref={fileLinkPickerInputRef}
+                role="combobox"
+                aria-expanded={matchingFiles.length > 0}
+                spellCheck={false}
+                type="text"
+                value={fileLinkPicker.query}
+                onChange={(event) => {
+                  const query = event.target.value;
+                  setFileLinkPicker((currentPicker) =>
+                    currentPicker ? { ...currentPicker, query, activeIndex: 0 } : currentPicker,
+                  );
+                }}
+                onKeyDown={(event) =>
+                  handleFileLinkPickerKeyDown(event, matchingFiles)
+                }
+              />
+            </span>
+          </label>
+          {message ? (
+            <p className="duplicate-file-dialog__description" role="status">
+              {message}
+            </p>
+          ) : (
+            <ul className="file-link-picker__list" id="file-link-picker-list" role="listbox">
+              {matchingFiles.map((file, index) => (
+                <li
+                  aria-selected={index === activeIndex}
+                  className={`file-link-picker__option ${index === activeIndex ? "is-active" : ""}`}
+                  id={`file-link-option-${index}`}
+                  key={file.path}
+                  role="option"
+                  onClick={() => chooseFileLink(file)}
+                  // Not onMouseEnter: arrow keys scroll the list under a resting pointer.
+                  onMouseMove={() =>
+                    setFileLinkPicker((currentPicker) =>
+                      currentPicker && currentPicker.activeIndex !== index
+                        ? { ...currentPicker, activeIndex: index }
+                        : currentPicker,
+                    )
+                  }
+                >
+                  <span className="file-link-picker__title">{file.title}</span>
+                  {file.fileName !== file.title ? (
+                    <span className="file-link-picker__file-name">{file.fileName}</span>
+                  ) : null}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
+    );
   }
 
   function openOpenPathDialog() {
@@ -14527,6 +14807,16 @@ function App() {
       return;
     }
 
+    if (!isMarkdownFilePath(target.path)) {
+      try {
+        await openLinkedFile({ path: target.path });
+        setStorageError("");
+      } catch (error) {
+        setStorageError(translatedError(error, "error.openFileFailed"));
+      }
+      return;
+    }
+
     setStorageError(t("status.openingFile"));
     try {
       const loaded = await openMarkdownFile({
@@ -16316,6 +16606,13 @@ function App() {
         };
   const previewEditorReadOnly =
     notePanelModalActive || (noteModeEnabled && mobileAnnotationKeyboardShouldStayClosed);
+  const fileLinkInsertionAvailable =
+    hasOpenDocument &&
+    !settingsViewOpen &&
+    !noteModeEnabled &&
+    !(editorMode === "preview" && previewEditorReadOnly);
+  fileLinkInsertionAvailableRef.current = fileLinkInsertionAvailable;
+  const insertFileMenuTitle = t("insertFileLink.menuItem");
   const mobileCommittedSelectionAnchor =
     pendingAnchor ?? activeNote?.anchor ?? activeGlossaryBinding?.anchor ?? null;
   const mobileCommittedSelectionKey =
@@ -16724,6 +17021,46 @@ function App() {
       !dropboxDirectoryPicker,
   );
   const startupActive = mobileStartupPhase !== "hidden" && !settingsViewOpen;
+
+  useEffect(() => {
+    if (!nativeStorageAvailable) return;
+
+    // WKWebView builds its context menu natively, so the menu item is added on the Rust side
+    // for whichever window last reported the pointer over its editor.
+    let reportedEnabled = false;
+    function reportInsertFileMenu(enabled: boolean) {
+      if (enabled === reportedEnabled) return;
+      reportedEnabled = enabled;
+      void setEditorInsertFileMenu({ enabled, title: insertFileMenuTitle }).catch((error) => {
+        console.error(error);
+      });
+    }
+
+    function handlePointerOver(event: PointerEvent) {
+      const pointerOverEditor =
+        event.target instanceof Element && Boolean(event.target.closest(editorSurfaceSelector));
+      reportInsertFileMenu(fileLinkInsertionAvailable && pointerOverEditor);
+    }
+
+    function handlePointerLeaveWindow() {
+      reportInsertFileMenu(false);
+    }
+
+    reportInsertFileMenu(
+      fileLinkInsertionAvailable &&
+        Array.from(document.querySelectorAll(editorSurfaceSelector)).some((element) =>
+          element.matches(":hover"),
+        ),
+    );
+    document.addEventListener("pointerover", handlePointerOver, true);
+    document.documentElement.addEventListener("mouseleave", handlePointerLeaveWindow);
+
+    return () => {
+      document.removeEventListener("pointerover", handlePointerOver, true);
+      document.documentElement.removeEventListener("mouseleave", handlePointerLeaveWindow);
+      reportInsertFileMenu(false);
+    };
+  }, [fileLinkInsertionAvailable, insertFileMenuTitle, nativeStorageAvailable]);
 
   useEffect(() => {
     if (!storageFeedbackVisible || storageLoading || dropboxConnecting) return;
@@ -17730,6 +18067,8 @@ function App() {
         </div>
       ) : null}
 
+      {renderFileLinkPicker()}
+
       {openPathDialog ? (
         <div
           className="duplicate-file-dialog-backdrop"
@@ -18634,6 +18973,7 @@ function App() {
                   onFocusRequestHandled={completeEditorFocusRequest}
                   onFocusTargetAnnotationPress={dismissFocusTargetAnnotationFromEditor}
                   onLinkClick={(href) => void openMarkdownLink(href)}
+                  onFileLinkTrigger={() => insertFileLinkHandlerRef.current()}
                   onSearchMatchCountChange={handleDocumentSearchMatchCountChange}
                   onSelectionChange={handleSelectionChange}
                   onSelectionEnter={handleSelectionEnter}
@@ -18647,6 +18987,7 @@ function App() {
                   selectAllRequestKey={editorSelectAllRequestKey}
                   value={selectedDocument.body}
                   onChange={updateSelectedDocumentBody}
+                  onFileLinkTrigger={() => insertFileLinkHandlerRef.current()}
                   onFocusRequestHandled={completeEditorFocusRequest}
                   onSearchMatchCountChange={handleDocumentSearchMatchCountChange}
                 />

@@ -47,6 +47,16 @@ export type EditorSelectionSnapshot = {
   viewportY?: number | null;
 };
 
+export type FileLinkInsertion = {
+  href: string;
+  label: string;
+};
+
 export type EditorSelectionHandle = {
   getSelectionSnapshot: () => EditorSelectionSnapshot | null;
+  // Inserts a link where the pending "@" trigger was removed, or else over the selection; a
+  // non-empty selection becomes the link label.
+  insertFileLink?: (link: FileLinkInsertion) => boolean;
+  // keepTrigger puts the removed "@" back, for when the user meant to type it.
+  cancelFileLinkTrigger?: (options?: { keepTrigger?: boolean }) => void;
 };
