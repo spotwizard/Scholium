@@ -5,6 +5,7 @@ import { closeHistory, history, undo } from "@milkdown/prose/history";
 import { Schema, type Node as ProseMirrorNode } from "@milkdown/prose/model";
 import {
   bulletList,
+  liftListItem,
   listItem,
   orderedList,
   splitListItem,
@@ -14,6 +15,7 @@ import {
   deleteEmptyParagraphAfterList,
   deleteAtListItemStart,
   insertEmptyFirstChildListItem,
+  liftListItemBesideSiblingLists,
   mergeRemovedListMarkerLineBackward,
   moveToNextEmptyListItem,
   normalizeAdjacentSerializedListItems,
@@ -2328,3 +2330,150 @@ assert.equal(
   true,
 );
 assert.deepEqual(lineAfterNestedListState.doc.toJSON(), lineAfterNestedListDocument.toJSON());
+
+// Shift+Tab on an item whose parent item holds a second list after its own
+// (a numbered list next to a bullet sub-list).
+const listAfterNumberedListDocument = schema.nodes.doc.create(null, [
+  schema.nodes.bullet_list.create(null, [
+    schema.nodes.list_item.create(null, [
+      paragraph("上層項目 B"),
+      schema.nodes.ordered_list.create(null, [
+        orderedItem("編號項目 1"),
+        orderedItem("編號項目 2"),
+        orderedItem("編號項目 3"),
+      ]),
+      schema.nodes.bullet_list.create(null, [item("子項目 X")]),
+    ]),
+    item("項目 C"),
+  ]),
+]);
+function listAfterNumberedListState(itemText: string, offset: number) {
+  let position = -1;
+  listAfterNumberedListDocument.descendants((node, nodePosition) => {
+    if (node.isText && node.text === itemText) position = nodePosition + offset;
+  });
+  assert.notEqual(position, -1);
+  return EditorState.create({
+    doc: listAfterNumberedListDocument,
+    selection: TextSelection.create(listAfterNumberedListDocument, position),
+  });
+}
+
+let liftMiddleState = listAfterNumberedListState("編號項目 2", 2);
+assert.equal(liftListItem(schema.nodes.list_item)(liftMiddleState, () => {}), false);
+assert.equal(
+  liftListItemBesideSiblingLists(schema.nodes.list_item)(liftMiddleState, (transaction) => {
+    liftMiddleState = liftMiddleState.apply(transaction);
+  }),
+  true,
+);
+const liftedTopList = liftMiddleState.doc.child(0);
+assert.equal(liftedTopList.childCount, 3);
+const liftedParent = liftedTopList.child(0);
+assert.equal(liftedParent.childCount, 2);
+assert.equal(liftedParent.child(1).type, schema.nodes.ordered_list);
+assert.equal(liftedParent.child(1).textContent, "編號項目 1");
+const liftedItem = liftedTopList.child(1);
+assert.equal(liftedItem.childCount, 3);
+assert.equal(liftedItem.child(0).textContent, "編號項目 2");
+assert.equal(liftedItem.child(1).type, schema.nodes.ordered_list);
+assert.equal(liftedItem.child(1).textContent, "編號項目 3");
+assert.equal(liftedItem.child(2).type, schema.nodes.bullet_list);
+assert.equal(liftedItem.child(2).textContent, "子項目 X");
+assert.equal(liftedTopList.child(2).textContent, "項目 C");
+assert.equal(liftMiddleState.doc.textContent, listAfterNumberedListDocument.textContent);
+assert.equal(liftMiddleState.selection.$from.parent.textContent, "編號項目 2");
+assert.equal(liftMiddleState.selection.$from.parentOffset, 2);
+
+let liftFirstState = listAfterNumberedListState("編號項目 1", 0);
+assert.equal(
+  liftListItemBesideSiblingLists(schema.nodes.list_item)(liftFirstState, (transaction) => {
+    liftFirstState = liftFirstState.apply(transaction);
+  }),
+  true,
+);
+assert.equal(liftFirstState.doc.child(0).child(0).childCount, 1);
+const firstLiftedItem = liftFirstState.doc.child(0).child(1);
+assert.equal(firstLiftedItem.child(0).textContent, "編號項目 1");
+assert.equal(firstLiftedItem.child(1).textContent, "編號項目 2編號項目 3");
+assert.equal(firstLiftedItem.child(2).textContent, "子項目 X");
+assert.equal(liftFirstState.selection.$from.parent.textContent, "編號項目 1");
+
+// The last bullet item before a numbered list at the same level takes that list
+// along as its children, instead of moving below it.
+const itemBeforeNumberedListDocument = schema.nodes.doc.create(null, [
+  schema.nodes.bullet_list.create(null, [
+    schema.nodes.list_item.create(null, [
+      paragraph("上層項目 A"),
+      schema.nodes.bullet_list.create(null, [
+        item("子項目 1"),
+        item("子項目 2", [item("子項目 2-1")]),
+      ]),
+      schema.nodes.ordered_list.create(null, [
+        orderedItem("編號項目 4"),
+        orderedItem("編號項目 5"),
+      ]),
+      schema.nodes.bullet_list.create(null, [item("子項目 3")]),
+    ]),
+  ]),
+]);
+let itemBeforeNumberedListPosition = -1;
+itemBeforeNumberedListDocument.descendants((node, position) => {
+  if (node.isText && node.text === "子項目 2") {
+    itemBeforeNumberedListPosition = position;
+  }
+});
+let itemBeforeNumberedListState = EditorState.create({
+  doc: itemBeforeNumberedListDocument,
+  selection: TextSelection.create(itemBeforeNumberedListDocument, itemBeforeNumberedListPosition),
+});
+assert.equal(liftListItem(schema.nodes.list_item)(itemBeforeNumberedListState, () => {}), false);
+assert.equal(
+  liftListItemBesideSiblingLists(schema.nodes.list_item)(
+    itemBeforeNumberedListState,
+    (transaction) => {
+      itemBeforeNumberedListState = itemBeforeNumberedListState.apply(transaction);
+    },
+  ),
+  true,
+);
+const numberedListOwner = itemBeforeNumberedListState.doc.child(0);
+assert.equal(numberedListOwner.childCount, 2);
+assert.equal(numberedListOwner.child(0).childCount, 2);
+assert.equal(numberedListOwner.child(0).child(1).textContent, "子項目 1");
+const itemWithNumberedList = numberedListOwner.child(1);
+assert.equal(itemWithNumberedList.childCount, 4);
+assert.equal(itemWithNumberedList.child(0).textContent, "子項目 2");
+assert.equal(itemWithNumberedList.child(1).type, schema.nodes.bullet_list);
+assert.equal(itemWithNumberedList.child(1).textContent, "子項目 2-1");
+assert.equal(itemWithNumberedList.child(2).type, schema.nodes.ordered_list);
+assert.equal(itemWithNumberedList.child(2).textContent, "編號項目 4編號項目 5");
+assert.equal(itemWithNumberedList.child(3).textContent, "子項目 3");
+assert.equal(
+  itemBeforeNumberedListState.doc.textContent,
+  itemBeforeNumberedListDocument.textContent,
+);
+assert.equal(
+  itemBeforeNumberedListState.selection.$from.parent.textContent,
+  "子項目 2",
+);
+
+// Left to liftListItem when it can lift the item itself.
+const plainNestedDocument = schema.nodes.doc.create(null, [
+  schema.nodes.bullet_list.create(null, [item("上層", [item("下層")])]),
+]);
+let plainNestedPosition = -1;
+plainNestedDocument.descendants((node, position) => {
+  if (node.isText && node.text === "下層") plainNestedPosition = position;
+});
+const plainNestedState = EditorState.create({
+  doc: plainNestedDocument,
+  selection: TextSelection.create(plainNestedDocument, plainNestedPosition),
+});
+assert.equal(liftListItem(schema.nodes.list_item)(plainNestedState, () => {}), true);
+assert.equal(
+  liftListItemBesideSiblingLists(schema.nodes.list_item)(plainNestedState, () => {
+    assert.fail("liftListItem already handles this item");
+  }),
+  false,
+);

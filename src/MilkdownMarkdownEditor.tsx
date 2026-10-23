@@ -101,6 +101,7 @@ import {
   deleteEmptyParagraphAfterList,
   deleteAtListItemStart,
   insertEmptyFirstChildListItem,
+  liftListItemBesideSiblingLists,
   mergeRemovedListMarkerLineBackward,
   moveToNextEmptyListItem,
   preserveSerializedEmptyParagraphListBoundaries,
@@ -3468,9 +3469,13 @@ export const MilkdownMarkdownEditor = forwardRef<
           }
 
           if (noteModeEnabledRef.current) return false;
-          if (event.key !== "Tab" || event.shiftKey) return false;
+          if (event.key !== "Tab") return false;
 
-          const handled = sinkSingleListItem(listItemType)(
+          const handled = (
+            event.shiftKey
+              ? liftListItemBesideSiblingLists
+              : sinkSingleListItem
+          )(listItemType)(
             view.state,
             (transaction) => view.dispatch(transaction),
             view,
