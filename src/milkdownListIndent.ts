@@ -1,4 +1,8 @@
-import type { Node as ProseMirrorNode, NodeType } from "@milkdown/prose/model";
+import {
+  Fragment,
+  type Node as ProseMirrorNode,
+  type NodeType,
+} from "@milkdown/prose/model";
 import { liftListItem, sinkListItem } from "@milkdown/prose/schema-list";
 import { canJoin } from "@milkdown/prose/transform";
 import {
@@ -624,7 +628,99 @@ export function sinkSingleListItem(itemType: NodeType): Command {
       ),
     );
     joinSunkItemIntoPreviousSubList(combinedTransaction, itemType);
-      dispatch(combinedTransaction.scrollIntoView());
+    dispatch(combinedTransaction.scrollIntoView());
+    return true;
+  };
+}
+
+// ProseMirror's liftListItem gives up when the item's parent item holds another
+// list after the one the item sits in (a numbered sub-list followed by a bullet
+// sub-list, which pasting a list under an item that already has one produces):
+// splitting the parent would leave the trailing list as its first child. Shift+Tab
+// then did nothing and the browser moved focus out of the editor, scrolling the
+// page to the top. This lifts the item out by hand. Everything shown below the
+// item at its old level (the items after it and the lists after its list) becomes
+// its children, so the text keeps its order. It does nothing when liftListItem
+// can handle the item.
+export function liftListItemBesideSiblingLists(itemType: NodeType): Command {
+  return (state, dispatch) => {
+    const { $from, $to } = state.selection;
+    // Without a dispatch, liftListItem only checks that the item is in a list.
+    if (liftListItem(itemType)(state, () => {})) return false;
+
+    let itemDepth = $from.depth;
+    while (itemDepth > 0 && $from.node(itemDepth).type !== itemType) {
+      itemDepth -= 1;
+    }
+    const listDepth = itemDepth - 1;
+    const parentItemDepth = listDepth - 1;
+    if (
+      parentItemDepth < 2 ||
+      $from.node(parentItemDepth).type !== itemType ||
+      !nodeIsMarkdownList($from.node(listDepth)) ||
+      $to.depth < itemDepth ||
+      $to.before(itemDepth) !== $from.before(itemDepth)
+    ) {
+      return false;
+    }
+    if (!dispatch) return true;
+
+    const list = $from.node(listDepth);
+    const item = $from.node(itemDepth);
+    const itemIndex = $from.index(listDepth);
+    const parentItem = $from.node(parentItemDepth);
+    const listIndex = $from.index(parentItemDepth);
+
+    const itemsAbove: ProseMirrorNode[] = [];
+    const itemsBelow: ProseMirrorNode[] = [];
+    list.forEach((sibling, _offset, index) => {
+      if (index < itemIndex) itemsAbove.push(sibling);
+      else if (index > itemIndex) itemsBelow.push(sibling);
+    });
+
+    const liftedChildren: ProseMirrorNode[] = [];
+    const appendLiftedChild = (child: ProseMirrorNode) => {
+      const lastChild = liftedChildren[liftedChildren.length - 1];
+      if (lastChild && nodeIsMarkdownList(child) && lastChild.type === child.type) {
+        liftedChildren[liftedChildren.length - 1] = lastChild.copy(
+          lastChild.content.append(child.content),
+        );
+      } else {
+        liftedChildren.push(child);
+      }
+    };
+    item.forEach((child) => liftedChildren.push(child));
+    if (itemsBelow.length > 0) appendLiftedChild(list.copy(Fragment.from(itemsBelow)));
+
+    const parentChildren: ProseMirrorNode[] = [];
+    parentItem.forEach((child, _offset, index) => {
+      if (index < listIndex) {
+        parentChildren.push(child);
+      } else if (index > listIndex) {
+        appendLiftedChild(child);
+      } else if (itemsAbove.length > 0) {
+        parentChildren.push(list.copy(Fragment.from(itemsAbove)));
+      }
+    });
+    const lifted = item.copy(Fragment.from(liftedChildren));
+    const remainingParent = parentItem.copy(Fragment.from(parentChildren));
+
+    const tr = state.tr.replaceWith(
+      $from.before(parentItemDepth),
+      $from.after(parentItemDepth),
+      [remainingParent, lifted],
+    );
+    const liftedContentStart =
+      $from.before(parentItemDepth) + remainingParent.nodeSize + 1;
+    const itemContentStart = $from.start(itemDepth);
+    tr.setSelection(
+      TextSelection.create(
+        tr.doc,
+        liftedContentStart + $from.pos - itemContentStart,
+        liftedContentStart + $to.pos - itemContentStart,
+      ),
+    );
+    dispatch(tr.scrollIntoView());
     return true;
   };
 }
