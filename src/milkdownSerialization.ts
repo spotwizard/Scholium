@@ -48,7 +48,22 @@ function normalizeSerializedEmptyParagraphBreaks(markdown: string) {
         /^(\s*(?:[-+*]|\d+[.)]))\s+<br\s*\/?>\s*$/i,
       );
       if (emptyListItemBreak) {
-        normalizedLines.push(emptyListItemBreak[1] ?? line);
+        const marker = emptyListItemBreak[1] ?? line;
+        normalizedLines.push(marker);
+
+        // A bare marker followed by a blank line ends the item in Markdown, so
+        // the sub-list of an empty item (one that Tab moved under it) would be
+        // read back as siblings of that item. Keep the sub-list right below it.
+        let nextContentIndex = index + 1;
+        while (nextContentIndex < lines.length && !(lines[nextContentIndex] ?? "").trim()) {
+          nextContentIndex += 1;
+        }
+        const childListItem = (lines[nextContentIndex] ?? "").match(
+          /^(\s*)(?:[-+*]|\d+[.)])(?:\s|$)/,
+        );
+        if (childListItem && (childListItem[1] ?? "").length > marker.length) {
+          index = nextContentIndex - 1;
+        }
         continue;
       }
     }
