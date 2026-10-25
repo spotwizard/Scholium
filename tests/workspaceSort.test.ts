@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { workspaceEntryFromDocument } from "../src/workspaceEntries.ts";
 import { sortWorkspaceEntriesForDirectory } from "../src/workspaceSort.ts";
 
 const entries = [
@@ -23,6 +24,28 @@ assert.deepEqual(
   "modified mode must sort newest first within each entry kind",
 );
 
+const duplicatedDocument = {
+  id: "/notes/copy.md",
+  title: "Copy",
+  path: "/notes/copy.md",
+  filePath: "/notes/copy.md",
+  notesPath: null,
+  updatedAt: "",
+  modifiedAt: 600,
+  body: "",
+};
+const entriesWithMappedDocument = [
+  ...[duplicatedDocument].map((document) => workspaceEntryFromDocument(document)),
+  ...entries,
+];
+assert.deepEqual(
+  sortWorkspaceEntriesForDirectory(entriesWithMappedDocument, "modified").map(
+    (entry) => entry.path,
+  ),
+  ["/z", "/z/b.md", "/z/a.md", "/a", "/notes/copy.md", "/new.md", "/old.md"],
+  "a newly created or duplicated file must stay in the file group below every directory",
+);
+
 const appSource = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
 assert.match(
   appSource,
@@ -38,6 +61,12 @@ assert.match(
   appSource,
   /setWorkspaceEntries\(\(entries\) =>\s*sortWorkspaceEntriesForDirectory\(entries, nextMode\)/,
   "changing the selector must immediately reorder the visible workspace",
+);
+
+assert.doesNotMatch(
+  appSource,
+  /\.map\(workspaceEntryFromDocument\)/,
+  "Array.map passes the item index as the depth, so a mapped file entry must not reach depth 0",
 );
 
 console.log("workspace sort regression: PASS");

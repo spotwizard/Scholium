@@ -5489,7 +5489,9 @@ function App() {
   const [workspaceSortMode, setWorkspaceSortMode] = useState<WorkspaceSortMode>("name");
   const workspaceSortModeRef = useRef(workspaceSortMode);
   const [workspaceEntries, setWorkspaceEntries] = useState<WorkspaceEntry[]>(() =>
-    sortWorkspaceEntriesForDirectory(documentsSeed.map(workspaceEntryFromDocument)),
+    sortWorkspaceEntriesForDirectory(
+      documentsSeed.map((document) => workspaceEntryFromDocument(document)),
+    ),
   );
   const [workspaceRootPath, setWorkspaceRootPath] = useState<string | null>(null);
   const [workspaceSource, setWorkspaceSource] = useState<WorkspaceSource | null>(null);
@@ -10053,7 +10055,7 @@ function App() {
 
       const nextEntries = [
         ...parentEntries,
-        ...loadedDocuments.map(workspaceEntryFromDocument),
+        ...loadedDocuments.map((document) => workspaceEntryFromDocument(document)),
         ...otherEntries,
       ];
 
@@ -13732,7 +13734,7 @@ function App() {
     setWorkspaceTitle("Scholium");
     setWorkspaceEntries(
       sortWorkspaceEntriesForDirectory(
-        documentsSeed.map(workspaceEntryFromDocument),
+        documentsSeed.map((document) => workspaceEntryFromDocument(document)),
         workspaceSortModeRef.current,
       ),
     );
