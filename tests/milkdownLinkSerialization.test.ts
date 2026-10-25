@@ -26,6 +26,17 @@ const fencedMarkdown = [
 assert.equal(normalizeMarkdownForScholium(fencedMarkdown), fencedMarkdown);
 
 assert.equal(normalizeMarkdownForScholium("- <br />\n1. <br>"), "-\n1.");
+// An empty item that Tab moved the next line under keeps that line as its child.
+assert.equal(
+  normalizeMarkdownForScholium(
+    "* 資料來源應附在文章結尾\n\n* <br />\n\n  * 僅須附資料來源即可\n\n* 嚴禁",
+  ),
+  "- 資料來源應附在文章結尾\n\n-\n  - 僅須附資料來源即可\n- 嚴禁",
+);
+assert.equal(
+  normalizeMarkdownForScholium("* 第一項\n\n* <br />\n\n* 第三項"),
+  "- 第一項\n\n-\n\n- 第三項",
+);
 assert.equal(normalizeMarkdownForScholium("first\\\nsecond"), "first\nsecond");
 assert.equal(
   normalizeMarkdownForScholium(`first${"\\".repeat(3)}\nsecond`),

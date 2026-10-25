@@ -2477,3 +2477,56 @@ assert.equal(
   }),
   false,
 );
+
+// Tab on the line below an empty item moves only that line under the empty
+// item; the empty item stays a line of its own.
+const tabUnderEmptyItemDocument = schema.nodes.doc.create(null, [
+  schema.nodes.bullet_list.create(null, [
+    item("資料來源應附在文章結尾"),
+    item(""),
+    item("僅須附資料來源即可"),
+    item("嚴禁將蒐集資料過程作為報告內容"),
+  ]),
+]);
+let tabUnderEmptyItemPosition = -1;
+tabUnderEmptyItemDocument.descendants((node, position) => {
+  if (node.isText && node.text === "僅須附資料來源即可") {
+    tabUnderEmptyItemPosition = position;
+  }
+});
+assert.notEqual(tabUnderEmptyItemPosition, -1);
+let tabUnderEmptyItemState = EditorState.create({
+  doc: tabUnderEmptyItemDocument,
+  selection: TextSelection.create(tabUnderEmptyItemDocument, tabUnderEmptyItemPosition),
+});
+assert.equal(
+  sinkSingleListItem(schema.nodes.list_item)(tabUnderEmptyItemState, (transaction) => {
+    tabUnderEmptyItemState = tabUnderEmptyItemState.apply(transaction);
+  }),
+  true,
+);
+assert.deepEqual(
+  tabUnderEmptyItemState.doc.toJSON(),
+  schema.nodes.doc
+    .create(null, [
+      schema.nodes.bullet_list.create(null, [
+        item("資料來源應附在文章結尾"),
+        item("", [item("僅須附資料來源即可")]),
+        item("嚴禁將蒐集資料過程作為報告內容"),
+      ]),
+    ])
+    .toJSON(),
+);
+assert.equal(
+  tabUnderEmptyItemState.selection.$from.parent.textContent,
+  "僅須附資料來源即可",
+);
+// The empty item's own line is not a blank line between lists, so the
+// writeback adds no blank lines elsewhere in the document.
+assert.equal(
+  preserveSerializedEmptyParagraphListBoundaries(
+    "- 前一段清單\n\n- 後一段清單",
+    tabUnderEmptyItemState.doc,
+  ),
+  "- 前一段清單\n\n- 後一段清單",
+);

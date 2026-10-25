@@ -42,6 +42,14 @@ function countEmptyParagraphListBoundaries(doc: ProseMirrorNode) {
   const scanNode = (node: ProseMirrorNode) => {
     for (let index = 0; index < node.childCount; index += 1) {
       if (!nodeIsEmptyParagraph(node.child(index))) continue;
+      // The first paragraph of an item is the item's own line; an empty item
+      // with a sub-list serializes as a bare marker, not a blank line.
+      if (
+        index === 0 &&
+        (node.type.name === "list_item" || node.type.name === "listItem")
+      ) {
+        continue;
+      }
 
       const previousNode = index > 0 ? node.child(index - 1) : null;
       const nextNode = index + 1 < node.childCount ? node.child(index + 1) : null;

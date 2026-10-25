@@ -3000,36 +3000,6 @@ button.document-tag-chip__label:focus-visible {
 
 .milkdown-markdown-editor
   .milkdown
-  .milkdown-list-item-block:has(
-    > .list-item
-      > .children
-      > .content-dom
-      > p:first-child
-      > br.ProseMirror-trailingBreak:only-child
-  ):has(> .list-item > .children > .content-dom > :is(ul, ol))
-  > .list-item
-  > .label-wrapper:has(.label.bullet) {
-  visibility: hidden;
-}
-
-.milkdown-markdown-editor
-  .milkdown
-  .milkdown-list-item-block:has(
-    > .list-item
-      > .children
-      > .content-dom
-      > p:first-child
-      > br.ProseMirror-trailingBreak:only-child
-  ):has(> .list-item > .children > .content-dom > :is(ul, ol))
-  > .list-item
-  > .children
-  > .content-dom
-  > p:first-child {
-  display: none;
-}
-
-.milkdown-markdown-editor
-  .milkdown
   .milkdown-list-item-block
   > .list-item
   > .label-wrapper
