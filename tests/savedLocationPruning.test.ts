@@ -25,15 +25,25 @@ assert.match(
   /if \(openSelectionRevision !== manualDocumentSelectionRevisionRef\.current\) return false;\n\n      setStorageError\(translatedError\(error, "error\.openFileFailed"\)\);\n      options\.onOpenFailed\?\.\(\);/,
   "a file open superseded by another open must not forget the saved file",
 );
-assert.match(
-  rustSource,
-  /store\.recent\.retain\(saved_location_exists\);\n    store\.favorite_directories\.retain\(saved_location_exists\);/,
-  "missing local locations must leave both Recent and Favorite Folders",
+assert.doesNotMatch(
+  appSource,
+  /savedLocationRemoved/,
+  "removing an unreadable saved location must not show a message",
 );
 assert.match(
   rustSource,
-  /fn remember_recent_location_entry\([\s\S]*?prune_missing_saved_locations\(&mut store\);[\s\S]*?store\.recent\.truncate\(MAX_RECENT_LOCATIONS\);/,
-  "missing locations must be dropped before the recent list is cut to its limit",
+  /load_dropbox_tokens\(app\.handle\(\), dropbox_tokens\)[\s\S]*?check_saved_locations_in_background\(app\.handle\(\)\.clone\(\)\);/,
+  "saved locations must be checked when the app starts, once Dropbox can be reached",
+);
+assert.match(
+  rustSource,
+  /fn check_saved_locations_in_background\(app_handle: tauri::AppHandle\) \{\n    std::thread::spawn\(move \|\| \{/,
+  "the launch check must run off the main thread so opening files is never blocked",
+);
+assert.match(
+  rustSource,
+  /&PredefinedMenuItem::fullscreen\(app_handle, None\)\?\],\n            \)\?,\n            &removed_locations,/,
+  "the removed list must be its own top-level menu after View",
 );
 
 console.log("saved location pruning regression: PASS");

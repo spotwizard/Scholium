@@ -91,7 +91,16 @@ const MENU_FAVORITE_DIRECTORY_PREFIX: &str = "file:favorite-directory:";
 const MENU_RECENT_LOCATION_PREFIX: &str = "file:recent-location:";
 #[cfg(desktop)]
 const MENU_SELECT_ALL: &str = "edit:select-all";
+#[cfg(desktop)]
+const MENU_REMOVED_LOCATIONS: &str = "removed-locations";
+#[cfg(desktop)]
+const MENU_CLEAR_REMOVED_LOCATIONS: &str = "removed-locations:clear";
+#[cfg(desktop)]
+const MENU_REMOVED_LOCATION_PREFIX: &str = "removed-locations:item:";
 const MAX_RECENT_LOCATIONS: usize = 12;
+// Extra recent entries wait behind the visible ones, so removing an unreadable entry frees its slot.
+const MAX_STORED_RECENT_LOCATIONS: usize = MAX_RECENT_LOCATIONS * 2;
+const MAX_REMOVED_LOCATIONS: usize = 50;
 const MAX_FILE_SEARCH_RESULTS: usize = 200;
 const MAX_LOCAL_SYMLINK_DEPTH: usize = 40;
 const NOTES_STORE_DIRECTORY: &str = "notes";
@@ -115,6 +124,8 @@ const DROPBOX_COPY_URL: &str = "https://api.dropboxapi.com/2/files/copy_v2";
 const DROPBOX_DELETE_URL: &str = "https://api.dropboxapi.com/2/files/delete_v2";
 const DROPBOX_MOVE_URL: &str = "https://api.dropboxapi.com/2/files/move_v2";
 const DROPBOX_CREATE_FOLDER_URL: &str = "https://api.dropboxapi.com/2/files/create_folder_v2";
+const DROPBOX_GET_METADATA_URL: &str = "https://api.dropboxapi.com/2/files/get_metadata";
+const DROPBOX_LOCATION_CHECK_TIMEOUT: Duration = Duration::from_secs(15);
 const DROPBOX_REQUIRED_SCOPES: &str =
     "files.metadata.read files.content.read files.metadata.write files.content.write";
 const DROPBOX_TOKEN_REFRESH_ATTEMPTS: usize = 3;
@@ -149,6 +160,9 @@ struct LocationStore {
     recent: Vec<LocationEntry>,
     #[serde(default)]
     favorite_directories: Vec<LocationEntry>,
+    /// Entries dropped from Recent or Favorite Folders because they could no longer be opened.
+    #[serde(default)]
+    removed_locations: Vec<LocationEntry>,
 }
 
 struct LocationMenuState {
@@ -1970,6 +1984,9 @@ fn menu_text(language: &str, key: &str) -> &'static str {
         ("en", "clearFavoriteDirectories") => "Clear Favorite Folders",
         ("en", "recentLocations") => "Recent",
         ("en", "noRecentLocations") => "No recent items",
+        ("en", "removedLocationsMenu") => "Removed",
+        ("en", "noRemovedLocations") => "No removed items",
+        ("en", "clearRemovedLocations") => "Clear Removed List",
         ("en", "clearItems") => "Clear Items",
         ("en", "newWindow") => "New Window",
         ("en", "newFile") => "New File",
@@ -1995,6 +2012,9 @@ fn menu_text(language: &str, key: &str) -> &'static str {
         ("zh-Hans", "clearFavoriteDirectories") => "清除收藏的文件夹",
         ("zh-Hans", "recentLocations") => "最近打开",
         ("zh-Hans", "noRecentLocations") => "尚无最近打开项目",
+        ("zh-Hans", "removedLocationsMenu") => "清除记录",
+        ("zh-Hans", "noRemovedLocations") => "尚无清除记录",
+        ("zh-Hans", "clearRemovedLocations") => "清空清除记录",
         ("zh-Hans", "clearItems") => "清除项目",
         ("zh-Hans", "newWindow") => "新建窗口",
         ("zh-Hans", "newFile") => "新建文件",
@@ -2020,6 +2040,9 @@ fn menu_text(language: &str, key: &str) -> &'static str {
         (_, "clearFavoriteDirectories") => "清除常用資料夾",
         (_, "recentLocations") => "最近開啟",
         (_, "noRecentLocations") => "尚無最近開啟項目",
+        (_, "removedLocationsMenu") => "清除紀錄",
+        (_, "noRemovedLocations") => "尚無清除紀錄",
+        (_, "clearRemovedLocations") => "清空清除紀錄",
         (_, "clearItems") => "清除項目",
         (_, "newWindow") => "新增視窗",
         (_, "newFile") => "新增檔案",
@@ -2282,45 +2305,162 @@ fn write_location_store(
         .map_err(|error| format!("failed to write location store: {error}"))
 }
 
-fn saved_location_exists(location: &LocationEntry) -> bool {
-    if location.source == "dropbox" {
-        return true;
-    }
+fn same_saved_location(left: &LocationEntry, right: &LocationEntry) -> bool {
+    left.source == right.source && left.kind == right.kind && left.path == right.path
+}
 
+fn local_saved_location_is_readable(location: &LocationEntry) -> bool {
     let path = Path::new(&location.path);
 
+    // Mobile only checks existence, since a picked file may need its picker grant to be read.
     match location.kind.as_str() {
-        "file" => path.is_file(),
-        "directory" => path.is_dir(),
+        "file" => path.is_file() && (cfg!(mobile) || fs::File::open(path).is_ok()),
+        "directory" => path.is_dir() && (cfg!(mobile) || fs::read_dir(path).is_ok()),
         _ => false,
     }
 }
 
-/// Drops local entries whose file or folder is gone, so they never take a slot in either menu.
-fn prune_missing_saved_locations(store: &mut LocationStore) -> bool {
-    let original_counts = (store.recent.len(), store.favorite_directories.len());
-
-    store.recent.retain(saved_location_exists);
-    store.favorite_directories.retain(saved_location_exists);
-
-    (store.recent.len(), store.favorite_directories.len()) != original_counts
-}
-
-fn forget_saved_location_entry(store: &mut LocationStore, entry: &LocationEntry) -> bool {
-    let original_counts = (store.recent.len(), store.favorite_directories.len());
-
-    store.recent.retain(|location| {
-        location.source != entry.source
-            || location.kind != entry.kind
-            || location.path != entry.path
-    });
-    if entry.kind == "directory" {
-        store
-            .favorite_directories
-            .retain(|location| location.source != entry.source || location.path != entry.path);
+/// Moves unreadable entries out of Recent and Favorite Folders into the removed list.
+fn remove_saved_locations(store: &mut LocationStore, unavailable: &[LocationEntry]) -> bool {
+    let is_unavailable = |location: &LocationEntry| {
+        unavailable
+            .iter()
+            .any(|entry| same_saved_location(entry, location))
+    };
+    let removed = store
+        .recent
+        .iter()
+        .chain(store.favorite_directories.iter())
+        .filter(|location| is_unavailable(location))
+        .cloned()
+        .collect::<Vec<_>>();
+    if removed.is_empty() {
+        return false;
     }
 
-    (store.recent.len(), store.favorite_directories.len()) != original_counts
+    store.recent.retain(|location| !is_unavailable(location));
+    store
+        .favorite_directories
+        .retain(|location| !is_unavailable(location));
+    for location in removed.into_iter().rev() {
+        store
+            .removed_locations
+            .retain(|removed_location| !same_saved_location(removed_location, &location));
+        store.removed_locations.insert(0, location);
+    }
+    store.removed_locations.truncate(MAX_REMOVED_LOCATIONS);
+
+    true
+}
+
+fn forget_saved_locations(
+    app_handle: &tauri::AppHandle,
+    unavailable: &[LocationEntry],
+) -> Result<(), String> {
+    let mut store = current_location_store(app_handle);
+    if !remove_saved_locations(&mut store, unavailable) {
+        return Ok(());
+    }
+
+    replace_current_location_store(app_handle, store.clone())?;
+    write_location_store(app_handle, &store)?;
+    refresh_app_menu(app_handle)
+}
+
+async fn dropbox_location_is_missing(
+    client: &reqwest::Client,
+    access_token: &str,
+    path: &str,
+) -> Result<bool, String> {
+    let response = client
+        .post(DROPBOX_GET_METADATA_URL)
+        .bearer_auth(access_token)
+        .timeout(DROPBOX_LOCATION_CHECK_TIMEOUT)
+        .json(&serde_json::json!({ "path": normalize_dropbox_path(path) }))
+        .send()
+        .await
+        .map_err(|error| format!("failed to check Dropbox location: {error}"))?;
+
+    let status = response.status();
+    if status.is_success() {
+        return Ok(false);
+    }
+
+    let raw_body = response
+        .text()
+        .await
+        .unwrap_or_else(|error| format!("failed to read Dropbox error response: {error}"));
+    if dropbox_error_is_not_found(status, &raw_body) {
+        return Ok(true);
+    }
+
+    Err(dropbox_error_message(
+        status,
+        &raw_body,
+        "failed to check Dropbox location",
+    ))
+}
+
+async fn missing_dropbox_saved_locations(
+    app_handle: &tauri::AppHandle,
+    locations: Vec<LocationEntry>,
+) -> Vec<LocationEntry> {
+    // Without a connection nothing can be confirmed missing, so every Dropbox entry stays.
+    let Ok(access_token) = dropbox_access_token(app_handle).await else {
+        return Vec::new();
+    };
+    let client = reqwest::Client::new();
+    let mut missing = Vec::new();
+
+    for location in locations {
+        match dropbox_location_is_missing(&client, &access_token, &location.path).await {
+            Ok(true) => missing.push(location),
+            Ok(false) => {}
+            Err(error) => {
+                eprintln!("{error}");
+                break;
+            }
+        }
+    }
+
+    missing
+}
+
+/// Checks every saved location off the main thread and quietly drops the unreadable ones.
+fn check_saved_locations_in_background(app_handle: tauri::AppHandle) {
+    std::thread::spawn(move || {
+        let store = current_location_store(&app_handle);
+        let mut locations: Vec<LocationEntry> = Vec::new();
+        for location in store.recent.iter().chain(store.favorite_directories.iter()) {
+            if !locations
+                .iter()
+                .any(|checked_location| same_saved_location(checked_location, location))
+            {
+                locations.push(location.clone());
+            }
+        }
+
+        let (dropbox_locations, local_locations): (Vec<_>, Vec<_>) = locations
+            .into_iter()
+            .partition(|location| location.source == "dropbox");
+        let mut unavailable = local_locations
+            .into_iter()
+            .filter(|location| !local_saved_location_is_readable(location))
+            .collect::<Vec<_>>();
+        let dropbox_locations = dropbox_locations
+            .into_iter()
+            .filter(|location| !normalize_dropbox_path(&location.path).is_empty())
+            .collect::<Vec<_>>();
+        if !dropbox_locations.is_empty() {
+            unavailable.extend(tauri::async_runtime::block_on(
+                missing_dropbox_saved_locations(&app_handle, dropbox_locations),
+            ));
+        }
+
+        if let Err(error) = forget_saved_locations(&app_handle, &unavailable) {
+            eprintln!("{error}");
+        }
+    });
 }
 
 fn remember_recent_location_entry(
@@ -2329,14 +2469,14 @@ fn remember_recent_location_entry(
 ) -> Result<(), String> {
     let mut store = current_location_store(app_handle);
 
-    prune_missing_saved_locations(&mut store);
-    store.recent.retain(|location| {
-        location.source != entry.source
-            || location.kind != entry.kind
-            || location.path != entry.path
-    });
+    store
+        .recent
+        .retain(|location| !same_saved_location(location, &entry));
+    store
+        .removed_locations
+        .retain(|location| !same_saved_location(location, &entry));
     store.recent.insert(0, entry);
-    store.recent.truncate(MAX_RECENT_LOCATIONS);
+    store.recent.truncate(MAX_STORED_RECENT_LOCATIONS);
 
     replace_current_location_store(app_handle, store.clone())?;
     write_location_store(app_handle, &store)?;
@@ -2350,10 +2490,12 @@ fn remember_favorite_directory_entry(
 ) -> Result<(), String> {
     let mut store = current_location_store(app_handle);
 
-    prune_missing_saved_locations(&mut store);
     store
         .favorite_directories
         .retain(|location| location.source != entry.source || location.path != entry.path);
+    store
+        .removed_locations
+        .retain(|location| !same_saved_location(location, &entry));
     store.favorite_directories.insert(0, entry);
 
     replace_current_location_store(app_handle, store.clone())?;
@@ -2366,6 +2508,16 @@ fn clear_recent_locations(app_handle: &tauri::AppHandle) -> Result<(), String> {
     let mut store = current_location_store(app_handle);
 
     store.recent.clear();
+    replace_current_location_store(app_handle, store.clone())?;
+    write_location_store(app_handle, &store)?;
+    refresh_app_menu(app_handle)
+}
+
+#[cfg(desktop)]
+fn clear_removed_locations(app_handle: &tauri::AppHandle) -> Result<(), String> {
+    let mut store = current_location_store(app_handle);
+
+    store.removed_locations.clear();
     replace_current_location_store(app_handle, store.clone())?;
     write_location_store(app_handle, &store)?;
     refresh_app_menu(app_handle)
@@ -3374,27 +3526,15 @@ fn forget_saved_location(
 ) -> Result<(), String> {
     let language = current_app_language(&app);
     let entry = sanitize_location_entry(&kind, path, String::new(), source, &language)?;
-    let mut store = current_location_store(&app);
 
-    if forget_saved_location_entry(&mut store, &entry) {
-        replace_current_location_store(&app, store.clone())?;
-        write_location_store(&app, &store)?;
-        refresh_app_menu(&app)?;
-    }
-
-    Ok(())
+    forget_saved_locations(&app, &[entry])
 }
 
 #[tauri::command]
 fn saved_locations(app: tauri::AppHandle) -> Result<LocationStore, String> {
     let mut store = current_location_store(&app);
 
-    if prune_missing_saved_locations(&mut store) {
-        replace_current_location_store(&app, store.clone())?;
-        write_location_store(&app, &store)?;
-        refresh_app_menu(&app)?;
-    }
-
+    store.recent.truncate(MAX_RECENT_LOCATIONS);
     Ok(store)
 }
 
@@ -4454,7 +4594,7 @@ fn build_recent_locations_submenu(
         )?;
         submenu.append(&empty_item)?;
     } else {
-        for (index, location) in store.recent.iter().enumerate() {
+        for (index, location) in store.recent.iter().take(MAX_RECENT_LOCATIONS).enumerate() {
             let item = MenuItem::with_id(
                 app_handle,
                 format!("{MENU_RECENT_LOCATION_PREFIX}{index}"),
@@ -4472,6 +4612,55 @@ fn build_recent_locations_submenu(
         MENU_CLEAR_RECENT_LOCATIONS,
         menu_text(language, "clearItems"),
         !store.recent.is_empty(),
+        None::<&str>,
+    )?;
+    submenu.append(&clear_item)?;
+
+    Ok(submenu)
+}
+
+#[cfg(desktop)]
+fn build_removed_locations_submenu(
+    app_handle: &tauri::AppHandle,
+    store: &LocationStore,
+    language: &str,
+) -> tauri::Result<Submenu<tauri::Wry>> {
+    let submenu = Submenu::with_id(
+        app_handle,
+        MENU_REMOVED_LOCATIONS,
+        menu_text(language, "removedLocationsMenu"),
+        true,
+    )?;
+
+    if store.removed_locations.is_empty() {
+        let empty_item = MenuItem::with_id(
+            app_handle,
+            "removed-locations:empty",
+            menu_text(language, "noRemovedLocations"),
+            false,
+            None::<&str>,
+        )?;
+        submenu.append(&empty_item)?;
+    } else {
+        // Removed entries are only listed for reference; they no longer open.
+        for (index, location) in store.removed_locations.iter().enumerate() {
+            let item = MenuItem::with_id(
+                app_handle,
+                format!("{MENU_REMOVED_LOCATION_PREFIX}{index}"),
+                location_menu_label(location),
+                false,
+                None::<&str>,
+            )?;
+            submenu.append(&item)?;
+        }
+    }
+
+    submenu.append(&PredefinedMenuItem::separator(app_handle)?)?;
+    let clear_item = MenuItem::with_id(
+        app_handle,
+        MENU_CLEAR_REMOVED_LOCATIONS,
+        menu_text(language, "clearRemovedLocations"),
+        !store.removed_locations.is_empty(),
         None::<&str>,
     )?;
     submenu.append(&clear_item)?;
@@ -4510,6 +4699,8 @@ fn build_app_menu(app_handle: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wr
     let favorite_directories =
         build_favorite_directories_submenu(app_handle, &location_store, &language)?;
     let recent_locations = build_recent_locations_submenu(app_handle, &location_store, &language)?;
+    let removed_locations =
+        build_removed_locations_submenu(app_handle, &location_store, &language)?;
 
     Menu::with_items(
         app_handle,
@@ -4569,6 +4760,7 @@ fn build_app_menu(app_handle: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wr
                 true,
                 &[&PredefinedMenuItem::fullscreen(app_handle, None)?],
             )?,
+            &removed_locations,
             &Submenu::with_items(
                 app_handle,
                 menu_text(&language, "windowMenu"),
@@ -4811,13 +5003,7 @@ pub fn run() {
                 });
             }
 
-            let mut location_store = read_location_store_from_disk(app.handle());
-            if prune_missing_saved_locations(&mut location_store) {
-                if let Err(error) = write_location_store(app.handle(), &location_store) {
-                    eprintln!("{error}");
-                }
-            }
-
+            let location_store = read_location_store_from_disk(app.handle());
             if let Err(error) = replace_current_location_store(app.handle(), location_store)
                 .and_then(|_| refresh_app_menu(app.handle()))
             {
@@ -4831,6 +5017,7 @@ pub fn run() {
             if let Err(error) = load_dropbox_tokens(app.handle(), dropbox_tokens) {
                 eprintln!("{error}");
             }
+            check_saved_locations_in_background(app.handle().clone());
 
             Ok(())
         });
@@ -4874,6 +5061,8 @@ pub fn run() {
             let _ = clear_favorite_directories(app);
         } else if event_id == MENU_CLEAR_RECENT_LOCATIONS {
             let _ = clear_recent_locations(app);
+        } else if event_id == MENU_CLEAR_REMOVED_LOCATIONS {
+            let _ = clear_removed_locations(app);
         } else if event_id.starts_with(MENU_FAVORITE_DIRECTORY_PREFIX)
             || event_id.starts_with(MENU_RECENT_LOCATION_PREFIX)
         {
@@ -4992,7 +5181,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_saved_locations_leave_both_menus() {
+    fn unreadable_saved_locations_move_to_the_removed_list() {
         let directory = test_directory("saved-locations");
         fs::create_dir_all(directory.join("kept")).unwrap();
         fs::write(directory.join("kept.md"), "").unwrap();
@@ -5002,6 +5191,38 @@ mod tests {
             title: name.to_string(),
             source: source.to_string(),
         };
+        let labels = |locations: &[LocationEntry]| {
+            locations
+                .iter()
+                .map(|location| format!("{}:{}", location.source, location.title))
+                .collect::<Vec<_>>()
+        };
+
+        assert!(local_saved_location_is_readable(&location(
+            "file", "kept.md", "local"
+        )));
+        assert!(local_saved_location_is_readable(&location(
+            "directory",
+            "kept",
+            "local"
+        )));
+        assert!(!local_saved_location_is_readable(&location(
+            "file", "gone.md", "local"
+        )));
+        assert!(!local_saved_location_is_readable(&location(
+            "directory",
+            "gone",
+            "local"
+        )));
+        assert!(!local_saved_location_is_readable(&location(
+            "file", "kept", "local"
+        )));
+        assert!(!local_saved_location_is_readable(&location(
+            "directory",
+            "kept.md",
+            "local"
+        )));
+
         let mut store = LocationStore {
             recent: vec![
                 location("file", "kept.md", "local"),
@@ -5013,35 +5234,33 @@ mod tests {
                 location("directory", "gone", "local"),
                 location("directory", "kept", "local"),
             ],
+            removed_locations: vec![location("file", "gone.md", "local")],
         };
+        let unavailable = [
+            location("file", "gone.md", "local"),
+            location("directory", "gone", "local"),
+            location("file", "gone.md", "dropbox"),
+        ];
 
-        assert!(prune_missing_saved_locations(&mut store));
-        let titles = |locations: &[LocationEntry]| {
-            locations
-                .iter()
-                .map(|location| format!("{}:{}", location.source, location.title))
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(titles(&store.recent), ["local:kept.md", "dropbox:gone.md"]);
-        assert_eq!(titles(&store.favorite_directories), ["local:kept"]);
-        assert!(!prune_missing_saved_locations(&mut store));
+        assert!(remove_saved_locations(&mut store, &unavailable));
+        assert_eq!(labels(&store.recent), ["local:kept.md"]);
+        assert_eq!(labels(&store.favorite_directories), ["local:kept"]);
+        assert_eq!(
+            labels(&store.removed_locations),
+            ["local:gone.md", "local:gone", "dropbox:gone.md"],
+            "each removed entry is listed once, in menu order",
+        );
+        assert!(!remove_saved_locations(&mut store, &unavailable));
 
-        store.recent.push(location("directory", "kept", "local"));
-        assert!(forget_saved_location_entry(
+        store.removed_locations = (0..MAX_REMOVED_LOCATIONS)
+            .map(|index| location("file", &format!("old-{index}.md"), "local"))
+            .collect();
+        assert!(remove_saved_locations(
             &mut store,
-            &location("directory", "kept", "local")
+            &[location("file", "kept.md", "local")]
         ));
-        assert_eq!(titles(&store.recent), ["local:kept.md", "dropbox:gone.md"]);
-        assert!(store.favorite_directories.is_empty());
-        assert!(forget_saved_location_entry(
-            &mut store,
-            &location("file", "gone.md", "dropbox")
-        ));
-        assert_eq!(titles(&store.recent), ["local:kept.md"]);
-        assert!(!forget_saved_location_entry(
-            &mut store,
-            &location("file", "kept.md", "dropbox")
-        ));
+        assert_eq!(store.removed_locations.len(), MAX_REMOVED_LOCATIONS);
+        assert_eq!(store.removed_locations[0].title, "kept.md");
 
         fs::remove_dir_all(directory).unwrap();
     }

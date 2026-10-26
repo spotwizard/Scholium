@@ -11924,9 +11924,8 @@ function App() {
   }
 
   async function openNativeMenuLocation(location: OpenLocationEventPayload) {
-    // A saved location that no longer opens leaves both menus instead of keeping its slot.
+    // A saved location that no longer opens quietly moves to the removed list instead of keeping its slot.
     const forgetUnavailableLocation = () => {
-      setStorageError(t("error.savedLocationRemoved", { title: location.title }));
       void forgetSavedLocation({
         kind: location.kind,
         path: location.path,
