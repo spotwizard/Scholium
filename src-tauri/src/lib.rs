@@ -2282,7 +2282,7 @@ fn write_location_store(
         .map_err(|error| format!("failed to write location store: {error}"))
 }
 
-fn recent_location_exists(location: &LocationEntry) -> bool {
+fn saved_location_exists(location: &LocationEntry) -> bool {
     if location.source == "dropbox" {
         return true;
     }
@@ -2296,12 +2296,31 @@ fn recent_location_exists(location: &LocationEntry) -> bool {
     }
 }
 
-fn prune_missing_recent_locations(store: &mut LocationStore) -> bool {
-    let original_count = store.recent.len();
+/// Drops local entries whose file or folder is gone, so they never take a slot in either menu.
+fn prune_missing_saved_locations(store: &mut LocationStore) -> bool {
+    let original_counts = (store.recent.len(), store.favorite_directories.len());
 
-    store.recent.retain(recent_location_exists);
+    store.recent.retain(saved_location_exists);
+    store.favorite_directories.retain(saved_location_exists);
 
-    store.recent.len() != original_count
+    (store.recent.len(), store.favorite_directories.len()) != original_counts
+}
+
+fn forget_saved_location_entry(store: &mut LocationStore, entry: &LocationEntry) -> bool {
+    let original_counts = (store.recent.len(), store.favorite_directories.len());
+
+    store.recent.retain(|location| {
+        location.source != entry.source
+            || location.kind != entry.kind
+            || location.path != entry.path
+    });
+    if entry.kind == "directory" {
+        store
+            .favorite_directories
+            .retain(|location| location.source != entry.source || location.path != entry.path);
+    }
+
+    (store.recent.len(), store.favorite_directories.len()) != original_counts
 }
 
 fn remember_recent_location_entry(
@@ -2310,6 +2329,7 @@ fn remember_recent_location_entry(
 ) -> Result<(), String> {
     let mut store = current_location_store(app_handle);
 
+    prune_missing_saved_locations(&mut store);
     store.recent.retain(|location| {
         location.source != entry.source
             || location.kind != entry.kind
@@ -2330,6 +2350,7 @@ fn remember_favorite_directory_entry(
 ) -> Result<(), String> {
     let mut store = current_location_store(app_handle);
 
+    prune_missing_saved_locations(&mut store);
     store
         .favorite_directories
         .retain(|location| location.source != entry.source || location.path != entry.path);
@@ -3345,10 +3366,30 @@ fn remember_recent_location(
 }
 
 #[tauri::command]
+fn forget_saved_location(
+    app: tauri::AppHandle,
+    kind: String,
+    path: String,
+    source: String,
+) -> Result<(), String> {
+    let language = current_app_language(&app);
+    let entry = sanitize_location_entry(&kind, path, String::new(), source, &language)?;
+    let mut store = current_location_store(&app);
+
+    if forget_saved_location_entry(&mut store, &entry) {
+        replace_current_location_store(&app, store.clone())?;
+        write_location_store(&app, &store)?;
+        refresh_app_menu(&app)?;
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
 fn saved_locations(app: tauri::AppHandle) -> Result<LocationStore, String> {
     let mut store = current_location_store(&app);
 
-    if prune_missing_recent_locations(&mut store) {
+    if prune_missing_saved_locations(&mut store) {
         replace_current_location_store(&app, store.clone())?;
         write_location_store(&app, &store)?;
         refresh_app_menu(&app)?;
@@ -4771,8 +4812,7 @@ pub fn run() {
             }
 
             let mut location_store = read_location_store_from_disk(app.handle());
-            let pruned_recent_locations = prune_missing_recent_locations(&mut location_store);
-            if pruned_recent_locations {
+            if prune_missing_saved_locations(&mut location_store) {
                 if let Err(error) = write_location_store(app.handle(), &location_store) {
                     eprintln!("{error}");
                 }
@@ -4886,6 +4926,7 @@ pub fn run() {
             write_pdf_file_to_directory,
             save_markdown_file,
             remember_recent_location,
+            forget_saved_location,
             saved_locations,
             set_current_directory_location,
             set_app_language,
@@ -4948,6 +4989,61 @@ mod tests {
             Some(Duration::from_millis(1_000))
         );
         assert_eq!(dropbox_token_refresh_retry_delay(3), None);
+    }
+
+    #[test]
+    fn missing_saved_locations_leave_both_menus() {
+        let directory = test_directory("saved-locations");
+        fs::create_dir_all(directory.join("kept")).unwrap();
+        fs::write(directory.join("kept.md"), "").unwrap();
+        let location = |kind: &str, name: &str, source: &str| LocationEntry {
+            kind: kind.to_string(),
+            path: directory.join(name).to_string_lossy().to_string(),
+            title: name.to_string(),
+            source: source.to_string(),
+        };
+        let mut store = LocationStore {
+            recent: vec![
+                location("file", "kept.md", "local"),
+                location("file", "gone.md", "local"),
+                location("directory", "gone", "local"),
+                location("file", "gone.md", "dropbox"),
+            ],
+            favorite_directories: vec![
+                location("directory", "gone", "local"),
+                location("directory", "kept", "local"),
+            ],
+        };
+
+        assert!(prune_missing_saved_locations(&mut store));
+        let titles = |locations: &[LocationEntry]| {
+            locations
+                .iter()
+                .map(|location| format!("{}:{}", location.source, location.title))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(titles(&store.recent), ["local:kept.md", "dropbox:gone.md"]);
+        assert_eq!(titles(&store.favorite_directories), ["local:kept"]);
+        assert!(!prune_missing_saved_locations(&mut store));
+
+        store.recent.push(location("directory", "kept", "local"));
+        assert!(forget_saved_location_entry(
+            &mut store,
+            &location("directory", "kept", "local")
+        ));
+        assert_eq!(titles(&store.recent), ["local:kept.md", "dropbox:gone.md"]);
+        assert!(store.favorite_directories.is_empty());
+        assert!(forget_saved_location_entry(
+            &mut store,
+            &location("file", "gone.md", "dropbox")
+        ));
+        assert_eq!(titles(&store.recent), ["local:kept.md"]);
+        assert!(!forget_saved_location_entry(
+            &mut store,
+            &location("file", "kept.md", "dropbox")
+        ));
+
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

@@ -235,6 +235,7 @@ import {
   dropboxOAuthStatus,
   duplicateDropboxMarkdownFile,
   duplicateMarkdownFile,
+  forgetSavedLocation,
   listDropboxMarkdownDirectory,
   listDropboxDirectoryFiles,
   listSiblingFiles,
@@ -10924,7 +10925,10 @@ function App() {
     }
   }
 
-  async function openDirectoryPath(path: string) {
+  async function openDirectoryPath(
+    path: string,
+    options: { onOpenFailed?: () => void } = {},
+  ) {
     if (!nativeStorageAvailable) {
       setStorageError(t("error.nativeRuntimeRequired"));
       return false;
@@ -10963,6 +10967,7 @@ function App() {
       if (openSelectionRevision !== manualDocumentSelectionRevisionRef.current) return false;
 
       setStorageError(translatedError(error, "error.openFolderFailed"));
+      options.onOpenFailed?.();
       return false;
     }
   }
@@ -10971,6 +10976,7 @@ function App() {
     path: string,
     options: {
       allowPendingConnection?: boolean;
+      onNotFound?: () => void;
       openedDirectory?: OpenDropboxMarkdownDirectoryResult;
       tabBehavior?: DocumentTabBehavior;
       userInitiated?: boolean;
@@ -11012,8 +11018,13 @@ function App() {
 
       const message = error instanceof Error ? error.message : String(error);
       setStorageError(dropboxUserFacingError(message));
+      if (dropboxErrorIsNotFound(message)) options.onNotFound?.();
       return false;
     }
+  }
+
+  function dropboxErrorIsNotFound(message: string) {
+    return message.includes("not_found");
   }
 
   function dropboxErrorNeedsAuthorization(message: string) {
@@ -11809,7 +11820,10 @@ function App() {
     setMobileStartupPhase("hidden");
   }
 
-  async function openMarkdownFilePath(path: string) {
+  async function openMarkdownFilePath(
+    path: string,
+    options: { onOpenFailed?: () => void } = {},
+  ) {
     if (!nativeStorageAvailable) {
       setStorageError(t("error.nativeRuntimeRequired"));
       return false;
@@ -11831,13 +11845,14 @@ function App() {
       if (openSelectionRevision !== manualDocumentSelectionRevisionRef.current) return false;
 
       setStorageError(translatedError(error, "error.openFileFailed"));
+      options.onOpenFailed?.();
       return false;
     }
   }
 
   async function openDropboxLocation(
     location: NativeLocation,
-    options: { allowPendingConnection?: boolean } = {},
+    options: { allowPendingConnection?: boolean; onNotFound?: () => void } = {},
   ) {
     if (!nativeStorageAvailable) {
       setStorageError(t("error.nativeRuntimeRequired"));
@@ -11889,6 +11904,7 @@ function App() {
       if (filePath) {
         await openDropboxMarkdownFilePath(filePath, {
           allowPendingConnection: connected,
+          onNotFound: location.kind === "file" ? options.onNotFound : undefined,
           openedDirectory,
         });
       } else {
@@ -11903,20 +11919,35 @@ function App() {
         return;
       }
       setStorageError(dropboxUserFacingError(message));
+      if (dropboxErrorIsNotFound(message)) options.onNotFound?.();
     }
   }
 
   async function openNativeMenuLocation(location: OpenLocationEventPayload) {
+    // A saved location that no longer opens leaves both menus instead of keeping its slot.
+    const forgetUnavailableLocation = () => {
+      setStorageError(t("error.savedLocationRemoved", { title: location.title }));
+      void forgetSavedLocation({
+        kind: location.kind,
+        path: location.path,
+        source: location.source,
+      })
+        .then(refreshSavedLocations)
+        .catch((error) => {
+          console.error(error);
+        });
+    };
+
     if (location.source === "dropbox") {
-      await openDropboxLocation(location);
+      await openDropboxLocation(location, { onNotFound: forgetUnavailableLocation });
       return;
     }
     if (location.kind === "directory") {
-      await openDirectoryPath(location.path);
+      await openDirectoryPath(location.path, { onOpenFailed: forgetUnavailableLocation });
       return;
     }
 
-    await openMarkdownFilePath(location.path);
+    await openMarkdownFilePath(location.path, { onOpenFailed: forgetUnavailableLocation });
   }
 
   async function openMarkdownFolder() {

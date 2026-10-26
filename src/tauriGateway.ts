@@ -160,6 +160,7 @@ export type SiblingFileResult = {
   fileName: string;
 };
 export type RememberRecentLocationArgs = NativeLocation;
+export type ForgetSavedLocationArgs = Pick<NativeLocation, "kind" | "path" | "source">;
 export type SetCurrentDirectoryLocationArgs = Pick<NativeLocation, "path" | "title" | "source">;
 
 export type CreateNewWindowArgs = {
@@ -300,6 +301,10 @@ export function takeOpenedFilePaths() {
 
 export function rememberRecentLocation(args: RememberRecentLocationArgs) {
   return invoke<void>("remember_recent_location", args);
+}
+
+export function forgetSavedLocation(args: ForgetSavedLocationArgs) {
+  return invoke<void>("forget_saved_location", args);
 }
 
 export function setCurrentDirectoryLocation(args: SetCurrentDirectoryLocationArgs) {
