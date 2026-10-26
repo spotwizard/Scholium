@@ -12,6 +12,11 @@ export const recentOpenedFilesStorageKey = "scholium:recent-opened-files";
 // Enough history to remember the last file of every folder a person keeps returning to.
 export const recentOpenedFilesLimit = 200;
 
+/** A missing Dropbox path is permanent; connection and authorization errors are not. */
+export function dropboxRecentPathIsMissing(message: string) {
+  return message.includes("Dropbox returned HTTP 409") && message.includes("not_found");
+}
+
 function recentOpenedFilePathsMatch(
   source: RecentOpenedFileSource,
   left: string,

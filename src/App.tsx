@@ -179,6 +179,7 @@ import {
   workspacePathIsInsideDirectory,
 } from "./workspacePaths";
 import {
+  dropboxRecentPathIsMissing,
   lastOpenedFileAmong,
   lastOpenedFileInDirectory,
   parseRecentOpenedFiles,
@@ -244,6 +245,7 @@ import {
   openMarkdownFile,
   openMarkdownFileContext,
   readDropboxMarkdownBody,
+  forgetRecentLocation,
   rememberRecentLocation,
   renameDropboxMarkdownDirectory,
   renameDropboxMarkdownFile,
@@ -9478,6 +9480,20 @@ function App() {
       });
   }
 
+  async function forgetUnavailableRecentLocation(
+    location: Pick<NativeLocation, "kind" | "path" | "source">,
+  ) {
+    try {
+      await forgetRecentLocation(location);
+      if (location.kind === "file") {
+        forgetRecentOpenedFile(location.source, location.path);
+      }
+      await refreshSavedLocations();
+    } catch (error) {
+      console.error(error);
+    }
+  }
+
   function setNativeCurrentDirectory(path: string, title: string, source: WorkspaceSource) {
     if (!nativeStorageAvailable) return;
 
@@ -11009,6 +11025,9 @@ function App() {
       if (selectionRevision !== manualDocumentSelectionRevisionRef.current) return false;
 
       const message = error instanceof Error ? error.message : String(error);
+      if (dropboxRecentPathIsMissing(message)) {
+        await forgetUnavailableRecentLocation({ kind: "file", path, source: "dropbox" });
+      }
       setStorageError(dropboxUserFacingError(message));
       return false;
     }
@@ -11894,6 +11913,9 @@ function App() {
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      if (dropboxRecentPathIsMissing(message)) {
+        await forgetUnavailableRecentLocation(location);
+      }
       if (dropboxErrorNeedsAuthorization(message) || dropboxErrorIsDisconnected(message)) {
         setDropboxConnected(false);
         pendingDropboxLocationAfterAuthRef.current = location;
@@ -11909,12 +11931,14 @@ function App() {
       await openDropboxLocation(location);
       return;
     }
-    if (location.kind === "directory") {
-      await openDirectoryPath(location.path);
-      return;
+    const selectionRevision = manualDocumentSelectionRevisionRef.current + 1;
+    const opened =
+      location.kind === "directory"
+        ? await openDirectoryPath(location.path)
+        : await openMarkdownFilePath(location.path);
+    if (!opened && selectionRevision === manualDocumentSelectionRevisionRef.current) {
+      await forgetUnavailableRecentLocation(location);
     }
-
-    await openMarkdownFilePath(location.path);
   }
 
   async function openMarkdownFolder() {

@@ -302,6 +302,10 @@ export function rememberRecentLocation(args: RememberRecentLocationArgs) {
   return invoke<void>("remember_recent_location", args);
 }
 
+export function forgetRecentLocation(args: Pick<NativeLocation, "kind" | "path" | "source">) {
+  return invoke<void>("forget_recent_location", args);
+}
+
 export function setCurrentDirectoryLocation(args: SetCurrentDirectoryLocationArgs) {
   return invoke<void>("set_current_directory_location", args);
 }

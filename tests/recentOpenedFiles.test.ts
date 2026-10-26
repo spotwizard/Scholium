@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import {
+  dropboxRecentPathIsMissing,
   lastOpenedFileAmong,
   lastOpenedFileInDirectory,
   parseRecentOpenedFiles,
@@ -8,6 +9,14 @@ import {
   recentOpenedFilesLimit,
   recentOpenedFilesWithout,
 } from "../src/recentOpenedFiles.ts";
+
+assert.equal(
+  dropboxRecentPathIsMissing('failed to open Dropbox file: Dropbox returned HTTP 409 Conflict: {"error_summary":"path/not_found/"}'),
+  true,
+);
+assert.equal(dropboxRecentPathIsMissing("Dropbox returned HTTP 409: path/conflict"), false);
+assert.equal(dropboxRecentPathIsMissing("Dropbox returned HTTP 401: path/not_found"), false);
+assert.equal(dropboxRecentPathIsMissing("Dropbox connection timed out"), false);
 
 assert.deepEqual(parseRecentOpenedFiles(null), []);
 assert.deepEqual(parseRecentOpenedFiles("not json"), []);
