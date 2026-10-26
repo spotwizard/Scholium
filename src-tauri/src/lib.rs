@@ -2304,8 +2304,12 @@ fn prune_missing_recent_locations(store: &mut LocationStore) -> bool {
     store.recent.len() != original_count
 }
 
-fn remember_recent_location_in_store(store: &mut LocationStore, entry: LocationEntry) {
-    prune_missing_recent_locations(store);
+fn remember_recent_location_entry(
+    app_handle: &tauri::AppHandle,
+    entry: LocationEntry,
+) -> Result<(), String> {
+    let mut store = current_location_store(app_handle);
+
     store.recent.retain(|location| {
         location.source != entry.source
             || location.kind != entry.kind
@@ -2313,38 +2317,6 @@ fn remember_recent_location_in_store(store: &mut LocationStore, entry: LocationE
     });
     store.recent.insert(0, entry);
     store.recent.truncate(MAX_RECENT_LOCATIONS);
-}
-
-fn remember_recent_location_entry(
-    app_handle: &tauri::AppHandle,
-    entry: LocationEntry,
-) -> Result<(), String> {
-    let mut store = current_location_store(app_handle);
-    remember_recent_location_in_store(&mut store, entry);
-
-    replace_current_location_store(app_handle, store.clone())?;
-    write_location_store(app_handle, &store)?;
-    refresh_app_menu(app_handle)
-}
-
-fn forget_recent_location_in_store(store: &mut LocationStore, entry: &LocationEntry) -> bool {
-    let previous_count = store.recent.len();
-    store.recent.retain(|location| {
-        location.source != entry.source
-            || location.kind != entry.kind
-            || location.path != entry.path
-    });
-    store.recent.len() != previous_count
-}
-
-fn forget_recent_location_entry(
-    app_handle: &tauri::AppHandle,
-    entry: &LocationEntry,
-) -> Result<(), String> {
-    let mut store = current_location_store(app_handle);
-    if !forget_recent_location_in_store(&mut store, entry) {
-        return Ok(());
-    }
 
     replace_current_location_store(app_handle, store.clone())?;
     write_location_store(app_handle, &store)?;
@@ -3370,18 +3342,6 @@ fn remember_recent_location(
     let entry = sanitize_location_entry(&kind, path, title, source, &language)?;
 
     remember_recent_location_entry(&app, entry)
-}
-
-#[tauri::command]
-fn forget_recent_location(
-    app: tauri::AppHandle,
-    kind: String,
-    path: String,
-    source: String,
-) -> Result<(), String> {
-    let language = current_app_language(&app);
-    let entry = sanitize_location_entry(&kind, path, String::new(), source, &language)?;
-    forget_recent_location_entry(&app, &entry)
 }
 
 #[tauri::command]
@@ -4883,31 +4843,16 @@ pub fn run() {
                 event_id,
                 MENU_FAVORITE_DIRECTORY_PREFIX,
             )
-            .or_else(|| indexed_location(&store.recent, event_id, MENU_RECENT_LOCATION_PREFIX))
-            .cloned();
+            .or_else(|| indexed_location(&store.recent, event_id, MENU_RECENT_LOCATION_PREFIX));
 
             if let Some(location) = location {
-                if event_id.starts_with(MENU_RECENT_LOCATION_PREFIX)
-                    && !recent_location_exists(&location)
-                {
-                    let mut store = current_location_store(app);
-                    if prune_missing_recent_locations(&mut store) {
-                        if let Err(error) = replace_current_location_store(app, store.clone())
-                            .and_then(|_| write_location_store(app, &store))
-                            .and_then(|_| refresh_app_menu(app))
-                        {
-                            eprintln!("failed to prune recent locations: {error}");
-                        }
-                    }
-                } else {
-                    let payload = OpenLocationPayload {
-                        kind: location.kind,
-                        path: location.path,
-                        source: location.source,
-                        title: location.title,
-                    };
-                    let _ = emit_to_target_webview_window(app, "scholium-open-location", payload);
-                }
+                let payload = OpenLocationPayload {
+                    kind: location.kind.clone(),
+                    path: location.path.clone(),
+                    source: location.source.clone(),
+                    title: location.title.clone(),
+                };
+                let _ = emit_to_target_webview_window(app, "scholium-open-location", payload);
             }
         }
     });
@@ -4941,7 +4886,6 @@ pub fn run() {
             write_pdf_file_to_directory,
             save_markdown_file,
             remember_recent_location,
-            forget_recent_location,
             saved_locations,
             set_current_directory_location,
             set_app_language,
@@ -4992,58 +4936,6 @@ fn test_directory(name: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn recent_locations_prune_missing_local_paths_before_limiting_history() {
-        let directory = test_directory("recent-locations");
-        fs::create_dir_all(&directory).unwrap();
-        let entry = |source: &str, path: String| LocationEntry {
-            kind: "file".to_string(),
-            path,
-            title: "note".to_string(),
-            source: source.to_string(),
-        };
-        let missing = entry(
-            "local",
-            directory.join("deleted.md").to_string_lossy().to_string(),
-        );
-        let remote = entry("dropbox", "/deleted-remotely.md".to_string());
-        let mut store = LocationStore {
-            recent: vec![missing.clone(), remote.clone()],
-            ..Default::default()
-        };
-        for index in 0..MAX_RECENT_LOCATIONS - 2 {
-            let path = directory.join(format!("{index}.md"));
-            fs::write(&path, "note").unwrap();
-            store
-                .recent
-                .push(entry("local", path.to_string_lossy().to_string()));
-        }
-
-        let newest_path = directory.join("new.md");
-        fs::write(&newest_path, "new").unwrap();
-        remember_recent_location_in_store(
-            &mut store,
-            entry("local", newest_path.to_string_lossy().to_string()),
-        );
-
-        assert_eq!(store.recent.len(), MAX_RECENT_LOCATIONS);
-        assert!(!store
-            .recent
-            .iter()
-            .any(|location| location.path == missing.path));
-        assert!(store
-            .recent
-            .iter()
-            .any(|location| location.path == remote.path));
-        assert!(store
-            .recent
-            .iter()
-            .any(|location| location.path.ends_with("0.md")));
-        assert!(forget_recent_location_in_store(&mut store, &remote));
-        assert!(!forget_recent_location_in_store(&mut store, &remote));
-        fs::remove_dir_all(&directory).unwrap();
-    }
 
     #[test]
     fn dropbox_token_refresh_retries_twice_with_backoff() {
