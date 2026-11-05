@@ -74,7 +74,8 @@
   --scholium-body-font:
     var(--scholium-english-font), var(--scholium-body-cjk-font), sans-serif;
   --scholium-code-font: var(--scholium-body-font);
-  --scholium-serif-font: "Noto Serif TC", "Songti TC", "Source Han Serif TC", serif;
+  --scholium-serif-font: "PT Serif", "Noto Serif TC", "Songti TC", "Source Han Serif TC",
+    serif;
   --scholium-monospace-font: "SFMono-Regular", ui-monospace, Menlo, Monaco,
     Consolas, "Liberation Mono", monospace;
   color: var(--color-text);
@@ -91,7 +92,8 @@
 }
 
 /*
- * Reading font: document content and note text switch to the bundled serif face.
+ * Reading font: document content and note text switch to the bundled serif faces
+ * (PT Serif for Latin text, Noto Serif TC for CJK text).
  * --scholium-code-font is already resolved on :root, so source mode and code
  * blocks keep the original typeface.
  */
@@ -7891,12 +7893,12 @@ button.document-tag-chip__label:focus-visible {
 }
 
 /*
- * Serif headings use the bundled Heavy weight so every level stands out from
- * body text. Kept at the end of the file so it wins over the per-surface
+ * Serif headings use the bundled Bold weight at every level so they stand out
+ * from body text. Kept at the end of the file so it wins over the per-surface
  * heading rules above, which share the same specificity.
  */
 :root[data-reading-font="serif"] .editor-surface :is(h1, h2, h3, h4, h5, h6),
 :root[data-reading-font="serif"] .note-markdown-editor :is(h1, h2, h3, h4, h5, h6),
 :root[data-reading-font="serif"] .bottom-note-body :is(h1, h2, h3, h4, h5, h6) {
-  font-weight: 900;
+  font-weight: 700;
 }
