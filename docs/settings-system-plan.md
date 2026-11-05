@@ -261,7 +261,7 @@ readSettingsSnapshot()
 第一版只實作以下可立即接到 runtime 的設定：
 
 - `app.interfaceFontSize`
-  - 控制 Scholium app 介面字體縮放。
+  - 控制 Scholium app 介面字體縮放；設定畫面維持固定 18px 基準，不隨此設定縮放。
   - default: `18`
 
 - `app.language`
