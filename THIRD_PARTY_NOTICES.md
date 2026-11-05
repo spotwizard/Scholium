@@ -13,3 +13,5 @@ The source mode, note mode, glossary mode, and desktop floating note and glossar
 - [Cross](https://www.flaticon.com/free-icon-font/cross_3917189)
 
 Icons made by [Flaticon](https://www.flaticon.com/uicons). Free for personal and commercial use with attribution.
+
+The serif body font is [Noto Serif TC](https://github.com/notofonts/noto-cjk) (Source Han Serif TC), bundled through [`@fontsource/noto-serif-tc`](https://fontsource.org/fonts/noto-serif-tc). Copyright 2017 Adobe Systems Incorporated, with Reserved Font Name 'Source'. Licensed under the [SIL Open Font License, Version 1.1](https://openfontlicense.org).

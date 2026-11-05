@@ -74,6 +74,7 @@
   --scholium-body-font:
     var(--scholium-english-font), var(--scholium-body-cjk-font), sans-serif;
   --scholium-code-font: var(--scholium-body-font);
+  --scholium-serif-font: "Noto Serif TC", "Songti TC", "Source Han Serif TC", serif;
   --scholium-monospace-font: "SFMono-Regular", ui-monospace, Menlo, Monaco,
     Consolas, "Liberation Mono", monospace;
   color: var(--color-text);
@@ -87,6 +88,18 @@
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   -webkit-text-size-adjust: 100%;
+}
+
+/*
+ * Reading font: document content and note text switch to the bundled serif face.
+ * --scholium-code-font is already resolved on :root, so source mode and code
+ * blocks keep the original typeface.
+ */
+:root[data-reading-font="serif"] .editor-surface,
+:root[data-reading-font="serif"] .note-markdown-editor,
+:root[data-reading-font="serif"] .bottom-note-body {
+  --scholium-body-font: var(--scholium-serif-font);
+  font-family: var(--scholium-serif-font);
 }
 
 :root[data-theme="dark"] {

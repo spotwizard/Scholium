@@ -33,7 +33,14 @@ assert.deepEqual(readSettingsSnapshot(), {
   "app.noteModeEnabledByDefault": true,
   "editor.fontSize": 22,
   "editor.lineHeight": 1.8,
+  "editor.readingFont": "serif",
 });
+
+storedValues.set("scholium:settings:editor.readingFont", "sans");
+assert.equal(readSettingsSnapshot()["editor.readingFont"], "sans");
+
+storedValues.set("scholium:settings:editor.readingFont", "comic");
+assert.equal(readSettingsSnapshot()["editor.readingFont"], "serif");
 
 Reflect.deleteProperty(globalThis, "window");
 

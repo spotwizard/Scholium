@@ -11,6 +11,7 @@ export type SettingsValueMap = {
   "app.noteModeEnabledByDefault": boolean;
   "editor.fontSize": number;
   "editor.lineHeight": number;
+  "editor.readingFont": "serif" | "sans";
 };
 
 export type SettingKey = keyof SettingsValueMap;
@@ -156,6 +157,18 @@ export const settingsDefinitions: SettingDefinition[] = [
     max: 2.2,
     step: 0.05,
   },
+  {
+    key: "editor.readingFont",
+    category: "editor",
+    type: "select",
+    labelKey: "settings.editor.readingFont.label",
+    descriptionKey: "settings.editor.readingFont.description",
+    defaultValue: "serif",
+    options: [
+      { labelKey: "settings.editor.readingFont.option.serif", value: "serif" },
+      { labelKey: "settings.editor.readingFont.option.sans", value: "sans" },
+    ],
+  },
 ];
 
 const settingsStoragePrefix = "scholium:settings:";
@@ -265,5 +278,6 @@ export function readSettingsSnapshot(): SettingsSnapshot {
     "app.noteModeEnabledByDefault": readSetting("app.noteModeEnabledByDefault"),
     "editor.fontSize": readSetting("editor.fontSize"),
     "editor.lineHeight": readSetting("editor.lineHeight"),
+    "editor.readingFont": readSetting("editor.readingFont"),
   };
 }
