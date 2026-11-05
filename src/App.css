@@ -7889,3 +7889,14 @@ button.document-tag-chip__label:focus-visible {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/*
+ * Serif headings use the bundled Heavy weight so every level stands out from
+ * body text. Kept at the end of the file so it wins over the per-surface
+ * heading rules above, which share the same specificity.
+ */
+:root[data-reading-font="serif"] .editor-surface :is(h1, h2, h3, h4, h5, h6),
+:root[data-reading-font="serif"] .note-markdown-editor :is(h1, h2, h3, h4, h5, h6),
+:root[data-reading-font="serif"] .bottom-note-body :is(h1, h2, h3, h4, h5, h6) {
+  font-weight: 900;
+}
