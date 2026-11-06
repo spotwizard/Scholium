@@ -2977,16 +2977,16 @@ button.document-tag-chip__label:focus-visible {
 }
 
 /*
- * Plain document paragraphs get 5% more line spacing than the editor line
+ * Plain document paragraphs get 10% more line spacing than the editor line
  * height setting. List items, quotes, tables and note text keep the setting
  * as is.
  */
 .editor-surface .milkdown-markdown-editor .milkdown .ProseMirror > p {
-  line-height: calc(var(--settings-editor-line-height-px) * 1.05) !important;
+  line-height: calc(var(--settings-editor-line-height-px) * 1.1) !important;
 }
 
 .editor-surface .markdown-preview > p {
-  line-height: calc(var(--settings-editor-line-height) * 1.05);
+  line-height: calc(var(--settings-editor-line-height) * 1.1);
 }
 
 .milkdown-markdown-editor
