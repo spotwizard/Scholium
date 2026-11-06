@@ -8037,3 +8037,13 @@ button.document-tag-chip__label:focus-visible {
     padding-block: 12px;
   }
 }
+
+/*
+ * WebKit (macOS and iOS app) places Noto Sans TC about 3px lower in its line
+ * box than the row icon, so names start visibly below the icon's top edge.
+ * Lift the name so its first line lines up with the top of the icon.
+ */
+.document-row:not(.file-search-result) .document-title {
+  position: relative;
+  top: -3px;
+}
