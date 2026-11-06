@@ -71,8 +71,10 @@
     "Heiti TC";
   --scholium-english-font: -apple-system, BlinkMacSystemFont, "SF Pro Text",
     "Helvetica Neue", Arial;
-  --scholium-body-font:
-    var(--scholium-english-font), var(--scholium-body-cjk-font), sans-serif;
+  /* Bundled Noto Sans TC pairs with the serif reading font and keeps every
+     intermediate interface weight; system fonts remain as fallbacks. */
+  --scholium-body-font: "Noto Sans TC Variable", var(--scholium-english-font),
+    var(--scholium-body-cjk-font), sans-serif;
   --scholium-code-font: var(--scholium-body-font);
   --scholium-serif-font: "PT Serif", "Noto Serif TC", "Songti TC", "Source Han Serif TC",
     serif;
@@ -95,12 +97,18 @@
  * Reading font: document content and note text switch to the bundled serif faces
  * (PT Serif for Latin text, Noto Serif TC for CJK text).
  * --scholium-code-font is already resolved on :root, so source mode and code
- * blocks keep the original typeface.
+ * blocks keep the original typeface. In the document area only the rendered
+ * content switches; tags, menus and other controls keep the interface font.
+ * Crepe's --crepe-font-default and --crepe-font-title (headings) are resolved
+ * on .milkdown, so they are overridden on .ProseMirror as well.
  */
-:root[data-reading-font="serif"] .editor-surface,
+:root[data-reading-font="serif"] .editor-surface .ProseMirror,
+:root[data-reading-font="serif"] .editor-surface .markdown-preview,
 :root[data-reading-font="serif"] .note-markdown-editor,
 :root[data-reading-font="serif"] .bottom-note-body {
   --scholium-body-font: var(--scholium-serif-font);
+  --crepe-font-default: var(--scholium-serif-font);
+  --crepe-font-title: var(--scholium-serif-font);
   font-family: var(--scholium-serif-font);
 }
 
