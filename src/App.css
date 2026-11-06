@@ -8016,10 +8016,22 @@ button.document-tag-chip__label:focus-visible {
  * the current pane width instead of truncating with an ellipsis, and give
  * each row a little more vertical room. Search results keep their own
  * two-line layout.
+ *
+ * WebKit (the macOS and iOS app) draws Noto Sans TC glyphs a few pixels
+ * below the top of their line box, so the icon and disclosure are pushed
+ * down by 0.3 of the name's font size to line up with the first line's
+ * glyph tops. The name itself is not moved: WebKit clips button content to
+ * the content box, and anything shifted outside it would be cut off.
  */
 .document-row:not(.file-search-result) {
+  --document-row-name-offset: 0.252rem;
   align-items: start;
-  padding-block: 9px;
+  padding-block: 4.5px 9px;
+}
+
+.document-row:not(.file-search-result) > .document-disclosure,
+.document-row:not(.file-search-result) > .document-icon {
+  margin-top: var(--document-row-name-offset);
 }
 
 .document-row:not(.file-search-result) .document-title,
@@ -8028,22 +8040,17 @@ button.document-tag-chip__label:focus-visible {
   text-overflow: clip;
   white-space: normal;
   overflow-wrap: anywhere;
-  line-height: 1.35;
+  line-height: 1.55;
+}
+
+/* Leave a little room so the last glyph on a line is never clipped. */
+.document-row:not(.file-search-result) .document-title {
+  padding-inline-end: 0.4em;
 }
 
 @media (max-width: 640px) {
-  /* Keep single-line rows centred within the taller touch row. */
   .document-row:not(.file-search-result) {
-    padding-block: 12px;
+    --document-row-name-offset: 0.27rem;
+    padding-block: 7px 12px;
   }
-}
-
-/*
- * WebKit (macOS and iOS app) places Noto Sans TC about 3px lower in its line
- * box than the row icon, so names start visibly below the icon's top edge.
- * Lift the name so its first line lines up with the top of the icon.
- */
-.document-row:not(.file-search-result) .document-title {
-  position: relative;
-  top: -3px;
 }
