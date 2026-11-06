@@ -76,6 +76,11 @@
   --scholium-body-font: "Noto Sans TC Variable", var(--scholium-english-font),
     var(--scholium-body-cjk-font), sans-serif;
   --scholium-code-font: var(--scholium-body-font);
+  /* Interface-font code, kept for text diagrams in every reading mode. */
+  --scholium-interface-code-font: var(--scholium-body-font);
+  /* Serif mode code: Latin keeps the Noto Sans TC glyphs, CJK uses the serif. */
+  --scholium-serif-code-font: "Scholium Code Latin", "Noto Serif TC", "Songti TC",
+    "Source Han Serif TC", "Noto Sans TC Variable", sans-serif;
   --scholium-serif-font: "PT Serif", "Noto Serif TC", "Songti TC", "Source Han Serif TC",
     serif;
   --scholium-monospace-font: "SFMono-Regular", ui-monospace, Menlo, Monaco,
@@ -110,6 +115,49 @@
   --crepe-font-default: var(--scholium-serif-font);
   --crepe-font-title: var(--scholium-serif-font);
   font-family: var(--scholium-serif-font);
+}
+
+/*
+ * Serif mode also applies to Chinese text in inline code and code blocks.
+ * "Scholium Code Latin" is the Latin subset of the bundled Noto Sans TC, so
+ * Latin code looks the same as before while CJK falls through to the serif.
+ * General punctuation (U+2000-206F) is left out so dashes, ellipses and
+ * bullets inside Chinese text follow the serif as well.
+ */
+@font-face {
+  font-family: "Scholium Code Latin";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url("../node_modules/@fontsource-variable/noto-sans-tc/files/noto-sans-tc-latin-wght-normal.woff2")
+    format("woff2-variations");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+    U+02DC, U+0304, U+0308, U+0329, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215,
+    U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: "Scholium Code Latin";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url("../node_modules/@fontsource-variable/noto-sans-tc/files/noto-sans-tc-latin-ext-wght-normal.woff2")
+    format("woff2-variations");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF,
+    U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+20A0-20AB, U+20AD-20C4, U+2113,
+    U+2C60-2C7F, U+A720-A7FF;
+}
+
+:root[data-reading-font="serif"] .editor-surface .ProseMirror,
+:root[data-reading-font="serif"] .editor-surface .markdown-preview,
+:root[data-reading-font="serif"] .note-markdown-editor,
+:root[data-reading-font="serif"] .bottom-note-body {
+  --scholium-code-font: var(--scholium-serif-code-font);
+}
+
+/* Text diagrams depend on the interface font's glyph widths for alignment. */
+:root[data-reading-font="serif"] .milkdown-code-block.is-text-diagram {
+  --scholium-code-font: var(--scholium-interface-code-font);
 }
 
 :root[data-theme="dark"] {
@@ -3373,6 +3421,29 @@ button.document-tag-chip__label:focus-visible {
   font-family: var(--scholium-code-font);
   font-size: inherit;
   line-height: inherit;
+}
+
+/*
+ * Code blocks in documents use the same extra line spacing as plain
+ * paragraphs: 15% on desktop, 10% on the phone layout. Text diagrams and
+ * commented file trees keep the editor line height.
+ */
+.editor-surface
+  .milkdown-markdown-editor
+  .milkdown
+  .milkdown-code-block:not(.is-text-diagram):not(.is-commented-file-tree)
+  .cm-scroller {
+  line-height: calc(var(--settings-editor-line-height-px) * 1.15);
+}
+
+@media (max-width: 640px) {
+  .editor-surface
+    .milkdown-markdown-editor
+    .milkdown
+    .milkdown-code-block:not(.is-text-diagram):not(.is-commented-file-tree)
+    .cm-scroller {
+    line-height: calc(var(--settings-editor-line-height-px) * 1.1);
+  }
 }
 
 .milkdown-markdown-editor
