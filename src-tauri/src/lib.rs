@@ -710,7 +710,11 @@ fn repair_local_dropbox_sidecar_on_open(
         .as_ref()
         .filter(|notes_file| notes_file_is_empty(notes_file))
     {
-        (notes_file.markdown_path.clone(), None)
+        // An empty sidecar saved through the Dropbox API names a `dropbox:` document, not this file.
+        (
+            empty_sidecar_document_id(&notes_file.markdown_path, markdown_path),
+            None,
+        )
     } else if let Some(serialized) = read_private_file_to_string(paths.notes())
         .map_err(|error| format!("failed to read stored notes: {error}"))?
     {
@@ -728,6 +732,18 @@ fn repair_local_dropbox_sidecar_on_open(
         desired_sidecar,
     )?;
     Ok(())
+}
+
+fn empty_sidecar_document_id(sidecar_document_id: &str, markdown_path: &Path) -> String {
+    let names_this_document = resolved_local_document_path(Path::new(sidecar_document_id))
+        .ok()
+        .zip(resolved_local_document_path(markdown_path).ok())
+        .is_some_and(|(sidecar_document, document)| sidecar_document == document);
+    if names_this_document {
+        sidecar_document_id.to_string()
+    } else {
+        markdown_path.to_string_lossy().to_string()
+    }
 }
 
 fn recover_local_documents_in_directory(
@@ -1797,6 +1813,19 @@ async fn upload_dropbox_notes_file(
     }
 
     Ok(())
+}
+
+async fn sync_dropbox_notes_file(
+    app: &tauri::AppHandle,
+    dropbox_path: &str,
+    notes_file: NotesFile,
+) -> Result<(), String> {
+    // Local Dropbox folders sync the sidecar back to disk, so an empty one is removed instead.
+    if notes_file_is_empty(&notes_file) {
+        delete_dropbox_notes_file(app, dropbox_path).await
+    } else {
+        upload_dropbox_notes_file(app, dropbox_path, notes_file).await
+    }
 }
 
 async fn delete_dropbox_notes_file(
@@ -3985,7 +4014,7 @@ async fn save_dropbox_markdown_file(
     );
 
     write_notes_file(&app, &notes_markdown_path, notes_file.clone())?;
-    upload_dropbox_notes_file(&app, &saved.path, notes_file).await?;
+    sync_dropbox_notes_file(&app, &saved.path, notes_file).await?;
 
     dropbox_file_with_notes(
         &app,
@@ -4101,7 +4130,7 @@ async fn duplicate_dropbox_markdown_file(
         let parsed = duplicate_notes_file_for_document(parsed, &target_document_id)?;
 
         write_notes_file(&app, &target_notes_markdown_path, parsed.clone())?;
-        upload_dropbox_notes_file(&app, &target_path, parsed).await?;
+        sync_dropbox_notes_file(&app, &target_path, parsed).await?;
     }
 
     open_dropbox_markdown_file(app, target_path).await
@@ -4280,7 +4309,7 @@ async fn rename_dropbox_markdown_file(
             let notes_file = move_notes_file_for_document(notes_file, &target_document_id);
 
             write_notes_file(&app, &target_notes_markdown_path, notes_file.clone())?;
-            upload_dropbox_notes_file(&app, &target_path, notes_file).await?;
+            sync_dropbox_notes_file(&app, &target_path, notes_file).await?;
             delete_dropbox_notes_file(&app, &source_path).await?;
             remove_document_notes(&app, &source_notes_markdown_path)?;
         }
@@ -5858,6 +5887,50 @@ mod tests {
         );
         assert!(!sidecar_path.exists());
 
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn empty_dropbox_api_sidecar_in_local_folder_is_removed_on_open() {
+        let unresolved_root = test_directory("dropbox-api-empty-sidecar");
+        fs::create_dir_all(unresolved_root.join("Dropbox/Notes")).unwrap();
+        let root = fs::canonicalize(&unresolved_root).unwrap();
+        let markdown_path = root.join("Dropbox/Notes/article.md");
+        fs::write(&markdown_path, "# Article").unwrap();
+        let sidecar_path = legacy_sidecar_path(&markdown_path).unwrap();
+        let dropbox_document_id = "dropbox:/Notes/article.md";
+        let sidecar_notes = notes_file_for_document(
+            dropbox_document_id.to_string(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+        fs::write(
+            &sidecar_path,
+            serde_json::to_string_pretty(&sidecar_notes).unwrap(),
+        )
+        .unwrap();
+        let recovery_directory = root.join("app-data/recovery/local");
+        let paths = LocalDocumentPaths::new(
+            markdown_path.clone(),
+            root.join("app-data/notes/article.notes.json"),
+            sidecar_path.clone(),
+            true,
+        );
+        let guard = lock_local_documents(&recovery_directory).unwrap();
+
+        let document_id = empty_sidecar_document_id(dropbox_document_id, &markdown_path);
+        assert_eq!(document_id, markdown_path.to_string_lossy());
+        assert!(
+            repair_local_sidecar(&guard, &recovery_directory, &paths, document_id, None).unwrap()
+        );
+        assert!(!sidecar_path.exists());
+        assert_eq!(
+            empty_sidecar_document_id(&markdown_path.to_string_lossy(), &markdown_path),
+            markdown_path.to_string_lossy()
+        );
+
+        drop(guard);
         fs::remove_dir_all(root).unwrap();
     }
 
