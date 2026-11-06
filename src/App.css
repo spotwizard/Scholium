@@ -3423,6 +3423,29 @@ button.document-tag-chip__label:focus-visible {
   line-height: inherit;
 }
 
+/*
+ * Code blocks in documents use the same extra line spacing as plain
+ * paragraphs: 15% on desktop, 10% on the phone layout. Text diagrams and
+ * commented file trees keep the editor line height.
+ */
+.editor-surface
+  .milkdown-markdown-editor
+  .milkdown
+  .milkdown-code-block:not(.is-text-diagram):not(.is-commented-file-tree)
+  .cm-scroller {
+  line-height: calc(var(--settings-editor-line-height-px) * 1.15);
+}
+
+@media (max-width: 640px) {
+  .editor-surface
+    .milkdown-markdown-editor
+    .milkdown
+    .milkdown-code-block:not(.is-text-diagram):not(.is-commented-file-tree)
+    .cm-scroller {
+    line-height: calc(var(--settings-editor-line-height-px) * 1.1);
+  }
+}
+
 .milkdown-markdown-editor
   .milkdown
   .milkdown-code-block.is-commented-file-tree
@@ -8056,28 +8079,5 @@ button.document-tag-chip__label:focus-visible {
 
   .editor-surface .markdown-preview > p {
     line-height: calc(var(--settings-editor-line-height) * 1.1);
-  }
-}
-
-/*
- * Code blocks in documents use the same extra line spacing as plain
- * paragraphs: 15% on desktop, 10% on the phone layout. Text diagrams and
- * commented file trees keep the editor line height.
- */
-.editor-surface
-  .milkdown-markdown-editor
-  .milkdown
-  .milkdown-code-block:not(.is-text-diagram):not(.is-commented-file-tree)
-  .cm-scroller {
-  line-height: calc(var(--settings-editor-line-height-px) * 1.15);
-}
-
-@media (max-width: 640px) {
-  .editor-surface
-    .milkdown-markdown-editor
-    .milkdown
-    .milkdown-code-block:not(.is-text-diagram):not(.is-commented-file-tree)
-    .cm-scroller {
-    line-height: calc(var(--settings-editor-line-height-px) * 1.1);
   }
 }
