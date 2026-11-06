@@ -7966,3 +7966,33 @@ button.document-tag-chip__label:focus-visible {
 :root[data-reading-font="serif"] .bottom-note-body :is(h1, h2, h3, h4, h5, h6) {
   font-weight: 700;
 }
+
+/*
+ * Noto Sans TC has a taller ascent and descent than the system fonts, so
+ * single-line labels that clip overflow for ellipsis cut off descenders
+ * (g, j, p, y) at their tight line heights. Extend the clip box above and
+ * below the text, and cancel it with negative margins so layout is unchanged.
+ */
+:is(
+    .pane-header h1,
+    .pane-header h2,
+    .document-tree-root__title,
+    .document-title,
+    .document-title__primary,
+    .document-title__meta,
+    .document-title__tags,
+    .tag-search-row__label,
+    .dropbox-directory-dialog__navigation span,
+    .dropbox-directory-dialog__row-main span:last-child,
+    .document-tag-chip__label,
+    .document-search__status,
+    .mobile-empty-actions button span,
+    .mobile-tag-picker-result__label,
+    .mobile-command-bar span,
+    .file-link-picker__title,
+    .file-link-picker__file-name,
+    .note-mode-switch__label
+  ) {
+  padding-block: 0.2em;
+  margin-block: -0.2em;
+}
