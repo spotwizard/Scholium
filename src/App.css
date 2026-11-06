@@ -7998,15 +7998,15 @@ button.document-tag-chip__label:focus-visible {
 }
 
 /*
- * Phone layout: plain paragraphs use 12% more line spacing instead of 15%,
+ * Phone layout: plain paragraphs use 10% more line spacing instead of 15%,
  * since the narrower column already reads with shorter lines.
  */
 @media (max-width: 640px) {
   .editor-surface .milkdown-markdown-editor .milkdown .ProseMirror > p {
-    line-height: calc(var(--settings-editor-line-height-px) * 1.12) !important;
+    line-height: calc(var(--settings-editor-line-height-px) * 1.1) !important;
   }
 
   .editor-surface .markdown-preview > p {
-    line-height: calc(var(--settings-editor-line-height) * 1.12);
+    line-height: calc(var(--settings-editor-line-height) * 1.1);
   }
 }
