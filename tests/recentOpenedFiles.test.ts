@@ -89,7 +89,7 @@ assert.match(
 );
 assert.match(
   openFileBody,
-  /applyOpenedDirectory\(directoryWithSelectedFile\(context\), context\.selectedFile\.path\);/,
+  /applyOpenedDirectory\(directoryWithSelectedFile\(context\), context\.selectedFile\.path(?:, \{\s*addAsWorkspaceRoot,\s*\})?\);/,
   "a chosen file is shown itself, not the folder's last opened file",
 );
 assert.doesNotMatch(openFileBody, /readLastOpenedFileInDirectory/);

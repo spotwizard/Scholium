@@ -3,6 +3,7 @@ export const workspaceStorageKeys = {
   lastOpenedMarkdownRootDirectory: "scholium:last-opened-markdown-root-directory",
   lastOpenedDropboxWorkspace: "scholium:last-opened-dropbox-workspace",
   documentTabSession: "scholium:document-tab-session",
+  openWorkspaceRoots: "scholium:open-workspace-roots",
 } as const;
 
 const secondaryWorkspaceStorageSeededKey = "scholium:secondary-workspace-seeded";

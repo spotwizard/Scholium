@@ -211,6 +211,24 @@ import {
   type WorkspaceFileEntry,
 } from "./workspaceEntries";
 import {
+  activateWorkspaceRootInList,
+  mergeRestoredWorkspaceRoots,
+  parseStoredWorkspaceRoots,
+  liveWorkspaceRoot,
+  removeWorkspaceRootFromList,
+  setWorkspaceRootCollapsed,
+  snapshotWorkspaceRoot,
+  sortWorkspaceRootSnapshots,
+  storedWorkspaceRootsFromOpenRoots,
+  upsertActiveWorkspaceRoot,
+  workspaceRootAfterRemoval,
+  workspaceRootContainingPath,
+  workspaceRootKey,
+  workspaceRootListingFile,
+  type OpenWorkspaceRoot,
+  type StoredWorkspaceRoot,
+} from "./workspaceRoots";
+import {
   readSettingsSnapshot,
   resetSetting,
   resetSettings,
@@ -452,6 +470,12 @@ type FileNameTooltipState = {
 
 type DocumentTabContextMenuState = {
   documentId: string;
+  left: number;
+  top: number;
+};
+
+type WorkspaceRootContextMenuState = {
+  rootKey: string;
   left: number;
   top: number;
 };
@@ -916,6 +940,7 @@ const {
   lastOpenedMarkdownRootDirectory: lastOpenedMarkdownRootDirectoryStorageKey,
   lastOpenedDropboxWorkspace: lastOpenedDropboxWorkspaceStorageKey,
   documentTabSession: documentTabSessionStorageKey,
+  openWorkspaceRoots: openWorkspaceRootsStorageKey,
 } = workspaceStorageKeys;
 const mobileViewportQuery = "(max-width: 640px)";
 const mobileSafeLayoutViewportQuery =
@@ -1296,6 +1321,28 @@ function rememberDocumentTabSession(session: DocumentTabSessionState | null) {
     }
   } catch {
     // Remembering open tabs is best-effort only.
+  }
+}
+
+function readStoredWorkspaceRoots() {
+  try {
+    return parseStoredWorkspaceRoots(
+      currentWindowWorkspaceStorage().getItem(openWorkspaceRootsStorageKey),
+    );
+  } catch {
+    return [];
+  }
+}
+
+function rememberStoredWorkspaceRoots(roots: StoredWorkspaceRoot[]) {
+  try {
+    if (roots.length > 0) {
+      currentWindowWorkspaceStorage().setItem(openWorkspaceRootsStorageKey, JSON.stringify(roots));
+    } else {
+      currentWindowWorkspaceStorage().removeItem(openWorkspaceRootsStorageKey);
+    }
+  } catch {
+    // Remembering the folders in the side panel is best-effort only.
   }
 }
 
@@ -5495,6 +5542,12 @@ function App() {
   );
   const [workspaceRootPath, setWorkspaceRootPath] = useState<string | null>(null);
   const [workspaceSource, setWorkspaceSource] = useState<WorkspaceSource | null>(null);
+  // Every folder in the side panel; the current one keeps its tree in workspaceEntries.
+  const [openWorkspaceRoots, setOpenWorkspaceRoots] = useState<OpenWorkspaceRoot[]>([]);
+  const openWorkspaceRootsRef = useRef(openWorkspaceRoots);
+  const workspaceRootPathRef = useRef(workspaceRootPath);
+  const workspaceSourceRef = useRef(workspaceSource);
+  const workspaceTitleRef = useRef(workspaceTitle);
   const [fileSearchQuery, setFileSearchQuery] = useState("");
   const [fileSearchMode, setFileSearchMode] = useState<FileSearchMode>("files");
   const [fileSearchFocused, setFileSearchFocused] = useState(false);
@@ -5521,6 +5574,7 @@ function App() {
   const tagInputRef = useRef<HTMLInputElement>(null);
   const documentTagsListRef = useRef<HTMLDivElement>(null);
   const [expandedDirectoryKeys, setExpandedDirectoryKeys] = useState<Set<string>>(() => new Set());
+  const expandedDirectoryKeysRef = useRef(expandedDirectoryKeys);
   const [loadingDirectoryKeys, setLoadingDirectoryKeys] = useState<Set<string>>(() => new Set());
   const [selectedDocumentId, setSelectedDocumentId] = useState(documentsSeed[0]?.id ?? "");
   const [openDocumentTabIds, setOpenDocumentTabIds] = useState<string[]>(() =>
@@ -5750,6 +5804,8 @@ function App() {
   const [fileNameTooltip, setFileNameTooltip] = useState<FileNameTooltipState | null>(null);
   const [documentTabContextMenu, setDocumentTabContextMenu] =
     useState<DocumentTabContextMenuState | null>(null);
+  const [workspaceRootContextMenu, setWorkspaceRootContextMenu] =
+    useState<WorkspaceRootContextMenuState | null>(null);
   const [duplicateFileDialog, setDuplicateFileDialog] =
     useState<DuplicateFileDialogState | null>(null);
   const [renameDialog, setRenameDialog] = useState<RenameDialogState | null>(null);
@@ -5938,6 +5994,11 @@ function App() {
   documentsRef.current = documents;
   workspaceSortModeRef.current = workspaceSortMode;
   workspaceEntriesRef.current = workspaceEntries;
+  openWorkspaceRootsRef.current = openWorkspaceRoots;
+  workspaceRootPathRef.current = workspaceRootPath;
+  workspaceSourceRef.current = workspaceSource;
+  workspaceTitleRef.current = workspaceTitle;
+  expandedDirectoryKeysRef.current = expandedDirectoryKeys;
   notesRef.current = notes;
   glossaryTermsRef.current = glossaryTerms;
   glossaryBindingsRef.current = glossaryBindings;
@@ -8175,11 +8236,12 @@ function App() {
   }, [selectionWarningPosition]);
 
   useEffect(() => {
-    if (!fileContextMenu && !documentTabContextMenu) return;
+    if (!fileContextMenu && !documentTabContextMenu && !workspaceRootContextMenu) return;
 
     function dismissContextMenus() {
       setFileContextMenu(null);
       setDocumentTabContextMenu(null);
+      setWorkspaceRootContextMenu(null);
     }
 
     function handleContextMenuKeyDown(event: KeyboardEvent) {
@@ -8198,7 +8260,7 @@ function App() {
       document.removeEventListener("scroll", dismissContextMenus, true);
       window.removeEventListener("keydown", handleContextMenuKeyDown, true);
     };
-  }, [documentTabContextMenu, fileContextMenu]);
+  }, [documentTabContextMenu, fileContextMenu, workspaceRootContextMenu]);
 
   useEffect(() => {
     if (!duplicateFileDialog) return;
@@ -8609,13 +8671,18 @@ function App() {
       }
 
       if (lastOpenedRootDirectoryPath) {
+        const storedWorkspaceRoots = readStoredWorkspaceRoots();
         void restoreLastOpenedMarkdownWorkspace(
           lastOpenedRootDirectoryPath,
           lastOpenedPath,
           localTabSession,
+          { tabRootPaths: storedWorkspaceRoots.map((root) => root.path) },
         )
-          .then((restored) => {
-            if (restored) setStorageError("");
+          .then(async (restored) => {
+            if (restored) {
+              setStorageError("");
+              await restoreAdditionalWorkspaceRoots(storedWorkspaceRoots);
+            }
             if (!disposed) setMobileStartupPhase("hidden");
             completeDocumentTabSessionRestore();
           })
@@ -8883,6 +8950,31 @@ function App() {
     workspaceRootPath,
     workspaceSource,
   ]);
+
+  useEffect(() => {
+    if (!nativeStorageAvailable || !documentTabSessionRestoreCompleted) return;
+
+    rememberStoredWorkspaceRoots(storedWorkspaceRootsFromOpenRoots(openWorkspaceRoots));
+  }, [documentTabSessionRestoreCompleted, nativeStorageAvailable, openWorkspaceRoots]);
+
+  const workspaceRootSelectionDocumentIdRef = useRef("");
+  useEffect(() => {
+    // Only a change of the shown file moves the current folder, so clicking another folder's tree keeps it there.
+    if (workspaceRootSelectionDocumentIdRef.current === selectedDocument.id) return;
+    workspaceRootSelectionDocumentIdRef.current = selectedDocument.id;
+
+    const filePath = selectedDocument.filePath;
+    if (!filePath || documentIsFromDropbox(selectedDocument)) return;
+
+    const roots = openWorkspaceRootsRef.current;
+    const liveRoot = liveWorkspaceRoot(roots);
+    if (!liveRoot || roots.length <= 1) return;
+    if (localPathIsInsideDirectory(filePath, liveRoot.path)) return;
+
+    // Switching to a tab from another folder makes that folder current, so new files go next to it.
+    const containingRoot = workspaceRootContainingPath(roots, filePath);
+    if (containingRoot) activateWorkspaceRoot(containingRoot.key);
+  }, [selectedDocument.id]);
 
   useEffect(() => {
     if (!nativeStorageAvailable) return;
@@ -10191,6 +10283,8 @@ function App() {
     setWorkspaceEntries(nextEntries);
     setWorkspaceRootPath(openedDirectory.path);
     setWorkspaceSource("dropbox");
+    // Dropbox shows one folder at a time, so the local folders leave the side panel.
+    commitOpenWorkspaceRoots([]);
     resetFileSearch();
     setExpandedDirectoryKeys(new Set());
     setLoadingDirectoryKeys(new Set());
@@ -10466,15 +10560,106 @@ function App() {
     void refreshSelectedDocumentFromDisk();
   }
 
+  function commitOpenWorkspaceRoots(nextRoots: OpenWorkspaceRoot[]) {
+    openWorkspaceRootsRef.current = nextRoots;
+    setOpenWorkspaceRoots(nextRoots);
+  }
+
+  /** Desktop keeps the open local folder in the side panel when another local folder opens. */
+  function shouldAddWorkspaceRoot() {
+    return (
+      !isMobileViewport &&
+      workspaceSourceRef.current === "local" &&
+      workspaceRootPathRef.current !== null
+    );
+  }
+
+  /** The folder list with the current folder's live tree stored, ready for another folder to become current. */
+  function openWorkspaceRootsWithLiveSnapshot() {
+    let roots = openWorkspaceRootsRef.current;
+    let liveRoot = liveWorkspaceRoot(roots);
+    const livePath = workspaceRootPathRef.current;
+    const liveSource = workspaceSourceRef.current;
+
+    if (!liveRoot) {
+      if (livePath === null || liveSource !== "local") return roots;
+
+      roots = upsertActiveWorkspaceRoot(roots, {
+        path: livePath,
+        title: workspaceTitleRef.current,
+        source: liveSource,
+      });
+      liveRoot = liveWorkspaceRoot(roots);
+      if (!liveRoot) return roots;
+    }
+
+    return snapshotWorkspaceRoot(roots, liveRoot.key, {
+      entries: workspaceEntriesRef.current,
+      expandedDirectoryKeys: Array.from(expandedDirectoryKeysRef.current),
+    });
+  }
+
+  /** Makes another folder in the side panel the current folder, which new files and search use. */
+  function activateWorkspaceRoot(key: string) {
+    const targetRoot = openWorkspaceRootsRef.current.find((root) => root.key === key);
+    if (!targetRoot) return false;
+    if (!targetRoot.snapshot) return true;
+
+    const snapshot = targetRoot.snapshot;
+    const nextExpandedDirectoryKeys = new Set(snapshot.expandedDirectoryKeys);
+    commitOpenWorkspaceRoots(
+      activateWorkspaceRootInList(openWorkspaceRootsWithLiveSnapshot(), key),
+    );
+    workspaceEntriesRef.current = snapshot.entries;
+    expandedDirectoryKeysRef.current = nextExpandedDirectoryKeys;
+    workspaceRootPathRef.current = targetRoot.path;
+    workspaceSourceRef.current = targetRoot.source;
+    workspaceTitleRef.current = targetRoot.title;
+    setWorkspaceEntries(snapshot.entries);
+    setExpandedDirectoryKeys(nextExpandedDirectoryKeys);
+    setLoadingDirectoryKeys(new Set());
+    setWorkspaceRootPath(targetRoot.path);
+    setWorkspaceSource(targetRoot.source);
+    setWorkspaceTitle(targetRoot.title);
+    setSelectedWorkspaceDocumentIds(new Set());
+    rememberLastOpenedMarkdownRootDirectoryPath(targetRoot.path);
+    setNativeCurrentDirectory(targetRoot.path, targetRoot.title, targetRoot.source);
+    return true;
+  }
+
+  function toggleWorkspaceRootCollapsed(key: string) {
+    const root = openWorkspaceRootsRef.current.find((candidate) => candidate.key === key);
+    if (!root) return;
+
+    commitOpenWorkspaceRoots(
+      setWorkspaceRootCollapsed(openWorkspaceRootsRef.current, key, !root.collapsed),
+    );
+  }
+
+  function removeWorkspaceRoot(key: string) {
+    const roots = openWorkspaceRootsRef.current;
+    const root = roots.find((candidate) => candidate.key === key);
+    if (!root || roots.length <= 1) return;
+
+    if (!root.snapshot) {
+      const nextRoot = workspaceRootAfterRemoval(roots, key);
+      if (!nextRoot || !activateWorkspaceRoot(nextRoot.key)) return;
+    }
+
+    commitOpenWorkspaceRoots(removeWorkspaceRootFromList(openWorkspaceRootsRef.current, key));
+  }
+
   function applyOpenedDirectory(
     openedDirectory: OpenMarkdownDirectoryResult,
     selectedPath?: string,
     options: {
+      addAsWorkspaceRoot?: boolean;
       rememberRecent?: boolean;
       rememberSelection?: boolean;
       selectFallback?: boolean;
     } = {},
   ) {
+    const addAsWorkspaceRoot = options.addAsWorkspaceRoot === true;
     discardTransientEmptySelectionNote();
     discardTransientEmptyGlossary();
     setSelectedWorkspaceDocumentIds(new Set());
@@ -10499,37 +10684,64 @@ function App() {
       : firstDocument;
     const documentToSelect =
       selectedDocument ?? (options.selectFallback === false ? null : firstDocument);
-    const draftState = currentDraftDocumentState();
-    const nextDocuments = [...loadedDocuments, ...draftState.documents];
+    const nextRoot = {
+      path: openedDirectory.path,
+      title: openedDirectory.title,
+      source: "local" as const,
+    };
 
-    documentsRef.current = nextDocuments;
-    setDocuments(nextDocuments);
-    setNotes([...loadedNotes, ...draftState.notes]);
-    setGlossaryBindings([...loadedGlossaryBindings, ...draftState.glossaryBindings]);
-    setGlossaryTerms(mergeGlossaryTerms(loadedGlossaryTerms, draftState.glossaryTerms));
+    if (addAsWorkspaceRoot) {
+      // Files that are already open keep their in-memory version, including unsaved edits.
+      const knownDocumentIds = new Set(documentsRef.current.map((document) => document.id));
+      mergeLoadedFilesIntoDocumentState(
+        loadedFiles.filter((loadedFile) => !knownDocumentIds.has(loadedFile.path)),
+      );
+      commitOpenWorkspaceRoots(
+        upsertActiveWorkspaceRoot(openWorkspaceRootsWithLiveSnapshot(), nextRoot),
+      );
+    } else {
+      const draftState = currentDraftDocumentState();
+      const nextDocuments = [...loadedDocuments, ...draftState.documents];
+
+      documentsRef.current = nextDocuments;
+      setDocuments(nextDocuments);
+      setNotes([...loadedNotes, ...draftState.notes]);
+      setGlossaryBindings([...loadedGlossaryBindings, ...draftState.glossaryBindings]);
+      setGlossaryTerms(mergeGlossaryTerms(loadedGlossaryTerms, draftState.glossaryTerms));
+      markLoadedDocumentsClean(loadedDocuments);
+      commitOpenWorkspaceRoots(upsertActiveWorkspaceRoot([], nextRoot));
+    }
+    workspaceEntriesRef.current = nextEntries;
+    expandedDirectoryKeysRef.current = new Set();
+    workspaceRootPathRef.current = openedDirectory.path;
+    workspaceSourceRef.current = "local";
+    workspaceTitleRef.current = openedDirectory.title;
     setWorkspaceTitle(openedDirectory.title);
     setWorkspaceEntries(nextEntries);
     setWorkspaceRootPath(openedDirectory.path);
     setWorkspaceSource("local");
     resetFileSearch();
-    setExpandedDirectoryKeys(new Set());
+    setExpandedDirectoryKeys(expandedDirectoryKeysRef.current);
     setLoadingDirectoryKeys(new Set());
     setSelectionWarningPosition(null);
     setPendingAnchor(null);
     setPendingGlossaryTerm(null);
     setNoteDraft("");
     setGlossaryDraft("");
-    markLoadedDocumentsClean(loadedDocuments);
     forgetLastOpenedDropboxWorkspace();
     rememberLastOpenedMarkdownRootDirectoryPath(openedDirectory.path);
 
     if (documentToSelect) {
       setActiveDocumentId(documentToSelect.id);
-      resetDocumentTabs(documentToSelect.id);
+      if (addAsWorkspaceRoot) {
+        addDocumentTab(documentToSelect.id);
+      } else {
+        resetDocumentTabs(documentToSelect.id);
+      }
       if (options.rememberSelection !== false) {
         rememberLastOpenedMarkdownPath(documentToSelect.filePath);
       }
-    } else {
+    } else if (!addAsWorkspaceRoot) {
       setActiveDocumentId("");
       resetDocumentTabs("");
       if (options.rememberSelection !== false) {
@@ -10557,9 +10769,12 @@ function App() {
 
   async function loadAvailableLocalDocumentTabSession(
     session: DocumentTabSessionState,
+    tabRootPaths: string[] = [],
   ) {
     const sessionPaths = session.openDocumentPaths.filter((path) =>
-      localPathIsInsideDirectory(path, session.workspacePath),
+      [session.workspacePath, ...tabRootPaths].some((rootPath) =>
+        localPathIsInsideDirectory(path, rootPath),
+      ),
     );
     const loadedResults = await Promise.allSettled(
       sessionPaths.map((path) =>
@@ -10591,6 +10806,65 @@ function App() {
     return true;
   }
 
+  /** Reopens, after startup, the other folders that were in the side panel. */
+  async function restoreAdditionalWorkspaceRoots(storedRoots: StoredWorkspaceRoot[]) {
+    if (isMobileViewport || storedRoots.length === 0) return;
+
+    const liveRootAtStart = liveWorkspaceRoot(openWorkspaceRootsRef.current);
+    if (liveRootAtStart?.source !== "local") return;
+
+    const rootsToLoad = storedRoots.filter(
+      (root) => workspaceRootKey("local", root.path) !== liveRootAtStart.key,
+    );
+
+    try {
+      const results = await Promise.allSettled(
+        rootsToLoad.map((root) => openMarkdownDirectory({ path: root.path })),
+      );
+      // Something other than a local folder opened while these loaded.
+      if (liveWorkspaceRoot(openWorkspaceRootsRef.current)?.source !== "local") return;
+
+      const restoredRoots: OpenWorkspaceRoot[] = [];
+      const loadedFiles: OpenMarkdownFileResult[] = [];
+      results.forEach((result, index) => {
+        if (result.status !== "fulfilled") return;
+
+        const storedRoot = rootsToLoad[index];
+        const openedDirectory = result.value;
+        loadedFiles.push(
+          ...openedDirectory.entries.flatMap((entry) =>
+            entry.kind === "file" ? [entry.file] : [],
+          ),
+        );
+        restoredRoots.push({
+          key: workspaceRootKey("local", storedRoot.path),
+          path: storedRoot.path,
+          title: openedDirectory.title,
+          source: "local",
+          collapsed: storedRoot.collapsed,
+          snapshot: {
+            entries: sortWorkspaceEntriesForDirectory(
+              workspaceEntriesFromOpenedDirectory(openedDirectory, 1),
+              workspaceSortModeRef.current,
+            ),
+            expandedDirectoryKeys: [],
+          },
+        });
+      });
+
+      const knownDocumentIds = new Set(documentsRef.current.map((document) => document.id));
+      mergeLoadedFilesIntoDocumentState(
+        loadedFiles.filter((loadedFile) => !knownDocumentIds.has(loadedFile.path)),
+      );
+      commitOpenWorkspaceRoots(
+        mergeRestoredWorkspaceRoots(openWorkspaceRootsRef.current, storedRoots, restoredRoots),
+      );
+    } catch (error) {
+      // The current folder is already open, so a folder that fails to reopen is left out.
+      console.error(error);
+    }
+  }
+
   /**
    * Resolves to false when the person opened another file or folder before the
    * restore finished, so the restore never replaces what they asked for.
@@ -10599,7 +10873,12 @@ function App() {
     rootDirectoryPath: string,
     selectedPath: string,
     tabSession: DocumentTabSessionState | null = null,
-    options: { rememberRecent?: boolean } = {},
+    options: {
+      addAsWorkspaceRoot?: boolean;
+      rememberRecent?: boolean;
+      /** Other folders in the side panel whose files may also be open in tabs. */
+      tabRootPaths?: string[];
+    } = {},
   ) {
     const restoreSelectionRevision = manualDocumentSelectionRevisionRef.current;
     const restoreWasInterrupted = () =>
@@ -10609,7 +10888,7 @@ function App() {
       path: rootDirectoryPath,
     });
     const loadedTabSession = tabSession
-      ? await loadAvailableLocalDocumentTabSession(tabSession)
+      ? await loadAvailableLocalDocumentTabSession(tabSession, options.tabRootPaths)
       : null;
     if (restoreWasInterrupted()) return false;
     const restoredSelectedPath = loadedTabSession
@@ -10670,6 +10949,7 @@ function App() {
     }
 
     applyOpenedDirectory(openedDirectory, selectedIsRootEntry ? restoredSelectedPath : undefined, {
+      addAsWorkspaceRoot: options.addAsWorkspaceRoot,
       rememberRecent: options.rememberRecent ?? false,
       rememberSelection: false,
       selectFallback:
@@ -10692,13 +10972,26 @@ function App() {
 
     if (!selectedFile) return true;
 
-    mergeLoadedFilesIntoDocumentState(loadedDescendantFiles);
-    setWorkspaceEntries(
-      sortWorkspaceEntriesForDirectory(nextEntries, workspaceSortModeRef.current),
+    const knownDocumentIds = new Set(documentsRef.current.map((document) => document.id));
+    mergeLoadedFilesIntoDocumentState(
+      options.addAsWorkspaceRoot
+        ? loadedDescendantFiles.filter((file) => !knownDocumentIds.has(file.path))
+        : loadedDescendantFiles,
     );
+    const sortedEntries = sortWorkspaceEntriesForDirectory(
+      nextEntries,
+      workspaceSortModeRef.current,
+    );
+    workspaceEntriesRef.current = sortedEntries;
+    expandedDirectoryKeysRef.current = nextExpandedDirectoryKeys;
+    setWorkspaceEntries(sortedEntries);
     setExpandedDirectoryKeys(nextExpandedDirectoryKeys);
     setActiveDocumentId(selectedFile.path);
-    resetDocumentTabs(selectedFile.path);
+    if (options.addAsWorkspaceRoot) {
+      addDocumentTab(selectedFile.path);
+    } else {
+      resetDocumentTabs(selectedFile.path);
+    }
     rememberLastOpenedMarkdownPath(selectedFile.path);
     if (loadedTabSession) {
       applyLocalDocumentTabSession(loadedTabSession);
@@ -10940,6 +11233,7 @@ function App() {
 
     // Opening a folder stops any unfinished restore or earlier open from replacing it.
     const openSelectionRevision = ++manualDocumentSelectionRevisionRef.current;
+    const addAsWorkspaceRoot = shouldAddWorkspaceRoot();
     setStorageError(t("status.openingFolder"));
 
     const lastOpenedFilePath = readLastOpenedFileInDirectory("local", path);
@@ -10949,7 +11243,7 @@ function App() {
           path,
           lastOpenedFilePath,
           null,
-          { rememberRecent: true },
+          { addAsWorkspaceRoot, rememberRecent: true },
         );
         if (restored) setStorageError("");
         return restored;
@@ -10965,7 +11259,7 @@ function App() {
       });
       if (openSelectionRevision !== manualDocumentSelectionRevisionRef.current) return false;
 
-      applyOpenedDirectory(openedDirectory);
+      applyOpenedDirectory(openedDirectory, undefined, { addAsWorkspaceRoot });
       return true;
     } catch (error) {
       if (openSelectionRevision !== manualDocumentSelectionRevisionRef.current) return false;
@@ -11502,6 +11796,45 @@ function App() {
     }
   }
 
+  /** Opens a row of a folder in the side panel that is not current, making that folder current first. */
+  function openEntryInWorkspaceRoot(
+    root: OpenWorkspaceRoot,
+    entry: WorkspaceEntry,
+    event: MouseEvent<HTMLButtonElement>,
+  ) {
+    if (!activateWorkspaceRoot(root.key)) return;
+
+    if (
+      entry.kind === "file" &&
+      !event.metaKey &&
+      !event.ctrlKey &&
+      !documentsRef.current.some((document) => document.id === entry.documentId)
+    ) {
+      void openFileInNewTab(entry);
+      return;
+    }
+
+    openWorkspaceEntry(entry, event);
+  }
+
+  function openWorkspaceRootContextMenu(
+    root: OpenWorkspaceRoot,
+    event: MouseEvent<HTMLButtonElement>,
+  ) {
+    event.preventDefault();
+    event.stopPropagation();
+    hideFileNameTooltip();
+    setFileContextMenu(null);
+    setDocumentTabContextMenu(null);
+    if (openWorkspaceRootsRef.current.length <= 1) return;
+
+    setWorkspaceRootContextMenu({
+      rootKey: root.key,
+      left: event.clientX,
+      top: event.clientY,
+    });
+  }
+
   function workspaceExportDocumentIdsForContext(entry: Extract<WorkspaceEntry, { kind: "file" }>) {
     if (!selectedWorkspaceDocumentIds.has(entry.documentId)) {
       return [entry.documentId];
@@ -11714,8 +12047,12 @@ function App() {
     const entryKey = directoryTreeKey(entry);
     if (loadingDirectoryKeys.has(entryKey)) return;
 
-    if (expandedDirectoryKeys.has(entryKey)) {
-      const descendantKeys = collectVisibleDescendantDirectoryKeys(workspaceEntries, entry);
+    // Refs keep this correct right after another folder in the side panel became current.
+    if (expandedDirectoryKeysRef.current.has(entryKey)) {
+      const descendantKeys = collectVisibleDescendantDirectoryKeys(
+        workspaceEntriesRef.current,
+        entry,
+      );
       setWorkspaceEntries((currentEntries) => collapseWorkspaceDirectory(currentEntries, entry));
       setExpandedDirectoryKeys((currentKeys) => {
         const nextKeys = new Set(currentKeys);
@@ -11737,6 +12074,7 @@ function App() {
       return;
     }
 
+    const rootPathAtStart = workspaceRootPathRef.current;
     setLoadingDirectoryKeys((currentKeys) => new Set(currentKeys).add(entryKey));
     setStorageError("");
 
@@ -11764,6 +12102,9 @@ function App() {
         mergeLoadedFilesIntoDocumentState(loadedFiles);
         childEntries = workspaceEntriesFromOpenedDirectory(openedDirectory, childDepth);
       }
+
+      // Another folder became current while this one loaded, so its tree is left alone.
+      if (workspaceRootPathRef.current !== rootPathAtStart) return;
 
       if (childEntries.length === 0) {
         setExpandedDirectoryKeys((currentKeys) => new Set(currentKeys).add(entryKey));
@@ -11823,6 +12164,23 @@ function App() {
       return false;
     }
 
+    const addAsWorkspaceRoot = shouldAddWorkspaceRoot();
+    if (addAsWorkspaceRoot) {
+      // A file already listed in a folder in the side panel opens there instead of adding its folder again.
+      const listingRoot = workspaceRootListingFile(
+        openWorkspaceRootsRef.current,
+        workspaceEntriesRef.current,
+        path,
+      );
+      const listedDocument = documentsRef.current.find((document) =>
+        localPathsMatch(document.filePath, path),
+      );
+      if (listingRoot && listedDocument && activateWorkspaceRoot(listingRoot.key)) {
+        selectDocument(listedDocument.id, { tabBehavior: "add" });
+        return true;
+      }
+    }
+
     // The chosen file always wins over a restore or an earlier open that is still loading.
     const openSelectionRevision = ++manualDocumentSelectionRevisionRef.current;
     setStorageError(t("status.openingFile"));
@@ -11833,7 +12191,9 @@ function App() {
       });
       if (openSelectionRevision !== manualDocumentSelectionRevisionRef.current) return false;
 
-      applyOpenedDirectory(directoryWithSelectedFile(context), context.selectedFile.path);
+      applyOpenedDirectory(directoryWithSelectedFile(context), context.selectedFile.path, {
+        addAsWorkspaceRoot,
+      });
       return true;
     } catch (error) {
       if (openSelectionRevision !== manualDocumentSelectionRevisionRef.current) return false;
@@ -13748,6 +14108,7 @@ function App() {
     );
     setWorkspaceRootPath(null);
     setWorkspaceSource(null);
+    commitOpenWorkspaceRoots([]);
     resetFileSearch();
     setExpandedDirectoryKeys(new Set());
     setLoadingDirectoryKeys(new Set());
@@ -16797,6 +17158,37 @@ function App() {
         ),
       }
     : undefined;
+  const workspaceRootContextMenuActions: FileContextMenuAction[] =
+    workspaceRootContextMenu && openWorkspaceRoots.length > 1
+      ? [
+          {
+            id: "remove-workspace-root",
+            label: t("workspaceRoot.remove"),
+            icon: <SearchCloseIcon />,
+            onSelect: () => {
+              setWorkspaceRootContextMenu(null);
+              removeWorkspaceRoot(workspaceRootContextMenu.rootKey);
+            },
+          },
+        ]
+      : [];
+  const workspaceRootContextMenuStyle: CSSProperties | undefined = workspaceRootContextMenu
+    ? {
+        left: Math.round(
+          clampNumber(workspaceRootContextMenu.left, 8, Math.max(8, window.innerWidth - 214)),
+        ),
+        top: Math.round(
+          clampNumber(
+            workspaceRootContextMenu.top,
+            8,
+            Math.max(
+              8,
+              window.innerHeight - (24 + workspaceRootContextMenuActions.length * 34),
+            ),
+          ),
+        ),
+      }
+    : undefined;
   const floatingPanelIsGlossary = Boolean(
     pendingGlossaryTerm ||
       activeGlossaryTerm ||
@@ -16849,6 +17241,12 @@ function App() {
     fileSearchMode === "files" && fileSearchActive && !localRecursiveFileSearchActive
       ? filterWorkspaceEntriesForSearch(workspaceEntries, trimmedFileSearchQuery)
       : workspaceEntries;
+  // Several open folders are listed with their own headers; a search covers the current folder only.
+  const showWorkspaceRootList =
+    !isMobileViewport &&
+    openWorkspaceRoots.length > 1 &&
+    fileSearchMode === "files" &&
+    !fileSearchActive;
   const visibleTagSearchResultsByPath = new Map<string, SearchMarkdownFileResult>();
   if (workspaceSource === "local") {
     localFileSearchResults.forEach((result) => {
@@ -17146,7 +17544,160 @@ function App() {
     }
   }, [editorMode, selectedDocumentId]);
 
-  const documentPaneWidth = estimateDocumentPaneWidth(workspaceTitle, workspaceEntries);
+  function renderWorkspaceEntryRow(
+    entry: WorkspaceEntry,
+    entryIndex: number,
+    rowEntries: WorkspaceEntry[],
+    root: OpenWorkspaceRoot | null = null,
+  ) {
+    // A folder in the side panel that is not current shows its stored tree.
+    const rootSnapshot = root?.snapshot ?? null;
+    // Rows sit one level under their folder's header when several folders are listed.
+    const depthOffset = root ? 1 : 0;
+    const mobileSelectionKey = workspaceEntrySelectionKey(entry);
+    const isMobileSelected =
+      !rootSnapshot &&
+      isMobileViewport &&
+      mobileSelectedWorkspaceEntryKey === mobileSelectionKey;
+    const isSelected =
+      hasOpenDocument &&
+      entry.kind === "file" &&
+      entry.documentId === selectedDocument.id;
+    const rowIsSelected = isSelected || isMobileSelected;
+    const isBatchSelected =
+      !rootSnapshot &&
+      entry.kind === "file" &&
+      selectedWorkspaceDocumentIds.has(entry.documentId);
+    const isDirectory = entry.kind === "directory";
+    const entryKey = isDirectory ? directoryTreeKey(entry) : "";
+    const isExpanded =
+      isDirectory &&
+      (rootSnapshot
+        ? rootSnapshot.expandedDirectoryKeys.includes(entryKey)
+        : expandedDirectoryKeys.has(entryKey));
+    const useSelectedFolderIcon = isDirectory && isExpanded;
+    const isLoading = isDirectory && !rootSnapshot && loadingDirectoryKeys.has(entryKey);
+    const nextEntry = rowEntries[entryIndex + 1];
+    const isExpandedDirectoryEmpty =
+      isDirectory &&
+      isExpanded &&
+      !fileSearchActive &&
+      (!nextEntry || (nextEntry.depth ?? 1) <= (entry.depth ?? 1));
+    const rowStyle = {
+      "--document-row-depth": (entry.depth ?? 1) + depthOffset,
+    } as CSSProperties;
+    const emptyStateStyle = {
+      "--document-row-depth": (entry.depth ?? 1) + 1 + depthOffset,
+    } as CSSProperties;
+
+    return (
+      <Fragment key={entry.id}>
+        <button
+          aria-describedby={
+            entry.kind === "file" ? fileNameTooltipDescribedBy(entry.id) : undefined
+          }
+          aria-expanded={isDirectory ? isExpanded : undefined}
+          className={`document-row ${isDirectory ? "is-folder" : ""} ${
+            entry.kind === "file" ? "is-file" : ""
+          } ${isExpanded ? "is-expanded" : ""} ${isLoading ? "is-loading" : ""} ${
+            rowIsSelected ? "is-selected" : ""
+          } ${isBatchSelected ? "is-batch-selected" : ""}`}
+          style={rowStyle}
+          onClick={(event) => {
+            hideFileNameTooltip();
+            if (root && rootSnapshot) {
+              openEntryInWorkspaceRoot(root, entry, event);
+              return;
+            }
+            openWorkspaceEntry(entry, event);
+          }}
+          onBlur={entry.kind === "file" ? hideFileNameTooltip : undefined}
+          onContextMenu={(event) => {
+            if (entry.kind === "parent-directory") return;
+
+            hideFileNameTooltip();
+            cancelWorkspaceFileLongPress();
+            if (root && rootSnapshot) activateWorkspaceRoot(root.key);
+            openFileContextMenu(entry, event);
+          }}
+          onFocus={
+            entry.kind === "file"
+              ? (event) => showFocusedFileNameTooltip(event, entry.id, entry.title)
+              : undefined
+          }
+          onKeyDown={
+            entry.kind === "file" ? handleFileNameTooltipKeyDown : undefined
+          }
+          onMouseEnter={
+            entry.kind === "file"
+              ? (event) =>
+                  scheduleFileNameTooltip(event.currentTarget, entry.id, entry.title)
+              : undefined
+          }
+          onMouseLeave={entry.kind === "file" ? hideFileNameTooltip : undefined}
+          onPointerCancel={(event) => {
+            cancelWorkspaceFileLongPress(event.pointerId);
+          }}
+          onPointerDown={(event) => {
+            hideFileNameTooltip();
+            if (entry.kind === "parent-directory") return;
+
+            startWorkspaceFileLongPress(entry, event);
+          }}
+          onPointerMove={moveWorkspaceFileLongPress}
+          onPointerUp={(event) => {
+            cancelWorkspaceFileLongPress(event.pointerId);
+          }}
+          title={entry.kind === "file" ? undefined : entry.title}
+          type="button"
+        >
+          <span
+            className={`document-disclosure ${isDirectory ? "" : "is-placeholder"}`}
+            aria-hidden="true"
+          >
+            {isDirectory ? (isLoading ? "..." : isExpanded ? "⌄" : "›") : ""}
+          </span>
+          <DocumentGlyphIcon
+            kind={isDirectory ? "folder" : "file"}
+            selected={
+              isDirectory
+                ? useSelectedFolderIcon || isMobileSelected
+                : isSelected || isMobileSelected || isBatchSelected
+            }
+          />
+          <span
+            className="document-title"
+            data-file-name-overflow={entry.kind === "file" ? "" : undefined}
+          >
+            {entry.title}
+          </span>
+        </button>
+        {isExpandedDirectoryEmpty ? (
+          <p className="directory-empty-state" role="status" style={emptyStateStyle}>
+            {entry.source === "dropbox"
+              ? t("dropbox.emptyFolder")
+              : t("status.noFoldersOrMarkdown")}
+          </p>
+        ) : null}
+      </Fragment>
+    );
+  }
+
+  // With several folders listed, the widest folder sets the width, so it stays put when the current folder changes.
+  const documentPaneWidth =
+    !isMobileViewport && openWorkspaceRoots.length > 1
+      ? Math.max(
+          ...openWorkspaceRoots.map((root) =>
+            estimateDocumentPaneWidth(
+              root.title,
+              (root.snapshot ? root.snapshot.entries : workspaceEntries).map((entry) => ({
+                ...entry,
+                depth: (entry.depth ?? 1) + 1,
+              })),
+            ),
+          ),
+        )
+      : estimateDocumentPaneWidth(workspaceTitle, workspaceEntries);
   const shellStyle = {
     "--document-pane-measured-width": `${documentPaneWidth}px`,
   } as CSSProperties;
@@ -17381,6 +17932,11 @@ function App() {
                   setWorkspaceEntries((entries) =>
                     sortWorkspaceEntriesForDirectory(entries, nextMode),
                   );
+                  commitOpenWorkspaceRoots(
+                    sortWorkspaceRootSnapshots(openWorkspaceRootsRef.current, (entries) =>
+                      sortWorkspaceEntriesForDirectory(entries, nextMode),
+                    ),
+                  );
                 }}
               >
                 <option value="name">{t("documentSort.name")}</option>
@@ -17429,7 +17985,7 @@ function App() {
               </section>
             ) : null}
 
-            {!isMobileViewport ? (
+            {!isMobileViewport && !showWorkspaceRootList ? (
               <div
                 className={`document-tree-root ${hasOpenDocument ? "" : "is-current"}`.trim()}
                 title={workspaceRootPath ?? workspaceTitle}
@@ -17645,127 +18201,58 @@ function App() {
                   })
                 : null}
             </>
-          ) : (
-            visibleWorkspaceEntries.map((entry, entryIndex) => {
-              const mobileSelectionKey = workspaceEntrySelectionKey(entry);
-              const isMobileSelected =
-                isMobileViewport && mobileSelectedWorkspaceEntryKey === mobileSelectionKey;
-              const isSelected =
-                hasOpenDocument &&
-                entry.kind === "file" &&
-                entry.documentId === selectedDocument.id;
-              const rowIsSelected = isSelected || isMobileSelected;
-              const isBatchSelected =
-                entry.kind === "file" && selectedWorkspaceDocumentIds.has(entry.documentId);
-              const isDirectory = entry.kind === "directory";
-              const entryKey = isDirectory ? directoryTreeKey(entry) : "";
-              const isExpanded = isDirectory && expandedDirectoryKeys.has(entryKey);
-              const useSelectedFolderIcon = isDirectory && isExpanded;
-              const isLoading = isDirectory && loadingDirectoryKeys.has(entryKey);
-              const nextEntry = visibleWorkspaceEntries[entryIndex + 1];
-              const isExpandedDirectoryEmpty =
-                isDirectory &&
-                isExpanded &&
-                !fileSearchActive &&
-                (!nextEntry || (nextEntry.depth ?? 1) <= (entry.depth ?? 1));
-              const rowStyle = {
-                "--document-row-depth": entry.depth ?? 1,
-              } as CSSProperties;
-              const emptyStateStyle = {
-                "--document-row-depth": (entry.depth ?? 1) + 1,
-              } as CSSProperties;
+          ) : showWorkspaceRootList ? (
+            openWorkspaceRoots.map((root) => {
+              const rootEntries = root.snapshot ? root.snapshot.entries : visibleWorkspaceEntries;
+              const rootIsCurrent = !root.snapshot;
+              const rootHeaderStyle = { "--document-row-depth": 1 } as CSSProperties;
+              const rootEmptyStateStyle = { "--document-row-depth": 2 } as CSSProperties;
 
               return (
-                <Fragment key={entry.id}>
+                <Fragment key={root.key}>
                   <button
-                    aria-describedby={
-                      entry.kind === "file" ? fileNameTooltipDescribedBy(entry.id) : undefined
-                    }
-                    aria-expanded={isDirectory ? isExpanded : undefined}
-                    className={`document-row ${isDirectory ? "is-folder" : ""} ${
-                      entry.kind === "file" ? "is-file" : ""
-                    } ${isExpanded ? "is-expanded" : ""} ${isLoading ? "is-loading" : ""} ${
-                      rowIsSelected ? "is-selected" : ""
-                    } ${isBatchSelected ? "is-batch-selected" : ""}`}
-                    style={rowStyle}
-                    onClick={(event) => {
-                      hideFileNameTooltip();
-                      openWorkspaceEntry(entry, event);
-                    }}
-                    onBlur={entry.kind === "file" ? hideFileNameTooltip : undefined}
-                    onContextMenu={(event) => {
-                      if (entry.kind === "parent-directory") return;
-
-                      hideFileNameTooltip();
-                      cancelWorkspaceFileLongPress();
-                      openFileContextMenu(entry, event);
-                    }}
-                    onFocus={
-                      entry.kind === "file"
-                        ? (event) => showFocusedFileNameTooltip(event, entry.id, entry.title)
-                        : undefined
-                    }
-                    onKeyDown={
-                      entry.kind === "file" ? handleFileNameTooltipKeyDown : undefined
-                    }
-                    onMouseEnter={
-                      entry.kind === "file"
-                        ? (event) =>
-                            scheduleFileNameTooltip(event.currentTarget, entry.id, entry.title)
-                        : undefined
-                    }
-                    onMouseLeave={entry.kind === "file" ? hideFileNameTooltip : undefined}
-                    onPointerCancel={(event) => {
-                      cancelWorkspaceFileLongPress(event.pointerId);
-                    }}
-                    onPointerDown={(event) => {
-                      hideFileNameTooltip();
-                      if (entry.kind === "parent-directory") return;
-
-                      startWorkspaceFileLongPress(entry, event);
-                    }}
-                    onPointerMove={moveWorkspaceFileLongPress}
-                    onPointerUp={(event) => {
-                      cancelWorkspaceFileLongPress(event.pointerId);
-                    }}
-                    title={entry.kind === "file" ? undefined : entry.title}
+                    aria-expanded={!root.collapsed}
+                    className={`document-row workspace-root-row ${
+                      rootIsCurrent ? "is-current-root" : ""
+                    } ${root.collapsed ? "" : "is-expanded"}`}
+                    style={rootHeaderStyle}
+                    onClick={() => toggleWorkspaceRootCollapsed(root.key)}
+                    onContextMenu={(event) => openWorkspaceRootContextMenu(root, event)}
+                    title={root.path}
                     type="button"
                   >
-                    <span
-                      className={`document-disclosure ${isDirectory ? "" : "is-placeholder"}`}
-                      aria-hidden="true"
-                    >
-                      {isDirectory ? (isLoading ? "..." : isExpanded ? "⌄" : "›") : ""}
+                    <span className="document-disclosure" aria-hidden="true">
+                      {root.collapsed ? "›" : "⌄"}
                     </span>
-                    <DocumentGlyphIcon
-                      kind={isDirectory ? "folder" : "file"}
-                      selected={
-                        isDirectory
-                          ? useSelectedFolderIcon || isMobileSelected
-                          : isSelected || isMobileSelected || isBatchSelected
-                      }
-                    />
-                    <span
-                      className="document-title"
-                      data-file-name-overflow={entry.kind === "file" ? "" : undefined}
-                    >
-                      {entry.title}
-                    </span>
+                    <DocumentGlyphIcon kind="folder" selected={rootIsCurrent} />
+                    <span className="document-title workspace-root-row__title">{root.title}</span>
                   </button>
-                  {isExpandedDirectoryEmpty ? (
-                    <p className="directory-empty-state" role="status" style={emptyStateStyle}>
-                      {entry.source === "dropbox"
-                        ? t("dropbox.emptyFolder")
-                        : t("status.noFoldersOrMarkdown")}
+                  {root.collapsed
+                    ? null
+                    : rootEntries.map((entry, entryIndex) =>
+                        renderWorkspaceEntryRow(entry, entryIndex, rootEntries, root),
+                      )}
+                  {!root.collapsed && rootEntries.length === 0 ? (
+                    <p
+                      className="directory-empty-state"
+                      role="status"
+                      style={rootEmptyStateStyle}
+                    >
+                      {t("status.noFoldersOrMarkdown")}
                     </p>
                   ) : null}
                 </Fragment>
               );
             })
+          ) : (
+            visibleWorkspaceEntries.map((entry, entryIndex) =>
+              renderWorkspaceEntryRow(entry, entryIndex, visibleWorkspaceEntries),
+            )
           )}
 
           {fileSearchMode === "files" &&
           !fileSearchActive &&
+          !showWorkspaceRootList &&
           workspaceSource &&
           workspaceEntries.length === 0 ? (
             <p className="directory-empty-state is-root" role="status">
@@ -17970,6 +18457,23 @@ function App() {
               role="menuitem"
               onClick={action.onSelect}
             >
+              {action.icon}
+              <span>{action.label}</span>
+            </button>
+          ))}
+        </div>
+      ) : null}
+
+      {workspaceRootContextMenu && workspaceRootContextMenuActions.length > 0 ? (
+        <div
+          className="file-context-menu"
+          role="menu"
+          style={workspaceRootContextMenuStyle}
+          onContextMenu={(event) => event.preventDefault()}
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          {workspaceRootContextMenuActions.map((action) => (
+            <button key={action.id} type="button" role="menuitem" onClick={action.onSelect}>
               {action.icon}
               <span>{action.label}</span>
             </button>

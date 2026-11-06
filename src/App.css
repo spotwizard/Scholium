@@ -875,6 +875,20 @@ button:disabled {
   color: var(--color-muted);
 }
 
+.document-row.workspace-root-row {
+  color: var(--color-heading);
+  min-height: 36px;
+}
+
+.document-row.workspace-root-row:not(:first-child) {
+  margin-top: 4px;
+}
+
+.document-row.workspace-root-row .workspace-root-row__title {
+  font-size: 0.84rem;
+  font-weight: 680;
+}
+
 .document-row.file-search-result {
   min-height: 46px;
 }
