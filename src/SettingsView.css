@@ -1,4 +1,10 @@
+/*
+ * The settings view keeps a fixed text size. The interface font size setting
+ * changes the root font size, so sizes here are derived from this base
+ * instead of rem to stop the settings view from scaling with that setting.
+ */
 .settings-view-backdrop {
+  --settings-view-base-font-size: 18px;
   position: fixed;
   inset: 0;
   z-index: 160;
@@ -9,6 +15,7 @@
   padding: 24px;
   background: rgba(17, 19, 24, 0.42);
   backdrop-filter: blur(2px);
+  font-size: var(--settings-view-base-font-size);
 }
 
 .settings-view {
@@ -40,7 +47,7 @@
 .settings-view__header h2 {
   margin: 0;
   color: var(--color-heading);
-  font-size: 1.04rem;
+  font-size: calc(1.04 * var(--settings-view-base-font-size));
   font-weight: 780;
   line-height: 1.25;
 }
@@ -68,7 +75,7 @@
   padding: 0 2px;
   color: var(--color-muted);
   background: transparent;
-  font-size: 0.8rem;
+  font-size: calc(0.8 * var(--settings-view-base-font-size));
   font-weight: 680;
 }
 
@@ -90,7 +97,7 @@
   border-radius: 6px;
   color: var(--color-muted);
   background: transparent;
-  font-size: 1.2rem;
+  font-size: calc(1.2 * var(--settings-view-base-font-size));
   font-weight: 520;
   line-height: 1;
 }
@@ -128,7 +135,7 @@
   padding: 0 11px;
   color: var(--color-muted);
   background: transparent;
-  font-size: 0.86rem;
+  font-size: calc(0.86 * var(--settings-view-base-font-size));
   font-weight: 690;
   line-height: 1.25;
   text-align: left;
@@ -169,7 +176,7 @@
 .settings-view__section h3 {
   margin: 0;
   color: var(--color-heading);
-  font-size: 1.02rem;
+  font-size: calc(1.02 * var(--settings-view-base-font-size));
   font-weight: 780;
   letter-spacing: 0;
   line-height: 1.25;
@@ -218,7 +225,7 @@
   padding: 0 10px;
   color: var(--color-muted);
   background: var(--color-surface-soft);
-  font-size: 0.78rem;
+  font-size: calc(0.78 * var(--settings-view-base-font-size));
   font-weight: 720;
   line-height: 1.2;
   white-space: nowrap;
@@ -250,7 +257,7 @@
   padding: 0 12px;
   color: var(--color-heading);
   background: var(--color-surface-raised);
-  font-size: 0.82rem;
+  font-size: calc(0.82 * var(--settings-view-base-font-size));
   font-weight: 720;
 }
 
@@ -274,7 +281,7 @@
   grid-column: 1 / -1;
   margin: 0;
   color: var(--color-muted);
-  font-size: 0.78rem;
+  font-size: calc(0.78 * var(--settings-view-base-font-size));
   font-weight: 580;
   line-height: 1.4;
 }
@@ -300,17 +307,17 @@
 
 .settings-view__setting-label {
   color: var(--color-heading);
-  font-size: 0.9rem;
+  font-size: calc(0.9 * var(--settings-view-base-font-size));
   font-weight: 720;
   line-height: 1.3;
 }
 
 .settings-view__setting-description {
   display: -webkit-box;
-  min-height: calc(0.78rem * 1.35 * 2);
+  min-height: calc(0.78 * var(--settings-view-base-font-size) * 1.35 * 2);
   overflow: hidden;
   color: var(--color-muted);
-  font-size: 0.78rem;
+  font-size: calc(0.78 * var(--settings-view-base-font-size));
   font-weight: 580;
   line-height: 1.35;
   -webkit-box-orient: vertical;
@@ -348,7 +355,7 @@
   padding: 0 8px;
   color: var(--color-muted);
   background: var(--color-surface-raised);
-  font-size: 0.82rem;
+  font-size: calc(0.82 * var(--settings-view-base-font-size));
   font-weight: 720;
 }
 
@@ -438,7 +445,7 @@
   overflow: hidden;
   color: var(--color-muted);
   background: transparent;
-  font-size: 0.8rem;
+  font-size: calc(0.8 * var(--settings-view-base-font-size));
   font-weight: 690;
   line-height: 1.1;
   text-overflow: ellipsis;
@@ -469,7 +476,7 @@
   padding: 0 6px;
   color: var(--color-muted);
   background: transparent;
-  font-size: 0.78rem;
+  font-size: calc(0.78 * var(--settings-view-base-font-size));
   font-weight: 680;
   text-align: right;
   white-space: nowrap;
@@ -571,7 +578,7 @@
   }
 
   .settings-view__header h2 {
-    font-size: 0.96rem;
+    font-size: calc(0.96 * var(--settings-view-base-font-size));
     line-height: 1.18;
   }
 
@@ -579,7 +586,7 @@
     width: 32px;
     height: 32px;
     border-radius: 7px;
-    font-size: 1.02rem;
+    font-size: calc(1.02 * var(--settings-view-base-font-size));
   }
 
   .settings-view__body {
@@ -595,7 +602,7 @@
     min-height: 32px;
     border-radius: 7px;
     padding: 0 10px;
-    font-size: 0.8rem;
+    font-size: calc(0.8 * var(--settings-view-base-font-size));
     font-weight: 700;
   }
 
@@ -610,7 +617,7 @@
   }
 
   .settings-view__section h3 {
-    font-size: 0.96rem;
+    font-size: calc(0.96 * var(--settings-view-base-font-size));
     line-height: 1.18;
   }
 
@@ -631,7 +638,7 @@
   .settings-view__cloud-status {
     min-height: 24px;
     padding: 0 8px;
-    font-size: 0.7rem;
+    font-size: calc(0.7 * var(--settings-view-base-font-size));
   }
 
   .settings-view__cloud-actions {
@@ -642,11 +649,11 @@
     min-height: 32px;
     border-radius: 7px;
     padding: 0 10px;
-    font-size: 0.78rem;
+    font-size: calc(0.78 * var(--settings-view-base-font-size));
   }
 
   .settings-view__cloud-note {
-    font-size: 0.74rem;
+    font-size: calc(0.74 * var(--settings-view-base-font-size));
     line-height: 1.34;
   }
 
@@ -657,26 +664,26 @@
   }
 
   .settings-view__setting-label {
-    font-size: 0.84rem;
+    font-size: calc(0.84 * var(--settings-view-base-font-size));
     line-height: 1.24;
   }
 
   .settings-view__setting-description {
     min-height: 0;
-    font-size: 0.72rem;
+    font-size: calc(0.72 * var(--settings-view-base-font-size));
     line-height: 1.3;
   }
 
   .settings-view__segmented button {
     min-height: 27px;
     padding: 0 7px;
-    font-size: 0.74rem;
+    font-size: calc(0.74 * var(--settings-view-base-font-size));
   }
 
   .settings-view__number-field {
     min-width: 76px;
     padding: 0 7px;
-    font-size: 0.76rem;
+    font-size: calc(0.76 * var(--settings-view-base-font-size));
   }
 
   .settings-view__number-field input {
@@ -703,7 +710,7 @@
   }
 
   .settings-view__reset {
-    font-size: 0.72rem;
+    font-size: calc(0.72 * var(--settings-view-base-font-size));
   }
 
   .settings-view__footer {
@@ -712,6 +719,6 @@
 
   .settings-view__reset-all {
     min-height: 24px;
-    font-size: 0.74rem;
+    font-size: calc(0.74 * var(--settings-view-base-font-size));
   }
 }

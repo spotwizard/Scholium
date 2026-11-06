@@ -71,9 +71,13 @@
     "Heiti TC";
   --scholium-english-font: -apple-system, BlinkMacSystemFont, "SF Pro Text",
     "Helvetica Neue", Arial;
-  --scholium-body-font:
-    var(--scholium-english-font), var(--scholium-body-cjk-font), sans-serif;
+  /* Bundled Noto Sans TC pairs with the serif reading font and keeps every
+     intermediate interface weight; system fonts remain as fallbacks. */
+  --scholium-body-font: "Noto Sans TC Variable", var(--scholium-english-font),
+    var(--scholium-body-cjk-font), sans-serif;
   --scholium-code-font: var(--scholium-body-font);
+  --scholium-serif-font: "PT Serif", "Noto Serif TC", "Songti TC", "Source Han Serif TC",
+    serif;
   --scholium-monospace-font: "SFMono-Regular", ui-monospace, Menlo, Monaco,
     Consolas, "Liberation Mono", monospace;
   color: var(--color-text);
@@ -87,6 +91,25 @@
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   -webkit-text-size-adjust: 100%;
+}
+
+/*
+ * Reading font: document content and note text switch to the bundled serif faces
+ * (PT Serif for Latin text, Noto Serif TC for CJK text).
+ * --scholium-code-font is already resolved on :root, so source mode and code
+ * blocks keep the original typeface. In the document area only the rendered
+ * content switches; tags, menus and other controls keep the interface font.
+ * Crepe's --crepe-font-default and --crepe-font-title (headings) are resolved
+ * on .milkdown, so they are overridden on .ProseMirror as well.
+ */
+:root[data-reading-font="serif"] .editor-surface .ProseMirror,
+:root[data-reading-font="serif"] .editor-surface .markdown-preview,
+:root[data-reading-font="serif"] .note-markdown-editor,
+:root[data-reading-font="serif"] .bottom-note-body {
+  --scholium-body-font: var(--scholium-serif-font);
+  --crepe-font-default: var(--scholium-serif-font);
+  --crepe-font-title: var(--scholium-serif-font);
+  font-family: var(--scholium-serif-font);
 }
 
 :root[data-theme="dark"] {
@@ -2608,18 +2631,18 @@ button.document-tag-chip__label:focus-visible {
 }
 
 .markdown-preview h1 {
-  font-size: 1.75rem;
+  font-size: 1.75em;
   margin-bottom: 0.68em;
 }
 
 .markdown-preview h2 {
   padding-bottom: 0.25em;
   border-bottom: 1px solid var(--color-border);
-  font-size: 1.35rem;
+  font-size: 1.35em;
 }
 
 .markdown-preview h3 {
-  font-size: 1.15rem;
+  font-size: 1.15em;
 }
 
 .markdown-preview h3,
@@ -2953,6 +2976,19 @@ button.document-tag-chip__label:focus-visible {
   line-height: var(--settings-editor-line-height-px) !important;
 }
 
+/*
+ * Plain document paragraphs get 15% more line spacing than the editor line
+ * height setting. List items, quotes, tables and note text keep the setting
+ * as is.
+ */
+.editor-surface .milkdown-markdown-editor .milkdown .ProseMirror > p {
+  line-height: calc(var(--settings-editor-line-height-px) * 1.15) !important;
+}
+
+.editor-surface .markdown-preview > p {
+  line-height: calc(var(--settings-editor-line-height) * 1.15);
+}
+
 .milkdown-markdown-editor
   .milkdown
   :is(.milkdown-image-block, .milkdown-code-block, .milkdown-table-block) {
@@ -3106,6 +3142,49 @@ button.document-tag-chip__label:focus-visible {
 .milkdown-markdown-editor .ProseMirror h5,
 .milkdown-markdown-editor .ProseMirror h6 {
   margin-bottom: 0.52em;
+}
+
+/*
+ * Document headings scale with the editor font size. Crepe's theme sizes them
+ * in fixed px (42/36/32/28/24/18px at an 18px body); these em values keep the
+ * same proportions so the default 18px editor size looks unchanged. The extra
+ * .milkdown class is needed to outrank the Crepe theme, which loads later.
+ * Note editors override these with their own rules further down.
+ */
+.milkdown-markdown-editor .milkdown .ProseMirror h1 {
+  margin-top: 0.7619em;
+  font-size: 2.3333em;
+  line-height: 1.1905;
+}
+
+.milkdown-markdown-editor .milkdown .ProseMirror h2 {
+  margin-top: 0.7778em;
+  font-size: 2em;
+  line-height: 1.2222;
+}
+
+.milkdown-markdown-editor .milkdown .ProseMirror h3 {
+  margin-top: 0.75em;
+  font-size: 1.7778em;
+  line-height: 1.25;
+}
+
+.milkdown-markdown-editor .milkdown .ProseMirror h4 {
+  margin-top: 0.7143em;
+  font-size: 1.5556em;
+  line-height: 1.2857;
+}
+
+.milkdown-markdown-editor .milkdown .ProseMirror h5 {
+  margin-top: 0.6667em;
+  font-size: 1.3333em;
+  line-height: 1.3333;
+}
+
+.milkdown-markdown-editor .milkdown .ProseMirror h6 {
+  margin-top: 0.8889em;
+  font-size: 1em;
+  line-height: 1.5556;
 }
 
 .milkdown-markdown-editor .ProseMirror blockquote {
@@ -7875,4 +7954,59 @@ button.document-tag-chip__label:focus-visible {
   font-size: 0.8rem;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/*
+ * Serif headings use the bundled Bold weight at every level so they stand out
+ * from body text. Kept at the end of the file so it wins over the per-surface
+ * heading rules above, which share the same specificity.
+ */
+:root[data-reading-font="serif"] .editor-surface :is(h1, h2, h3, h4, h5, h6),
+:root[data-reading-font="serif"] .note-markdown-editor :is(h1, h2, h3, h4, h5, h6),
+:root[data-reading-font="serif"] .bottom-note-body :is(h1, h2, h3, h4, h5, h6) {
+  font-weight: 700;
+}
+
+/*
+ * Noto Sans TC has a taller ascent and descent than the system fonts, so
+ * single-line labels that clip overflow for ellipsis cut off descenders
+ * (g, j, p, y) at their tight line heights. Extend the clip box above and
+ * below the text, and cancel it with negative margins so layout is unchanged.
+ */
+:is(
+    .pane-header h1,
+    .pane-header h2,
+    .document-tree-root__title,
+    .document-title,
+    .document-title__primary,
+    .document-title__meta,
+    .document-title__tags,
+    .tag-search-row__label,
+    .dropbox-directory-dialog__navigation span,
+    .dropbox-directory-dialog__row-main span:last-child,
+    .document-tag-chip__label,
+    .document-search__status,
+    .mobile-empty-actions button span,
+    .mobile-tag-picker-result__label,
+    .mobile-command-bar span,
+    .file-link-picker__title,
+    .file-link-picker__file-name,
+    .note-mode-switch__label
+  ) {
+  padding-block: 0.2em;
+  margin-block: -0.2em;
+}
+
+/*
+ * Phone layout: plain paragraphs use 10% more line spacing instead of 15%,
+ * since the narrower column already reads with shorter lines.
+ */
+@media (max-width: 640px) {
+  .editor-surface .milkdown-markdown-editor .milkdown .ProseMirror > p {
+    line-height: calc(var(--settings-editor-line-height-px) * 1.1) !important;
+  }
+
+  .editor-surface .markdown-preview > p {
+    line-height: calc(var(--settings-editor-line-height) * 1.1);
+  }
 }

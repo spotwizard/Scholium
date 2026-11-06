@@ -8386,6 +8386,14 @@ function App() {
   }, [settingsSnapshot]);
 
   useEffect(() => {
+    document.documentElement.dataset.readingFont = settingsSnapshot["editor.readingFont"];
+
+    return () => {
+      document.documentElement.removeAttribute("data-reading-font");
+    };
+  }, [settingsSnapshot]);
+
+  useEffect(() => {
     const theme = settingsSnapshot["app.theme"];
     const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
 
