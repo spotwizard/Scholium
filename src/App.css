@@ -8010,3 +8010,30 @@ button.document-tag-chip__label:focus-visible {
     line-height: calc(var(--settings-editor-line-height) * 1.1);
   }
 }
+
+/*
+ * Directory tree: show full file and folder names by wrapping them within
+ * the current pane width instead of truncating with an ellipsis, and give
+ * each row a little more vertical room. Search results keep their own
+ * two-line layout.
+ */
+.document-row:not(.file-search-result) {
+  align-items: start;
+  padding-block: 9px;
+}
+
+.document-row:not(.file-search-result) .document-title,
+.document-tree-root__title {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.35;
+}
+
+@media (max-width: 640px) {
+  /* Keep single-line rows centred within the taller touch row. */
+  .document-row:not(.file-search-result) {
+    padding-block: 12px;
+  }
+}
