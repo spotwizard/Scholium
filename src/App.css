@@ -2660,7 +2660,7 @@ button.document-tag-chip__label:focus-visible {
   margin: 0 0 1em;
   border: 1px solid var(--color-border);
   border-radius: 8px;
-  padding: 14px;
+  padding: 14px 28px;
   background: var(--color-surface-soft);
 }
 
@@ -3154,7 +3154,7 @@ button.document-tag-chip__label:focus-visible {
   overflow: visible;
   border: 1px solid var(--color-border);
   border-radius: 8px;
-  padding: var(--code-block-toolbar-reserved-space) 12px
+  padding: var(--code-block-toolbar-reserved-space) 24px
     var(--code-block-content-bottom-space);
   background: var(--color-surface-soft);
 }
@@ -3456,7 +3456,7 @@ button.document-tag-chip__label:focus-visible {
   overflow: hidden;
   border-color: color-mix(in srgb, #6e1b2b 38%, var(--color-border));
   border-left: 4px solid #6e1b2b;
-  padding: var(--code-block-toolbar-reserved-space) 20px
+  padding: var(--code-block-toolbar-reserved-space) 40px
     var(--code-block-content-bottom-space);
   background:
     linear-gradient(145deg, color-mix(in srgb, var(--color-surface) 88%, transparent), transparent),
@@ -7337,7 +7337,7 @@ button.document-tag-chip__label:focus-visible {
     box-sizing: border-box;
     max-width: 100%;
     overflow: hidden;
-    padding: var(--code-block-toolbar-reserved-space) 10px
+    padding: var(--code-block-toolbar-reserved-space) 20px
       var(--code-block-content-bottom-space);
   }
 
@@ -7402,7 +7402,7 @@ button.document-tag-chip__label:focus-visible {
   }
 
   .milkdown-markdown-editor .milkdown .milkdown-code-block.is-text-diagram {
-    padding: var(--code-block-toolbar-reserved-space) 12px
+    padding: var(--code-block-toolbar-reserved-space) 24px
       var(--code-block-content-bottom-space);
   }
 

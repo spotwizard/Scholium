@@ -162,19 +162,19 @@ assert.match(styles, /--code-block-toolbar-reserved-space: 34px/);
 assert.match(styles, /--code-block-content-bottom-space: 14px/);
 assert.match(
   styles,
-  /\.milkdown-code-block \{[\s\S]*?padding: var\(--code-block-toolbar-reserved-space\) 12px\s+var\(--code-block-content-bottom-space\)/,
+  /\.milkdown-code-block \{[\s\S]*?padding: var\(--code-block-toolbar-reserved-space\) 24px\s+var\(--code-block-content-bottom-space\)/,
 );
 assert.match(
   styles,
-  /\.milkdown-code-block\.is-text-diagram \{[\s\S]*?padding: var\(--code-block-toolbar-reserved-space\) 20px\s+var\(--code-block-content-bottom-space\)/,
+  /\.milkdown-code-block\.is-text-diagram \{[\s\S]*?padding: var\(--code-block-toolbar-reserved-space\) 40px\s+var\(--code-block-content-bottom-space\)/,
 );
 assert.match(
   styles,
-  /@media \(max-width: 640px\)[\s\S]*?\.milkdown-code-block \{[\s\S]*?padding: var\(--code-block-toolbar-reserved-space\) 10px\s+var\(--code-block-content-bottom-space\)/,
+  /@media \(max-width: 640px\)[\s\S]*?\.milkdown-code-block \{[\s\S]*?padding: var\(--code-block-toolbar-reserved-space\) 20px\s+var\(--code-block-content-bottom-space\)/,
 );
 assert.match(
   styles,
-  /@media \(max-width: 640px\)[\s\S]*?\.milkdown-code-block\.is-text-diagram \{[\s\S]*?padding: var\(--code-block-toolbar-reserved-space\) 12px\s+var\(--code-block-content-bottom-space\)/,
+  /@media \(max-width: 640px\)[\s\S]*?\.milkdown-code-block\.is-text-diagram \{[\s\S]*?padding: var\(--code-block-toolbar-reserved-space\) 24px\s+var\(--code-block-content-bottom-space\)/,
 );
 assert.match(
   styles,
